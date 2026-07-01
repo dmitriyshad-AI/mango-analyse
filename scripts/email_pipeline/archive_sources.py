@@ -18,6 +18,7 @@ from scripts.email_pipeline.classification import (
     local_of,
     participants_for,
 )
+from scripts.email_pipeline.contact import Participant
 
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
@@ -57,7 +58,10 @@ class ArchiveMessage:
     klass: str
     classification_reason: str
     from_email: str
+    from_name: str
     from_domain: str
+    to_participants: tuple[Participant, ...]
+    cc_participants: tuple[Participant, ...]
     to_domains: tuple[str, ...]
     body_chars: int
     attachment_count: int
@@ -135,9 +139,11 @@ def load_archive_messages(
         for sha, message_id, subject, mailbox, kind, date_iso, body_chars, extracted_path, eml_path in rows:
             record = participants.get(sha, {"from": None, "to": [], "cc": [], "reply_to": None})
             from_record = record.get("from") or ("", "", "")
+            to_records = tuple(record.get("to") or [])
+            cc_records = tuple(record.get("cc") or [])
             from_email = str(from_record[1] or "")
+            from_name = str(from_record[0] or "")
             from_domain = str(from_record[2] or "").lower()
-            to_records = record.get("to") or []
             to_domains = tuple(str(item[2] or "").lower() for item in to_records)
             is_outbound = (
                 from_domain in {"kmipt.ru"}
@@ -179,7 +185,10 @@ def load_archive_messages(
                     klass=klass,
                     classification_reason=reason,
                     from_email=from_email,
+                    from_name=from_name,
                     from_domain=from_domain,
+                    to_participants=to_records,
+                    cc_participants=cc_records,
                     to_domains=to_domains,
                     body_chars=int(body_chars or 0),
                     attachment_count=int(attachment_counts.get(str(sha), 0)),

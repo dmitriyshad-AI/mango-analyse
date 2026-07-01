@@ -21,8 +21,9 @@ from scripts.email_pipeline.archive_sources import (
     read_text,
 )
 from scripts.email_pipeline.brand import infer_email_brand
-from scripts.email_pipeline.classification import build_outbound_templates
-from scripts.email_pipeline.quality import evaluate_quality, quality_to_dict
+from scripts.email_pipeline.classification import build_outbound_template_counts, norm_subject
+from scripts.email_pipeline.contact import contact_to_dict, resolve_customer_contact
+from scripts.email_pipeline.quality import evaluate_quality, quality_to_dict, sanitize_summary_payload_for_quality
 from scripts.email_pipeline.summary import SummaryItem, clean_body, mask_pii, summarize_items
 
 
@@ -57,7 +58,10 @@ def main() -> int:
     prod_check_before = check_prod_timeline_readonly(prod_db)
     specs = default_archive_specs(source_root)
     archive_paths = existing_archive_paths(specs)
-    outbound_templates = build_outbound_templates(archive_paths, threshold=args.template_threshold)
+    outbound_template_counts = build_outbound_template_counts(archive_paths)
+    outbound_templates = {
+        subject for subject, count in outbound_template_counts.items() if count >= args.template_threshold
+    }
 
     seen: set[str] = set()
     classification_counts: Counter[str] = Counter()
@@ -77,7 +81,15 @@ def main() -> int:
                 continue
             body = read_text(message.extracted_text_path, limit=None)
             brand = infer_email_brand(message.subject, body)
-            real_records.append(_record_for_message(message, body=body, brand=brand))
+            real_records.append(
+                _record_for_message(
+                    message,
+                    body=body,
+                    brand=brand,
+                    outbound_template_freq=outbound_template_counts.get(norm_subject(message.subject), 0),
+                    template_threshold=args.template_threshold,
+                )
+            )
 
     real_records.sort(key=lambda row: row["message_sha256"])
     selected = real_records[: args.limit]
@@ -123,7 +135,12 @@ def main() -> int:
         row["summary_brand_mismatch"] = _summary_brand_mismatch(
             row["brand"], json.dumps(row["summary_payload"], ensure_ascii=False)
         )
-        row["quality"] = quality_to_dict(evaluate_quality(row))
+        quality_result = evaluate_quality(row)
+        sanitized_payload = sanitize_summary_payload_for_quality(row["summary_payload"], quality_result)
+        if sanitized_payload != row["summary_payload"]:
+            row["summary_payload"] = sanitized_payload
+            quality_result = evaluate_quality(row)
+        row["quality"] = quality_to_dict(quality_result)
     ensure_local_output_dir_allowed(repo_root=repo_root, local_output_dir=local_output_dir)
     local_outputs = write_local_outputs(selected, local_output_dir=local_output_dir, prefix=args.local_output_prefix)
     prod_check_after = check_prod_timeline_readonly(prod_db)
@@ -160,7 +177,24 @@ def main() -> int:
     return 0
 
 
-def _record_for_message(message: ArchiveMessage, *, body: str, brand: Any) -> dict[str, Any]:
+def _record_for_message(
+    message: ArchiveMessage,
+    *,
+    body: str,
+    brand: Any,
+    outbound_template_freq: int,
+    template_threshold: int,
+) -> dict[str, Any]:
+    contact = resolve_customer_contact(
+        direction=message.direction,
+        from_participant=(message.from_name, message.from_email, message.from_domain),
+        to_participants=message.to_participants,
+        cc_participants=message.cc_participants,
+        raw_text=f"{message.subject}\n{body[:20000]}",
+    )
+    contact_fields = contact_to_dict(contact)
+    is_outbound_template = message.direction == "outbound" and outbound_template_freq >= template_threshold
+    is_mass_recipient = contact.external_recipient_count >= 2
     return {
         "message_sha256": message.message_sha256,
         "source_archive": message.source_archive,
@@ -174,8 +208,15 @@ def _record_for_message(message: ArchiveMessage, *, body: str, brand: Any) -> di
         "date_iso": message.date_iso,
         "direction": message.direction,
         "from_email": message.from_email,
+        "from_name": message.from_name,
         "from_domain": message.from_domain,
         "to_domains": list(message.to_domains),
+        "to_emails": [item[1] for item in message.to_participants if item[1]],
+        "cc_emails": [item[1] for item in message.cc_participants if item[1]],
+        **contact_fields,
+        "outbound_template_freq": outbound_template_freq,
+        "is_outbound_template": is_outbound_template,
+        "is_mass_recipient": is_mass_recipient,
         "classification_reason": message.classification_reason,
         "body_chars": message.body_chars,
         "attachment_count": message.attachment_count,
@@ -217,6 +258,20 @@ def build_report(
     extraction_source_counts = Counter((row.get("summary_payload") or {}).get("extraction_source") for row in selected)
     event_type_counts = Counter((row.get("summary_payload") or {}).get("event_type") for row in selected)
     money_direction_counts = Counter((row.get("summary_payload") or {}).get("money_direction") for row in selected)
+    contact_email_rows = [row for row in selected if row.get("contact_email")]
+    contact_phone_rows = [row for row in selected if row.get("contact_phone")]
+    contact_ambiguous_rows = [row for row in selected if row.get("contact_ambiguous")]
+    contact_missing_rows = [row for row in selected if row.get("contact_missing")]
+    contact_service_rows = [
+        row
+        for row in selected
+        if str(row.get("contact_email") or "").lower() in {"edu@kmipt.ru"}
+        or str(row.get("contact_email") or "").lower().endswith(("@kmipt.ru", "@cdpofoton.ru", "@foton.school"))
+    ]
+    paid_rows = [row for row in selected if (row.get("quality") or {}).get("paid_amount_rub") is not None]
+    refund_rows = [row for row in selected if (row.get("quality") or {}).get("refund_amount_rub") is not None]
+    quote_rows = [row for row in selected if (row.get("quality") or {}).get("quoted_price_rub") is not None]
+    amount_missing_rows = [row for row in selected if (row.get("quality") or {}).get("amount_missing")]
     model_placeholder_count = sum(
         1
         for row in selected
@@ -259,7 +314,9 @@ def build_report(
         row
         for row in selected
         if (row.get("quality") or {}).get("memory_status") == "broadcast_not_usable"
-        and row.get("from_domain") in {"kmipt.ru", "cdpofoton.ru"}
+        and not set((row.get("quality") or {}).get("quality_flags") or []).intersection(
+            {"broadcast_envelope", "outbound_template", "mass_recipient", "model_broadcast_structural"}
+        )
     ]
     git = git_block(repo_root)
     examples = [row for row in selected if row.get("summary_retained_source_terms")][:7]
@@ -322,8 +379,14 @@ def build_report(
     lines.append(f"- reasoning: {summary_result.reasoning}")
     lines.append(f"- llm_calls_total: {summary_result.llm_calls_total}")
     lines.append(f"- llm_calls_limit: <=100")
-    lines.append("\n## A2-v2: слой качества перед памятью\n")
-    lines.append("Смысловые поля (`event_type`, `money_direction`, `amount_kind`, `student_name`, `grade`, `subject_area`) извлекает модель; детерминированные гейты меряют только число/длину/вложения/заголовки.")
+    lines.append("\n## A2-v3: контакт клиента + рабочий гейт + суммы\n")
+    lines.append("Смысловые поля (`event_type`, `money_direction`, `amount_kind`, `amount_is_total`, `student_name`, `payer_name`, `is_plain_acknowledgement`) извлекает модель; детерминированные гейты меряют структуру конверта/цепочки, числа, длину, вложения и массовость отправки.")
+    lines.append("\nКонтакт клиента, детерминированно из конверта/участников:")
+    lines.append(f"- contact_email_present: {len(contact_email_rows)} / {len(selected)}")
+    lines.append(f"- contact_phone_present: {len(contact_phone_rows)} / {len(selected)}")
+    lines.append(f"- contact_ambiguous: {len(contact_ambiguous_rows)}")
+    lines.append(f"- contact_missing: {len(contact_missing_rows)}")
+    lines.append(f"- service_domain_as_contact: {len(contact_service_rows)}")
     lines.append("\nmemory_status:")
     for key, value in memory_status_counts.most_common():
         lines.append(f"- {key}: {value}")
@@ -337,6 +400,11 @@ def build_report(
     lines.append("\nmoney_direction:")
     for key, value in money_direction_counts.most_common():
         lines.append(f"- {key}: {value}")
+    lines.append("\nРазнесённые суммы:")
+    lines.append(f"- paid_amount_rows: {len(paid_rows)}, paid_amount_sum: {sum(int((row.get('quality') or {}).get('paid_amount_rub') or 0) for row in paid_rows)}")
+    lines.append(f"- refund_amount_rows: {len(refund_rows)}, refund_amount_sum: {sum(int((row.get('quality') or {}).get('refund_amount_rub') or 0) for row in refund_rows)}")
+    lines.append(f"- quoted_price_rows: {len(quote_rows)}, quoted_price_sum: {sum(int((row.get('quality') or {}).get('quoted_price_rub') or 0) for row in quote_rows)}")
+    lines.append(f"- amount_missing_count: {len(amount_missing_rows)}")
     lines.append(f"\n- name_placeholder_count_in_raw_summary: {model_placeholder_count}")
     lines.append(f"- requires_human_confirmation: {human_confirmation_count}")
     lines.append(f"- financial_unverified_count: {len(financial_unverified_rows)}")
@@ -347,7 +415,7 @@ def build_report(
     lines.append("\nPrecision гейтов на контрольных условиях:")
     lines.append(f"- money_gate_false_positive_by_number_check: {len(money_gate_false_positive)}")
     lines.append(f"- thin_ack_false_positive_by_model_fact_check: {len(thin_ack_false_positive)}")
-    lines.append(f"- broadcast_false_positive_by_trusted_domain_check: {len(broadcast_false_positive)}")
+    lines.append(f"- broadcast_false_positive_without_structural_signal: {len(broadcast_false_positive)}")
     checked = len(financial_unverified_rows) + len(thin_ack_rows) + len(broadcast_rows)
     false_positive = len(money_gate_false_positive) + len(thin_ack_false_positive) + len(broadcast_false_positive)
     precision = 1.0 if checked == 0 else round((checked - false_positive) / checked, 3)
@@ -445,6 +513,19 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
                 "from_email": row.get("from_email"),
                 "from_domain": row.get("from_domain"),
                 "to_domains": row.get("to_domains") or [],
+                "to_emails": row.get("to_emails") or [],
+                "cc_emails": row.get("cc_emails") or [],
+                "contact_email": row.get("contact_email"),
+                "contact_phone": row.get("contact_phone"),
+                "contact_name": row.get("contact_name"),
+                "contact_source": row.get("contact_source"),
+                "contact_missing": row.get("contact_missing"),
+                "contact_ambiguous": row.get("contact_ambiguous"),
+                "contact_reason": row.get("contact_reason"),
+                "external_recipient_count": row.get("external_recipient_count"),
+                "outbound_template_freq": row.get("outbound_template_freq"),
+                "is_outbound_template": row.get("is_outbound_template"),
+                "is_mass_recipient": row.get("is_mass_recipient"),
                 "subject_full": row["subject"],
                 "full_clean_text": row["full_clean_text"],
                 "full_clean_text_chars": row["full_clean_text_chars"],
@@ -464,22 +545,40 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
         "brand",
         "brand_source",
         "from_email",
+        "contact_email",
+        "contact_phone",
+        "contact_name",
+        "contact_source",
+        "contact_missing",
+        "contact_ambiguous",
+        "contact_reason",
+        "external_recipient_count",
         "detected_emails",
         "detected_phones",
         "subject_full",
         "summary",
         "next_step",
+        "extraction_source",
         "memory_status",
         "quality_flags",
         "event_type",
         "money_direction",
         "amount_rub",
         "amount_kind",
+        "amount_is_total",
+        "amount_items",
+        "paid_amount_rub",
+        "refund_amount_rub",
+        "quoted_price_rub",
+        "amount_missing",
         "amount_uncertain",
         "money_amounts_rub",
         "student_name",
+        "payer_name",
+        "model_contact_name",
         "grade",
         "subject_area",
+        "is_plain_acknowledgement",
         "requires_human_confirmation",
         "safe_next_step_note",
         "thread_id",
@@ -502,22 +601,40 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
                     "brand": row["brand"],
                     "brand_source": row["brand_source"],
                     "from_email": row.get("from_email") or "",
+                    "contact_email": row.get("contact_email") or "",
+                    "contact_phone": row.get("contact_phone") or "",
+                    "contact_name": row.get("contact_name") or "",
+                    "contact_source": row.get("contact_source") or "",
+                    "contact_missing": row.get("contact_missing"),
+                    "contact_ambiguous": row.get("contact_ambiguous"),
+                    "contact_reason": row.get("contact_reason") or "",
+                    "external_recipient_count": row.get("external_recipient_count") or 0,
                     "detected_emails": "; ".join(_unique(EMAIL_RE.findall(text))),
                     "detected_phones": "; ".join(_unique(PHONE_RE.findall(text) + PHONE_TAIL_RE.findall(text))),
                     "subject_full": row["subject"],
                     "summary": str(summary_payload.get("summary") or ""),
                     "next_step": str(summary_payload.get("next_step") or ""),
+                    "extraction_source": summary_payload.get("extraction_source") or "",
                     "memory_status": quality.get("memory_status") or "",
                     "quality_flags": "; ".join(quality.get("quality_flags") or []),
                     "event_type": summary_payload.get("event_type") or "",
                     "money_direction": summary_payload.get("money_direction") or "",
                     "amount_rub": summary_payload.get("amount_rub") if summary_payload.get("amount_rub") is not None else "",
                     "amount_kind": summary_payload.get("amount_kind") or "",
+                    "amount_is_total": summary_payload.get("amount_is_total"),
+                    "amount_items": json.dumps(summary_payload.get("amount_items") or [], ensure_ascii=False),
+                    "paid_amount_rub": quality.get("paid_amount_rub") if quality.get("paid_amount_rub") is not None else "",
+                    "refund_amount_rub": quality.get("refund_amount_rub") if quality.get("refund_amount_rub") is not None else "",
+                    "quoted_price_rub": quality.get("quoted_price_rub") if quality.get("quoted_price_rub") is not None else "",
+                    "amount_missing": quality.get("amount_missing"),
                     "amount_uncertain": summary_payload.get("amount_uncertain"),
                     "money_amounts_rub": "; ".join(str(item) for item in quality.get("money_amounts_rub") or []),
                     "student_name": summary_payload.get("student_name") or "",
+                    "payer_name": summary_payload.get("payer_name") or "",
+                    "model_contact_name": summary_payload.get("contact_name") or "",
                     "grade": summary_payload.get("grade") or "",
                     "subject_area": summary_payload.get("subject_area") or "",
+                    "is_plain_acknowledgement": summary_payload.get("is_plain_acknowledgement"),
                     "requires_human_confirmation": quality.get("requires_human_confirmation"),
                     "safe_next_step_note": quality.get("safe_next_step_note") or "",
                     "thread_id": quality.get("thread_id") or "",

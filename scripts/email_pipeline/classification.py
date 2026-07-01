@@ -159,6 +159,11 @@ def participants_for(con: sqlite3.Connection) -> dict[str, dict[str, object]]:
 
 
 def build_outbound_templates(db_paths: list[Path], threshold: int = 10) -> set[str]:
+    freq = build_outbound_template_counts(db_paths)
+    return {subject for subject, count in freq.items() if count >= threshold}
+
+
+def build_outbound_template_counts(db_paths: list[Path]) -> Counter[str]:
     freq: Counter[str] = Counter()
     for path in db_paths:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
@@ -169,7 +174,7 @@ def build_outbound_templates(db_paths: list[Path], threshold: int = 10) -> set[s
                     normalized = norm_subject(subject)
                     if normalized:
                         freq[normalized] += 1
-    return {subject for subject, count in freq.items() if count >= threshold}
+    return freq
 
 
 def classify_message(msg: ClassificationInput, outbound_templates: set[str]) -> tuple[str, str]:
@@ -217,4 +222,3 @@ def classify_message(msg: ClassificationInput, outbound_templates: set[str]) -> 
             return "outbound_campaign", "template_mass_send"
         return "real_correspondence", "outbound_personal"
     return "real_correspondence", "inbound_human"
-

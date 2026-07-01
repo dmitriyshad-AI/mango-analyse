@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 
 from scripts.email_pipeline.brand import infer_email_brand
+from scripts.email_pipeline.contact import resolve_customer_contact
 from scripts.email_pipeline.pilot_100 import ensure_local_output_dir_allowed
-from scripts.email_pipeline.quality import evaluate_quality
+from scripts.email_pipeline.quality import evaluate_quality, sanitize_summary_payload_for_quality
 from scripts.email_pipeline import summary as summary_module
 from scripts.email_pipeline.summary import SummaryItem, build_summary_prompt, mask_pii, summarize_items
 
@@ -200,7 +201,7 @@ def test_quality_money_gate_keeps_legitimate_camp_price() -> None:
     assert "money_over_limit" not in result.quality_flags
 
 
-def test_quality_short_payment_is_usable_but_plain_ack_is_thin() -> None:
+def test_quality_short_payment_ack_is_not_thin_and_reply_needs_context() -> None:
     payment = {
         "message_sha256": "sha1",
         "subject": "Оплата",
@@ -211,6 +212,21 @@ def test_quality_short_payment_is_usable_but_plain_ack_is_thin() -> None:
             "amount_rub": None,
             "amount_kind": "actual_payment",
             "amount_uncertain": False,
+            "is_plain_acknowledgement": True,
+        },
+    }
+    payment_reply = {
+        "message_sha256": "sha1b",
+        "subject": "Re: Оплата",
+        "full_clean_text": "Спасибо, получено.",
+        "in_reply_to": "<parent>",
+        "summary_payload": {
+            "event_type": "payment",
+            "money_direction": "in",
+            "amount_rub": None,
+            "amount_kind": "actual_payment",
+            "amount_uncertain": False,
+            "is_plain_acknowledgement": True,
         },
     }
     ack = {
@@ -226,4 +242,115 @@ def test_quality_short_payment_is_usable_but_plain_ack_is_thin() -> None:
         },
     }
     assert evaluate_quality(payment).memory_status == "usable_memory"
+    assert evaluate_quality(payment).requires_human_confirmation is False
+    assert evaluate_quality(payment_reply).memory_status == "needs_thread_context"
     assert evaluate_quality(ack).memory_status == "thin_ack"
+
+
+def test_quality_blocks_own_mass_outbound_but_not_single_reply() -> None:
+    campaign = {
+        "message_sha256": "sha",
+        "direction": "outbound",
+        "from_email": "edu@kmipt.ru",
+        "from_domain": "kmipt.ru",
+        "external_recipient_count": 1,
+        "is_outbound_template": True,
+        "subject": "Ваше расписание занятий",
+        "full_clean_text": "Расписание отправлено.",
+        "summary_payload": {
+            "event_type": "broadcast",
+            "money_direction": "none",
+            "amount_rub": None,
+            "amount_kind": None,
+            "amount_uncertain": False,
+        },
+    }
+    single_reply = {
+        **campaign,
+        "message_sha256": "sha2",
+        "is_outbound_template": False,
+        "subject": "Re: Вы записаны очно УНПК МФТИ 5 класс",
+        "full_clean_text": "Вы записаны очно УНПК МФТИ 5 класс. Занятия будут проходить по согласованному расписанию, детали отправим отдельным письмом.",
+        "summary_payload": {**campaign["summary_payload"], "event_type": "scheduling"},
+    }
+    assert evaluate_quality(campaign).memory_status == "broadcast_not_usable"
+    assert evaluate_quality(single_reply).memory_status == "usable_memory"
+
+    school_broadcast_without_template = {
+        **campaign,
+        "message_sha256": "sha3",
+        "is_outbound_template": False,
+        "subject": "Отзыв об обучении",
+    }
+    assert evaluate_quality(school_broadcast_without_template).memory_status == "broadcast_not_usable"
+
+
+def test_quality_quote_only_and_anomalous_amount_summary_sanitizer() -> None:
+    quote_only = {
+        "message_sha256": "sha",
+        "subject": "Re: Летняя школа",
+        "full_clean_text": "Анна Иванова писал(а) 12.05.2026 10:00:",
+        "summary_payload": {
+            "event_type": "other",
+            "money_direction": "none",
+            "amount_rub": None,
+            "amount_kind": None,
+            "amount_uncertain": False,
+        },
+    }
+    assert evaluate_quality(quote_only).memory_status == "quote_only"
+
+    row = {
+        "message_sha256": "sha2",
+        "subject": "Расписание",
+        "full_clean_text": "Стоимость: 35 500 руб. и 59 500 000 руб.",
+        "summary_payload": {
+            "summary": "Стоимость 35 500 руб. и 59 500 000 руб.",
+            "topic": "Расписание",
+            "next_step": "Проверить 59 500 000 руб.",
+            "event_type": "scheduling",
+            "money_direction": "in",
+            "amount_rub": 59500000,
+            "amount_kind": "quote",
+            "amount_is_total": False,
+            "amount_uncertain": False,
+        },
+    }
+    result = evaluate_quality(row)
+    cleaned = sanitize_summary_payload_for_quality(row["summary_payload"], result)
+    assert result.memory_status == "financial_unverified"
+    assert "59 500 000" not in cleaned["summary"]
+    assert "59 500 000" not in cleaned["next_step"]
+    assert cleaned["amount_rub"] is None
+
+
+def test_contact_resolution_uses_customer_envelope_not_service_or_first_recipient() -> None:
+    inbound = resolve_customer_contact(
+        direction="inbound",
+        from_participant=("Родитель", "parent@example.com", "example.com"),
+        to_participants=[("Школа", "edu@kmipt.ru", "kmipt.ru")],
+        cc_participants=[],
+    )
+    assert inbound.contact_email == "parent@example.com"
+    assert inbound.contact_source == "header_from"
+
+    service = resolve_customer_contact(
+        direction="inbound",
+        from_participant=("Школа", "edu@kmipt.ru", "kmipt.ru"),
+        to_participants=[("Школа", "edu@kmipt.ru", "kmipt.ru")],
+        cc_participants=[],
+    )
+    assert service.contact_email is None
+    assert service.contact_missing is True
+
+    ambiguous = resolve_customer_contact(
+        direction="outbound",
+        from_participant=("Школа", "edu@kmipt.ru", "kmipt.ru"),
+        to_participants=[
+            ("Первый", "one@example.com", "example.com"),
+            ("Второй", "two@example.com", "example.com"),
+        ],
+        cc_participants=[],
+    )
+    assert ambiguous.contact_email is None
+    assert ambiguous.contact_ambiguous is True

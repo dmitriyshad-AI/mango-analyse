@@ -26,6 +26,22 @@ RE_LONG_PRIVATE_NUMBER = re.compile(r"\b\d{6,}\b")
 EVENT_TYPES = {"payment", "refund", "application", "scheduling", "assessment", "contract", "tax", "medical", "broadcast", "other"}
 MONEY_DIRECTIONS = {"in", "out", "none"}
 AMOUNT_KINDS = {"quote", "actual_payment", "refund"}
+SUBJECT_ALIASES = {
+    "мат": "математика",
+    "математика": "математика",
+    "олимпиадная математика": "математика",
+    "физ": "физика",
+    "физика": "физика",
+    "инфа": "информатика",
+    "информатика": "информатика",
+    "фм": "математика,физика",
+    "физмат": "математика,физика",
+    "физико-математический": "математика,физика",
+    "английский": "английский",
+    "русский": "русский",
+    "химия": "химия",
+    "биология": "биология",
+}
 
 QUOTE_HEADER = re.compile(
     r"^\s*(-{2,}\s*original message|-{2,}\s*пересылаемое|исходное сообщение|>+|on .+ wrote:|"
@@ -187,12 +203,17 @@ def _call_summary_provider(
                     "subject_area": None,
                     "amount_rub": None,
                     "amount_kind": None,
+                    "amount_is_total": False,
+                    "amount_items": [],
                     "amount_uncertain": False,
                     "deadline_date": None,
                     "contract_no": None,
                     "document_no": None,
                     "requisites": [],
                     "has_attachment": False,
+                    "payer_name": None,
+                    "contact_name": None,
+                    "is_plain_acknowledgement": False,
                 }
                 for item in batch
             ]
@@ -210,13 +231,18 @@ def _normalize_summary_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized["money_direction"] = _enum_value(normalized.get("money_direction"), MONEY_DIRECTIONS, "none")
     normalized["amount_kind"] = _enum_value(normalized.get("amount_kind"), AMOUNT_KINDS, None)
     normalized["student_name"] = _nullable_string(normalized.get("student_name"))
-    normalized["grade"] = _nullable_string(normalized.get("grade"))
-    normalized["subject_area"] = _nullable_string(normalized.get("subject_area"))
+    normalized["grade"] = _canonical_grade(normalized.get("grade"))
+    normalized["subject_area"] = _canonical_subject_area(normalized.get("subject_area"))
     normalized["amount_rub"] = _nullable_int(normalized.get("amount_rub"))
+    normalized["amount_is_total"] = bool(normalized.get("amount_is_total")) if normalized.get("amount_is_total") is not None else False
+    normalized["amount_items"] = _normalize_amount_items(normalized.get("amount_items"))
     normalized["amount_uncertain"] = bool(normalized.get("amount_uncertain")) if normalized.get("amount_uncertain") is not None else False
     normalized["deadline_date"] = _nullable_string(normalized.get("deadline_date"))
     normalized["contract_no"] = _nullable_string(normalized.get("contract_no"))
     normalized["document_no"] = _nullable_string(normalized.get("document_no"))
+    normalized["payer_name"] = _nullable_string(normalized.get("payer_name"))
+    normalized["contact_name"] = _nullable_string(normalized.get("contact_name"))
+    normalized["is_plain_acknowledgement"] = bool(normalized.get("is_plain_acknowledgement"))
     requisites = normalized.get("requisites")
     normalized["requisites"] = [str(item).strip() for item in requisites if str(item).strip()] if isinstance(requisites, list) else []
     normalized["has_attachment"] = bool(normalized.get("has_attachment")) if normalized.get("has_attachment") is not None else False
@@ -242,6 +268,52 @@ def _nullable_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_amount_items(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        amount = _nullable_int(item.get("amount_rub"))
+        kind = _enum_value(item.get("amount_kind"), AMOUNT_KINDS, None)
+        if amount is None and kind is None:
+            continue
+        items.append(
+            {
+                "amount_rub": amount,
+                "amount_kind": kind,
+                "description": _nullable_string(item.get("description")),
+                "is_total": bool(item.get("is_total")),
+            }
+        )
+    return items
+
+
+def _canonical_grade(value: object) -> str | None:
+    text = _nullable_string(value)
+    if not text:
+        return None
+    match = re.search(r"\b([1-9]|1[0-1])\b", text)
+    return match.group(1) if match else text
+
+
+def _canonical_subject_area(value: object) -> str | None:
+    text = _nullable_string(value)
+    if not text:
+        return None
+    lowered = re.sub(r"\s+", " ", text.casefold()).strip()
+    if lowered in SUBJECT_ALIASES:
+        return SUBJECT_ALIASES[lowered]
+    parts: list[str] = []
+    for chunk in re.split(r"[,;/+]| и ", lowered):
+        cleaned = chunk.strip()
+        item = SUBJECT_ALIASES.get(cleaned, cleaned)
+        if item and item not in parts:
+            parts.append(item)
+    return ",".join(parts) if parts else text
 
 
 def _humanize_mask_tokens(text: str) -> str:
@@ -290,16 +362,21 @@ def build_summary_prompt(items: list[SummaryItem]) -> str:
         "Если в письме есть 'Воскресенье 10:50-12:30', '2025-2026 уч.г.', '126 000 руб.', '8 класс' или название группы, "
         "перенеси эту конкретику в summary/next_step, если она относится к сути письма. "
         "ПДн во входе уже скрыты маркерами, не восстанавливай и не выдумывай их; не уничтожай учебные числа, даты, время, цены и группы. "
-        "Имена учеников и родителей во входе НЕ скрыты: если видишь имя ученика, извлеки его в student_name и сохрани в summary, если оно важно для сути. "
+        "Имена учеников и родителей во входе НЕ скрыты: различай роли. Ребёнка клади в student_name, взрослого/плательщика в payer_name/contact_name; "
+        "не клади первого попавшегося взрослого в student_name. "
         "Дополнительно извлеки закрытые поля: event_type один из payment/refund/application/scheduling/assessment/contract/tax/medical/broadcast/other; "
         "money_direction один из in/out/none; amount_kind один из quote/actual_payment/refund или null; "
-        "student_name, grade, subject_area, amount_rub integer RUB или null, amount_uncertain boolean, deadline_date, contract_no, document_no, requisites list, has_attachment boolean. "
+        "student_name, payer_name, contact_name, grade, subject_area, amount_rub integer RUB или null, amount_is_total boolean, "
+        "amount_items list, amount_uncertain boolean, deadline_date, contract_no, document_no, requisites list, has_attachment boolean, "
+        "is_plain_acknowledgement boolean. "
         "amount_kind: quote = цена/стоимость/предложение, actual_payment = факт оплаты/поступления, refund = возврат. "
+        "amount_is_total=true только если модель видит, что сумма итоговая; отдельные позиции положи в amount_items. "
         "Если сумма неоднозначна, слишком странна или непонятно, это цена или факт оплаты, ставь amount_uncertain=true и не угадывай. "
         "Не ставь amount_uncertain=true только потому, что в письме несколько ясных цен/скидок/вариантов; если каждая сумма читается нормально, это quote и amount_uncertain=false. "
+        "is_plain_acknowledgement=true только для чистого подтверждения факта без новой инструкции, спора или возврата. "
         "Если денег в письме нет, amount_rub=null и amount_uncertain=false. "
         "extraction_source всегда 'model', если ты понял поля сам из письма. "
-        "Схема каждой строки: {message_sha256, summary, topic, next_step, confidence, extraction_source, event_type, money_direction, student_name, grade, subject_area, amount_rub, amount_kind, amount_uncertain, deadline_date, contract_no, document_no, requisites, has_attachment}. "
+        "Схема каждой строки: {message_sha256, summary, topic, next_step, confidence, extraction_source, event_type, money_direction, student_name, payer_name, contact_name, grade, subject_area, amount_rub, amount_kind, amount_is_total, amount_items, amount_uncertain, deadline_date, contract_no, document_no, requisites, has_attachment, is_plain_acknowledgement}. "
         "summary: 2-4 предложения по-русски, с фактами и конкретными значениями; topic: 2-8 слов; "
         "next_step: конкретный следующий шаг или null; confidence: 0..1.\n\n"
         + json.dumps({"emails": records}, ensure_ascii=False)
@@ -367,16 +444,21 @@ def _call_codex_json(
                         "event_type",
                         "money_direction",
                         "student_name",
+                        "payer_name",
+                        "contact_name",
                         "grade",
                         "subject_area",
                         "amount_rub",
                         "amount_kind",
+                        "amount_is_total",
+                        "amount_items",
                         "amount_uncertain",
                         "deadline_date",
                         "contract_no",
                         "document_no",
                         "requisites",
                         "has_attachment",
+                        "is_plain_acknowledgement",
                     ],
                     "properties": {
                         "message_sha256": {"type": "string"},
@@ -388,16 +470,34 @@ def _call_codex_json(
                         "event_type": {"type": "string", "enum": sorted(EVENT_TYPES)},
                         "money_direction": {"type": "string", "enum": sorted(MONEY_DIRECTIONS)},
                         "student_name": {"type": ["string", "null"]},
+                        "payer_name": {"type": ["string", "null"]},
+                        "contact_name": {"type": ["string", "null"]},
                         "grade": {"type": ["string", "null"]},
                         "subject_area": {"type": ["string", "null"]},
                         "amount_rub": {"type": ["integer", "null"]},
                         "amount_kind": {"type": ["string", "null"], "enum": ["quote", "actual_payment", "refund", None]},
+                        "amount_is_total": {"type": "boolean"},
+                        "amount_items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["amount_rub", "amount_kind", "description", "is_total"],
+                                "properties": {
+                                    "amount_rub": {"type": ["integer", "null"]},
+                                    "amount_kind": {"type": ["string", "null"], "enum": ["quote", "actual_payment", "refund", None]},
+                                    "description": {"type": ["string", "null"]},
+                                    "is_total": {"type": "boolean"},
+                                },
+                            },
+                        },
                         "amount_uncertain": {"type": "boolean"},
                         "deadline_date": {"type": ["string", "null"]},
                         "contract_no": {"type": ["string", "null"]},
                         "document_no": {"type": ["string", "null"]},
                         "requisites": {"type": "array", "items": {"type": "string"}},
                         "has_attachment": {"type": "boolean"},
+                        "is_plain_acknowledgement": {"type": "boolean"},
                     },
                 },
             }

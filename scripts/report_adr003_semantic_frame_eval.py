@@ -133,6 +133,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Self-answer money-lowered candidates: `{self_shadow.get('money_lowered_count', 0)}`",
         f"- Self-answer operational-lowered candidates: `{self_shadow.get('operational_lowered_count', 0)}`",
         f"- Self-answer freshness-unknown candidates: `{self_shadow.get('freshness_unknown_self_candidates', 0)}`",
+        f"- Self-answer partial-freshness candidates: `{self_shadow.get('partial_freshness_self_candidates', 0)}`",
         "",
         "## Acceptance Flags",
         "",
@@ -388,6 +389,7 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
     money_lowered = 0
     operational_lowered = 0
     freshness_unknown = 0
+    partial_freshness = 0
     for dialog in dialogs:
         dialog_id = str(dialog.get("dialog_id") or "")
         for turn in _turns(dialog):
@@ -431,6 +433,18 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
             if not bool(freshness.get("ok")):
                 freshness_unknown += 1
                 unsafe_examples.append({**row, "unsafe_reason": "freshness_unknown"})
+            exact_fact_count = _safe_int(freshness.get("exact_fact_count"))
+            fresh_client_safe_count = _safe_int(freshness.get("fresh_client_safe_count"))
+            if bool(freshness.get("ok")) and exact_fact_count > fresh_client_safe_count:
+                partial_freshness += 1
+                unsafe_examples.append(
+                    {
+                        **row,
+                        "unsafe_reason": "partial_freshness",
+                        "exact_fact_count": exact_fact_count,
+                        "fresh_client_safe_count": fresh_client_safe_count,
+                    }
+                )
             if len(candidate_examples) < 50:
                 candidate_examples.append(row)
     return {
@@ -446,9 +460,17 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
         "money_lowered_count": money_lowered,
         "operational_lowered_count": operational_lowered,
         "freshness_unknown_self_candidates": freshness_unknown,
+        "partial_freshness_self_candidates": partial_freshness,
         "unsafe_candidate_examples": unsafe_examples[:50],
         "candidate_examples": candidate_examples,
     }
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _money_signal(shadow: Mapping[str, Any]) -> bool:

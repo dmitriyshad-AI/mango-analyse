@@ -459,7 +459,49 @@ def test_semantic_frame_self_answer_shadow_metadata_only_would_demote() -> None:
     assert shadow["route_before"] == "draft_for_manager"
     assert shadow["route_after_if_active"] == "bot_answer_self_for_pilot"
     assert shadow["guards"]["freshness"]["ok"] is True
+    assert shadow["guards"]["freshness"]["exact_fact_count"] == 1
+    assert shadow["guards"]["freshness"]["fresh_client_safe_count"] == 1
+    assert shadow["guards"]["freshness"]["all_exact_facts_fresh_client_safe"] is True
     assert result.metadata["direct_path"]["semantic_frame_self_answer_shadow"] == shadow
+
+
+def test_semantic_frame_self_answer_shadow_reports_partial_freshness() -> None:
+    metadata = _safe_self_answer_frame()
+    metadata["direct_path"]["wide_fact_exact_keys"] = ["foton.online.platform", "foton.online.price"]
+    metadata["direct_path"]["wide_fact_metadata"] = {
+        "foton.online.platform": {
+            "brand": "foton",
+            "client_safe": "true",
+            "valid_until": "2026-12-31",
+        },
+        "foton.online.price": {
+            "brand": "foton",
+            "client_safe": "true",
+            "valid_until": "2026-01-01",
+        },
+    }
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Онлайн-занятия проходят на SohoLMS, семестр стоит 29 750 рублей.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    freshness = shadow["guards"]["freshness"]
+    assert shadow["status"] == "would_demote_to_self"
+    assert freshness["ok"] is True
+    assert freshness["exact_fact_count"] == 2
+    assert freshness["checked_count"] == 2
+    assert freshness["fresh_client_safe_count"] == 1
+    assert freshness["all_exact_facts_fresh_client_safe"] is False
 
 
 def test_semantic_frame_self_answer_shadow_blocks_p0_even_when_frame_says_safe() -> None:

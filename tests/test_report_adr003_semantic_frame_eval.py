@@ -285,7 +285,13 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
         "reason": "safe_answer_self_fresh_fact",
         "self_class": "price",
         "route_after_if_active": "bot_answer_self_for_pilot",
-        "guards": {"freshness": {"ok": True}},
+        "guards": {
+            "freshness": {
+                "ok": True,
+                "exact_fact_count": 2,
+                "fresh_client_safe_count": 1,
+            }
+        },
     }
     unsafe = _dialog(include_frame=True)
     unsafe["dialog_id"] = "d2"
@@ -315,7 +321,8 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
     assert shadow["money_lowered_count"] == 1
     assert shadow["operational_lowered_count"] == 1
     assert shadow["freshness_unknown_self_candidates"] == 1
-    assert len(shadow["unsafe_candidate_examples"]) == 4
+    assert shadow["partial_freshness_self_candidates"] == 1
+    assert len(shadow["unsafe_candidate_examples"]) == 5
 
 
 def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:

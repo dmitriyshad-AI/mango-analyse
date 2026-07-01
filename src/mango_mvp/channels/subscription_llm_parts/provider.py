@@ -2778,8 +2778,15 @@ def _semantic_frame_fresh_client_safe_fact_trace(
     exact_keys = [str(key or "").strip() for key in (direct.get("wide_fact_exact_keys") or ()) if str(key or "").strip()]
     fact_meta = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
     checked: list[dict[str, str]] = []
+    fresh_checked: list[dict[str, str]] = []
+    base = {
+        "exact_fact_count": len(exact_keys),
+        "checked_count": 0,
+        "fresh_client_safe_count": 0,
+        "all_exact_facts_fresh_client_safe": False,
+    }
     if not exact_keys:
-        return {"ok": False, "reason": "no_exact_fact_keys", "checked": checked}
+        return {"ok": False, "reason": "no_exact_fact_keys", "checked": checked, **base}
     for key in exact_keys:
         raw = fact_meta.get(key) if isinstance(fact_meta, Mapping) else None
         meta = raw if isinstance(raw, Mapping) else {}
@@ -2797,8 +2804,26 @@ def _semantic_frame_fresh_client_safe_fact_trace(
             }
         )
         if brand == active_brand and client_safe and valid_until_ok:
-            return {"ok": True, "reason": "fresh_client_safe_exact_fact", "fact_key": key, "valid_until": valid_until, "checked": checked}
-    return {"ok": False, "reason": "no_fresh_client_safe_exact_fact", "checked": checked[:8]}
+            fresh_checked.append(checked[-1])
+    base = {
+        **base,
+        "checked_count": len(checked),
+        "fresh_client_safe_count": len(fresh_checked),
+        "all_exact_facts_fresh_client_safe": bool(exact_keys) and len(fresh_checked) == len(exact_keys),
+        "checked_truncated": len(checked) > 16,
+    }
+    checked_trace = checked[:16]
+    if fresh_checked:
+        first = fresh_checked[0]
+        return {
+            "ok": True,
+            "reason": "fresh_client_safe_exact_fact",
+            "fact_key": first.get("fact_key", ""),
+            "valid_until": first.get("valid_until", ""),
+            "checked": checked_trace,
+            **base,
+        }
+    return {"ok": False, "reason": "no_fresh_client_safe_exact_fact", "checked": checked_trace, **base}
 
 
 def _semantic_frame_self_answer_blocking_flags(result: SubscriptionDraftResult) -> tuple[str, ...]:

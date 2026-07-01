@@ -32,6 +32,10 @@ P0_FLAG_MARKERS = (
     "paid_operation_context",
     "high_risk",
 )
+MONEY_PAYMENT_READINESS_MARKERS = {"ready_to_pay", "paid", "dispute"}
+MONEY_REQUESTED_ACTION_MARKERS = {"send_payment_link", "refund_or_cancel"}
+OPERATIONAL_REQUESTED_ACTION_MARKERS = {"check_availability", "enroll", "send_document", "handoff_manager"}
+OPERATIONAL_DEAL_STAGE_MARKERS = {"closing", "post_payment", "support"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -126,6 +130,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Self-answer shadow turns: `{self_shadow.get('turn_count', 0)}`",
         f"- Self-answer candidates: `{self_shadow.get('would_demote_count', 0)}`",
         f"- Self-answer P0-lowered candidates: `{self_shadow.get('p0_lowered_count', 0)}`",
+        f"- Self-answer money-lowered candidates: `{self_shadow.get('money_lowered_count', 0)}`",
+        f"- Self-answer operational-lowered candidates: `{self_shadow.get('operational_lowered_count', 0)}`",
         f"- Self-answer freshness-unknown candidates: `{self_shadow.get('freshness_unknown_self_candidates', 0)}`",
         "",
         "## Acceptance Flags",
@@ -379,6 +385,8 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
     would_demote = 0
     p0_lowered = 0
     manager_only_lowered = 0
+    money_lowered = 0
+    operational_lowered = 0
     freshness_unknown = 0
     for dialog in dialogs:
         dialog_id = str(dialog.get("dialog_id") or "")
@@ -414,6 +422,12 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
             if str(turn.get("bot_route") or "") == "manager_only":
                 manager_only_lowered += 1
                 unsafe_examples.append({**row, "unsafe_reason": "manager_only_route"})
+            if _money_signal(shadow):
+                money_lowered += 1
+                unsafe_examples.append({**row, "unsafe_reason": "money_signal"})
+            if _operational_signal(shadow):
+                operational_lowered += 1
+                unsafe_examples.append({**row, "unsafe_reason": "operational_signal"})
             if not bool(freshness.get("ok")):
                 freshness_unknown += 1
                 unsafe_examples.append({**row, "unsafe_reason": "freshness_unknown"})
@@ -429,10 +443,26 @@ def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, An
         "would_demote_by_class": dict(candidate_by_class),
         "p0_lowered_count": p0_lowered,
         "manager_only_lowered_count": manager_only_lowered,
+        "money_lowered_count": money_lowered,
+        "operational_lowered_count": operational_lowered,
         "freshness_unknown_self_candidates": freshness_unknown,
         "unsafe_candidate_examples": unsafe_examples[:50],
         "candidate_examples": candidate_examples,
     }
+
+
+def _money_signal(shadow: Mapping[str, Any]) -> bool:
+    frame = shadow.get("frame") if isinstance(shadow.get("frame"), Mapping) else {}
+    payment_readiness = str(frame.get("payment_readiness") or "").strip().casefold()
+    requested_action = str(frame.get("requested_action") or "").strip().casefold()
+    return payment_readiness in MONEY_PAYMENT_READINESS_MARKERS or requested_action in MONEY_REQUESTED_ACTION_MARKERS
+
+
+def _operational_signal(shadow: Mapping[str, Any]) -> bool:
+    frame = shadow.get("frame") if isinstance(shadow.get("frame"), Mapping) else {}
+    requested_action = str(frame.get("requested_action") or "").strip().casefold()
+    deal_stage = str(frame.get("deal_stage") or "").strip().casefold()
+    return requested_action in OPERATIONAL_REQUESTED_ACTION_MARKERS or deal_stage in OPERATIONAL_DEAL_STAGE_MARKERS
 
 
 def _actual_route_handoff(turn: Mapping[str, Any]) -> bool:

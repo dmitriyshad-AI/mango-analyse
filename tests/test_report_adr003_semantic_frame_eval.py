@@ -296,6 +296,11 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
         "reason": "safe_answer_self_fresh_fact",
         "self_class": "refund",
         "route_after_if_active": "bot_answer_self_for_pilot",
+        "frame": {
+            "deal_stage": "post_payment",
+            "payment_readiness": "paid",
+            "requested_action": "refund_or_cancel",
+        },
         "guards": {"freshness": {"ok": False}},
     }
     _write_jsonl(on_transcripts, [safe, unsafe])
@@ -307,8 +312,10 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
     assert shadow["would_demote_count"] == 2
     assert shadow["would_demote_by_class"] == {"price": 1, "refund": 1}
     assert shadow["p0_lowered_count"] == 1
+    assert shadow["money_lowered_count"] == 1
+    assert shadow["operational_lowered_count"] == 1
     assert shadow["freshness_unknown_self_candidates"] == 1
-    assert len(shadow["unsafe_candidate_examples"]) == 2
+    assert len(shadow["unsafe_candidate_examples"]) == 4
 
 
 def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:

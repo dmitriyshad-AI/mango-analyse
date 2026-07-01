@@ -537,6 +537,29 @@ def test_semantic_frame_self_answer_shadow_blocks_sanitizer_and_deferral_flags()
     assert result.route == "draft_for_manager"
 
 
+def test_semantic_frame_self_answer_shadow_requires_answer_question_action() -> None:
+    metadata = _safe_self_answer_frame()
+    metadata["semantic_frame"]["requested_action"] = "check_availability"
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит наличие места.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "requested_action_not_answer_question"
+    assert result.route == "draft_for_manager"
+
+
 def test_semantic_frame_self_answer_shadow_ignores_inline_non_posthoc_frame() -> None:
     metadata = _safe_self_answer_frame()
     metadata.pop("semantic_frame_posthoc_shadow")

@@ -20,7 +20,7 @@ HEAD: `81c02e6`
 | F1/v4 eval report | `audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_semantic_frame_eval_report.json` | `56130` | `68a32f5982ee63a0be3bf4ea9a3127e56779f635b11c9daa3e51e3ea32a3a4fa` |
 | F1/v4 gold report | `audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_frame_gold_calibration_report.json` | `71974` | `64997c7e598d7391c25731575d377e488109c20935304121f29477d30fa08631` |
 | F2 ON transcripts | `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/on/dynamic_dialog_transcripts.jsonl` | `10110606` | `a1274e6f18a6e097224840e85f2f955fe1e3b54f211caecd72f06ae80cd08d9b` |
-| F2 eval report | `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/adr003_semantic_frame_eval_report.json` | `58919` | `0c62f56f8a130c44d269fef0de7dd17cd517bf077bb6f233873283bcd1b39dd2` |
+| F2 eval report | `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/adr003_semantic_frame_eval_report.json` | `58985` | `862b7bf629bfa180ee84e1910241b16748afff8035eb51bda1ab38f0ca4e2a79` |
 | F2 candidates | `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/self_answer_shadow_candidates.csv` | `1623` | `763b8a6c4822944caf93d705cd882e1b5d005d65fce22c5b215dd18a97e37a15` |
 | F2 gold report | `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/gold_calibration/adr003_frame_gold_calibration_report.json` | `75820` | `b4527e5b8f80eeac004ccaa640fca5f0009bfd325811fd809857a68be90cd6f1` |
 
@@ -33,6 +33,8 @@ HEAD: `81c02e6`
 - `would_demote_by_class`: `price=5`, `format=1`
 - `p0_lowered_count`: `0`
 - `manager_only_lowered_count`: `0`
+- `money_lowered_count`: `0`
+- `operational_lowered_count`: `0`
 - `freshness_unknown_self_candidates`: `0`
 - Blocked: `235`
 - Main block reasons: `protected_p0=80`, `route_not_draft_for_manager=114`, `risk_class_not_safe=25`, `low_confidence=9`, `blocking_safety_flags=4`, `deal_stage_blocked=2`, `missing_facts=1`

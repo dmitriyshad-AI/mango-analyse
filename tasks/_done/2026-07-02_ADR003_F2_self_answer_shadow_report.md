@@ -36,6 +36,8 @@
 - Классы кандидатов: `price=5`, `format=1`
 - `p0_lowered_count`: `0`
 - `manager_only_lowered_count`: `0`
+- `money_lowered_count`: `0`
+- `operational_lowered_count`: `0`
 - `freshness_unknown_self_candidates`: `0`
 - Unsafe candidate examples: `0`
 

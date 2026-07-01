@@ -2885,6 +2885,8 @@ def _semantic_frame_self_answer_shadow_trace(
         reason = "answerability_not_self"
     elif _semantic_frame_bool(frame.get("must_handoff")) is not False:
         reason = "must_handoff_not_false"
+    elif _semantic_frame_value(frame, "requested_action") != "answer_question":
+        reason = "requested_action_not_answer_question"
     elif _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
         reason = "payment_readiness_blocked"
     elif _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:

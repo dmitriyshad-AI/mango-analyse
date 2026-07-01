@@ -48,8 +48,10 @@ def _dialog(*, text: str = "Менеджер проверит наличие м�
     return {"dialog_id": "d1", "brand": "foton", "turns": [turn]}
 
 
-def _summary(total_calls: int = 3, *, frame_calls: int = 0) -> dict:
-    return {"llm_calls": {"total": total_calls, "bot_semantic_frame_shadow": frame_calls}, "hard_gate_failure_dialogs": []}
+def _summary(total_calls: int = 3, *, frame_calls: int = 0, **extra_calls: int) -> dict:
+    calls = {"total": total_calls, "bot_semantic_frame_shadow": frame_calls}
+    calls.update(extra_calls)
+    return {"llm_calls": calls, "hard_gate_failure_dialogs": []}
 
 
 def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
@@ -99,6 +101,121 @@ def test_report_accepts_expected_posthoc_frame_call_delta(tmp_path: Path) -> Non
     assert result["llm_calls"]["extra_total"] == 1
     assert result["llm_calls"]["extra_semantic_frame_shadow"] == 1
     assert result["acceptance"]["flags"]["extra_model_calls_expected"] is True
+
+
+def test_report_accepts_paired_semantic_frame_enrichment_calls(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    _write_jsonl(off_transcripts, [_dialog(include_frame=False)])
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+    off_summary.write_text(json.dumps(_summary(3, frame_calls=0)), encoding="utf-8")
+    on_summary.write_text(
+        json.dumps(
+            {
+                "semantic_frame_enriched": True,
+                "llm_calls": {"total": 1, "bot_semantic_frame_shadow": 1},
+                "hard_gate_failure_dialogs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    assert result["acceptance"]["status"] == "pass"
+    assert result["llm_calls"]["mode"] == "semantic_frame_enrichment"
+    assert result["llm_calls"]["raw_total_delta"] == -2
+    assert result["llm_calls"]["extra_total"] == 1
+    assert result["llm_calls"]["extra_semantic_frame_shadow"] == 1
+    assert result["acceptance"]["flags"]["extra_model_calls_expected"] is True
+
+
+def test_report_rejects_paired_enrichment_with_non_frame_calls(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    _write_jsonl(off_transcripts, [_dialog(include_frame=False)])
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+    off_summary.write_text(json.dumps(_summary(3, frame_calls=0)), encoding="utf-8")
+    on_summary.write_text(
+        json.dumps(
+            {
+                "semantic_frame_enriched": True,
+                "semantic_frame_enrichment": {"status": "all", "turns_total": 1, "enriched_turns": 1},
+                "llm_calls": {"total": 2, "bot_semantic_frame_shadow": 1, "memory": 1},
+                "hard_gate_failure_dialogs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["llm_calls"]["mode"] == "semantic_frame_enrichment"
+    assert result["llm_calls"]["on_non_frame_total"] == 1
+    assert result["acceptance"]["flags"]["extra_model_calls_expected"] is False
+
+
+def test_report_rejects_partial_paired_enrichment(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    _write_jsonl(off_transcripts, [_dialog(include_frame=False)])
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+    off_summary.write_text(json.dumps(_summary(3, frame_calls=0)), encoding="utf-8")
+    on_summary.write_text(
+        json.dumps(
+            {
+                "semantic_frame_enrichment": {"status": "partial", "turns_total": 2, "enriched_turns": 1},
+                "llm_calls": {"total": 1, "bot_semantic_frame_shadow": 1},
+                "hard_gate_failure_dialogs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["llm_calls"]["mode"] == "semantic_frame_enrichment_partial"
+    assert result["acceptance"]["flags"]["extra_model_calls_expected"] is False
+
+
+def test_report_flags_input_diff_even_when_bot_output_matches(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    on = _dialog(include_frame=True)
+    on["turns"][0]["client_message"] = "Другой вопрос"
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["off_on_diff"]["route_text_diff_count"] == 0
+    assert result["off_on_diff"]["input_diff_count"] == 1
+    assert result["acceptance"]["flags"]["input_turns_match"] is False
 
 
 def test_report_flags_route_text_diff(tmp_path: Path) -> None:

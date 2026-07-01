@@ -2363,6 +2363,101 @@ def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
     assert counter.snapshot()["bot_direct_draft"] == 1
 
 
+def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW", "1")
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    counter = sim.LlmCallCounter()
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    def fake_frame_runner(self, prompt: str) -> str:
+        return json.dumps(
+            {
+                "semantic_frame": {
+                    "intent": "live_availability",
+                    "risk_class": "manager_action",
+                    "deal_stage": "closing",
+                    "payment_readiness": "considering",
+                    "requested_product": {"brand": "foton", "raw_text": "курс"},
+                    "requested_action": "check_availability",
+                    "answerability": "manager_only",
+                    "must_handoff": True,
+                    "evidence": ["нужно проверить место"],
+                    "confidence": 0.9,
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(
+        sim.SubscriptionLlmDraftProvider,
+        "_direct_path_semantic_frame_shadow_runner",
+        fake_frame_runner,
+    )
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+    dialogs = [
+        {
+            "dialog_id": "d1",
+            "brand": "foton",
+            "persona": {"dialog_id": "d1", "brand": "foton"},
+            "judge_result": {"verdict": "PASS_WITH_NOTES"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Есть места?",
+                    "bot_route": "draft_for_manager",
+                    "bot_text": "Менеджер проверит наличие места.",
+                    "bot_safety_flags": ["manager_approval_required"],
+                    "bot_manager_checklist": ["Проверить наличие места."],
+                },
+                {
+                    "turn": 2,
+                    "client_message": "Спасибо.",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Пожалуйста.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        }
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+    )
+
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "draft_for_manager"
+    assert turn["bot_text"] == "Менеджер проверит наличие места."
+    assert turn["bot_safety_flags"] == ["manager_approval_required"]
+    assert turn["bot_manager_checklist"] == ["Проверить наличие места."]
+    assert turn["bot_semantic_frame"]["intent"] == "live_availability"
+    assert turn["bot_frame_decision_shadow"]["status"] == "observed"
+    second_turn = enriched[0]["turns"][1]
+    assert second_turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert second_turn["bot_text"] == "Пожалуйста."
+    assert second_turn["bot_safety_flags"] == ["no_auto_send"]
+    assert second_turn["bot_manager_checklist"] == []
+    assert second_turn["bot_semantic_frame"]["intent"] == "live_availability"
+    assert counter.snapshot()["bot_semantic_frame_shadow"] == 2
+    assert counter.snapshot().get("bot_direct_draft", 0) == 0
+
+
 def test_direct_path_retriever_runner_counts_llm_role(monkeypatch) -> None:
     counter = sim.LlmCallCounter()
     provider = sim.CountingSubscriptionLlmDraftProvider(llm_call_counter=counter)

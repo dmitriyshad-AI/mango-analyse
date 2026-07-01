@@ -107,7 +107,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Frame present: `{frame.get('present_count', 0)}` / `{frame.get('turns_total', 0)}`",
         f"- Frame schema complete: `{frame.get('complete_required_count', 0)}` / `{frame.get('present_count', 0)}`",
         f"- OFF/ON route-text diffs: `{diff.get('route_text_diff_count', 'n/a')}`",
-        f"- LLM call delta: `{llm.get('extra_total', 'n/a')}`",
+        f"- OFF/ON input diffs: `{diff.get('input_diff_count', 'n/a')}`",
+        f"- LLM call mode: `{llm.get('mode', 'unknown')}`",
+        f"- LLM raw total delta: `{llm.get('raw_total_delta', 'n/a')}`",
+        f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
+        f"- LLM non-frame ON calls: `{llm.get('on_non_frame_total', 'n/a')}`",
         f"- Frame decision shadow turns: `{shadow.get('turn_count', 0)}`",
         "",
         "## Acceptance Flags",
@@ -170,9 +174,16 @@ def _compare_off_on(off_dialogs: Sequence[Mapping[str, Any]], on_dialogs: Sequen
     missing_off = sorted(set(on_map) - set(off_map))
     missing_on = sorted(set(off_map) - set(on_map))
     diffs: list[dict[str, Any]] = []
+    input_diffs: list[dict[str, Any]] = []
     for key in common:
         off_turn = off_map[key]
         on_turn = on_map[key]
+        input_changed: dict[str, dict[str, Any]] = {}
+        for field in ("client_message", "client_stop"):
+            if off_turn.get(field) != on_turn.get(field):
+                input_changed[field] = {"off": off_turn.get(field), "on": on_turn.get(field)}
+        if input_changed:
+            input_diffs.append({"dialog_id": key[0], "turn": key[1], "changed": input_changed})
         changed: dict[str, dict[str, Any]] = {}
         for field in ("bot_route", "bot_text", "bot_safety_flags", "bot_manager_checklist"):
             if off_turn.get(field) != on_turn.get(field):
@@ -184,6 +195,8 @@ def _compare_off_on(off_dialogs: Sequence[Mapping[str, Any]], on_dialogs: Sequen
         "compared_turns": len(common),
         "missing_off_turns": len(missing_off),
         "missing_on_turns": len(missing_on),
+        "input_diff_count": len(input_diffs),
+        "input_diff_examples": input_diffs[:25],
         "route_text_diff_count": len(diffs),
         "diff_examples": diffs[:25],
     }
@@ -194,15 +207,33 @@ def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any
     on_calls = on_summary.get("llm_calls") if isinstance(on_summary.get("llm_calls"), Mapping) else {}
     off_total = _int_value(off_calls.get("total")) if off_calls else None
     on_total = _int_value(on_calls.get("total")) if on_calls else None
+    on_frame = _int_value(on_calls.get("bot_semantic_frame_shadow")) if on_calls else 0
+    off_frame = _int_value(off_calls.get("bot_semantic_frame_shadow")) if off_calls else 0
+    raw_total_delta = (on_total - off_total) if off_total is not None and on_total is not None else None
+    enrichment = on_summary.get("semantic_frame_enrichment") if isinstance(on_summary.get("semantic_frame_enrichment"), Mapping) else {}
+    enrichment_status = str(enrichment.get("status") or ("all" if on_summary.get("semantic_frame_enriched") else "none"))
+    on_non_frame_total = max((on_total or 0) - on_frame, 0)
+    if enrichment_status == "all":
+        extra_total = on_total
+        extra_frame = on_frame
+        mode = "semantic_frame_enrichment"
+    elif enrichment_status == "partial":
+        extra_total = on_total
+        extra_frame = on_frame
+        mode = "semantic_frame_enrichment_partial"
+    else:
+        extra_total = raw_total_delta
+        extra_frame = (on_frame - off_frame) if off_calls and on_calls else None
+        mode = "paired_full_run"
     return {
+        "mode": mode,
+        "enrichment_status": enrichment_status,
         "off_total": off_total,
         "on_total": on_total,
-        "extra_total": (on_total - off_total) if off_total is not None and on_total is not None else None,
-        "extra_semantic_frame_shadow": (
-            _int_value(on_calls.get("bot_semantic_frame_shadow")) - _int_value(off_calls.get("bot_semantic_frame_shadow"))
-            if off_calls and on_calls
-            else None
-        ),
+        "on_non_frame_total": on_non_frame_total,
+        "raw_total_delta": raw_total_delta,
+        "extra_total": extra_total,
+        "extra_semantic_frame_shadow": extra_frame,
         "off": dict(off_calls),
         "on": dict(on_calls),
     }
@@ -349,11 +380,27 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     extra_total = llm.get("extra_total")
     extra_frame = llm.get("extra_semantic_frame_shadow")
     frame_present = int(frame.get("present_count") or 0)
-    expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
+    if llm.get("mode") == "semantic_frame_enrichment":
+        expected_call_delta = (
+            extra_total == extra_frame == frame_present
+            and frame_present > 0
+            and llm.get("on_total") == extra_total
+            and llm.get("on_non_frame_total") == 0
+        )
+    elif llm.get("mode") == "semantic_frame_enrichment_partial":
+        expected_call_delta = False
+    else:
+        expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
     flags = {
         "route_text_diff_zero": (
             diff.get("status") == "compared"
             and diff.get("route_text_diff_count") == 0
+            and diff.get("missing_off_turns") == 0
+            and diff.get("missing_on_turns") == 0
+        ),
+        "input_turns_match": (
+            diff.get("status") == "compared"
+            and diff.get("input_diff_count") == 0
             and diff.get("missing_off_turns") == 0
             and diff.get("missing_on_turns") == 0
         ),
@@ -367,6 +414,13 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("OFF transcripts were not provided; route/text no-op cannot be proven by this report.")
     if llm.get("extra_total") is None:
         notes.append("OFF/ON summary pair was not provided; extra model call delta cannot be proven by this report.")
+    elif llm.get("mode") == "semantic_frame_enrichment":
+        if expected_call_delta:
+            notes.append("ON run is paired SemanticFrame enrichment; model calls are only post-hoc frame metadata calls.")
+        else:
+            notes.append("SemanticFrame enrichment run made non-frame model calls or did not cover every ON turn.")
+    elif llm.get("mode") == "semantic_frame_enrichment_partial":
+        notes.append("SemanticFrame enrichment is partial; every ON turn must be enriched for strict no-op acceptance.")
     elif extra_total not in (0, extra_frame):
         notes.append("Extra model calls are not fully explained by post-hoc SemanticFrame shadow calls.")
     elif extra_total == extra_frame and extra_total:

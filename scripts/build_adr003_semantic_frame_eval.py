@@ -442,7 +442,25 @@ def _build_m1_scenario(
         "source_breakdown": dict(breakdown),
         "source_details": source_details,
         "skipped_sources": skipped_sources,
-        "runner_command": (
+        "off_runner_command": (
+            "PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py "
+            f"--scenarios {scenario_path} --client-mode scripted --parallel 4 --judge-prompt-version v9.1 "
+            "--out-dir <OFF_RUN>"
+        ),
+        "paired_enrichment_command": (
+            "TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW=1 "
+            "PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py "
+            f"--scenarios {scenario_path} --semantic-frame-enrich-from <OFF_RUN>/dynamic_dialog_transcripts.jsonl "
+            "--client-mode scripted --judge-mode fake --memory-mode fake --parallel 4 --judge-prompt-version v9.1 "
+            "--out-dir <ON_ENRICHED_RUN>"
+        ),
+        "report_command": (
+            "PYTHONPATH=src python3 scripts/report_adr003_semantic_frame_eval.py "
+            "--off-transcripts <OFF_RUN>/dynamic_dialog_transcripts.jsonl --off-summary <OFF_RUN>/dynamic_summary.json "
+            "--on-transcripts <ON_ENRICHED_RUN>/dynamic_dialog_transcripts.jsonl "
+            "--on-summary <ON_ENRICHED_RUN>/dynamic_summary.json --out-dir <REPORT_DIR>"
+        ),
+        "legacy_same_payload_runner_command": (
             "TELEGRAM_SEMANTIC_FRAME_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW=1 "
             "PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py "
             f"--scenarios {scenario_path} --client-mode scripted --parallel 4 --judge-prompt-version v9.1"
@@ -541,7 +559,7 @@ def build_eval(*, whatif_path: Path, out_dir: Path, version: str) -> Mapping[str
         },
         "m1_acceptance": {
             "shadow_off_on_route_text_diff": 0,
-            "extra_model_calls_per_turn": 0,
+            "paired_enrichment_extra_calls": "only bot_semantic_frame_shadow, exactly one per ON turn",
             "frame_must_handoff_alignment_min": 0.95,
             "brand_leaks": 0,
             "fabrication_hard_gate_failures": 0,

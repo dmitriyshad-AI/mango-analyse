@@ -1,0 +1,45 @@
+# ADR003 SemanticFrame Enrichment Measurement
+
+Дата: 2026-07-01.
+
+## Что сделано
+
+- Добавлен `--semantic-frame-enrich-from` в `scripts/run_telegram_dynamic_client_sim.py`.
+- Режим читает готовый `dynamic_dialog_transcripts.jsonl`, строит замороженный `SubscriptionDraftResult` из сохранённых `bot_route`/`bot_text`/`bot_safety_flags`/`bot_manager_checklist` и добавляет только post-hoc `SemanticFrame` metadata.
+- Draft-модель в enrichment-режиме не вызывается повторно.
+- `dynamic_summary.json` теперь пишет `semantic_frame_enrichment.status`: `none` / `partial` / `all`.
+- `scripts/report_adr003_semantic_frame_eval.py` различает обычный full-run pair и paired enrichment. Для enrichment PASS возможен только когда все ON-вызовы являются `bot_semantic_frame_shadow`, входные реплики совпадают, route/text/safety/checklist не изменились.
+- Manifest ADR003 обновлён: каноничный Stage 1 замер = OFF run + paired enrichment + report. Старый same-payload command оставлен только как legacy investigation path.
+
+## Измерение
+
+Локальный Wappi25 paired enrichment:
+
+- Артефакты: `audits/_inbox/adr003_semantic_frame_enrich_wappi25_20260701/`
+- Scope: первые 25 Wappi latest25 кейсов из ADR003 M1-набора.
+- OFF: реальный `bot-mode codex`, `judge/memory/semantic/semantic-verifier` fake, `selling` det.
+- ON: paired enrichment от OFF-транскрипта.
+
+Результат:
+
+- Acceptance: `pass`
+- Frame present: 25 / 25
+- Required fields complete: 25 / 25
+- Route/text/safety/checklist diff: 0
+- Input diff: 0
+- ON LLM calls: 25 total, 25 `bot_semantic_frame_shadow`, 0 non-frame
+- `must_handoff_vs_route`: 17 match / 8 mismatch
+- `must_handoff_vs_p0_signal`: 13 match / 12 mismatch
+
+Хэши:
+
+- Scenario: `df2726ddd67aac15e8c5ededd38c849a4e06a59f176109fb6ecd9da5f69842ca`
+- OFF transcripts: `cb7d62d42326c584e38681527348d5c6b0d311984a81bef6542ada6a2d212204`
+- ON enriched transcripts: `327fdfdc4e08ddf9bc3088aaf54b87f7a94198861b5c97e06cfb40bbd7c30889`
+- Report JSON: `53f572da5316040daf39f197ec7594acbae411d6b67b8befdeb91b36cb1b40c0`
+
+## Вывод
+
+Paired enrichment доказал только узкий no-op: frame metadata можно добавить к уже готовому черновику без изменения сохранённых route/text/safety/checklist.
+
+Это не semantic-pass для использования frame как decision policy. Frame-vs-current-route mismatches остаются и требуют gold-разметки и регрейда до любого active behavior.

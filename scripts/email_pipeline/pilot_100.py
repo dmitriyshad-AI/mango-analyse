@@ -22,6 +22,7 @@ from scripts.email_pipeline.archive_sources import (
 )
 from scripts.email_pipeline.brand import infer_email_brand
 from scripts.email_pipeline.classification import build_outbound_templates
+from scripts.email_pipeline.quality import evaluate_quality, quality_to_dict
 from scripts.email_pipeline.summary import SummaryItem, clean_body, mask_pii, summarize_items
 
 
@@ -122,6 +123,7 @@ def main() -> int:
         row["summary_brand_mismatch"] = _summary_brand_mismatch(
             row["brand"], json.dumps(row["summary_payload"], ensure_ascii=False)
         )
+        row["quality"] = quality_to_dict(evaluate_quality(row))
     ensure_local_output_dir_allowed(repo_root=repo_root, local_output_dir=local_output_dir)
     local_outputs = write_local_outputs(selected, local_output_dir=local_output_dir, prefix=args.local_output_prefix)
     prod_check_after = check_prod_timeline_readonly(prod_db)
@@ -149,6 +151,7 @@ def main() -> int:
             "report": str(report_path),
             "prod_mtime_unchanged": prod_check_after["mtime_unchanged"],
             "storage_mask_token_count": sum(int(row["storage_mask_token_count"]) for row in selected),
+            "memory_status_counts": dict(Counter((row.get("quality") or {}).get("memory_status") for row in selected)),
             "local_storage_jsonl": str(local_outputs["storage_jsonl"]),
             "local_reconciliation_csv": str(local_outputs["reconciliation_csv"]),
         },
@@ -161,6 +164,11 @@ def _record_for_message(message: ArchiveMessage, *, body: str, brand: Any) -> di
     return {
         "message_sha256": message.message_sha256,
         "source_archive": message.source_archive,
+        "message_id": message.message_id,
+        "in_reply_to": message.in_reply_to,
+        "references": message.references,
+        "list_unsubscribe": message.list_unsubscribe,
+        "precedence": message.precedence,
         "subject": message.subject,
         "mailbox": message.mailbox,
         "date_iso": message.date_iso,
@@ -170,6 +178,8 @@ def _record_for_message(message: ArchiveMessage, *, body: str, brand: Any) -> di
         "to_domains": list(message.to_domains),
         "classification_reason": message.classification_reason,
         "body_chars": message.body_chars,
+        "attachment_count": message.attachment_count,
+        "has_attachment": message.attachment_count > 0,
         "body": body,
         "body_available": bool(body),
         "brand": brand.brand,
@@ -203,6 +213,54 @@ def build_report(
     summary_retained_rows = sum(1 for row in selected if row.get("summary_retained_source_terms"))
     avg_original_chars = round(sum(int(row.get("body_chars") or 0) for row in selected) / max(len(selected), 1), 1)
     avg_clean_chars = round(sum(int(row.get("full_clean_text_chars") or 0) for row in selected) / max(len(selected), 1), 1)
+    memory_status_counts = Counter((row.get("quality") or {}).get("memory_status") for row in selected)
+    extraction_source_counts = Counter((row.get("summary_payload") or {}).get("extraction_source") for row in selected)
+    event_type_counts = Counter((row.get("summary_payload") or {}).get("event_type") for row in selected)
+    money_direction_counts = Counter((row.get("summary_payload") or {}).get("money_direction") for row in selected)
+    model_placeholder_count = sum(
+        1
+        for row in selected
+        if re.search(
+            r"\[name\]|\b(?:за|для|по)\s+имя\b|\bскрытое\s+имя\b",
+            json.dumps(row.get("summary_payload") or {}, ensure_ascii=False),
+            re.I,
+        )
+    )
+    human_confirmation_count = sum(
+        1 for row in selected if (row.get("quality") or {}).get("requires_human_confirmation")
+    )
+    financial_unverified_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") == "financial_unverified"]
+    thin_ack_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") == "thin_ack"]
+    attachment_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") == "attachment_only"]
+    thread_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") in {"needs_thread_context", "quote_only"}]
+    broadcast_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") == "broadcast_not_usable"]
+    usable_rows = [row for row in selected if (row.get("quality") or {}).get("memory_status") == "usable_memory"]
+    suspicious_18 = next((row for row in selected if row["message_sha256"].startswith("006099fe3375")), None)
+    camp_102k = [row for row in selected if 102600 in ((row.get("quality") or {}).get("money_amounts_rub") or [])]
+    money_gate_false_positive = [
+        row
+        for row in selected
+        if (row.get("quality") or {}).get("memory_status") == "financial_unverified"
+        and not any(amount > 1_000_000 for amount in ((row.get("quality") or {}).get("money_amounts_rub") or []))
+        and not (row.get("summary_payload") or {}).get("amount_uncertain")
+    ]
+    thin_ack_false_positive = [
+        row
+        for row in selected
+        if (row.get("quality") or {}).get("memory_status") == "thin_ack"
+        and (
+            (row.get("summary_payload") or {}).get("event_type") not in (None, "", "other", "broadcast")
+            or (row.get("summary_payload") or {}).get("money_direction") not in (None, "", "none")
+            or (row.get("summary_payload") or {}).get("student_name")
+            or (row.get("summary_payload") or {}).get("amount_rub") is not None
+        )
+    ]
+    broadcast_false_positive = [
+        row
+        for row in selected
+        if (row.get("quality") or {}).get("memory_status") == "broadcast_not_usable"
+        and row.get("from_domain") in {"kmipt.ru", "cdpofoton.ru"}
+    ]
     git = git_block(repo_root)
     examples = [row for row in selected if row.get("summary_retained_source_terms")][:7]
     if len(examples) < 7:
@@ -257,13 +315,88 @@ def build_report(
     lines.append(f"- local full storage JSONL: `{local_outputs['storage_jsonl']}`")
     lines.append(f"- local reconciliation CSV with phones/emails: `{local_outputs['reconciliation_csv']}`")
     lines.append("- Локальные таблицы лежат в `.codex_local/email_pipeline/`, этот путь уже в `.gitignore`; в Foton/git они не попадают.")
-    lines.append("- LLM-вход маскирует ПДн, но не маскирует учебные числа: расписание, даты, цены, классы, группы.")
+    lines.append("- LLM-вход маскирует телефоны/email, но сохраняет имена и реквизиты для извлечения student_name/contract/requisites; учебные числа, даты, цены, классы и группы не маскируются.")
     lines.append("\n## LLM-сводки\n")
     lines.append(f"- provider: {summary_result.provider}")
     lines.append(f"- model: {summary_result.model}")
     lines.append(f"- reasoning: {summary_result.reasoning}")
     lines.append(f"- llm_calls_total: {summary_result.llm_calls_total}")
     lines.append(f"- llm_calls_limit: <=100")
+    lines.append("\n## A2-v2: слой качества перед памятью\n")
+    lines.append("Смысловые поля (`event_type`, `money_direction`, `amount_kind`, `student_name`, `grade`, `subject_area`) извлекает модель; детерминированные гейты меряют только число/длину/вложения/заголовки.")
+    lines.append("\nmemory_status:")
+    for key, value in memory_status_counts.most_common():
+        lines.append(f"- {key}: {value}")
+    lines.append(f"- usable_memory_share: {round(len(usable_rows) / max(len(selected), 1), 3)}")
+    lines.append("\nextraction_source:")
+    for key, value in extraction_source_counts.most_common():
+        lines.append(f"- {key}: {value}")
+    lines.append("\nevent_type:")
+    for key, value in event_type_counts.most_common():
+        lines.append(f"- {key}: {value}")
+    lines.append("\nmoney_direction:")
+    for key, value in money_direction_counts.most_common():
+        lines.append(f"- {key}: {value}")
+    lines.append(f"\n- name_placeholder_count_in_raw_summary: {model_placeholder_count}")
+    lines.append(f"- requires_human_confirmation: {human_confirmation_count}")
+    lines.append(f"- financial_unverified_count: {len(financial_unverified_rows)}")
+    lines.append(f"- thin_ack_count: {len(thin_ack_rows)}")
+    lines.append(f"- attachment_only_count: {len(attachment_rows)}")
+    lines.append(f"- thread_context_or_quote_count: {len(thread_rows)}")
+    lines.append(f"- broadcast_not_usable_count: {len(broadcast_rows)}")
+    lines.append("\nPrecision гейтов на контрольных условиях:")
+    lines.append(f"- money_gate_false_positive_by_number_check: {len(money_gate_false_positive)}")
+    lines.append(f"- thin_ack_false_positive_by_model_fact_check: {len(thin_ack_false_positive)}")
+    lines.append(f"- broadcast_false_positive_by_trusted_domain_check: {len(broadcast_false_positive)}")
+    checked = len(financial_unverified_rows) + len(thin_ack_rows) + len(broadcast_rows)
+    false_positive = len(money_gate_false_positive) + len(thin_ack_false_positive) + len(broadcast_false_positive)
+    precision = 1.0 if checked == 0 else round((checked - false_positive) / checked, 3)
+    lines.append(f"- gate_precision_counterset: {precision} ({checked - false_positive}/{checked})")
+    lines.append("\nКонтр-примеры и обязательные гейты:")
+    if suspicious_18:
+        lines.append(
+            f"- #18 money_gate: sha `{suspicious_18['message_sha256'][:12]}`, status="
+            f"`{(suspicious_18.get('quality') or {}).get('memory_status')}`, amounts="
+            f"`{(suspicious_18.get('quality') or {}).get('money_amounts_rub')}`"
+        )
+    else:
+        lines.append("- #18 money_gate: NOT_FOUND")
+    for row in camp_102k[:2]:
+        lines.append(
+            f"- 102k camp counterexample: sha `{row['message_sha256'][:12]}`, status="
+            f"`{(row.get('quality') or {}).get('memory_status')}`, amounts="
+            f"`{(row.get('quality') or {}).get('money_amounts_rub')}`"
+        )
+    short_valuable = [
+        row
+        for row in selected
+        if len(str(row.get("full_clean_text") or "").strip()) < 80
+        and (row.get("quality") or {}).get("memory_status") == "usable_memory"
+    ]
+    for row in short_valuable[:3]:
+        payload = row.get("summary_payload") or {}
+        lines.append(
+            f"- short valuable kept: sha `{row['message_sha256'][:12]}`, event_type="
+            f"`{payload.get('event_type')}`, status=`usable_memory`, summary={mask_pii(str(payload.get('summary') or ''))[:180]}"
+        )
+    lines.append("\nПлохие классы, сохранены как пометки, ничего не удалено:")
+    for title, rows in (
+        ("financial_unverified", financial_unverified_rows),
+        ("thin_ack", thin_ack_rows),
+        ("attachment_only", attachment_rows),
+        ("needs_thread_context/quote_only", thread_rows),
+        ("broadcast_not_usable", broadcast_rows),
+    ):
+        lines.append(f"\n### {title}")
+        for row in rows[:3]:
+            payload = row.get("summary_payload") or {}
+            quality = row.get("quality") or {}
+            lines.append(
+                f"- sha `{row['message_sha256'][:12]}` status=`{quality.get('memory_status')}` "
+                f"flags=`{','.join(quality.get('quality_flags') or [])}` "
+                f"event=`{payload.get('event_type')}` money=`{payload.get('money_direction')}` "
+                f"summary={mask_pii(str(payload.get('summary') or ''))[:220]}"
+            )
     lines.append("\n## 7 обезличенных примеров с конкретикой\n")
     for index, row in enumerate(examples, 1):
         summary_payload = row.get("summary_payload") or {}
@@ -274,6 +407,13 @@ def build_report(
         lines.append(f"- source_concrete_terms: {', '.join(row.get('source_concrete_terms') or []) or 'none'}")
         lines.append(f"- summary_concrete_terms: {', '.join(row.get('summary_concrete_terms') or []) or 'none'}")
         lines.append(f"- retained_source_terms: {', '.join(row.get('summary_retained_source_terms') or []) or 'none'}")
+        quality = row.get("quality") or {}
+        summary_payload = row.get("summary_payload") or {}
+        lines.append(
+            f"- quality: status=`{quality.get('memory_status')}`, flags=`{','.join(quality.get('quality_flags') or [])}`, "
+            f"event=`{summary_payload.get('event_type')}`, money=`{summary_payload.get('money_direction')}`, "
+            f"human_confirmation=`{quality.get('requires_human_confirmation')}`"
+        )
         lines.append(f"- subject: {mask_pii(row['subject'])[:180] or '(пусто)'}")
         lines.append(f"- body_fragment: {mask_pii(clean_body(row['body'], limit=520))[:520] or '(тело недоступно)'}")
         lines.append(f"- summary: {mask_pii(str(summary_payload.get('summary') or ''))}")
@@ -310,6 +450,7 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
                 "full_clean_text_chars": row["full_clean_text_chars"],
                 "body_chars": row["body_chars"],
                 "summary_payload": row["summary_payload"],
+                "quality": row.get("quality") or {},
                 "source_concrete_terms": row.get("source_concrete_terms") or [],
                 "summary_concrete_terms": row.get("summary_concrete_terms") or [],
                 "summary_retained_source_terms": row.get("summary_retained_source_terms") or [],
@@ -328,6 +469,22 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
         "subject_full",
         "summary",
         "next_step",
+        "memory_status",
+        "quality_flags",
+        "event_type",
+        "money_direction",
+        "amount_rub",
+        "amount_kind",
+        "amount_uncertain",
+        "money_amounts_rub",
+        "student_name",
+        "grade",
+        "subject_area",
+        "requires_human_confirmation",
+        "safe_next_step_note",
+        "thread_id",
+        "thread_basis",
+        "has_attachment",
         "full_clean_text_chars",
     ]
     with reconciliation_path.open("w", encoding="utf-8", newline="") as f:
@@ -336,6 +493,7 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
         for row in selected:
             text = f"{row.get('from_email') or ''}\n{row['subject']}\n{row['full_clean_text']}"
             summary_payload = row.get("summary_payload") or {}
+            quality = row.get("quality") or {}
             writer.writerow(
                 {
                     "message_sha256": row["message_sha256"],
@@ -349,6 +507,22 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
                     "subject_full": row["subject"],
                     "summary": str(summary_payload.get("summary") or ""),
                     "next_step": str(summary_payload.get("next_step") or ""),
+                    "memory_status": quality.get("memory_status") or "",
+                    "quality_flags": "; ".join(quality.get("quality_flags") or []),
+                    "event_type": summary_payload.get("event_type") or "",
+                    "money_direction": summary_payload.get("money_direction") or "",
+                    "amount_rub": summary_payload.get("amount_rub") if summary_payload.get("amount_rub") is not None else "",
+                    "amount_kind": summary_payload.get("amount_kind") or "",
+                    "amount_uncertain": summary_payload.get("amount_uncertain"),
+                    "money_amounts_rub": "; ".join(str(item) for item in quality.get("money_amounts_rub") or []),
+                    "student_name": summary_payload.get("student_name") or "",
+                    "grade": summary_payload.get("grade") or "",
+                    "subject_area": summary_payload.get("subject_area") or "",
+                    "requires_human_confirmation": quality.get("requires_human_confirmation"),
+                    "safe_next_step_note": quality.get("safe_next_step_note") or "",
+                    "thread_id": quality.get("thread_id") or "",
+                    "thread_basis": quality.get("thread_basis") or "",
+                    "has_attachment": row.get("has_attachment"),
                     "full_clean_text_chars": row.get("full_clean_text_chars") or 0,
                 }
             )

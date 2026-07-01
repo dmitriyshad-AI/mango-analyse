@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Iterable
 
 from scripts.email_pipeline.classification import (
     ClassificationInput,
+    EML_HDR_BYTES,
+    RE_AUTO_SUBMITTED,
+    RE_CAMPAIGN,
+    RE_LIST_UNSUB,
+    RE_PRECEDENCE_BULK,
     classify_message,
     local_of,
     participants_for,
-    scan_eml_header,
 )
 
 
@@ -38,6 +44,11 @@ class ArchiveSpec:
 class ArchiveMessage:
     message_sha256: str
     source_archive: str
+    message_id: str
+    in_reply_to: str
+    references: str
+    list_unsubscribe: bool
+    precedence: str
     subject: str
     mailbox: str
     message_kind: str
@@ -49,6 +60,7 @@ class ArchiveMessage:
     from_domain: str
     to_domains: tuple[str, ...]
     body_chars: int
+    attachment_count: int
     extracted_text_path: Path | None
     raw_eml_path: Path | None
 
@@ -112,11 +124,15 @@ def load_archive_messages(
         con.execute("PRAGMA query_only=ON")
         participants = participants_for(con)
         rows = con.execute(
-            "SELECT sha256, subject, mailbox, message_kind, message_date_iso, "
+            "SELECT sha256, message_id, subject, mailbox, message_kind, message_date_iso, "
             "extracted_text_chars, extracted_text_path, raw_eml_path FROM messages"
         ).fetchall()
+        attachment_counts = {
+            str(sha): int(count)
+            for sha, count in con.execute("SELECT message_sha256, count(*) FROM attachments GROUP BY message_sha256")
+        }
         output: list[ArchiveMessage] = []
-        for sha, subject, mailbox, kind, date_iso, body_chars, extracted_path, eml_path in rows:
+        for sha, message_id, subject, mailbox, kind, date_iso, body_chars, extracted_path, eml_path in rows:
             record = participants.get(sha, {"from": None, "to": [], "cc": [], "reply_to": None})
             from_record = record.get("from") or ("", "", "")
             from_email = str(from_record[1] or "")
@@ -129,9 +145,10 @@ def load_archive_messages(
                 or "Шаблоны" in (mailbox or "")
             )
             resolved_eml = resolve_data_path(eml_path, source_root=source_root, repo_root=repo_root)
+            eml_meta = scan_eml_metadata(resolved_eml)
             eml_flags = {"list_unsub": False, "bulk": False, "auto": False, "campaign": False}
             if not is_outbound and kind != "internal" and from_domain not in {"kmipt.ru"}:
-                eml_flags = scan_eml_header(resolved_eml)
+                eml_flags = {key: bool(eml_meta.get(key)) for key in ("list_unsub", "bulk", "auto", "campaign")}
             classification_input = ClassificationInput(
                 kind=kind or "",
                 mailbox=mailbox or "",
@@ -149,6 +166,11 @@ def load_archive_messages(
                 ArchiveMessage(
                     message_sha256=sha,
                     source_archive=spec.name,
+                    message_id=str(message_id or eml_meta.get("message_id") or ""),
+                    in_reply_to=str(eml_meta.get("in_reply_to") or ""),
+                    references=str(eml_meta.get("references") or ""),
+                    list_unsubscribe=bool(eml_meta.get("list_unsub")),
+                    precedence=str(eml_meta.get("precedence") or ""),
                     subject=subject or "",
                     mailbox=mailbox or "",
                     message_kind=kind or "",
@@ -160,11 +182,48 @@ def load_archive_messages(
                     from_domain=from_domain,
                     to_domains=to_domains,
                     body_chars=int(body_chars or 0),
+                    attachment_count=int(attachment_counts.get(str(sha), 0)),
                     extracted_text_path=resolve_data_path(extracted_path, source_root=source_root, repo_root=repo_root),
                     raw_eml_path=resolved_eml,
                 )
             )
         return output
+
+
+def scan_eml_metadata(path: Path | str | None) -> dict[str, object]:
+    flags: dict[str, object] = {
+        "list_unsub": False,
+        "bulk": False,
+        "auto": False,
+        "campaign": False,
+        "message_id": "",
+        "in_reply_to": "",
+        "references": "",
+        "precedence": "",
+    }
+    if not path:
+        return flags
+    try:
+        head = Path(path).read_bytes()[:EML_HDR_BYTES]
+    except Exception:
+        return flags
+    sep = head.find(b"\r\n\r\n")
+    if sep == -1:
+        sep = head.find(b"\n\n")
+    header = head[:sep] if sep != -1 else head
+    flags["list_unsub"] = bool(RE_LIST_UNSUB.search(header))
+    flags["bulk"] = bool(RE_PRECEDENCE_BULK.search(header))
+    flags["auto"] = bool(RE_AUTO_SUBMITTED.search(header))
+    flags["campaign"] = bool(RE_CAMPAIGN.search(header))
+    try:
+        msg = BytesParser(policy=policy.default).parsebytes(header + b"\r\n\r\n")
+    except Exception:
+        return flags
+    flags["message_id"] = str(msg.get("Message-ID") or "").strip()
+    flags["in_reply_to"] = str(msg.get("In-Reply-To") or "").strip()
+    flags["references"] = str(msg.get("References") or "").strip()
+    flags["precedence"] = str(msg.get("Precedence") or "").strip().lower()
+    return flags
 
 
 def read_text(path: Path | None, *, limit: int | None = 10000) -> str:

@@ -7,6 +7,7 @@ from pathlib import Path
 from mango_mvp.customer_timeline.a2_mail_ingest import (
     A2V3MailIngestConfig,
     apply_a2v3_mail_ingest,
+    build_local_client_review,
     create_test_db_backup,
     plan_a2v3_mail_ingest,
     validate_a2v3_mail_ingest,
@@ -269,3 +270,38 @@ def test_a2v3_mail_ingest_checks_prod_dedupe_across_both_mail_namespaces(tmp_pat
     assert applied["selected_events"] == 1
     assert applied["counts"]["prod_duplicate_events_observed"] == 1
     assert applied["counts"]["created_events"] == 1
+
+
+def test_a2v3_local_client_review_includes_linked_and_unresolved_rows(tmp_path: Path) -> None:
+    rows = [
+        _row("e" * 64, email="parent@example.com"),
+        _row("f" * 64, email="missing@example.com"),
+    ]
+    config = _config(tmp_path, rows)
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plans, _ = plan_a2v3_mail_ingest(config)
+    review = build_local_client_review(config, plans)
+
+    assert review["rows"] == 2
+    assert review["new_email_events"] == 2
+    assert review["linked_groups"] == 1
+    assert review["unresolved_groups"] == 1
+    review_rows = [
+        json.loads(line)
+        for line in Path(str(review["jsonl"])).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    linked = next(row for row in review_rows if row["customer_id"] == "customer:known")
+    unresolved = next(row for row in review_rows if row["customer_id"] is None)
+
+    assert linked["existing_before"]["event_count"] == 2
+    assert linked["new_email_events"][0]["resolution"] == "linked"
+    assert linked["combined_timeline_count"] == 3
+    assert linked["combined_timeline"][0]["source"] == "new_a2v3_email"
+    assert linked["current_next_step"]["schema_version"] == "customer_timeline_next_step_resolution_v1"
+
+    assert unresolved["resolution"] == {"unmatched": 1}
+    assert unresolved["combined_timeline_count"] == 1
+    assert unresolved["combined_timeline"][0]["source"] == "new_a2v3_email"
+    assert unresolved["current_next_step"]["reason_code"] == "unresolved_identity"

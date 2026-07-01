@@ -36,6 +36,7 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     _parse_event_at,
     _sha16,
 )
+from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -468,23 +469,42 @@ def existing_event_dedupe_keys(db_path: Path) -> set[str]:
 
 
 def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[PlannedA2V3MailEvent]) -> Mapping[str, Any]:
-    linked_customer_ids = sorted({plan.resolution.customer_id for plan in plans if plan.resolution.customer_id})
+    grouped: dict[str, list[PlannedA2V3MailEvent]] = defaultdict(list)
+    for plan in plans:
+        key = f"customer:{plan.resolution.customer_id}" if plan.resolution.outcome == "linked" and plan.resolution.customer_id else (
+            f"unresolved:{plan.resolution.outcome}:{plan.event.source_id[:16]}"
+        )
+        grouped[key].append(plan)
     review_rows: list[dict[str, Any]] = []
     with _prod_connection(config.prod_timeline_db) as prod:
-        for customer_id in linked_customer_ids:
-            existing = _customer_history_summary(prod, tenant_id=config.tenant_id, customer_id=customer_id)
-            new_plans = [plan for plan in plans if plan.resolution.customer_id == customer_id]
+        for group_id in sorted(grouped):
+            new_plans = grouped[group_id]
+            customer_id = new_plans[0].resolution.customer_id if group_id.startswith("customer:") else None
+            existing = (
+                _customer_history_summary(prod, tenant_id=config.tenant_id, customer_id=customer_id)
+                if customer_id
+                else _empty_customer_history_summary()
+            )
+            existing_events = existing.get("events") or []
+            combined_timeline = _combined_timeline(existing_events, new_plans)
+            next_step = _review_next_step(existing_events, new_plans, customer_id=customer_id)
             review_rows.append(
                 {
+                    "review_group_id": group_id,
                     "customer_id": customer_id,
                     "contact": _review_contact(new_plans),
                     "brand_values": sorted({_brand(plan.row) for plan in new_plans}),
                     "existing_before": existing,
                     "new_email_events": [_review_new_event(plan) for plan in new_plans],
-                    "resolution": Counter(plan.resolution.outcome for plan in new_plans),
+                    "combined_timeline": combined_timeline,
+                    "combined_timeline_count": len(combined_timeline),
+                    "resolution": dict(Counter(plan.resolution.outcome for plan in new_plans)),
+                    "resolution_reasons": sorted({plan.resolution.reason for plan in new_plans}),
+                    "current_next_step": next_step,
                     "bot_visible_new_chunks": sum(1 for plan in new_plans if plan.bot_visible),
                 }
             )
+    config.out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = config.out_dir / "timeline_100_clients_review.jsonl"
     csv_path = config.out_dir / "timeline_100_clients_review.csv"
     jsonl_path.write_text(
@@ -493,15 +513,24 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
     )
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         fieldnames = [
+            "review_group_id",
             "customer_id",
             "contact_email",
             "contact_phone",
             "contact_name",
             "brands",
+            "resolution",
+            "resolution_reasons",
             "existing_event_count",
+            "existing_event_type_counts",
             "existing_last_items",
             "new_email_count",
             "new_email_summaries",
+            "combined_timeline_count",
+            "combined_timeline",
+            "current_next_step_status",
+            "current_next_step",
+            "current_next_step_reason",
             "bot_visible_new_chunks",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -510,19 +539,39 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
             contact = row["contact"]
             writer.writerow(
                 {
+                    "review_group_id": row["review_group_id"],
                     "customer_id": row["customer_id"],
                     "contact_email": contact.get("email", ""),
                     "contact_phone": contact.get("phone", ""),
                     "contact_name": contact.get("name", ""),
                     "brands": ", ".join(row["brand_values"]),
+                    "resolution": json.dumps(row["resolution"], ensure_ascii=False, sort_keys=True),
+                    "resolution_reasons": ", ".join(row["resolution_reasons"]),
                     "existing_event_count": row["existing_before"]["event_count"],
+                    "existing_event_type_counts": json.dumps(
+                        row["existing_before"]["event_type_counts"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "existing_last_items": json.dumps(row["existing_before"]["last_items"], ensure_ascii=False),
                     "new_email_count": len(row["new_email_events"]),
                     "new_email_summaries": json.dumps(row["new_email_events"], ensure_ascii=False),
+                    "combined_timeline_count": row["combined_timeline_count"],
+                    "combined_timeline": json.dumps(row["combined_timeline"], ensure_ascii=False),
+                    "current_next_step_status": row["current_next_step"].get("status", ""),
+                    "current_next_step": row["current_next_step"].get("display_text", ""),
+                    "current_next_step_reason": row["current_next_step"].get("reason_code", ""),
                     "bot_visible_new_chunks": row["bot_visible_new_chunks"],
                 }
             )
-    return {"rows": len(review_rows), "jsonl": str(jsonl_path), "csv": str(csv_path)}
+    return {
+        "rows": len(review_rows),
+        "new_email_events": sum(len(row["new_email_events"]) for row in review_rows),
+        "linked_groups": sum(1 for row in review_rows if row["customer_id"]),
+        "unresolved_groups": sum(1 for row in review_rows if not row["customer_id"]),
+        "jsonl": str(jsonl_path),
+        "csv": str(csv_path),
+    }
 
 
 def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
@@ -647,9 +696,13 @@ def write_foton_report(
         f"- chunk gate counts: `{test_db_verification.get('chunk_gate_counts')}`",
         "",
         "## Локальная таблица для ручного просмотра Дмитрия",
-        f"- rows: `{review_report.get('rows')}`",
+        f"- rows grouped by client/unresolved identity: `{review_report.get('rows')}`",
+        f"- new email events represented: `{review_report.get('new_email_events')}`",
+        f"- linked client rows: `{review_report.get('linked_groups')}`",
+        f"- unresolved/blocked rows: `{review_report.get('unresolved_groups')}`",
         f"- JSONL с ПДн: `{review_report.get('jsonl')}`",
         f"- CSV с ПДн: `{review_report.get('csv')}`",
+        "- Таблица содержит: контакт+бренд, память до письма, новые email-события, объединённую ленту и текущий next-step по объединённому виду.",
         "",
         "## Ограничения",
         "- Это контрольный тест на свежей тест-БД, не решение о prod-вливании.",
@@ -1218,6 +1271,7 @@ def _customer_history_summary(
     tenant_id: str,
     customer_id: str,
 ) -> Mapping[str, Any]:
+    events = _customer_history_events(con, tenant_id=tenant_id, customer_id=customer_id)
     counts = {
         str(row["event_type"]): int(row["c"])
         for row in con.execute(
@@ -1230,29 +1284,159 @@ def _customer_history_summary(
             (tenant_id, customer_id),
         )
     }
-    rows = con.execute(
-        """
-        SELECT event_at, event_type, source_system, subject, summary
-        FROM timeline_events
-        WHERE tenant_id = ? AND customer_id = ?
-        ORDER BY event_at DESC, event_id DESC
-        LIMIT 3
-        """,
-        (tenant_id, customer_id),
-    ).fetchall()
     return {
         "event_count": sum(counts.values()),
         "event_type_counts": counts,
-        "last_items": [
-            {
-                "event_at": row["event_at"],
-                "event_type": row["event_type"],
-                "source_system": row["source_system"],
-                "subject": row["subject"],
-                "summary": compact_text(row["summary"], limit=180),
-            }
-            for row in rows
-        ],
+        "last_items": [_timeline_review_item(event, source="existing_prod") for event in events[:3]],
+        "events": events,
+    }
+
+
+def _empty_customer_history_summary() -> Mapping[str, Any]:
+    return {"event_count": 0, "event_type_counts": {}, "last_items": [], "events": []}
+
+
+def _customer_history_events(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+) -> list[Mapping[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT
+          event_id,
+          customer_id,
+          event_at,
+          event_type,
+          source_system,
+          source_id,
+          source_ref,
+          direction,
+          match_status,
+          subject,
+          text_preview,
+          summary,
+          record_json
+        FROM timeline_events
+        WHERE tenant_id = ? AND customer_id = ?
+        ORDER BY event_at DESC, event_id DESC
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    events: list[Mapping[str, Any]] = []
+    for row in rows:
+        try:
+            payload = dict(json.loads(row["record_json"] or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        for key in (
+            "event_id",
+            "customer_id",
+            "event_at",
+            "event_type",
+            "source_system",
+            "source_id",
+            "source_ref",
+            "direction",
+            "match_status",
+            "subject",
+            "text_preview",
+            "summary",
+        ):
+            payload.setdefault(key, row[key])
+        events.append(payload)
+    return events
+
+
+def _combined_timeline(
+    existing_events: Sequence[Mapping[str, Any]],
+    new_plans: Sequence[PlannedA2V3MailEvent],
+) -> list[Mapping[str, Any]]:
+    # New email items are intentionally shown first: Dmitry reviews what would be added over current memory.
+    new_items = [
+        _timeline_review_item(_new_event_for_review(plan), source="new_a2v3_email")
+        for plan in sorted(new_plans, key=lambda item: str(item.event.event_at.isoformat()), reverse=True)
+    ]
+    existing_items = [_timeline_review_item(event, source="existing_prod") for event in existing_events]
+    return [*new_items, *existing_items]
+
+
+def _review_next_step(
+    existing_events: Sequence[Mapping[str, Any]],
+    new_plans: Sequence[PlannedA2V3MailEvent],
+    *,
+    customer_id: Optional[str],
+) -> Mapping[str, Any]:
+    if not customer_id:
+        return {
+            "status": "not_applicable",
+            "display_text": "Нет привязанного клиента",
+            "reason_code": "unresolved_identity",
+        }
+    events = [dict(event) for event in existing_events]
+    events.extend(_new_event_for_review(plan) for plan in new_plans)
+    return dict(
+        resolve_customer_next_step(
+            events,
+            readiness={"open_conflicts": 0},
+            customer_id=customer_id,
+        ).to_json_dict()
+    )
+
+
+def _new_event_for_review(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
+    event = dict(plan.event.to_json_dict())
+    record = dict(event.get("record") or {})
+    record["safe_next_step_note"] = _quality(plan.row).get("safe_next_step_note")
+    record["next_step_model"] = (plan.row.get("summary_payload") or {}).get("next_step")
+    record["memory_status"] = _quality(plan.row).get("memory_status")
+    record["identity_resolution"] = {
+        "outcome": plan.resolution.outcome,
+        "reason": plan.resolution.reason,
+        "method": plan.resolution.method,
+        "customer_id": plan.resolution.customer_id,
+        "blocked": plan.resolution.blocked,
+        "ambiguous": plan.resolution.ambiguous,
+    }
+    record["bot_visibility"] = {
+        "allowed_for_bot": plan.bot_visible,
+        "requires_manager_review": not plan.bot_visible,
+        "reason": plan.bot_gate_reason,
+    }
+    event["record"] = record
+    return event
+
+
+def _timeline_review_item(event: Mapping[str, Any], *, source: str) -> Mapping[str, Any]:
+    record = event.get("record") or {}
+    if not isinstance(record, Mapping):
+        record = {}
+    metadata = event.get("metadata") or {}
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    bot_visibility = record.get("bot_visibility") or {}
+    if not isinstance(bot_visibility, Mapping):
+        bot_visibility = {}
+    identity_resolution = record.get("identity_resolution") or {}
+    if not isinstance(identity_resolution, Mapping):
+        identity_resolution = {}
+    return {
+        "source": source,
+        "event_id": event.get("event_id") or event.get("source_id"),
+        "event_at": event.get("event_at"),
+        "event_type": event.get("event_type"),
+        "source_system": event.get("source_system"),
+        "direction": event.get("direction"),
+        "subject": compact_text(event.get("subject"), limit=160),
+        "summary": compact_text(event.get("summary") or record.get("summary"), limit=260),
+        "safe_next_step_note": compact_text(record.get("safe_next_step_note"), limit=220),
+        "amount_rub": record.get("amount_rub"),
+        "amount_kind": record.get("amount_kind"),
+        "memory_status": record.get("memory_status") or (metadata.get("memory_status") if metadata else None),
+        "bot_visible": bot_visibility.get("allowed_for_bot"),
+        "resolution": identity_resolution.get("outcome"),
+        "resolution_reason": identity_resolution.get("reason"),
     }
 
 
@@ -1275,11 +1459,13 @@ def _review_new_event(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
         "date_iso": row.get("date_iso"),
         "event_type": payload.get("event_type"),
         "summary": payload.get("summary"),
+        "safe_next_step_note": _quality(row).get("safe_next_step_note"),
         "amount_rub": payload.get("amount_rub"),
         "amount_kind": payload.get("amount_kind"),
         "memory_status": _quality(row).get("memory_status"),
         "bot_visible": plan.bot_visible,
         "resolution": plan.resolution.outcome,
+        "resolution_reason": plan.resolution.reason,
     }
 
 

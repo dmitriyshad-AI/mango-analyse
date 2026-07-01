@@ -1821,11 +1821,13 @@ def run_one_dialog(
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
             else {}
         )
-        semantic_frame_metadata = (
-            dict(result.metadata.get("semantic_frame_shadow") or {})
-            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("semantic_frame_shadow"), Mapping)
-            else {}
-        )
+        semantic_frame_metadata = {}
+        if isinstance(result.metadata, Mapping):
+            raw_frame = result.metadata.get("semantic_frame")
+            if not isinstance(raw_frame, Mapping):
+                raw_frame = result.metadata.get("semantic_frame_shadow")
+            if isinstance(raw_frame, Mapping):
+                semantic_frame_metadata = dict(raw_frame)
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))

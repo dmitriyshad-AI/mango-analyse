@@ -59,6 +59,7 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
             "semantic_frame": {"intent": "enrollment_question"},
         }
     )
+    assert "semantic_frame" not in off_result.metadata
     assert "semantic_frame_shadow" not in off_result.metadata
 
     result = _normalize_direct_path_payload(
@@ -91,9 +92,11 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
 
     assert result.route == "bot_answer_self_for_pilot"
     assert result.draft_text == "Да, можно записаться на онлайн-курс."
-    frame = result.metadata["semantic_frame_shadow"]
+    frame = result.metadata["semantic_frame"]
     assert frame == {
-        "schema_version": "semantic_frame_shadow_v1_2026_06_30",
+        "schema_version": "semantic_frame_v1_2026_07_01",
+        "legacy_schema_version": "semantic_frame_shadow_v1_2026_06_30",
+        "mode": "shadow",
         "intent": "enrollment_question",
         "risk_class": "safe",
         "deal_stage": "interest",
@@ -113,6 +116,7 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
         "evidence": ["клиент спрашивает про запись без P0, телефон [phone], id [id]"],
         "confidence": 0.91,
     }
+    assert result.metadata["semantic_frame_shadow"] == frame
 
 
 class _SemanticFrameFakeProvider(SubscriptionLlmDraftProvider):
@@ -152,4 +156,6 @@ def test_semantic_frame_shadow_does_not_change_route_text_or_call_count() -> Non
     assert '"semantic_frame"' in provider.last_prompt
     assert result.route == "draft_for_manager"
     assert result.draft_text == "Менеджер проверит наличие места и подскажет следующий шаг."
+    assert result.metadata["direct_path"]["semantic_frame"]["intent"] == "live_availability"
+    assert result.metadata["direct_path"]["semantic_frame"]["mode"] == "shadow"
     assert result.metadata["direct_path"]["semantic_frame_shadow"]["intent"] == "live_availability"

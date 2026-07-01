@@ -2806,9 +2806,18 @@ def _direct_path_metadata(
 def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
     direct = dict(direct_meta)
-    semantic_frame = metadata.get("semantic_frame_shadow") if isinstance(metadata.get("semantic_frame_shadow"), Mapping) else {}
+    semantic_frame = metadata.get("semantic_frame") if isinstance(metadata.get("semantic_frame"), Mapping) else {}
+    if not semantic_frame:
+        semantic_frame = metadata.get("semantic_frame_shadow") if isinstance(metadata.get("semantic_frame_shadow"), Mapping) else {}
     if semantic_frame:
-        direct["semantic_frame_shadow"] = dict(semantic_frame)
+        frame = dict(semantic_frame)
+        frame.setdefault("mode", "shadow")
+        if str(frame.get("schema_version") or "").startswith("semantic_frame_shadow_"):
+            frame.setdefault("legacy_schema_version", str(frame["schema_version"]))
+            frame["schema_version"] = "semantic_frame_v1_2026_07_01"
+        direct["semantic_frame"] = dict(frame)
+        # Backward-compatible alias while older reports/tests migrate.
+        direct["semantic_frame_shadow"] = dict(frame)
     metadata["direct_path"] = direct
     if isinstance(direct_meta.get("answer_coverage_plan"), Mapping):
         metadata["answer_coverage_plan"] = dict(direct_meta["answer_coverage_plan"])  # type: ignore[index]

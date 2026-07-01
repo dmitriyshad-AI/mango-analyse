@@ -246,7 +246,11 @@ def _semantic_frame_payment_class(result: SubscriptionDraftResult, *, context: O
     if str(result.route or "") == "manager_only":
         return ""
     direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
-    frame = metadata.get("semantic_frame_shadow")
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else {}
     if not isinstance(frame, Mapping):
         frame = direct.get("semantic_frame_shadow") if isinstance(direct.get("semantic_frame_shadow"), Mapping) else {}
     if not isinstance(frame, Mapping) or not frame:

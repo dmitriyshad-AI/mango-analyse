@@ -2238,6 +2238,9 @@ def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> 
     }
 
 
+SEMANTIC_FRAME_SCHEMA_VERSION = "semantic_frame_v1_2026_07_01"
+SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION = "semantic_frame_shadow_v1_2026_06_30"
+
 _SEMANTIC_FRAME_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
 _SEMANTIC_FRAME_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
 _SEMANTIC_FRAME_LONG_ID_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
@@ -2274,8 +2277,13 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
         }
     else:
         product = {"raw_text": _direct_path_semantic_frame_safe_text(requested_product, limit=160)}
+    mode = str(raw.get("mode") or "shadow").strip().casefold()
+    if mode not in {"shadow", "active"}:
+        mode = "shadow"
     frame = {
-        "schema_version": "semantic_frame_shadow_v1_2026_06_30",
+        "schema_version": SEMANTIC_FRAME_SCHEMA_VERSION,
+        "legacy_schema_version": SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION,
+        "mode": mode,
         "intent": _direct_path_semantic_frame_safe_text(raw.get("intent"), limit=120),
         "risk_class": _direct_path_semantic_frame_safe_text(raw.get("risk_class"), limit=80),
         "deal_stage": _direct_path_semantic_frame_safe_text(raw.get("deal_stage"), limit=80),
@@ -2449,6 +2457,9 @@ def _normalize_direct_path_payload(
         metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
     semantic_frame = _direct_path_semantic_frame_from_payload(payload) if include_semantic_frame_shadow else {}
     if semantic_frame:
+        metadata["semantic_frame"] = semantic_frame
+        # Backward-compatible alias for one release: TZ154/text hygiene and
+        # older simulators may still read the historical shadow key.
         metadata["semantic_frame_shadow"] = semantic_frame
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),

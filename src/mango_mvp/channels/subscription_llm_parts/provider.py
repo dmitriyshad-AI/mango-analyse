@@ -2616,6 +2616,9 @@ _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_SUBSTRINGS = (
     "complaint",
     "legal",
     "zero_collect",
+    "output_sanitizer:",
+    "client_name_echo",
+    "internal_client_placeholder",
 )
 _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT = {"ready_to_pay", "paid", "dispute"}
 _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES = {"post_payment", "support"}
@@ -2888,6 +2891,8 @@ def _semantic_frame_self_answer_shadow_trace(
         reason = "deal_stage_blocked"
     elif blocking_flags:
         reason = "blocking_safety_flags"
+    elif bool(direct.get("deferral_text_in_self")):
+        reason = "deferral_text_in_self"
     elif result.missing_facts:
         reason = "missing_facts"
     elif result.forbidden_promises_detected:

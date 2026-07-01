@@ -512,6 +512,31 @@ def test_semantic_frame_self_answer_shadow_requires_high_confidence_and_fresh_fa
     assert low_result.route == stale_result.route == "draft_for_manager"
 
 
+def test_semantic_frame_self_answer_shadow_blocks_sanitizer_and_deferral_flags() -> None:
+    sanitized = _safe_self_answer_frame()
+    sanitized["direct_path"]["deferral_text_in_self"] = True
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Если нужно уточнить по вашей группе, менеджер проверит.",
+        safety_flags=("output_sanitizer:client_name_echo", "prose_model_led:internal_client_placeholder"),
+        metadata=sanitized,
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "blocking_safety_flags"
+    assert "output_sanitizer:client_name_echo" in shadow["guards"]["blocking_flags"]
+    assert result.route == "draft_for_manager"
+
+
 def test_semantic_frame_self_answer_shadow_ignores_inline_non_posthoc_frame() -> None:
     metadata = _safe_self_answer_frame()
     metadata.pop("semantic_frame_posthoc_shadow")

@@ -84,6 +84,7 @@ def build_report(
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
+        "semantic_frame_self_answer_shadow": _semantic_frame_self_answer_shadow_metrics(on_dialogs),
         "hard_gate_failures": {
             "on": len(on_summary_data.get("hard_gate_failure_dialogs") or []),
             "off": len(off_summary_data.get("hard_gate_failure_dialogs") or []) if off_summary_data else None,
@@ -100,6 +101,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     shadow = report.get("frame_decision_shadow") if isinstance(report.get("frame_decision_shadow"), Mapping) else {}
+    self_shadow = (
+        report.get("semantic_frame_self_answer_shadow")
+        if isinstance(report.get("semantic_frame_self_answer_shadow"), Mapping)
+        else {}
+    )
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -117,6 +123,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
         f"- LLM non-frame ON calls: `{llm.get('on_non_frame_total', 'n/a')}`",
         f"- Frame decision shadow turns: `{shadow.get('turn_count', 0)}`",
+        f"- Self-answer shadow turns: `{self_shadow.get('turn_count', 0)}`",
+        f"- Self-answer candidates: `{self_shadow.get('would_demote_count', 0)}`",
+        f"- Self-answer P0-lowered candidates: `{self_shadow.get('p0_lowered_count', 0)}`",
+        f"- Self-answer freshness-unknown candidates: `{self_shadow.get('freshness_unknown_self_candidates', 0)}`",
         "",
         "## Acceptance Flags",
         "",
@@ -355,6 +365,73 @@ def _frame_decision_shadow_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict
         "p0_vs_actual": dict(p0_alignment),
         "action_status": dict(action_alignment),
         "mismatch_examples": examples[:50],
+    }
+
+
+def _semantic_frame_self_answer_shadow_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    status_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    class_counts: Counter[str] = Counter()
+    candidate_by_class: Counter[str] = Counter()
+    unsafe_examples: list[dict[str, Any]] = []
+    candidate_examples: list[dict[str, Any]] = []
+    turns = 0
+    would_demote = 0
+    p0_lowered = 0
+    manager_only_lowered = 0
+    freshness_unknown = 0
+    for dialog in dialogs:
+        dialog_id = str(dialog.get("dialog_id") or "")
+        for turn in _turns(dialog):
+            shadow = turn.get("bot_semantic_frame_self_answer_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            turns += 1
+            status = str(shadow.get("status") or "unknown")
+            reason = str(shadow.get("reason") or "unknown")
+            self_class = str(shadow.get("self_class") or "unknown")
+            status_counts[status] += 1
+            reason_counts[reason] += 1
+            class_counts[self_class] += 1
+            if status != "would_demote_to_self":
+                continue
+            would_demote += 1
+            candidate_by_class[self_class] += 1
+            guards = shadow.get("guards") if isinstance(shadow.get("guards"), Mapping) else {}
+            freshness = guards.get("freshness") if isinstance(guards.get("freshness"), Mapping) else {}
+            row = {
+                "dialog_id": dialog_id,
+                "turn": turn.get("turn"),
+                "brand": dialog.get("brand"),
+                "bot_route": turn.get("bot_route"),
+                "self_class": self_class,
+                "reason": reason,
+                "route_after_if_active": shadow.get("route_after_if_active"),
+            }
+            if _actual_p0_signal(turn):
+                p0_lowered += 1
+                unsafe_examples.append({**row, "unsafe_reason": "actual_p0_signal"})
+            if str(turn.get("bot_route") or "") == "manager_only":
+                manager_only_lowered += 1
+                unsafe_examples.append({**row, "unsafe_reason": "manager_only_route"})
+            if not bool(freshness.get("ok")):
+                freshness_unknown += 1
+                unsafe_examples.append({**row, "unsafe_reason": "freshness_unknown"})
+            if len(candidate_examples) < 50:
+                candidate_examples.append(row)
+    return {
+        "schema_version": "semantic_frame_self_answer_shadow_metrics_v1_2026_07_02",
+        "turn_count": turns,
+        "status": dict(status_counts),
+        "reasons": dict(reason_counts),
+        "self_classes": dict(class_counts),
+        "would_demote_count": would_demote,
+        "would_demote_by_class": dict(candidate_by_class),
+        "p0_lowered_count": p0_lowered,
+        "manager_only_lowered_count": manager_only_lowered,
+        "freshness_unknown_self_candidates": freshness_unknown,
+        "unsafe_candidate_examples": unsafe_examples[:50],
+        "candidate_examples": candidate_examples,
     }
 
 

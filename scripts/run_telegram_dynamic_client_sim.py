@@ -31,7 +31,10 @@ from mango_mvp.channels.subscription_llm import (
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
-from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_frame_decision_shadow
+from mango_mvp.channels.subscription_llm_parts.provider import (
+    apply_semantic_frame_decision_shadow,
+    apply_semantic_frame_self_answer_shadow,
+)
 from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
@@ -1671,6 +1674,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_semantic_frame_self_answer_shadow": json.dumps(
+                        turn.get("bot_semantic_frame_self_answer_shadow") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_semantic_output_verifier": json.dumps(
                         turn.get("bot_semantic_output_verifier") or {},
                         ensure_ascii=False,
@@ -1857,16 +1865,20 @@ def _enrich_one_transcript_with_semantic_frame(
             client_message=client_message,
             context=context,
         )
+        framed = apply_semantic_frame_self_answer_shadow(framed, context=context)
         framed = apply_semantic_frame_decision_shadow(framed, context=context)
         raw_frame = framed.metadata.get("semantic_frame") if isinstance(framed.metadata, Mapping) else {}
         if not isinstance(raw_frame, Mapping):
             raw_frame = framed.metadata.get("semantic_frame_shadow") if isinstance(framed.metadata, Mapping) else {}
         raw_shadow = framed.metadata.get("frame_decision_shadow") if isinstance(framed.metadata, Mapping) else {}
+        raw_self_shadow = framed.metadata.get("semantic_frame_self_answer_shadow") if isinstance(framed.metadata, Mapping) else {}
         raw_direct = framed.metadata.get("direct_path") if isinstance(framed.metadata, Mapping) else {}
         if isinstance(raw_frame, Mapping) and raw_frame:
             turn["bot_semantic_frame"] = dict(raw_frame)
         if isinstance(raw_shadow, Mapping) and raw_shadow:
             turn["bot_frame_decision_shadow"] = dict(raw_shadow)
+        if isinstance(raw_self_shadow, Mapping) and raw_self_shadow:
+            turn["bot_semantic_frame_self_answer_shadow"] = dict(raw_self_shadow)
         if isinstance(raw_direct, Mapping) and raw_direct:
             turn["bot_direct_path"] = dict(raw_direct)
         turn["semantic_frame_enriched"] = True
@@ -2005,6 +2017,11 @@ def run_one_dialog(
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("frame_decision_shadow"), Mapping)
             else {}
         )
+        semantic_frame_self_answer_shadow_metadata = (
+            dict(result.metadata.get("semantic_frame_self_answer_shadow") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("semantic_frame_self_answer_shadow"), Mapping)
+            else {}
+        )
         answerability_trace_metadata = (
             dict(result.metadata.get("answerability_trace") or {})
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
@@ -2064,6 +2081,7 @@ def run_one_dialog(
             "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
             "bot_close_detect": close_detect_metadata,
             "bot_frame_decision_shadow": frame_decision_shadow_metadata,
+            "bot_semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
@@ -3490,6 +3508,7 @@ def build_summary(
     answerability_trace = _answerability_trace_summary(transcripts)
     semantic_frame = _semantic_frame_summary(transcripts)
     frame_decision_shadow = _frame_decision_shadow_summary(transcripts)
+    semantic_frame_self_answer_shadow = _semantic_frame_self_answer_shadow_summary(transcripts)
     total_turns = sum(len(item.get("turns") or []) for item in transcripts)
     semantic_frame_enriched_turns = sum(
         1
@@ -3639,6 +3658,11 @@ def build_summary(
         **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
         **({"semantic_frame": semantic_frame} if int(semantic_frame.get("turn_count") or 0) else {}),
         **({"frame_decision_shadow": frame_decision_shadow} if int(frame_decision_shadow.get("turn_count") or 0) else {}),
+        **(
+            {"semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow}
+            if int(semantic_frame_self_answer_shadow.get("turn_count") or 0)
+            else {}
+        ),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -4062,6 +4086,52 @@ def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> 
         "action_alignment": dict(action_alignment),
         "mismatches": mismatches,
         "examples": examples,
+    }
+
+
+def _semantic_frame_self_answer_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    statuses: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
+    self_classes: Counter[str] = Counter()
+    would_demote_examples: list[Mapping[str, Any]] = []
+    blocked_examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            shadow = turn.get("bot_semantic_frame_self_answer_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            total += 1
+            status = str(shadow.get("status") or "unknown")
+            reason = str(shadow.get("reason") or "unknown")
+            self_class = str(shadow.get("self_class") or "unknown")
+            statuses[status] += 1
+            reasons[reason] += 1
+            self_classes[self_class] += 1
+            row = {
+                "dialog_id": str(dialog.get("dialog_id") or ""),
+                "turn": turn.get("turn"),
+                "brand": str(dialog.get("brand") or ""),
+                "route": str(turn.get("bot_route") or ""),
+                "status": status,
+                "reason": reason,
+                "self_class": self_class,
+                "route_after_if_active": shadow.get("route_after_if_active"),
+            }
+            if status == "would_demote_to_self" and len(would_demote_examples) < 50:
+                would_demote_examples.append(row)
+            elif status == "blocked" and len(blocked_examples) < 50:
+                blocked_examples.append(row)
+    return {
+        "schema_version": "semantic_frame_self_answer_shadow_summary_v1_2026_07_02",
+        "turn_count": total,
+        "statuses": dict(statuses),
+        "reasons": dict(reasons),
+        "self_classes": dict(self_classes),
+        "would_demote_examples": would_demote_examples,
+        "blocked_examples": blocked_examples,
     }
 
 
@@ -5418,6 +5488,11 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
     handoff_trace = summary.get("handoff_trace") if isinstance(summary.get("handoff_trace"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
     frame_decision_shadow = summary.get("frame_decision_shadow") if isinstance(summary.get("frame_decision_shadow"), Mapping) else {}
+    self_answer_shadow = (
+        summary.get("semantic_frame_self_answer_shadow")
+        if isinstance(summary.get("semantic_frame_self_answer_shadow"), Mapping)
+        else {}
+    )
     return "\n".join(
         [
             "# Dynamic Telegram Client Simulation v7",
@@ -5439,6 +5514,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
             f"- Close detect: `{summary.get('close_detect')}`",
             f"- Frame decision shadow: `{frame_decision_shadow}`",
+            f"- SemanticFrame self-answer shadow: `{self_answer_shadow}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",
@@ -5592,6 +5668,7 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_model_intent_confidence",
         "bot_semantic_frame",
         "bot_frame_decision_shadow",
+        "bot_semantic_frame_self_answer_shadow",
         "bot_safety_flags",
         "bot_answer_quality_findings",
         "bot_answer_quality_rewritten",

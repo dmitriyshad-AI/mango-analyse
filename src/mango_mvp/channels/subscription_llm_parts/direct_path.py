@@ -119,6 +119,8 @@ SEMANTIC_FRAME_DECISION_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW"
 
 SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV = "TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE"
 
+SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SELF_ANSWER_SHADOW"
+
 PAYMENT_REFUND_DISPUTE_SPLIT_ENV = "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT"
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
@@ -351,6 +353,13 @@ def _semantic_frame_manager_action_gate_enabled(context: Optional[Mapping[str, A
         context,
         SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
         aliases=("semantic_frame_manager_action_gate", "semantic_frame_manager_action_gate_enabled"),
+    )
+
+def _semantic_frame_self_answer_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV,
+        aliases=("semantic_frame_self_answer_shadow", "semantic_frame_self_answer_shadow_enabled"),
     )
 
 def _payment_refund_dispute_split_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -1195,6 +1204,8 @@ def _direct_path_records_to_fact_pack(
                 "brand": str(fact.get("brand") or ""),
                 "fact_type": str(fact.get("fact_type") or ""),
                 "product": str(fact.get("product") or ""),
+                "valid_until": str(fact.get("valid_until") or ""),
+                "client_safe": "true" if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand) else "false",
             },
         }
         if include_scope_axes:

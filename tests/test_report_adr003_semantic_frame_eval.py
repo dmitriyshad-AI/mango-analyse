@@ -276,6 +276,41 @@ def test_report_flags_route_text_diff(tmp_path: Path) -> None:
     assert result["off_on_diff"]["diff_examples"][0]["changed"]["bot_text"]["on"] == "Да, место есть."
 
 
+def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    safe = _dialog(include_frame=True)
+    safe_turn = safe["turns"][0]
+    safe_turn["bot_semantic_frame_self_answer_shadow"] = {
+        "status": "would_demote_to_self",
+        "reason": "safe_answer_self_fresh_fact",
+        "self_class": "price",
+        "route_after_if_active": "bot_answer_self_for_pilot",
+        "guards": {"freshness": {"ok": True}},
+    }
+    unsafe = _dialog(include_frame=True)
+    unsafe["dialog_id"] = "d2"
+    unsafe_turn = unsafe["turns"][0]
+    unsafe_turn["bot_safety_flags"] = ["refund", "manager_approval_required"]
+    unsafe_turn["bot_semantic_frame_self_answer_shadow"] = {
+        "status": "would_demote_to_self",
+        "reason": "safe_answer_self_fresh_fact",
+        "self_class": "refund",
+        "route_after_if_active": "bot_answer_self_for_pilot",
+        "guards": {"freshness": {"ok": False}},
+    }
+    _write_jsonl(on_transcripts, [safe, unsafe])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    shadow = result["semantic_frame_self_answer_shadow"]
+    assert shadow["turn_count"] == 2
+    assert shadow["would_demote_count"] == 2
+    assert shadow["would_demote_by_class"] == {"price": 1, "refund": 1}
+    assert shadow["p0_lowered_count"] == 1
+    assert shadow["freshness_unknown_self_candidates"] == 1
+    assert len(shadow["unsafe_candidate_examples"]) == 2
+
+
 def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     on_summary = tmp_path / "on_summary.json"

@@ -12,6 +12,7 @@ from mango_mvp.channels.subscription_llm import (
     SEMANTIC_FRAME_DECISION_SHADOW_ENV,
     SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
     SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
+    SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
@@ -54,6 +55,18 @@ def test_semantic_frame_manager_action_gate_flag_is_default_off_and_not_profile_
     assert subscription_llm._semantic_frame_manager_action_gate_enabled({SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_manager_action_gate_enabled({"semantic_frame_manager_action_gate": "1"}) is True
     assert subscription_llm._semantic_frame_manager_action_gate_enabled({SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "0"}) is False
+
+
+def test_semantic_frame_self_answer_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_self_answer_shadow_enabled({}) is False
+    assert subscription_llm._semantic_frame_self_answer_shadow_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_self_answer_shadow_enabled({SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_self_answer_shadow_enabled({"semantic_frame_self_answer_shadow": "1"}) is True
+    assert subscription_llm._semantic_frame_self_answer_shadow_enabled({SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_posthoc_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,6 +401,138 @@ def test_semantic_frame_decision_shadow_reports_missing_frame_without_behavior_c
     assert result.route == "bot_answer_self_for_pilot"
     assert result.draft_text == "Да, можно записаться на онлайн-курс."
     assert result.metadata["frame_decision_shadow"]["status"] == "no_frame"
+
+
+def _safe_self_answer_frame(*, confidence: float = 0.94, valid_until: str = "2026-12-31") -> dict:
+    return {
+        "semantic_frame_posthoc_shadow": {"status": "ok"},
+        "semantic_frame": {
+            "schema_version": "semantic_frame_v1_2026_07_01",
+            "mode": "shadow",
+            "intent": "price_question",
+            "risk_class": "safe",
+            "deal_stage": "interest",
+            "payment_readiness": "asking_price",
+            "requested_product": {"brand": "foton", "raw_text": "онлайн-курс"},
+            "requested_action": "answer_question",
+            "answerability": "answer_self",
+            "must_handoff": False,
+            "confidence": confidence,
+        },
+        "direct_path": {
+            "selected_category": "pricing",
+            "wide_fact_exact_keys": ["foton.online.price"],
+            "wide_fact_metadata": {
+                "foton.online.price": {
+                    "brand": "foton",
+                    "client_safe": "true",
+                    "valid_until": valid_until,
+                }
+            },
+        },
+    }
+
+
+def test_semantic_frame_self_answer_shadow_metadata_only_would_demote() -> None:
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Онлайн-курс стоит 24 000 рублей за семестр.",
+        safety_flags=("manager_approval_required", "no_auto_send"),
+        manager_checklist=("Проверить перед отправкой.",),
+        metadata=_safe_self_answer_frame(),
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Онлайн-курс стоит 24 000 рублей за семестр."
+    assert result.safety_flags == base_result.safety_flags
+    assert result.manager_checklist == base_result.manager_checklist
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert shadow["status"] == "would_demote_to_self"
+    assert shadow["route_before"] == "draft_for_manager"
+    assert shadow["route_after_if_active"] == "bot_answer_self_for_pilot"
+    assert shadow["guards"]["freshness"]["ok"] is True
+    assert result.metadata["direct_path"]["semantic_frame_self_answer_shadow"] == shadow
+
+
+def test_semantic_frame_self_answer_shadow_blocks_p0_even_when_frame_says_safe() -> None:
+    metadata = _safe_self_answer_frame()
+    metadata["direct_path_model_p0"] = {"is_p0": True, "p0_kind": "refund_claim"}
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        risk_level="high",
+        safety_flags=("refund", "manager_approval_required", "no_auto_send"),
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert result.route == "draft_for_manager"
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "protected_p0"
+    assert shadow["route_after_if_active"] == "draft_for_manager"
+
+
+def test_semantic_frame_self_answer_shadow_requires_high_confidence_and_fresh_fact() -> None:
+    low_conf = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Онлайн-курс стоит 24 000 рублей за семестр.",
+        metadata=_safe_self_answer_frame(confidence=0.89),
+    )
+    stale = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Онлайн-курс стоит 24 000 рублей за семестр.",
+        metadata=_safe_self_answer_frame(valid_until="2026-01-01"),
+    )
+
+    context = {
+        "active_brand": "foton",
+        SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+    }
+    low_result = subscription_llm.apply_semantic_frame_self_answer_shadow(low_conf, context=context)
+    stale_result = subscription_llm.apply_semantic_frame_self_answer_shadow(stale, context=context)
+
+    assert low_result.metadata["semantic_frame_self_answer_shadow"]["reason"] == "low_confidence"
+    assert stale_result.metadata["semantic_frame_self_answer_shadow"]["reason"] == "no_fresh_client_safe_exact_fact"
+    assert low_result.route == stale_result.route == "draft_for_manager"
+
+
+def test_semantic_frame_self_answer_shadow_ignores_inline_non_posthoc_frame() -> None:
+    metadata = _safe_self_answer_frame()
+    metadata.pop("semantic_frame_posthoc_shadow")
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Онлайн-курс стоит 24 000 рублей за семестр.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(
+        base_result,
+        context={
+            "active_brand": "foton",
+            SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "frame_not_posthoc"
+    assert result.route == "draft_for_manager"
 
 
 def test_semantic_frame_manager_action_gate_is_off_noop() -> None:

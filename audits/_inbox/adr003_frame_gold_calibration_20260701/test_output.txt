@@ -1,0 +1,28 @@
+Command:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_frame_gold_calibration.py tests/test_build_adr003_frame_gold_queue.py tests/test_report_adr003_semantic_frame_eval.py tests/test_adr003_regex_understanding_moratorium.py
+
+Output:
+
+.......................                                                  [100%]
+23 passed in 1.12s
+
+Command:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_frame_gold_calibration.py --transcripts audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/on/dynamic_dialog_transcripts.jsonl --gold product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl --out-dir audits/_inbox/adr003_frame_gold_calibration_20260701
+
+Output:
+
+{
+  "ok": true,
+  "json": "audits/_inbox/adr003_frame_gold_calibration_20260701/adr003_frame_gold_calibration_report.json",
+  "markdown": "audits/_inbox/adr003_frame_gold_calibration_20260701/adr003_frame_gold_calibration_report.md"
+}
+
+Command:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+Output:
+
+3807 passed, 5 skipped, 1 warning in 74.53s (0:01:14)

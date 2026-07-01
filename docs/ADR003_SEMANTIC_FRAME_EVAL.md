@@ -153,7 +153,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 
 ## Manager-Action Gate Prototype
 
-Коммит `7ef2c50` добавляет узкий default-OFF флаг `TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE`.
+Коммит `3aedeea` добавляет узкий default-OFF флаг `TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE`.
 
 Гейт работает только после post-hoc frame со статусом `ok`; inline legacy `semantic_frame_shadow` не считается активным источником. Он может только повысить автономный `bot_answer_self*` до `draft_for_manager`, не меняет текст, не поднимает в `manager_only`, не понижает существующие handoff/P0 routes и не включён в профиль.
 
@@ -165,3 +165,22 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 - убраны ранние справочные `check_availability` на `interest/qualification`, где SemanticFrame был too-cautious.
 
 Ограничение: это `formal_pass` + локальный semantic smoke, но не разрешение на включение флага. Перед включением нужен отдельный semantic gold-регрейд promoted rows и negative rows: цены, адрес, платформа, формат, порядок записи, рассрочка, pre-sale refund, "подумаем/оплачу позже", safe deferral.
+
+## Phase 1 Frame Gold Calibration
+
+Локальная Ф1-калибровка 2026-07-01:
+
+- Gold: `product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl`.
+- Gold SHA256: `4c505bb23cddbdfb8a0d4324bd2822b253001dc46fc0e75b90ab5ba2d6fb5be3`.
+- Gold scope: 75 строк из full131 mismatch/manager-action очереди, без клиентских текстов; 73 сравнимые, 2 `unclear`.
+- Scorer: `scripts/report_adr003_frame_gold_calibration.py`.
+- Report: `audits/_inbox/adr003_frame_gold_calibration_20260701/`.
+- `must_handoff` accuracy: `0.6027` (44/73).
+- `too_cautious`: `29`.
+- `too_confident`: `0`.
+- `current_over_handoff_candidates`: `21`.
+- `safe_self_candidates`: `32`.
+- Confidence buckets: `0.80-0.89` = 40 rows / 47.5% must_handoff accuracy / 21 too_cautious; `0.90-1.00` = 33 rows / 75.76% accuracy / 8 too_cautious.
+- Field accuracy: `risk_class` 37/75, `requested_action` 61/75, `answerability` 1/75.
+
+Вывод Ф1: `SemanticFrame` пока не готов рулить автономией. `too_confident=0` на этой очереди подтверждает безопасную сторону ошибки, но `must_handoff` accuracy низкая, а `answerability` не соблюдает заявленную схему (`yes/no` вместо `answer_self/manager_only` в сохранённых frame). Следующий шаг — улучшать инструкцию/схему и повторять Ф1-калибровку, а не включать Ф2/Ф3 active self-answer gate.

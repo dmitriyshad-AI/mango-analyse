@@ -34,7 +34,7 @@ from mango_mvp.customer_timeline.safety import (
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
-CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260618_002_derived_signal_status"
+CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260701_001_email_event_content_key"
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -107,6 +107,8 @@ FORBIDDEN_PERSISTED_PAYLOAD_KEYS = {
 }
 ALLOWED_SEARCH_SCOPES = {"events", "bot_context", "signals"}
 _SEARCH_TOKEN_RE = re.compile(r"[\w@.+-]+", re.UNICODE)
+_EMAIL_CONTENT_DEDUP_EVENT_TYPE = "email_message"
+_WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 
 
 Clock = Callable[[], datetime]
@@ -114,6 +116,111 @@ Clock = Callable[[], datetime]
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def normalize_email_content_text(value: Any) -> str:
+    return _WHITESPACE_RE.sub(" ", str(value or "").strip()).casefold()
+
+
+def timeline_email_content_key(
+    *,
+    tenant_id: str,
+    customer_id: Optional[str],
+    event_type: str,
+    event_at: datetime | str,
+    subject: Optional[str],
+    summary: Optional[str],
+) -> Optional[str]:
+    customer = optional_text(customer_id)
+    if not customer:
+        return None
+    if str(event_type or "") != _EMAIL_CONTENT_DEDUP_EVENT_TYPE:
+        return None
+    normalized_summary = normalize_email_content_text(summary)
+    if not normalized_summary:
+        return None
+    if isinstance(event_at, datetime):
+        event_dt = event_at
+    else:
+        event_dt = parse_datetime(str(event_at), "event_at")
+    require_timezone(event_dt, "event_at")
+    minute = event_dt.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    return stable_prefixed_id(
+        "email_content",
+        {
+            "tenant_id": normalize_key(tenant_id, "tenant_id"),
+            "customer_id": customer,
+            "event_at_minute": minute,
+            "subject": normalize_email_content_text(subject),
+            "summary_sha256": stable_digest({"summary": normalized_summary}),
+        },
+        length=40,
+    )
+
+
+def timeline_email_content_signature(
+    *,
+    tenant_id: str,
+    customer_id: Optional[str],
+    event_type: str,
+    event_at: datetime | str,
+    subject: Optional[str],
+    summary: Optional[str],
+    text_preview: Optional[str],
+) -> Optional[str]:
+    content_key = timeline_email_content_key(
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        event_type=event_type,
+        event_at=event_at,
+        subject=subject,
+        summary=summary,
+    )
+    if not content_key:
+        return None
+    preview_hash = stable_digest({"text_preview": normalize_email_content_text(text_preview)})
+    return f"{content_key}:{preview_hash}"
+
+
+def existing_timeline_email_content_signatures(db_path: Path | str) -> set[str]:
+    path = Path(db_path)
+    if not path.exists():
+        return set()
+    uri = f"{path.resolve(strict=False).as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_events'"
+        ).fetchone()
+        if not exists:
+            return set()
+        rows = con.execute(
+            """
+            SELECT tenant_id, customer_id, event_type, event_at, subject, summary, text_preview
+            FROM timeline_events
+            WHERE customer_id IS NOT NULL
+              AND customer_id != ''
+              AND event_type = ?
+              AND summary IS NOT NULL
+              AND summary != ''
+            """,
+            (_EMAIL_CONTENT_DEDUP_EVENT_TYPE,),
+        ).fetchall()
+    result: set[str] = set()
+    for row in rows:
+        signature = timeline_email_content_signature(
+            tenant_id=row["tenant_id"],
+            customer_id=row["customer_id"],
+            event_type=row["event_type"],
+            event_at=row["event_at"],
+            subject=row["subject"],
+            summary=row["summary"],
+            text_preview=row["text_preview"],
+        )
+        if signature:
+            result.add(signature)
+    return result
 
 
 @dataclass(frozen=True)
@@ -495,6 +602,7 @@ class CustomerTimelineSQLiteStore:
               source_ref TEXT,
               direction TEXT NOT NULL,
               match_status TEXT NOT NULL,
+              content_key TEXT,
               confidence REAL,
               importance INTEGER NOT NULL,
               subject TEXT,
@@ -647,6 +755,9 @@ class CustomerTimelineSQLiteStore:
               ON timeline_events(tenant_id, opportunity_id, event_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_events_source
               ON timeline_events(tenant_id, source_system, source_id, event_type);
+            CREATE INDEX IF NOT EXISTS ix_timeline_events_content_key
+              ON timeline_events(tenant_id, customer_id, content_key)
+              WHERE content_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS ix_timeline_events_type_time
               ON timeline_events(tenant_id, event_type, event_at);
             CREATE INDEX IF NOT EXISTS ix_artifacts_event
@@ -705,6 +816,49 @@ class CustomerTimelineSQLiteStore:
               ON derived_signals(tenant_id, customer_id, status, expires_at)
             """
         )
+        timeline_event_columns = {
+            row["name"]
+            for row in self._con.execute("PRAGMA table_info(timeline_events)").fetchall()
+        }
+        if "content_key" not in timeline_event_columns:
+            self._con.execute("ALTER TABLE timeline_events ADD COLUMN content_key TEXT")
+        self._con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_timeline_events_content_key
+              ON timeline_events(tenant_id, customer_id, content_key)
+              WHERE content_key IS NOT NULL
+            """
+        )
+        self._backfill_timeline_event_content_keys()
+
+    def _backfill_timeline_event_content_keys(self) -> None:
+        rows = self._con.execute(
+            """
+            SELECT event_id, tenant_id, customer_id, event_type, event_at, subject, summary
+            FROM timeline_events
+            WHERE content_key IS NULL
+              AND customer_id IS NOT NULL
+              AND customer_id != ''
+              AND event_type = ?
+              AND summary IS NOT NULL
+              AND summary != ''
+            """,
+            (_EMAIL_CONTENT_DEDUP_EVENT_TYPE,),
+        ).fetchall()
+        for row in rows:
+            content_key = timeline_email_content_key(
+                tenant_id=row["tenant_id"],
+                customer_id=row["customer_id"],
+                event_type=row["event_type"],
+                event_at=row["event_at"],
+                subject=row["subject"],
+                summary=row["summary"],
+            )
+            if content_key:
+                self._con.execute(
+                    "UPDATE timeline_events SET content_key = ? WHERE event_id = ?",
+                    (content_key, row["event_id"]),
+                )
 
     def upsert_customer(
         self,
@@ -838,6 +992,38 @@ class CustomerTimelineSQLiteStore:
                 record_hash=existing_by_dedupe["record_hash"],
                 audit_id=None,
             )
+        content_key = timeline_email_content_key(
+            tenant_id=event.tenant_id,
+            customer_id=event.customer_id,
+            event_type=event.event_type.value,
+            event_at=event.event_at,
+            subject=event.subject,
+            summary=event.summary,
+        )
+        if content_key and existing_by_dedupe is None:
+            existing_by_content = self._con.execute(
+                """
+                SELECT event_id, record_hash, text_preview
+                FROM timeline_events
+                WHERE tenant_id = ?
+                  AND customer_id = ?
+                  AND content_key = ?
+                  AND event_id != ?
+                ORDER BY created_at ASC, event_id ASC
+                """,
+                (event.tenant_id, event.customer_id, content_key, event.event_id),
+            ).fetchall()
+            incoming_preview = normalize_email_content_text(event.text_preview)
+            for existing in existing_by_content:
+                if normalize_email_content_text(existing["text_preview"]) == incoming_preview:
+                    return CustomerTimelineStoreWriteResult(
+                        record_type="timeline_event",
+                        record_id=existing["event_id"],
+                        created=False,
+                        status="duplicate",
+                        record_hash=existing["record_hash"],
+                        audit_id=None,
+                    )
         result = self._upsert_record(
             table="timeline_events",
             key_column="event_id",
@@ -857,6 +1043,7 @@ class CustomerTimelineSQLiteStore:
                 "source_ref": event.source_ref,
                 "direction": event.direction.value,
                 "match_status": event.match_status.value,
+                "content_key": content_key,
                 "confidence": event.confidence,
                 "importance": event.importance,
                 "subject": event.subject,
@@ -2755,10 +2942,14 @@ __all__ = [
     "CustomerTimelineStoreWriteResult",
     "build_fts_query",
     "customer_timeline_sqlite_safety_contract",
+    "existing_timeline_email_content_signatures",
     "guard_customer_timeline_sqlite_path",
     "ingestion_run_from_json",
     "json_dumps",
     "json_loads",
+    "normalize_email_content_text",
     "scrub_timeline_persisted_json",
     "sqlite_fts5_available",
+    "timeline_email_content_key",
+    "timeline_email_content_signature",
 ]

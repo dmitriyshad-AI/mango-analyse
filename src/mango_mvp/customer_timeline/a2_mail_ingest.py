@@ -38,7 +38,11 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     _sha16,
 )
 from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    existing_timeline_email_content_signatures,
+    timeline_email_content_signature,
+)
 
 
 A2V3_MAIL_INGEST_SCHEMA_VERSION = "a2v3_mail_timeline_ingest_v1"
@@ -379,9 +383,13 @@ def create_test_db_backup(config: A2V3MailIngestConfig, *, label: str = "a2v3_ma
 def validate_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
     plans, report = plan_a2v3_mail_ingest(config)
     test_existing = existing_event_dedupe_keys(config.timeline_db_path)
+    test_existing_content = existing_timeline_email_content_signatures(config.timeline_db_path)
     seen: set[str] = set()
+    seen_content: set[str] = set()
     would_create = 0
     would_skip_existing = 0
+    would_skip_existing_content = 0
+    would_skip_content_in_input = 0
     would_skip_prod_duplicate = 0
     for plan in plans:
         key = plan.event.dedupe_key
@@ -389,6 +397,23 @@ def validate_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> Mapping[str, Any]
             would_skip_existing += 1
             continue
         seen.add(key)
+        content_signature = timeline_email_content_signature(
+            tenant_id=plan.event.tenant_id,
+            customer_id=plan.event.customer_id,
+            event_type=plan.event.event_type.value,
+            event_at=plan.event.event_at,
+            subject=plan.event.subject,
+            summary=plan.event.summary,
+            text_preview=plan.event.text_preview,
+        )
+        if content_signature and content_signature in seen_content:
+            would_skip_content_in_input += 1
+            continue
+        if content_signature and content_signature in test_existing_content:
+            would_skip_existing_content += 1
+            continue
+        if content_signature:
+            seen_content.add(content_signature)
         if plan.prod_duplicate_keys:
             would_skip_prod_duplicate += 1
         would_create += 1
@@ -399,6 +424,8 @@ def validate_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> Mapping[str, Any]
         "test_db_path": str(config.timeline_db_path),
         "would_create_events": would_create,
         "would_skip_existing_test_events": would_skip_existing,
+        "would_skip_existing_content_events": would_skip_existing_content,
+        "would_skip_content_events_in_input": would_skip_content_in_input,
         "would_skip_prod_duplicate_events": would_skip_prod_duplicate,
     }
     write_json(config.out_dir / "validate_report.json", validation)
@@ -410,7 +437,9 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
     _validate_backup_manifest(config, backup_manifest_path)
     plans, planning_report = plan_a2v3_mail_ingest(config)
     test_existing = existing_event_dedupe_keys(config.timeline_db_path)
+    test_existing_content = existing_timeline_email_content_signatures(config.timeline_db_path)
     seen: set[str] = set()
+    seen_content: set[str] = set()
     selected: list[PlannedA2V3MailEvent] = []
     counters: Counter[str] = Counter()
     for plan in plans:
@@ -422,11 +451,29 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
         if key in test_existing:
             counters["skipped_existing_test"] += 1
             continue
+        content_signature = timeline_email_content_signature(
+            tenant_id=plan.event.tenant_id,
+            customer_id=plan.event.customer_id,
+            event_type=plan.event.event_type.value,
+            event_at=plan.event.event_at,
+            subject=plan.event.subject,
+            summary=plan.event.summary,
+            text_preview=plan.event.text_preview,
+        )
+        if content_signature and content_signature in seen_content:
+            counters["skipped_content_duplicate_in_input"] += 1
+            continue
+        if content_signature and content_signature in test_existing_content:
+            counters["skipped_existing_content"] += 1
+            continue
+        if content_signature:
+            seen_content.add(content_signature)
         if plan.prod_duplicate_keys:
             counters["prod_duplicate_events_observed"] += 1
         selected.append(plan)
 
     store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=config.allowed_root)
+    accepted_plans: list[PlannedA2V3MailEvent] = []
     try:
         input_hash = _input_fingerprint(config)
         run = store.start_ingestion_run(
@@ -462,6 +509,10 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
                 )
                 if event_result.created:
                     counters["created_events"] += 1
+                    accepted_plans.append(plan)
+                elif event_result.status == "duplicate" and event_result.record_id != plan.event.event_id:
+                    counters["skipped_content_duplicate_events"] += 1
+                    continue
                 if plan.chunk is not None:
                     chunk_result = store.upsert_bot_context_chunk(
                         plan.chunk,
@@ -483,7 +534,7 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
         )
     finally:
         store.close()
-    facts_upserted = _upsert_a2v3_event_facts(config.timeline_db_path, selected)
+    facts_upserted = _upsert_a2v3_event_facts(config.timeline_db_path, accepted_plans)
     counters["upserted_a2v3_event_facts"] += facts_upserted
     report = {
         **planning_report,

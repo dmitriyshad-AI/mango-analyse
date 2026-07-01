@@ -234,6 +234,32 @@ def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path
         assert fact == ("payment", "actual", 50000.0, "foton", "foton", "a2v3_email_content", 1)
 
 
+def test_a2v3_mail_ingest_content_duplicate_skips_chunk_and_facts(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        [
+            _row("h" * 64, email="parent@example.com"),
+            _row("i" * 64, email="parent@example.com"),
+        ],
+    )
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    validation = validate_a2v3_mail_ingest(config)
+    backup = create_test_db_backup(config)
+    applied = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert validation["would_create_events"] == 1
+    assert validation["would_skip_content_events_in_input"] == 1
+    assert applied["selected_events"] == 1
+    assert applied["counts"]["created_events"] == 1
+    assert applied["counts"]["created_chunks"] == 1
+    assert applied["counts"]["upserted_a2v3_event_facts"] == 1
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT count(*) FROM timeline_events").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
 def test_a2v3_mail_ingest_blocks_ambiguous_identity_and_non_usable_memory(tmp_path: Path) -> None:
     rows = [
         _row("b" * 64, email="amb@example.com"),

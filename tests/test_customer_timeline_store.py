@@ -121,6 +121,33 @@ def event(
     )
 
 
+def email_event(
+    customer: CustomerIdentity | None,
+    *,
+    source_id: str,
+    subject: str = "Заявка с сайта",
+    text_preview: str = "Клиент уточняет расписание группы.",
+    summary: str = "Клиент уточнил расписание группы и попросил ответить.",
+    event_at: datetime = NOW,
+) -> TimelineEvent:
+    return TimelineEvent(
+        tenant_id=customer.tenant_id if customer else "foton",
+        customer_id=customer.customer_id if customer else None,
+        event_type=TimelineEventType.EMAIL_MESSAGE,
+        event_at=event_at,
+        source_system="mail_archive_stage2",
+        source_id=source_id,
+        direction=TimelineDirection.INBOUND,
+        subject=subject,
+        text_preview=text_preview,
+        summary=summary,
+        importance=2,
+        match_status="strong_unique" if customer else "unmatched",
+        confidence=0.9 if customer else None,
+        created_at=NOW,
+    )
+
+
 def artifact(ev: TimelineEvent, *, tenant_id: str | None = None) -> EventArtifact:
     return EventArtifact(
         tenant_id=tenant_id or ev.tenant_id,
@@ -212,7 +239,9 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert "timeline_conflicts" in names
     assert "customer_id_mappings" in names
     assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
+    assert "content_key" in column_names(db_path, "timeline_events")
     assert "ix_signals_customer_status_expiry" in index_names(db_path)
+    assert "ix_timeline_events_content_key" in index_names(db_path)
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
     assert summary["backend"] == "sqlite"
     assert summary["counts"]["schema_migrations"] == 1
@@ -860,6 +889,90 @@ def test_duplicate_source_event_with_different_explicit_id_does_not_create_secon
     assert duplicate.record_id == first.event_id
     assert store.summary()["counts"]["timeline_events"] == 1
     assert store.get_event("foton", first.event_id)["summary"] == first.summary
+    store.close()
+
+
+def test_email_content_duplicate_with_new_source_id_is_skipped(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    first = email_event(customer, source_id="mail-1")
+    second = email_event(
+        customer,
+        source_id="mail-2",
+        subject="  заявка   с сайта ",
+        text_preview="Клиент уточняет расписание группы.",
+        summary="Клиент уточнил расписание группы и попросил ответить.",
+        event_at=NOW + timedelta(seconds=30),
+    )
+
+    store.upsert_customer(customer)
+    created = store.upsert_event(first)
+    duplicate = store.upsert_event(second)
+
+    assert created.created is True
+    assert duplicate.created is False
+    assert duplicate.status == "duplicate"
+    assert duplicate.record_id == first.event_id
+    assert store.summary()["counts"]["timeline_events"] == 1
+    stored = store.get_event("foton", first.event_id)
+    assert stored["source_id"] == "mail-1"
+    store.close()
+
+
+def test_email_content_duplicate_without_customer_is_not_skipped(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    first = email_event(None, source_id="web-form-1")
+    second = email_event(None, source_id="web-form-2", event_at=NOW + timedelta(seconds=30))
+
+    created = store.upsert_event(first)
+    second_created = store.upsert_event(second)
+
+    assert created.created is True
+    assert second_created.created is True
+    assert store.summary()["counts"]["timeline_events"] == 2
+    store.close()
+
+
+def test_email_content_key_requires_identical_text_preview(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    first = email_event(customer, source_id="mail-1", text_preview="Первый текст письма.")
+    second = email_event(
+        customer,
+        source_id="mail-2",
+        text_preview="Другой текст письма.",
+        event_at=NOW + timedelta(seconds=30),
+    )
+
+    store.upsert_customer(customer)
+    created = store.upsert_event(first)
+    second_created = store.upsert_event(second)
+
+    assert created.created is True
+    assert second_created.created is True
+    assert store.summary()["counts"]["timeline_events"] == 2
+    store.close()
+
+
+def test_email_content_key_normalizes_timezone_equivalent_minutes(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    first = email_event(customer, source_id="mail-utc", event_at=NOW)
+    second = email_event(
+        customer,
+        source_id="mail-msk",
+        event_at=(NOW + timedelta(seconds=30)).astimezone(timezone(timedelta(hours=3))),
+    )
+
+    store.upsert_customer(customer)
+    created = store.upsert_event(first)
+    duplicate = store.upsert_event(second)
+
+    assert created.created is True
+    assert duplicate.created is False
+    assert duplicate.status == "duplicate"
+    assert duplicate.record_id == first.event_id
+    assert store.summary()["counts"]["timeline_events"] == 1
     store.close()
 
 

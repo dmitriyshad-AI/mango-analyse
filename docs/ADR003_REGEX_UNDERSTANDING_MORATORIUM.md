@@ -33,3 +33,20 @@
 - тестовые/отчетные парсеры.
 
 Любое расширение regex в runtime-канале должно явно объяснить, что это проверка выхода, а не понимание клиента, и обновить guard-тест.
+
+## CI guard
+
+Мораторий закреплен тестом `tests/test_adr003_regex_understanding_moratorium.py`.
+
+Он проверяет два frozen snapshot:
+
+- `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` — все текущие `re.compile` в runtime-каналах;
+- `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` — direct-path `re.compile`, inline `re.search/sub/...`, верхнеуровневые keyword/marker таблицы и строковые `"..." in text`-проверки в файлах понимания.
+
+Если тест упал, нельзя просто обновить snapshot. Сначала надо ответить:
+
+1. это проверка выхода/fail-closed/PII/brand/fabrication, а не понимание сырого клиентского текста?
+2. есть ли eval-кейс, который фиксирует найденный смысловой сбой?
+3. почему это не должно решаться SemanticFrame?
+
+Если это новый смысл клиента, snapshot не обновляется: добавляется eval-кейс и калибруется SemanticFrame. Если это разрешенная механическая проверка выхода, в audit pack нужно явно написать причину и только затем обновить snapshot.

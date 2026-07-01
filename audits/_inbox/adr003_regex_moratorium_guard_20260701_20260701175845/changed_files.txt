@@ -1,0 +1,5 @@
+docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md
+docs/ADR003_SEMANTIC_FRAME_EVAL.md
+tests/test_adr003_regex_understanding_moratorium.py
+tests/fixtures/adr003_runtime_channel_regex_snapshot.json
+tests/fixtures/adr003_direct_path_text_patterns_snapshot.json

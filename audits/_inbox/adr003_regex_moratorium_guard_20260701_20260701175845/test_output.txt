@@ -1,0 +1,7 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_adr003_regex_understanding_moratorium.py tests/test_direct_path_semantic_frame_shadow.py tests/test_build_adr003_semantic_frame_eval.py
+
+11 passed in 1.69s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3773 passed, 5 skipped, 1 warning in 84.39s (0:01:24)

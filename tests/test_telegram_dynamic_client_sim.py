@@ -636,6 +636,12 @@ def test_summary_includes_frame_decision_shadow_counts(tmp_path):
     assert frame_shadow["p0_vs_actual"] == {"mismatch": 1}
     assert frame_shadow["mismatches"][0]["dialog_id"] == "frame_shadow"
     assert "Frame decision shadow" in sim.render_summary_md(summary)
+    rows = sim.build_turn_rows(transcripts)
+    csv_path = tmp_path / "turns.csv"
+    sim.write_csv(csv_path, rows)
+    csv_text = csv_path.read_text(encoding="utf-8")
+    assert "bot_semantic_frame" in csv_text.splitlines()[0]
+    assert "bot_frame_decision_shadow" in csv_text.splitlines()[0]
 
 
 def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
@@ -1320,6 +1326,58 @@ def test_replay_from_uses_saved_client_messages_and_marks_summary(tmp_path, monk
     assert summary["llm_calls"]["client"] == 0
 
 
+def test_scripted_client_mode_uses_persona_behaviors_without_client_llm(tmp_path, monkeypatch):
+    path = tmp_path / "scripted.jsonl"
+    out_dir = tmp_path / "scripted_out"
+    snapshot = tmp_path / "snapshot.json"
+    rows = [
+        {"type": "simulator_spec", "rules": ["scripted"]},
+        {"type": "judge_spec", "output_schema": {"verdict": "PASS|FAIL"}},
+        {
+            "type": "persona",
+            "dialog_id": "scripted_case",
+            "brand": "foton",
+            "persona": "родитель",
+            "max_turns": 3,
+            "scripted_behaviors": ["Первый точный вопрос", "Второй точный вопрос"],
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+    snapshot.write_text(json.dumps({"facts": []}), encoding="utf-8")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    rc = sim.main(
+        [
+            "--scenarios",
+            str(path),
+            "--snapshot",
+            str(snapshot),
+            "--out-dir",
+            str(out_dir),
+            "--client-mode",
+            "scripted",
+            "--judge-mode",
+            "fake",
+            "--bot-mode",
+            "fake",
+            "--memory-mode",
+            "fake",
+            "--parallel",
+            "1",
+        ]
+    )
+
+    assert rc == 0
+    transcript_rows = [
+        json.loads(line)
+        for line in (out_dir / "dynamic_dialog_transcripts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    turns = transcript_rows[0]["turns"]
+    assert [turn["client_message"] for turn in turns] == ["Первый точный вопрос", "Второй точный вопрос"]
+    summary = json.loads((out_dir / "dynamic_summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_calls"]["client"] == 0
+
+
 def test_replay_from_refuses_same_output_transcript_path(tmp_path):
     path = tmp_path / "v7.jsonl"
     out_dir = tmp_path / "out"
@@ -1396,6 +1454,48 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert "answer_quality_reference" in context
     assert "conversation_intent_plan" in context
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+
+
+def test_initial_history_lines_seed_dynamic_context(monkeypatch, tmp_path):
+    captured: list[tuple[str, ...]] = []
+
+    def fake_context_builder(*args, **kwargs):
+        captured.append(tuple(kwargs.get("recent_messages") or ()))
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context_builder)
+
+    class CapturingProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                }
+            )
+
+    sim.run_one_dialog(
+        {
+            "dialog_id": "history_seed",
+            "brand": "unpk",
+            "persona": "родитель",
+            "max_turns": 1,
+            "initial_history_lines": ["Клиент: старый вопрос", "Ответ: старый ответ"],
+            "scripted_behaviors": ["текущий вопрос"],
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.ScriptedClientModel({"scripted_behaviors": ["текущий вопрос"]}),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=CapturingProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    assert captured[0] == ("Клиент: старый вопрос", "Ответ: старый ответ")
 
 
 def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch, tmp_path):

@@ -101,6 +101,24 @@ class ReplayClientModel:
         }
 
 
+class ScriptedClientModel:
+    def __init__(self, persona: Mapping[str, Any]) -> None:
+        raw_messages = persona.get("scripted_behaviors")
+        if raw_messages is None:
+            raw_messages = persona.get("behaviors")
+        if isinstance(raw_messages, str):
+            raw_messages = [raw_messages]
+        self._messages = tuple(str(item or "").strip() for item in (raw_messages or ()) if str(item or "").strip())
+        self._index = 0
+
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        if self._index >= len(self._messages):
+            return {"message": "Поняла, спасибо.", "stop": True}
+        message = self._messages[self._index]
+        self._index += 1
+        return {"message": message, "stop": self._index >= len(self._messages)}
+
+
 class FakeJudgeModel:
     def generate(self, prompt: str) -> Mapping[str, Any]:
         return {
@@ -612,7 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="When resuming, rerun only dialogs that ended with timeout.",
     )
-    parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
+    parser.add_argument("--client-mode", choices=("codex", "fake", "scripted"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument(
         "--judge-prompt-version",
@@ -780,7 +798,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pending_personas.append(persona)
 
         if args.parallel == 1:
-            client_model = build_client_model(args)
+            client_model = None if args.client_mode == "scripted" else build_client_model(args)
             judge_model = build_judge_model(args)
             bot_provider = build_bot_provider(args)
             memory_model = build_memory_model(args)
@@ -812,7 +830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             persona,
                             simulator_spec=sim_input.simulator_spec,
                             judge_spec=sim_input.judge_spec,
-                            client_model=client_model,
+                            client_model=build_client_model(args, persona=persona) if args.client_mode == "scripted" else client_model,
                             judge_model=judge_model,
                             bot_provider=bot_provider,
                             memory_model=memory_model,
@@ -1030,9 +1048,13 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
     return rows
 
 
-def build_client_model(args: argparse.Namespace) -> Any:
+def build_client_model(args: argparse.Namespace, *, persona: Mapping[str, Any] | None = None) -> Any:
     if args.client_mode == "fake":
         return FakeClientModel()
+    if args.client_mode == "scripted":
+        if persona is None:
+            raise ValueError("scripted client mode requires a persona")
+        return ScriptedClientModel(persona)
     return maybe_counting_model(
         CodexJsonModel(
             model=args.model,
@@ -1191,7 +1213,7 @@ def run_one_dialog_isolated(
         persona,
         simulator_spec=simulator_spec,
         judge_spec=judge_spec,
-        client_model=build_client_model(args),
+        client_model=build_client_model(args, persona=persona) if args.client_mode == "scripted" else build_client_model(args),
         judge_model=build_judge_model(args),
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
         memory_model=build_memory_model(args),
@@ -1608,6 +1630,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_frame_decision_shadow": json.dumps(
+                        turn.get("bot_frame_decision_shadow") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_semantic_output_verifier": json.dumps(
                         turn.get("bot_semantic_output_verifier") or {},
                         ensure_ascii=False,
@@ -1721,7 +1748,7 @@ def run_one_dialog(
     brand = str(persona.get("brand") or "unknown")
     max_turns = int(max_turns_override or persona.get("max_turns") or 6)
     turns: list[dict[str, Any]] = []
-    recent_messages: list[str] = []
+    recent_messages: list[str] = _initial_recent_messages_from_persona(persona)
     dialogue_memory: Mapping[str, Any] = {}
 
     for turn_index in range(1, max_turns + 1):
@@ -2233,6 +2260,20 @@ def _persona_for_client_prompt(persona: Mapping[str, Any]) -> Mapping[str, Any]:
         for key, value in persona.items()
         if str(key) not in _DYNAMIC_SIM_RESOLVER_PERSONA_KEYS
     }
+
+
+def _initial_recent_messages_from_persona(persona: Mapping[str, Any]) -> list[str]:
+    raw_lines = persona.get("initial_history_lines")
+    if raw_lines is None:
+        raw_lines = persona.get("history_lines")
+    if isinstance(raw_lines, str):
+        raw_lines = [raw_lines]
+    lines: list[str] = []
+    for item in raw_lines or ():
+        text = str(item or "").strip()
+        if text:
+            lines.append(text)
+    return lines
 
 
 def normalize_judge_prompt_version(value: object) -> str:
@@ -5370,6 +5411,8 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_model_intent_scope",
         "bot_model_intent_sense",
         "bot_model_intent_confidence",
+        "bot_semantic_frame",
+        "bot_frame_decision_shadow",
         "bot_safety_flags",
         "bot_answer_quality_findings",
         "bot_answer_quality_rewritten",

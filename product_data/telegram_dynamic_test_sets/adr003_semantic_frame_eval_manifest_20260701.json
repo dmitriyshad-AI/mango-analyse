@@ -1,0 +1,250 @@
+{
+  "baseline_metrics": {
+    "wappi_brand_counts": {
+      "foton": 11,
+      "unpk": 14
+    },
+    "wappi_route_counts": {
+      "bot_answer_self_for_pilot": 12,
+      "draft_for_manager": 10,
+      "manager_only": 3
+    },
+    "wappi_safety_flag_counts": {
+      "authoritative_gate:unconfirmed_schedule": 3,
+      "authoritative_gate:wrong_intent_fact": 3,
+      "authoritative_output_gate_blocked": 6,
+      "autonomy_blocked_high_risk": 2,
+      "autonomy_default_cautious_live_status_missing": 2,
+      "autonomy_default_cautious_missing_facts": 2,
+      "autonomy_default_cautious_unverified_fact": 12,
+      "autonomy_matrix_passed": 6,
+      "autonomy_matrix_promoted_safe_draft": 4,
+      "autonomy_verified_fact_answer_template_applied": 2,
+      "conversation_intent_plan_answer_first": 7,
+      "conversation_intent_plan_live_availability": 2,
+      "conversation_intent_plan_topic_applied": 24,
+      "direct_p0_text_hygiene": 3,
+      "direct_path_autonomy_topic_from_plan": 2,
+      "direct_path_gate_text_preserved": 6,
+      "direct_path_model": 24,
+      "direct_path_model_p0_paid_operation_context": 1,
+      "direct_path_model_p0_refund": 2,
+      "direct_path_preblocked_p0": 1,
+      "direct_path_reliable_answerer_bypass_payment_dispute": 1,
+      "draft_only": 24,
+      "high_risk_manager_only": 2,
+      "manager_approval_required": 25,
+      "no_auto_send": 25,
+      "output_sanitizer:client_name_echo": 3,
+      "output_sanitizer_applied": 3,
+      "paid_operation_context": 1,
+      "prose_model_led:internal_client_placeholder": 2,
+      "prose_model_led:repeated_cosmetic_opening": 1,
+      "refund": 2,
+      "reliable_answerer_live_status_partial_preserved": 1,
+      "semantic_output_verifier_regenerated_for_manager": 5,
+      "tone_close_detect": 7
+    }
+  },
+  "baseline_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_baseline_20260701.json",
+  "case_count": 25,
+  "generated_at": "2026-07-01T14:39:45+00:00",
+  "m1_acceptance": {
+    "brand_leaks": 0,
+    "extra_model_calls_per_turn": 0,
+    "fabrication_hard_gate_failures": 0,
+    "frame_must_handoff_alignment_min": 0.95,
+    "shadow_off_on_route_text_diff": 0
+  },
+  "m1_scenarios": {
+    "limitations": [
+      "Wappi latest25 has no manual expected_frame gold yet; use this bundle for route/text no-op and telemetry coverage.",
+      "Frame quality gates require a follow-up gold labelling pass before migrating regex understanding."
+    ],
+    "line_count": 133,
+    "path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl",
+    "persona_count": 131,
+    "runner_command": "TELEGRAM_SEMANTIC_FRAME_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py --scenarios product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl --client-mode scripted --parallel 4 --judge-prompt-version v9.1",
+    "sha256": "df2726ddd67aac15e8c5ededd38c849a4e06a59f176109fb6ecd9da5f69842ca",
+    "skipped_sources": [],
+    "source_breakdown": {
+      "adr003_semantic_frame_wappi_latest25": 25,
+      "closing_fix_tz142_20260627": 20,
+      "forward_payment_personas_20260630": 4,
+      "p0_deep_match_tz147_20260618": 28,
+      "p0_model_led_micro_20260622": 11,
+      "p0_stability_set_20260617": 22,
+      "reliable_answerer_step1_20260625": 12,
+      "targeted_riskzones_2026_05_26": 9
+    },
+    "source_details": [
+      {
+        "expected_frame_gold": "missing_manual_gold",
+        "persona_count": 25,
+        "row_type": "wappi_whatif_case",
+        "source_set": "adr003_semantic_frame_wappi_latest25"
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": true,
+        "has_simulator_spec": true,
+        "line_count": 6,
+        "path": "product_data/telegram_dynamic_test_sets/forward_payment_personas_20260630.jsonl",
+        "persona_count": 4,
+        "sha256": "54972f5d5c63b1faa36d0ae89c339c9be5d9822907b6b9def1f76ec3882604a5",
+        "source_set": "forward_payment_personas_20260630",
+        "type_counts": {
+          "judge_spec": 1,
+          "persona": 4,
+          "simulator_spec": 1
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": true,
+        "has_simulator_spec": true,
+        "line_count": 13,
+        "path": "product_data/telegram_dynamic_test_sets/p0_model_led_micro_20260622.jsonl",
+        "persona_count": 11,
+        "sha256": "976ed1eb3176ee07eade7163fa47565f1100286455b1600daaf61dee7dd9cac6",
+        "source_set": "p0_model_led_micro_20260622",
+        "type_counts": {
+          "judge_spec": 1,
+          "persona": 11,
+          "simulator_spec": 1
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": false,
+        "has_simulator_spec": false,
+        "line_count": 22,
+        "path": "product_data/telegram_dynamic_test_sets/p0_stability_set_20260617.jsonl",
+        "persona_count": 22,
+        "sha256": "134a451ef34b7d8edc6895ca8e42d6d6481ae4812e7cc7430ed3f5d4e9e8d3b6",
+        "source_set": "p0_stability_set_20260617",
+        "type_counts": {
+          "persona": 22
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": true,
+        "has_simulator_spec": true,
+        "line_count": 11,
+        "path": "product_data/telegram_dynamic_test_sets/targeted_riskzones_2026_05_26.jsonl",
+        "persona_count": 9,
+        "sha256": "4da381b2549f099f62d2fa44e2aa63816e168f976a27d95a24a64cca32d1bbba",
+        "source_set": "targeted_riskzones_2026_05_26",
+        "type_counts": {
+          "judge_spec": 1,
+          "persona": 9,
+          "simulator_spec": 1
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": true,
+        "has_simulator_spec": true,
+        "line_count": 14,
+        "path": "product_data/telegram_dynamic_test_sets/reliable_answerer_step1_20260625.jsonl",
+        "persona_count": 12,
+        "sha256": "8d908ca9c2b8b2a10c4173e89ddae53cbfe9ec0e2daabce92a47465836742d4a",
+        "source_set": "reliable_answerer_step1_20260625",
+        "type_counts": {
+          "judge_spec": 1,
+          "persona": 12,
+          "simulator_spec": 1
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": true,
+        "has_simulator_spec": true,
+        "line_count": 22,
+        "path": "product_data/telegram_dynamic_test_sets/closing_fix_tz142_20260627.jsonl",
+        "persona_count": 20,
+        "sha256": "ca18d1f6b002422a267a5d83fb4dd0940a8a96392718b8d5c25158293be9910f",
+        "source_set": "closing_fix_tz142_20260627",
+        "type_counts": {
+          "judge_spec": 1,
+          "persona": 20,
+          "simulator_spec": 1
+        }
+      },
+      {
+        "duplicate_dialog_ids": [],
+        "exists": true,
+        "has_judge_spec": false,
+        "has_simulator_spec": false,
+        "line_count": 28,
+        "path": "product_data/telegram_dynamic_test_sets/p0_deep_match_tz147_20260618.jsonl",
+        "persona_count": 28,
+        "sha256": "db90649ae916cf1946b5b49ebe195a7b3924995d1f87ed05a0cd3c2fee5858dc",
+        "source_set": "p0_deep_match_tz147_20260618",
+        "type_counts": {
+          "persona": 28
+        }
+      }
+    ]
+  },
+  "schema_version": "adr003_semantic_frame_eval_manifest_v2_2026_07_01",
+  "source_sets": [
+    {
+      "kind": "wappi_whatif_latest25_sanitized",
+      "line_count": 25,
+      "path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_wappi_latest25_20260701.jsonl",
+      "sha256": "4af363872dacdcb7d0c5cf4b8f74e81e74e76e8aacb6850a3c53aa16ed78b976"
+    },
+    {
+      "exists": true,
+      "line_count": 6,
+      "path": "product_data/telegram_dynamic_test_sets/forward_payment_personas_20260630.jsonl",
+      "sha256": "54972f5d5c63b1faa36d0ae89c339c9be5d9822907b6b9def1f76ec3882604a5"
+    },
+    {
+      "exists": true,
+      "line_count": 13,
+      "path": "product_data/telegram_dynamic_test_sets/p0_model_led_micro_20260622.jsonl",
+      "sha256": "976ed1eb3176ee07eade7163fa47565f1100286455b1600daaf61dee7dd9cac6"
+    },
+    {
+      "exists": true,
+      "line_count": 22,
+      "path": "product_data/telegram_dynamic_test_sets/p0_stability_set_20260617.jsonl",
+      "sha256": "134a451ef34b7d8edc6895ca8e42d6d6481ae4812e7cc7430ed3f5d4e9e8d3b6"
+    },
+    {
+      "exists": true,
+      "line_count": 11,
+      "path": "product_data/telegram_dynamic_test_sets/targeted_riskzones_2026_05_26.jsonl",
+      "sha256": "4da381b2549f099f62d2fa44e2aa63816e168f976a27d95a24a64cca32d1bbba"
+    },
+    {
+      "exists": true,
+      "line_count": 14,
+      "path": "product_data/telegram_dynamic_test_sets/reliable_answerer_step1_20260625.jsonl",
+      "sha256": "8d908ca9c2b8b2a10c4173e89ddae53cbfe9ec0e2daabce92a47465836742d4a"
+    },
+    {
+      "exists": true,
+      "line_count": 22,
+      "path": "product_data/telegram_dynamic_test_sets/closing_fix_tz142_20260627.jsonl",
+      "sha256": "ca18d1f6b002422a267a5d83fb4dd0940a8a96392718b8d5c25158293be9910f"
+    },
+    {
+      "exists": true,
+      "line_count": 28,
+      "path": "product_data/telegram_dynamic_test_sets/p0_deep_match_tz147_20260618.jsonl",
+      "sha256": "db90649ae916cf1946b5b49ebe195a7b3924995d1f87ed05a0cd3c2fee5858dc"
+    }
+  ],
+  "version": "20260701",
+  "wappi_latest25_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_wappi_latest25_20260701.jsonl"
+}

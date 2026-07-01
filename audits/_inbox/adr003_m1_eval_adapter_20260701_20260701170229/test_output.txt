@@ -1,0 +1,59 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_build_adr003_semantic_frame_eval.py tests/test_telegram_dynamic_client_sim.py::test_scripted_client_mode_uses_persona_behaviors_without_client_llm tests/test_telegram_dynamic_client_sim.py::test_initial_history_lines_seed_dynamic_context tests/test_telegram_dynamic_client_sim.py::test_replay_from_uses_saved_client_messages_and_marks_summary tests/test_telegram_dynamic_client_sim.py::test_summary_includes_frame_decision_shadow_counts
+
+5 passed in 0.72s
+
+Latest rerun after final Wappi name-pair masking:
+
+5 passed in 0.70s
+
+Latest rerun after Wappi single-name and latest25-history fix:
+
+5 passed in 0.67s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_semantic_frame_eval.py
+
+{
+  "baseline_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_baseline_20260701.json",
+  "case_count": 25,
+  "eval_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_wappi_latest25_20260701.jsonl",
+  "m1_persona_count": 131,
+  "m1_scenarios_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl",
+  "manifest_path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_eval_manifest_20260701.json",
+  "route_counts": {
+    "bot_answer_self_for_pilot": 12,
+    "draft_for_manager": 10,
+    "manager_only": 3
+  }
+}
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py --scenarios product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl --snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir audits/_inbox/adr003_m1_scenarios_fake_smoke_20260701 --client-mode scripted --judge-mode fake --bot-mode fake --memory-mode fake --limit 2 --parallel 1
+
+ok=true, dialogs=2, turns=2, fail=0
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py --scenarios product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl --snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir audits/_inbox/adr003_m1_scenarios_fake_smoke_full_20260701_final --client-mode scripted --judge-mode fake --bot-mode fake --memory-mode fake --parallel 4
+
+ok=true, dialogs=131, turns=241, fail=0, hard_gate_failures=0
+llm_calls.total=0, hard_gate_failure_dialogs=0, infra_error_dialogs=0, turn_fallback_reasons={}
+dynamic_dialog_transcripts judge verdict counts: PASS_WITH_NOTES=131
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3771 passed, 5 skipped, 1 warning in 82.80s (0:01:22)
+
+Latest full pytest after final Wappi name-pair masking:
+
+3771 passed, 5 skipped, 1 warning in 89.46s (0:01:29)
+
+Latest full pytest after Wappi single-name and latest25-history fix:
+
+3771 passed, 5 skipped, 1 warning in 85.87s (0:01:25)
+
+PII/sanitization checks for committed ADR-003 20260701 generated files:
+
+- product_data/telegram_dynamic_test_sets/adr003_semantic_frame_wappi_latest25_20260701.jsonl:
+  @=0, email=0, Ирина=0, Ольга=0, Фирсов=0, Фирсова=0, Буличев=0, Буличева=0, Булычев=0, Булычева=0, Ярослав=0, Сергей=0, Сергея=0
+- product_data/telegram_dynamic_test_sets/adr003_semantic_frame_m1_scenarios_20260701.jsonl:
+  @=0, email=0, Ирина=0, Ольга=0, Фирсов=0, Фирсова=0, Буличев=0, Буличева=0, Булычев=0, Булычева=0, Ярослав=0, Сергей=0, Сергея=0
+- latest25 current client_text in history_lines: 0/25.
+- M1 scenario current scripted_behaviors in initial_history_lines: 0/25 for Wappi-derived personas.
+- audits/_inbox/adr003_m1_scenarios_fake_smoke_full_20260701_final/full_transcripts.md still contains public KB email edu@kmipt.ru in confirmed_facts_for_judge; that smoke output is not part of the committed M1 eval bundle.

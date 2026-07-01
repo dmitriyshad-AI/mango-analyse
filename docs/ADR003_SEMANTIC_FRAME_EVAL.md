@@ -24,9 +24,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_semantic_f
 ## Shadow-Gates
 
 - `TELEGRAM_SEMANTIC_FRAME_SHADOW` default OFF.
+- `TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW` default OFF. Это предпочтительный Stage 1 режим после smoke 2026-07-01: frame считается отдельным post-hoc shadow-вызовом после финального черновика и пишет только metadata.
 - ON-режим не имеет права менять `route`, `draft_text`, `safety_flags`, `manager_checklist` и P0-пол.
-- SemanticFrame должен приходить в существующем direct-path payload, без отдельного модельного вызова.
-- M1-регрейд сравнивает OFF/ON на этом наборе: diff финальных черновиков = 0, extra model calls = 0, `frame.must_handoff` vs фактический P0 >= 95%.
+- Same-payload `TELEGRAM_SEMANTIC_FRAME_SHADOW` оставлен как legacy/investigation path: малый smoke показал, что добавление frame-поля в основной draft prompt может менять текст.
+- M1-регрейд сравнивает OFF/ON на этом наборе: diff финальных черновиков = 0, extra model calls = 0 для legacy bridge или ровно ожидаемый `bot_semantic_frame_shadow` delta для post-hoc, `frame.must_handoff` vs фактический P0 >= 95%.
 
 ## OFF/ON Report
 
@@ -41,7 +42,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_semantic_
   --out-dir <REPORT_DIR>
 ```
 
-Отчёт проверяет route/text no-op, delta модельных вызовов, coverage/schema `SemanticFrame`, `frame_decision_shadow` и расхождения `must_handoff` с фактическим handoff/P0-сигналом. Если OFF-ветка не передана, отчёт не заявляет no-op, а явно пишет `needs_review`.
+Отчёт проверяет route/text no-op, delta модельных вызовов, coverage/schema `SemanticFrame`, `frame_decision_shadow` и расхождения `must_handoff` с фактическим handoff/P0-сигналом. Для post-hoc shadow допустим только delta, полностью объяснённый ролью `bot_semantic_frame_shadow`. Если OFF-ветка не передана, отчёт не заявляет no-op, а явно пишет `needs_review`.
 
 ## Baseline
 

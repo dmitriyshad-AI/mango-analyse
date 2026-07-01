@@ -1,0 +1,9 @@
+docs/ADR003_SEMANTIC_FRAME_EVAL.md
+scripts/report_adr003_semantic_frame_eval.py
+scripts/run_telegram_dynamic_client_sim.py
+src/mango_mvp/channels/subscription_llm_parts/__init__.py
+src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+src/mango_mvp/channels/subscription_llm_parts/provider.py
+tests/test_direct_path_semantic_frame_shadow.py
+tests/test_report_adr003_semantic_frame_eval.py
+tests/test_telegram_dynamic_client_sim.py

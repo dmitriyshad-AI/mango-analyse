@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import mango_mvp.channels.subscription_llm as subscription_llm
@@ -8,6 +10,7 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     SEMANTIC_FRAME_DECISION_SHADOW_ENV,
+    SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
@@ -38,6 +41,18 @@ def test_semantic_frame_decision_shadow_flag_is_default_off_and_not_profile_on(m
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({"semantic_frame_decision_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "0"}) is False
+
+
+def test_semantic_frame_posthoc_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_POSTHOC_SHADOW_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_posthoc_shadow_enabled({}) is False
+    assert subscription_llm._semantic_frame_posthoc_shadow_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_POSTHOC_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_posthoc_shadow_enabled({SEMANTIC_FRAME_POSTHOC_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_posthoc_shadow_enabled({"semantic_frame_posthoc_shadow": "1"}) is True
+    assert subscription_llm._semantic_frame_posthoc_shadow_enabled({SEMANTIC_FRAME_POSTHOC_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
@@ -133,16 +148,33 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
 
 
 class _SemanticFrameFakeProvider(SubscriptionLlmDraftProvider):
-    def __init__(self, result: SubscriptionDraftResult) -> None:
+    def __init__(
+        self,
+        result: SubscriptionDraftResult,
+        *,
+        posthoc_payload: dict | None = None,
+        posthoc_error: Exception | None = None,
+    ) -> None:
         super().__init__()
         self.result = result
+        self.posthoc_payload = posthoc_payload
+        self.posthoc_error = posthoc_error
         self.calls = 0
+        self.posthoc_calls = 0
         self.last_prompt = ""
+        self.last_posthoc_prompt = ""
 
     def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
         self.calls += 1
         self.last_prompt = prompt
         return self.result
+
+    def _direct_path_semantic_frame_shadow_runner(self, prompt: str) -> str:
+        self.posthoc_calls += 1
+        self.last_posthoc_prompt = prompt
+        if self.posthoc_error is not None:
+            raise self.posthoc_error
+        return json.dumps(self.posthoc_payload or {}, ensure_ascii=False)
 
 
 def test_semantic_frame_shadow_does_not_change_route_text_or_call_count() -> None:
@@ -173,6 +205,92 @@ def test_semantic_frame_shadow_does_not_change_route_text_or_call_count() -> Non
     assert result.metadata["direct_path"]["semantic_frame"]["mode"] == "shadow"
     assert result.metadata["direct_path"]["semantic_frame_shadow"]["intent"] == "live_availability"
     assert "frame_decision_shadow" not in result.metadata
+
+
+def test_semantic_frame_posthoc_shadow_adds_metadata_only_after_final_result() -> None:
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит наличие места и подскажет следующий шаг.",
+        safety_flags=("manager_approval_required", "no_auto_send"),
+        manager_checklist=("Проверить наличие места.",),
+    )
+    off_provider = _SemanticFrameFakeProvider(base_result)
+    off_result = off_provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+    provider = _SemanticFrameFakeProvider(
+        base_result,
+        posthoc_payload={
+            "semantic_frame": {
+                "intent": "live_availability",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "considering",
+                "requested_product": {"brand": "foton", "raw_text": "онлайн-группа"},
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "evidence": ["нужно проверить место, телефон +7 900 111-22-33"],
+                "confidence": 0.9,
+            }
+        },
+    )
+
+    result = provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", SEMANTIC_FRAME_POSTHOC_SHADOW_ENV: "1"},
+    )
+
+    assert off_provider.calls == 1
+    assert off_provider.posthoc_calls == 0
+    assert provider.calls == 1
+    assert provider.posthoc_calls == 1
+    assert '"semantic_frame"' not in provider.last_prompt
+    assert "SemanticFrame SHADOW" not in provider.last_prompt
+    assert result.route == off_result.route
+    assert result.draft_text == off_result.draft_text
+    assert result.safety_flags == off_result.safety_flags
+    assert result.manager_checklist == off_result.manager_checklist
+    frame = result.metadata["semantic_frame"]
+    assert frame["intent"] == "live_availability"
+    assert frame["evidence"] == ["нужно проверить место, телефон [phone]"]
+    assert result.metadata["semantic_frame_shadow"] == frame
+    assert result.metadata["direct_path"]["semantic_frame"] == frame
+    assert result.metadata["semantic_frame_posthoc_shadow"]["status"] == "ok"
+
+
+def test_semantic_frame_posthoc_shadow_error_is_fail_soft() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, можно записаться на онлайн-курс.",
+        safety_flags=("no_auto_send",),
+    )
+    off_provider = _SemanticFrameFakeProvider(base_result)
+    off_result = off_provider.build_draft(
+        "Можно записаться на курс?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+    provider = _SemanticFrameFakeProvider(
+        base_result,
+        posthoc_error=RuntimeError("temporary frame failure"),
+    )
+
+    result = provider.build_draft(
+        "Можно записаться на курс?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", SEMANTIC_FRAME_POSTHOC_SHADOW_ENV: "1"},
+    )
+
+    assert off_provider.calls == 1
+    assert off_provider.posthoc_calls == 0
+    assert provider.calls == 1
+    assert provider.posthoc_calls == 1
+    assert result.route == off_result.route
+    assert result.draft_text == off_result.draft_text
+    assert result.safety_flags == off_result.safety_flags
+    assert result.manager_checklist == off_result.manager_checklist
+    assert "semantic_frame" not in result.metadata
+    assert result.metadata["semantic_frame_posthoc_shadow"]["status"] == "provider_error"
 
 
 def test_semantic_frame_decision_shadow_adds_metadata_only() -> None:

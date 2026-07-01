@@ -273,6 +273,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
+    _semantic_frame_posthoc_shadow_enabled,
     _semantic_frame_decision_shadow_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
@@ -973,7 +974,12 @@ class SubscriptionLlmDraftProvider:
                 context=context,
                 client_message=client_message,
             )
-            return apply_semantic_frame_decision_shadow(scrubbed, context=context)
+            framed = self._apply_direct_path_semantic_frame_posthoc_shadow(
+                scrubbed,
+                client_message=client_message,
+                context=context,
+            )
+            return apply_semantic_frame_decision_shadow(framed, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -1884,6 +1890,57 @@ class SubscriptionLlmDraftProvider:
             return ""
         return _extract_humanity_x2_text(raw or proc.stdout or proc.stderr or "")
 
+    def _direct_path_semantic_frame_shadow_runner(self, prompt: str) -> str:
+        model = str(os.getenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_MODEL") or self.model).strip() or self.model
+        reasoning = str(os.getenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_REASONING") or "medium").strip() or "medium"
+        return self._run_prompt_text(
+            prompt,
+            prefix="mango_semantic_frame_posthoc_",
+            suffix=".json",
+            model=model,
+            reasoning_effort=reasoning,
+            timeout_sec=min(self.timeout_sec, 45),
+        )
+
+    def _apply_direct_path_semantic_frame_posthoc_shadow(
+        self,
+        result: SubscriptionDraftResult,
+        *,
+        client_message: str,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> SubscriptionDraftResult:
+        if not _semantic_frame_posthoc_shadow_enabled(context):
+            return result
+        metadata = dict(result.metadata)
+        if isinstance(metadata.get("semantic_frame"), Mapping) or isinstance(metadata.get("semantic_frame_shadow"), Mapping):
+            return result
+
+        prompt = build_direct_path_semantic_frame_posthoc_prompt(result, client_message=client_message, context=context)
+        status = {"attempted": True, "status": "attempted", "mode": "posthoc"}
+        try:
+            raw = self._direct_path_semantic_frame_shadow_runner(prompt)
+            payload = extract_json_object(raw)
+            if "semantic_frame" not in payload and "semanticFrame" not in payload and "semantic_frame_shadow" not in payload:
+                payload = {"semantic_frame": payload}
+            frame = _direct_path_semantic_frame_from_payload(payload)
+        except Exception as exc:  # noqa: BLE001 - shadow telemetry must be fail-soft.
+            frame = {}
+            status.update({"status": "provider_error", "error": str(exc)[:240]})
+        if not frame:
+            metadata["semantic_frame_posthoc_shadow"] = status if status.get("status") == "provider_error" else {**status, "status": "empty_frame"}
+            return replace(result, metadata=metadata)
+
+        status["status"] = "ok"
+        metadata["semantic_frame"] = frame
+        metadata["semantic_frame_shadow"] = frame
+        metadata["semantic_frame_posthoc_shadow"] = status
+        direct = dict(metadata.get("direct_path") or {})
+        direct["semantic_frame"] = dict(frame)
+        direct["semantic_frame_shadow"] = dict(frame)
+        direct["semantic_frame_posthoc_shadow"] = dict(status)
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)
 
@@ -2317,6 +2374,55 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
     ):
         return {}
     return frame
+
+
+def build_direct_path_semantic_frame_posthoc_prompt(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    planner = metadata.get("conversation_intent_plan") if isinstance(metadata.get("conversation_intent_plan"), Mapping) else {}
+    recent = list(_direct_path_recent_messages(context, limit=8))
+    payload = {
+        "active_brand": _active_brand(context),
+        "client_message": _direct_path_semantic_frame_safe_text(client_message, limit=900),
+        "final_route": result.route,
+        "final_draft_text": _direct_path_semantic_frame_safe_text(result.draft_text, limit=1400),
+        "safety_flags": list(result.safety_flags)[:30],
+        "manager_checklist": list(result.manager_checklist)[:12],
+        "recent_messages": [_direct_path_semantic_frame_safe_text(item, limit=360) for item in recent[-8:]],
+        "direct_path": {
+            "model_p0": direct.get("model_p0") or metadata.get("direct_path_model_p0") or {},
+            "model_intent": direct.get("model_intent") or metadata.get("direct_path_model_intent") or {},
+            "action_proposal": direct.get("action_proposal") or metadata.get("action_proposal") or {},
+            "reason_class": metadata.get("reason_class") or direct.get("reason_class") or "",
+        },
+        "conversation_intent_plan": planner,
+    }
+    return (
+        "Ты заполняешь только телеметрию SemanticFrame для уже готового черновика Telegram-бота.\n"
+        "Нельзя переписывать ответ, менять route, менять safety_flags или предлагать клиентский текст.\n"
+        "Оцени смысл ситуации по текущей реплике, истории и уже готовому результату.\n"
+        "Верни только JSON с одним ключом semantic_frame.\n\n"
+        "Схема semantic_frame:\n"
+        "{\n"
+        '  "intent": "главный смысл запроса",\n'
+        '  "risk_class": "safe|p0|manager_action|missing_facts|unknown",\n'
+        '  "deal_stage": "cold|interest|qualification|offer|closing|post_payment|support|unknown",\n'
+        '  "payment_readiness": "none|asking_price|considering|ready_to_pay|paid|dispute|unknown",\n'
+        '  "requested_product": {"brand": "", "subject": "", "grade": "", "format": "", "venue": "", "program_kind": "", "raw_text": ""},\n'
+        '  "requested_action": "answer_question|check_availability|enroll|send_materials|send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown",\n'
+        '  "answerability": "answer_self|manager_only|uncertain",\n'
+        '  "must_handoff": false,\n'
+        '  "evidence": ["короткие неперсональные причины без телефонов, email и ФИО"],\n'
+        '  "confidence": 0.0\n'
+        "}\n\n"
+        "Данные для классификации:\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+    )
 
 
 def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:

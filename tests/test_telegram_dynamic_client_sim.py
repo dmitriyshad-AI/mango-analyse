@@ -2330,6 +2330,7 @@ def test_llm_call_summary_exposes_semantic_output_roles() -> None:
             "bot_semantic_output_verifier": 3,
             "bot_semantic_output_regen": 1,
             "bot_direct_draft": 2,
+            "bot_semantic_frame_shadow": 1,
             "bot_retriever": 1,
             "client": 2,
         },
@@ -2340,8 +2341,9 @@ def test_llm_call_summary_exposes_semantic_output_roles() -> None:
     assert summary["bot_semantic_output_verifier"] == 3
     assert summary["bot_semantic_output_regen"] == 1
     assert summary["bot_direct_draft"] == 2
+    assert summary["bot_semantic_frame_shadow"] == 1
     assert summary["bot_retriever"] == 1
-    assert summary["total"] == 9
+    assert summary["total"] == 10
 
 
 def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
@@ -2719,6 +2721,7 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "client": 2,
         "bot_draft": 3,
         "bot_direct_draft": 0,
+        "bot_semantic_frame_shadow": 0,
         "bot_retriever": 0,
         "bot_critic": 1,
         "bot_faithfulness": 2,

@@ -113,6 +113,8 @@ P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
 
 SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
 
+SEMANTIC_FRAME_POSTHOC_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW"
+
 SEMANTIC_FRAME_DECISION_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW"
 
 PAYMENT_REFUND_DISPUTE_SPLIT_ENV = "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT"
@@ -326,6 +328,13 @@ def _semantic_frame_shadow_enabled(context: Optional[Mapping[str, Any]] = None) 
         context,
         SEMANTIC_FRAME_SHADOW_ENV,
         aliases=("semantic_frame_shadow", "semantic_frame_shadow_enabled"),
+    )
+
+def _semantic_frame_posthoc_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
+        aliases=("semantic_frame_posthoc_shadow", "semantic_frame_posthoc_shadow_enabled"),
     )
 
 def _semantic_frame_decision_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

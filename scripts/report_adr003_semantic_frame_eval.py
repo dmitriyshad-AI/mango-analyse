@@ -198,6 +198,11 @@ def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any
         "off_total": off_total,
         "on_total": on_total,
         "extra_total": (on_total - off_total) if off_total is not None and on_total is not None else None,
+        "extra_semantic_frame_shadow": (
+            _int_value(on_calls.get("bot_semantic_frame_shadow")) - _int_value(off_calls.get("bot_semantic_frame_shadow"))
+            if off_calls and on_calls
+            else None
+        ),
         "off": dict(off_calls),
         "on": dict(on_calls),
     }
@@ -341,6 +346,10 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     frame = report.get("semantic_frame") if isinstance(report.get("semantic_frame"), Mapping) else {}
     hard = report.get("hard_gate_failures") if isinstance(report.get("hard_gate_failures"), Mapping) else {}
+    extra_total = llm.get("extra_total")
+    extra_frame = llm.get("extra_semantic_frame_shadow")
+    frame_present = int(frame.get("present_count") or 0)
+    expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
     flags = {
         "route_text_diff_zero": (
             diff.get("status") == "compared"
@@ -348,7 +357,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
             and diff.get("missing_off_turns") == 0
             and diff.get("missing_on_turns") == 0
         ),
-        "extra_model_calls_zero": llm.get("extra_total") == 0,
+        "extra_model_calls_expected": expected_call_delta,
         "semantic_frame_present_on_all_turns": bool(frame.get("turns_total")) and frame.get("missing_count") == 0,
         "semantic_frame_required_fields_complete": frame.get("present_count") == frame.get("complete_required_count"),
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
@@ -358,6 +367,10 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("OFF transcripts were not provided; route/text no-op cannot be proven by this report.")
     if llm.get("extra_total") is None:
         notes.append("OFF/ON summary pair was not provided; extra model call delta cannot be proven by this report.")
+    elif extra_total not in (0, extra_frame):
+        notes.append("Extra model calls are not fully explained by post-hoc SemanticFrame shadow calls.")
+    elif extra_total == extra_frame and extra_total:
+        notes.append("Extra model calls are expected post-hoc SemanticFrame shadow calls.")
     if not flags["semantic_frame_present_on_all_turns"]:
         notes.append("SemanticFrame is missing on at least one ON turn or ON turn count is zero.")
     status = "pass" if all(flags.values()) else "needs_review"

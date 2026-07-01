@@ -80,6 +80,50 @@ def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
     assert result["frame_decision_shadow"]["turn_count"] == 1
 
 
+def test_report_does_not_treat_manager_approval_flag_as_route_handoff(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    turn = dialog["turns"][0]
+    turn["bot_route"] = "bot_answer_self_for_pilot"
+    turn["bot_safety_flags"] = ["manager_approval_required", "no_auto_send"]
+    turn["bot_semantic_frame"] = _frame(must_handoff=False)
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    assert result["semantic_frame"]["must_handoff_vs_route"] == {"match": 1}
+    assert result["semantic_frame"]["must_handoff_vs_p0_signal"] == {"match": 1}
+
+
+def test_report_rejects_non_bool_must_handoff(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    dialog["turns"][0]["bot_semantic_frame"]["must_handoff"] = "false"
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["semantic_frame"]["complete_required_count"] == 0
+    assert result["semantic_frame"]["missing_required_fields"] == {"must_handoff:invalid_bool": 1}
+    assert result["semantic_frame"]["must_handoff"] == {"invalid": 1}
+
+
+def test_report_treats_string_false_model_p0_as_not_p0(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    turn = dialog["turns"][0]
+    turn["bot_route"] = "bot_answer_self_for_pilot"
+    turn["bot_safety_flags"] = ["no_auto_send"]
+    turn["bot_direct_path_model_p0"] = {"is_p0": "false"}
+    turn["bot_semantic_frame"] = _frame(must_handoff=False)
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    assert result["semantic_frame"]["must_handoff_vs_p0_signal"] == {"match": 1}
+
+
 def test_report_accepts_expected_posthoc_frame_call_delta(tmp_path: Path) -> None:
     off_transcripts = tmp_path / "off.jsonl"
     on_transcripts = tmp_path / "on.jsonl"

@@ -88,7 +88,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_cl
 - SHA256 scenario: `df2726ddd67aac15e8c5ededd38c849a4e06a59f176109fb6ecd9da5f69842ca`
 - SHA256 OFF transcripts: `cb7d62d42326c584e38681527348d5c6b0d311984a81bef6542ada6a2d212204`
 - SHA256 ON enriched transcripts: `327fdfdc4e08ddf9bc3088aaf54b87f7a94198861b5c97e06cfb40bbd7c30889`
-- SHA256 report JSON: `53f572da5316040daf39f197ec7594acbae411d6b67b8befdeb91b36cb1b40c0`
+- SHA256 report JSON: `b3673d75c69f8b85ea7199400c9899e9718fef1ca205be62166c6aa441097769`
 
 Ограничение: это доказывает только paired metadata no-op на Wappi25. В отчёте есть frame-vs-current-route mismatches (`must_handoff_vs_route`: 17 match / 8 mismatch; `must_handoff_vs_p0_signal`: 13 match / 12 mismatch), поэтому использовать frame для изменения маршрута пока нельзя. Следующий шаг перед active-фазой — ручной `expected_frame` gold и разбор mismatch-классов.
 
@@ -108,6 +108,33 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_cl
 - ON model calls: 241 total, 241 `bot_semantic_frame_shadow`, 0 non-frame calls
 - SHA256 OFF transcripts: `ea2bfde7f34bdf11535a6b579980e9e081f977930a9bb4fd921b8359b53d8bb3`
 - SHA256 ON enriched transcripts: `c43f67e48ba8c58108f1a424df01259cddc8af51805b0911d5da6bf14c19b15c`
-- SHA256 report JSON: `6f66fc424766e2329384b1fe0a6dd21111aa6af26d8fab2b0ae493414db63241`
+- SHA256 report JSON: `e3a58dc9069d3b75c65bae1e6060a51fe0580c1947b006390c2845c4e966116f`
 
-Ограничение: full131 доказывает технический shadow/no-op, но не semantic-pass для руления. `frame.must_handoff` всё ещё существенно расходится с текущими детекторами (`must_handoff_vs_route`: 174 match / 67 mismatch; `must_handoff_vs_p0_signal`: 172 match / 69 mismatch). Эти расхождения нужно разметить по gold: часть может быть желаемым снижением over-handoff, часть — ложный handoff или риск пропуска.
+Ограничение: full131 доказывает технический shadow/no-op, но не semantic-pass для руления. `frame.must_handoff` всё ещё существенно расходится с текущими детекторами (`must_handoff_vs_route`: 203 match / 38 mismatch; `must_handoff_vs_p0_signal`: 172 match / 69 mismatch). Эти расхождения нужно разметить по gold: часть может быть желаемым снижением over-handoff, часть — ложный handoff или риск пропуска.
+
+## Gold Queue For Frame Mismatches
+
+Для ручного регрейда SemanticFrame добавлен локальный builder:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold_queue.py \
+  --transcripts <ON_ENRICHED_RUN>/dynamic_dialog_transcripts.jsonl \
+  --out-dir <GOLD_QUEUE_DIR>
+```
+
+Он не вызывает модель и не меняет поведение: читает enriched transcript, сравнивает `frame.must_handoff` с текущим route-handoff и P0-сигналом, затем пишет JSONL/CSV-очередь для ручного заполнения `expected_*` полей. По умолчанию в очередь попадают только расхождения; `--include-matches` нужен только для выборочного контроля совпадений.
+
+Локальная очередь по full131 от 2026-07-01:
+
+- Артефакты: `audits/_inbox/adr003_semantic_frame_gold_queue_full131_20260701/`
+- Dialogs/turns: 131 / 241
+- Framed turns: 241 / 241
+- Queue rows: 75
+- `frame_handoff_no_p0_signal`: 37
+- `frame_handoff_current_self+frame_handoff_no_p0_signal`: 32
+- `frame_handoff_current_self`: 3
+- `frame_self_current_handoff`: 3
+- Brands in queue: Foton 35, UNPK 40
+- PII risk rows: 0
+
+Эти 75 строк могут содержать клиентские тексты из transcript, поэтому очередь остаётся локальным audit artifact и не добавляется в git. Коммитится только сам builder, тесты и агрегированная сводка в документах.

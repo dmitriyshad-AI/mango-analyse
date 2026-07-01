@@ -1,7 +1,9 @@
 docs/ADR003_SEMANTIC_FRAME_EVAL.md
 product_data/telegram_dynamic_test_sets/adr003_semantic_frame_eval_manifest_20260701.json
 scripts/build_adr003_semantic_frame_eval.py
+scripts/build_adr003_frame_gold_queue.py
 scripts/report_adr003_semantic_frame_eval.py
 scripts/run_telegram_dynamic_client_sim.py
+tests/test_build_adr003_frame_gold_queue.py
 tests/test_report_adr003_semantic_frame_eval.py
 tests/test_telegram_dynamic_client_sim.py

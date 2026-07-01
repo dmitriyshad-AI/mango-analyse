@@ -90,6 +90,7 @@ def build_report(
         },
     }
     report["acceptance"] = _acceptance(report)
+    report["decision_readiness"] = _decision_readiness(report)
     return report
 
 
@@ -103,6 +104,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "# ADR-003 SemanticFrame Eval Report",
         "",
         f"- Acceptance: `{acceptance.get('status', 'unknown')}`",
+        f"- Technical shadow status: `{(report.get('decision_readiness') or {}).get('technical_shadow_status', 'unknown')}`",
+        f"- Semantic decision status: `{(report.get('decision_readiness') or {}).get('semantic_decision_status', 'unknown')}`",
+        f"- Active behavior allowed: `{(report.get('decision_readiness') or {}).get('active_behavior_allowed', False)}`",
         f"- ON turns: `{frame.get('turns_total', 0)}`",
         f"- Frame present: `{frame.get('present_count', 0)}` / `{frame.get('turns_total', 0)}`",
         f"- Frame schema complete: `{frame.get('complete_required_count', 0)}` / `{frame.get('present_count', 0)}`",
@@ -258,16 +262,21 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
                 continue
             present += 1
             missing = [field for field in REQUIRED_FRAME_FIELDS if field not in frame]
+            frame_must = _strict_bool(frame.get("must_handoff"))
+            if frame_must is None:
+                missing.append("must_handoff:invalid_bool")
             if missing:
                 missing_required.update(missing)
             else:
                 complete_required += 1
-            frame_must = bool(frame.get("must_handoff"))
-            must_handoff["true" if frame_must else "false"] += 1
+            if frame_must is None:
+                must_handoff["invalid"] += 1
+            else:
+                must_handoff["true" if frame_must else "false"] += 1
             route_handoff = _actual_route_handoff(turn)
             p0_signal = _actual_p0_signal(turn)
-            route_key = "match" if frame_must == route_handoff else "mismatch"
-            p0_key = "match" if frame_must == p0_signal else "mismatch"
+            route_key = "invalid_frame" if frame_must is None else ("match" if frame_must == route_handoff else "mismatch")
+            p0_key = "invalid_frame" if frame_must is None else ("match" if frame_must == p0_signal else "mismatch")
             route_alignment[route_key] += 1
             p0_alignment[p0_key] += 1
             if route_key == "mismatch" or p0_key == "mismatch":
@@ -351,8 +360,7 @@ def _frame_decision_shadow_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict
 
 def _actual_route_handoff(turn: Mapping[str, Any]) -> bool:
     route = str(turn.get("bot_route") or "")
-    flags = {str(flag) for flag in (turn.get("bot_safety_flags") or [])}
-    return route in {"manager_only", "draft_for_manager"} or "manager_approval_required" in flags
+    return route in {"manager_only", "draft_for_manager"}
 
 
 def _actual_p0_signal(turn: Mapping[str, Any]) -> bool:
@@ -367,9 +375,13 @@ def _actual_p0_signal(turn: Mapping[str, Any]) -> bool:
         route == "manager_only"
         or any(marker in flags for marker in P0_FLAG_MARKERS)
         or any(marker in risk_codes for marker in P0_FLAG_MARKERS)
-        or bool(model_p0.get("is_p0"))
-        or bool(direct_p0.get("is_p0"))
+        or _strict_bool(model_p0.get("is_p0")) is True
+        or _strict_bool(direct_p0.get("is_p0")) is True
     )
+
+
+def _strict_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -429,6 +441,16 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("SemanticFrame is missing on at least one ON turn or ON turn count is zero.")
     status = "pass" if all(flags.values()) else "needs_review"
     return {"status": status, "flags": flags, "notes": notes}
+
+
+def _decision_readiness(report: Mapping[str, Any]) -> dict[str, Any]:
+    acceptance = report.get("acceptance") if isinstance(report.get("acceptance"), Mapping) else {}
+    return {
+        "technical_shadow_status": "pass" if acceptance.get("status") == "pass" else "needs_review",
+        "semantic_decision_status": "not_pass",
+        "active_behavior_allowed": False,
+        "reason": "SemanticFrame has no filled expected-frame gold labels in this report.",
+    }
 
 
 def _int_value(value: Any) -> int:

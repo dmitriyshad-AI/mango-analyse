@@ -138,3 +138,15 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 - PII risk rows: 0
 
 Эти 75 строк могут содержать клиентские тексты из transcript, поэтому очередь остаётся локальным audit artifact и не добавляется в git. Коммитится только сам builder, тесты и агрегированная сводка в документах.
+
+## Manual Gold Review Summary
+
+Первый смысловой разбор очереди зафиксирован в `audits/_inbox/adr003_semantic_frame_gold_review_20260701/semantic_gold_summary.md`.
+
+Итог по 75 строкам:
+
+- `frame_correct`: 29
+- `frame_too_cautious`: 43
+- `unclear`: 3
+
+Вывод: `SemanticFrame` уже полезен как сигнал `manager_action` для оплаты/чека/брони/живого наличия/запроса администратора, но пока слишком часто поднимает `must_handoff` на справочных вопросах, обычных next-step ходах и safe deferral. Поэтому active behavior остаётся заблокированным. Следующий этап должен быть не "frame рулит всем", а узкий `manager_action_gate` за отдельным default-OFF флагом и с gold-регрессиями из этой очереди.

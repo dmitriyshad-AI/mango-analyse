@@ -13,11 +13,13 @@ import yaml
 import mango_mvp.channels.subscription_llm as subscription_llm
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
+    AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV,
     AUTONOMY_SCOPE_PRECISION_ENV,
     FactStore,
     FAITHFULNESS_SHADOW_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     _safe_fallback_text,
+    authoritative_gate_scope_relevance_fix_enabled,
     autonomy_scope_precision_enabled,
     build_faithfulness_prompt,
     check_claim_faithfulness,
@@ -4911,6 +4913,42 @@ def test_authoritative_output_gate_allows_only_source_marked_payment_dispute_poo
     assert "hard_p0" in {item["code"] for item in unmarked_gated.metadata["authoritative_output_gate"]["findings"]}
 
 
+def test_authoritative_output_gate_scope_relevance_fix_keeps_direct_path_address_self_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, "1")
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Очные занятия Фотона проходят в Москве по адресу: Верхняя Красносельская ул., 30.",
+        topic_id="theme:013_schedule",
+        metadata={
+            "direct_path": {
+                "retrieved_facts": {
+                    "locations_foton.addresses.1.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30.",
+                },
+            },
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Где проходят очные занятия? Адрес скажите.",
+        context={
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "schedule", "answer_topics": ["address"]},
+            "direct_path": {
+                "answer_coverage_plan": {"client_facets": ["address"]},
+                "model_intent": {"primary_intent": "address"},
+            },
+        },
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gate["action"] == "pass"
+    assert all(item["code"] != "wrong_intent_fact" for item in gate["findings"])
+
+
 def test_output_sanitizer_cuts_opus_meta_dump_before_gate() -> None:
     original = (
         "Проблема с данными: вход похож на внутренний кейс.\n"
@@ -9078,6 +9116,211 @@ def test_autonomy_scope_precision_c3_lvsh_out_of_context_still_blocked(
         active_brand="foton",
         contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),
         client_message=question,
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_is_env_only_default_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, raising=False)
+
+    assert authoritative_gate_scope_relevance_fix_enabled({}) is False
+    assert authoritative_gate_scope_relevance_fix_enabled({
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }) is False
+    assert authoritative_gate_scope_relevance_fix_enabled({
+        AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV: "1",
+    }) is True
+    assert authoritative_gate_scope_relevance_fix_enabled({
+        AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV: "0",
+    }) is False
+    assert AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+
+
+def test_authoritative_gate_scope_relevance_fix_allows_structured_address_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, raising=False)
+    facts = {"locations_foton.addresses.1.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
+    question = "Где проходят очные занятия? Адрес скажите."
+    draft = "Очные занятия Фотона проходят по адресу: Москва, Верхняя Красносельская ул., 30."
+    contract = AnswerContract(active_brand="foton", current_question="Какие очные занятия?", answerability="answer_self")
+    context = {
+        "conversation_intent_plan": {"answer_topics": ["address"], "topic_roles": ["address"]},
+        "direct_path": {
+            "answer_coverage_plan": {
+                "client_facets": ["address"],
+                "covered_facets": [{"facet": "address", "coverage": "covered"}],
+            },
+            "reliable_answerer": {"covered_facets_in_text": ["address"]},
+        },
+    }
+
+    off_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message=question,
+        context=context,
+    )
+    on_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message=question,
+        context={**context, AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV: "1"},
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in off_findings)
+    assert not any(finding.code == "wrong_intent_fact" for finding in on_findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_keeps_address_block_for_price_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, "1")
+    facts = {"locations_foton.addresses.1.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
+    question = "Сколько стоит онлайн-курс по математике?"
+
+    findings = verify_dialogue_contract_output(
+        "Фотон: Москва, Верхняя Красносельская ул., 30.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),
+        client_message=question,
+        context={
+            "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+            "direct_path": {"answer_coverage_plan": {"client_facets": ["price"]}},
+        },
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_allows_address_inside_class_schedule_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, "1")
+    facts = {
+        "locations_foton.addresses.1.address": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30.",
+        "schedule_2026_27.groups.math_7.client_safe_text": (
+            "Математика, 7 класс, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026."
+        ),
+    }
+
+    findings = verify_dialogue_contract_output(
+        "Для 7 класса по математике очно есть группа: Верхняя Красносельская, 30, воскресенье 12:15-14:15, старт 13.09.2026.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(
+            active_brand="foton",
+            current_question="Какие очные занятия по математике для 7 класса?",
+            answerability="answer_self",
+        ),
+        client_message="Какие очные занятия по математике для 7 класса?",
+        context={"conversation_intent_plan": {"primary_intent": "schedule", "fact_scope": "class_schedule"}},
+    )
+
+    assert not any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_keeps_bare_address_blocked_in_schedule_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, "1")
+    facts = {"locations_foton.addresses.1.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
+
+    findings = verify_dialogue_contract_output(
+        "Фотон: Москва, Верхняя Красносельская ул., 30.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(
+            active_brand="foton",
+            current_question="Какие очные занятия по математике для 7 класса?",
+            answerability="answer_self",
+        ),
+        client_message="Какие очные занятия по математике для 7 класса?",
+        context={"conversation_intent_plan": {"primary_intent": "schedule", "fact_scope": "class_schedule"}},
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_allows_structured_lvsh_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, raising=False)
+    facts = {
+        "lvsh_mendeleevo_2026.program.daily_pairs": "УНПК: ЛВШ Менделеево обычно проходит 3 пары в день.",
+    }
+    question = "Расскажите про программу ЛВШ для 5 класса."
+    draft = "В ЛВШ Менделеево обычно проходит 3 пары в день."
+    contract = AnswerContract(active_brand="unpk", current_question="Расскажите про программу", answerability="answer_self")
+    context = {
+        "conversation_intent_plan": {
+            "answer_topics": ["camp"],
+            "primary_intent": "camp",
+            "product_family": "camp",
+            "product_scope": "lvsh_mendeleevo",
+            "fact_scope": "residential_lvsh",
+            "topic_id": "theme:026_camp_general",
+        },
+        "direct_path": {
+            "answer_coverage_plan": {"requested_scope": "lvsh_mendeleevo"},
+            "llm_retrieve": {"venue_scope": {"requested_scope": "lvsh_mendeleevo"}},
+        },
+    }
+
+    off_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="unpk",
+        contract=contract,
+        client_message=question,
+        context=context,
+    )
+    on_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="unpk",
+        contract=contract,
+        client_message=question,
+        context={**context, AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV: "1"},
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in off_findings)
+    assert not any(finding.code == "wrong_intent_fact" for finding in on_findings)
+
+
+def test_authoritative_gate_scope_relevance_fix_keeps_lvsh_block_for_regular_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, "1")
+    facts = {
+        "lvsh_mendeleevo_2026.address.client_safe_text": "УНПК: ЛВШ Менделеево проходит в кампусе МФТИ.",
+    }
+
+    findings = verify_dialogue_contract_output(
+        "УНПК: ЛВШ Менделеево проходит в кампусе МФТИ.",
+        facts=facts,
+        active_brand="unpk",
+        contract=AnswerContract(
+            active_brand="unpk",
+            current_question="Где проходят московские очные занятия?",
+            answerability="answer_self",
+        ),
+        client_message="Где проходят московские очные занятия?",
+        context={
+            "conversation_intent_plan": {"primary_intent": "address", "answer_topics": ["address"]},
+            "direct_path": {
+                "answer_coverage_plan": {"client_facets": ["address"], "requested_scope": "moscow_regular"},
+                "llm_retrieve": {"venue_scope": {"requested_scope": "moscow_regular"}},
+            },
+        },
     )
 
     assert any(finding.code == "wrong_intent_fact" for finding in findings)

@@ -1,3 +1,5 @@
+> FAIL 2026-07-02 21:42 | ветка codex/email-pipeline-restore | codex | причина: stale task for another branch/worktree; not active in codex/email-pipeline-restore during Marathon 2
+
 Ветка: codex/tz34-child-escalation
 Зоны: src/mango_mvp/customer_profile/, scripts/, tests/, tasks/, docs/worktrees_registry.md, audits/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_profile_builder.py

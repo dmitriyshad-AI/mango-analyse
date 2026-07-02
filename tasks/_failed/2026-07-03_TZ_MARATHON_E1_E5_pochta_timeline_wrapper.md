@@ -1,3 +1,5 @@
+> FAIL 2026-07-02 21:42 | ветка codex/email-pipeline-restore | codex | причина: superseded by 2026-07-03 Marathon 2 v6 for same email+timeline track
+
 > TAKE 2026-07-02 03:21 | ветка codex/email-pipeline-restore | codex
 
 Ветка: codex/email-pipeline-restore

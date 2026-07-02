@@ -109,6 +109,7 @@ class A2V3MailIngestConfig:
     enrich_existing: bool = False
     brand_dominance_ratio: float = DEFAULT_BRAND_DOMINANCE_RATIO
     chunk_rich_text: bool = True
+    refresh_purchases: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_jsonl", Path(self.input_jsonl).expanduser())
@@ -607,11 +608,15 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
                 connection=store._con,
                 allowed_root=config.allowed_root,
             )
-            purchases_upserted = _refresh_customer_purchases_v1(
-                config.timeline_db_path,
-                tenant_id=config.tenant_id,
-                connection=store._con,
-                allowed_root=config.allowed_root,
+            purchases_upserted = (
+                _refresh_customer_purchases_v1(
+                    config.timeline_db_path,
+                    tenant_id=config.tenant_id,
+                    connection=store._con,
+                    allowed_root=config.allowed_root,
+                )
+                if config.refresh_purchases
+                else 0
             )
             counters["upserted_a2v3_event_facts"] += facts_upserted
             counters["upserted_a2v3_customer_brand_profiles"] += brand_profiles_upserted

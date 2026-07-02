@@ -190,6 +190,209 @@ def test_backfill_customer_objections_removes_stale_rows_on_rebuild(tmp_path: Pa
         assert con.execute("SELECT count(*) FROM customer_objection_summary_v1").fetchone()[0] == 0
 
 
+def test_backfill_customer_objections_uses_client_transcript_not_call_summary(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    canonical_db = tmp_path / "canonical_calls_master.db"
+    _seed_canonical_calls(
+        canonical_db,
+        [
+            (101, "Клиент: нам дорого, можем ли получить скидку?", "outbound"),
+            (202, "", "outbound"),
+        ],
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        for source_id, summary in (
+            ("101", "Менеджер сказал, что цена стандартная."),
+            ("202", "Менеджер сказал клиенту: это дорого, но скидки нет."),
+            ("303", "Слитая сводка: дорого и нужна скидка."),
+        ):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:1",
+                    event_type="mango_call",
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=source_id,
+                    direction="outbound",
+                    summary=summary,
+                    match_status="strong_unique",
+                    record={},
+                    created_at=NOW,
+                )
+            )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=canonical_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert result["call_events_total"] == 3
+    assert result["call_events_matched"] == 2
+    assert result["call_events_unmatched"] == 1
+    assert result["objection_type_counts"] == {"price": 1}
+    with sqlite3.connect(db) as con:
+        row = con.execute(
+            "SELECT source_event_id, speaker, confidence, quote_preview FROM customer_objections_v1"
+        ).fetchone()
+    assert row[0]
+    assert row[1] == "client"
+    assert row[2] == "high"
+    assert "нам дорого" in row[3].casefold()
+    assert "Слитая сводка" not in row[3]
+
+
+def test_backfill_customer_objections_skips_outbound_email(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-out",
+                direction=TimelineDirection.OUTBOUND,
+                subject="Цена",
+                summary="Пишем клиенту, что курс дорогой.",
+                match_status="strong_unique",
+                record={"full_clean_text": "Курс дорогой, скидки нет."},
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+    assert result["email_events_skipped_non_client"] == 1
+
+
+def test_backfill_customer_objections_records_coverage_gate(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    canonical_db = tmp_path / "canonical_calls_master.db"
+    _seed_canonical_calls(canonical_db, [(101, "Клиент: дорого.", "outbound")])
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        for source_id in ("101", "202"):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:1",
+                    event_type="mango_call",
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=source_id,
+                    direction="outbound",
+                    summary="дорого",
+                    match_status="strong_unique",
+                    record={},
+                    created_at=NOW,
+                )
+            )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=canonical_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert result["call_match_coverage"] == 0.5
+    assert result["coverage_gate_passed"] is False
+    with sqlite3.connect(db) as con:
+        row = con.execute(
+            "SELECT crm_objections_enabled FROM customer_objection_extraction_runs_v1"
+        ).fetchone()
+    assert row[0] == 0
+
+
+def test_backfill_customer_objections_migrates_old_table_and_removes_legacy_rows(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-1",
+                direction=TimelineDirection.INBOUND,
+                subject="Цена",
+                summary="Клиент пишет, что дорого.",
+                match_status="strong_unique",
+                record={"full_clean_text": "Дорого, нужен бюджет 80 тыс."},
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.executescript(
+            """
+            CREATE TABLE customer_objections_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              source_event_id TEXT NOT NULL,
+              source_channel TEXT NOT NULL,
+              objection_type TEXT NOT NULL,
+              quote_preview TEXT NOT NULL,
+              budget_hint_rub INTEGER,
+              price_sensitivity TEXT NOT NULL,
+              extracted_at TEXT NOT NULL,
+              extractor_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO customer_objections_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "customer:1", "legacy", "call", "price", "старое слитое summary", None, "high", NOW.isoformat(), "ob_v1"),
+        )
+        con.commit()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 1
+    with sqlite3.connect(db) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(customer_objections_v1)").fetchall()}
+        rows = con.execute(
+            "SELECT source_event_id, speaker, direction, confidence FROM customer_objections_v1"
+        ).fetchall()
+        summary = con.execute("SELECT top_objections_json FROM customer_objection_summary_v1").fetchone()
+    assert {"speaker", "direction", "confidence"} <= columns
+    assert len(rows) == 1
+    assert rows[0][0] != "legacy"
+    assert rows[0][1:] == ("client", "inbound", "high")
+    assert json.loads(summary[0]) == [["price", 1]]
+
+
 def test_backfill_customer_objections_rejects_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "missing.sqlite"
 
@@ -201,3 +404,20 @@ def test_backfill_customer_objections_rejects_missing_db(tmp_path: Path) -> None
         raise AssertionError("missing DB must not be created")
 
     assert not missing.exists()
+
+
+def _seed_canonical_calls(db_path: Path, rows: list[tuple[int, str, str]]) -> None:
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE canonical_calls (
+              canonical_call_id INTEGER PRIMARY KEY,
+              transcript_client TEXT,
+              direction TEXT
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO canonical_calls (canonical_call_id, transcript_client, direction) VALUES (?, ?, ?)",
+            rows,
+        )

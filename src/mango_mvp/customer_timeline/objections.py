@@ -13,9 +13,11 @@ from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_pa
 
 
 OBJECTION_EXTRACTOR_VERSION = "ob_v1"
+LEGACY_OBJECTION_EXTRACTOR_VERSIONS: tuple[str, ...] = ()
 OBJECTION_SCHEMA_VERSION = "customer_timeline_objections_v1"
 OBJECTION_TYPES = ("price", "schedule", "trust", "competitor", "child_refusal", "other")
 PRICE_SENSITIVITY_ORDER = {"low": 0, "medium": 1, "high": 2}
+CALL_MATCH_COVERAGE_GATE = 0.70
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}", re.I)
 DOMAIN_RE = re.compile(r"\b[\w.-]+\.[a-zа-я]{2,}\b", re.I)
 PHONE_RE = re.compile(
@@ -32,6 +34,14 @@ ADDRESS_RE = re.compile(
     r"\b(?:адрес|г\.|город|ул\.|улица|проспект|пр-т|дом|д\.|кв\.)\s*[:№#-]?\s*[^,.;\n]{1,80}",
     re.I,
 )
+QUOTE_HEADER_RE = re.compile(
+    r"^\s*(-{2,}\s*original message|-{2,}\s*пересылаемое|исходное сообщение|>+|on .+ wrote:|"
+    r".+ (написал|написала|wrote)\s*:|\d{1,2}\.\d{1,2}\.\d{2,4}.*(пишет|написал)|"
+    r"от кого:|кому:|отправлено:|sent:|from:\s)",
+    re.I,
+)
+SIGNATURE_DIVIDER_RE = re.compile(r"^\s*--\s*$")
+FOOTER_HINT_RE = re.compile(r"(с уважением|best regards|данное сообщение.*конфиденц|отписаться|unsubscribe|©)", re.I)
 PERSON_LABEL_RE = re.compile(
     r"\b(?P<label>меня зовут|это|мама|папа|родитель|ученик|ученица|реб[её]нок)\s+"
     r"(?P<name>[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})",
@@ -95,6 +105,22 @@ class ObjectionExtraction:
     price_sensitivity: str
 
 
+@dataclass(frozen=True)
+class ObjectionSourceText:
+    event: sqlite3.Row
+    text: str
+    speaker: str
+    direction: str
+    confidence: str
+    source_kind: str
+
+
+@dataclass(frozen=True)
+class CanonicalCallText:
+    transcript_client: str
+    direction: str
+
+
 def extract_objections_from_text(text: str) -> tuple[ObjectionExtraction, ...]:
     normalized = _normalize_text(text)
     if not normalized:
@@ -123,6 +149,7 @@ def backfill_customer_objections_v1(
     db_path: Path | str,
     *,
     allowed_root: Path | str,
+    canonical_calls_db_path: Path | str | None = None,
     tenant_id: str = "foton",
     apply: bool = True,
     as_of: datetime | None = None,
@@ -133,44 +160,62 @@ def backfill_customer_objections_v1(
     with _connect_existing_db(db, writable=apply) as con:
         con.row_factory = sqlite3.Row
         candidates = _load_objection_candidate_events(con, tenant_id=tenant_id)
+        canonical_calls = _load_canonical_call_texts(canonical_calls_db_path)
+        source_texts, metrics = _objection_source_texts(candidates, canonical_calls=canonical_calls)
         rows = []
-        for event in candidates:
-            text = _event_text(event)
-            for extraction in extract_objections_from_text(text):
+        for source in source_texts:
+            for extraction in extract_objections_from_text(source.text):
                 rows.append(
                     {
-                        "tenant_id": str(event["tenant_id"]),
-                        "customer_id": str(event["customer_id"]),
-                        "source_event_id": str(event["event_id"]),
-                        "source_channel": _source_channel(event),
+                        "tenant_id": str(source.event["tenant_id"]),
+                        "customer_id": str(source.event["customer_id"]),
+                        "source_event_id": str(source.event["event_id"]),
+                        "source_channel": _source_channel(source.event),
                         "objection_type": extraction.objection_type,
                         "quote_preview": extraction.quote_preview[:120],
                         "budget_hint_rub": extraction.budget_hint_rub,
                         "price_sensitivity": extraction.price_sensitivity,
+                        "speaker": source.speaker,
+                        "direction": source.direction,
+                        "confidence": source.confidence,
                         "extracted_at": computed_at,
                         "extractor_version": OBJECTION_EXTRACTOR_VERSION,
                     }
                 )
+        coverage_gate_passed = bool(metrics["call_match_coverage"] >= CALL_MATCH_COVERAGE_GATE)
         if apply:
             _ensure_objection_tables(con)
+            versions = tuple(dict.fromkeys((OBJECTION_EXTRACTOR_VERSION, *LEGACY_OBJECTION_EXTRACTOR_VERSIONS)))
+            placeholders = ",".join("?" for _ in versions)
             con.execute(
-                "DELETE FROM customer_objections_v1 WHERE tenant_id = ? AND extractor_version = ?",
-                (tenant_id, OBJECTION_EXTRACTOR_VERSION),
+                f"DELETE FROM customer_objections_v1 WHERE tenant_id = ? AND extractor_version IN ({placeholders})",
+                (tenant_id, *versions),
             )
             _upsert_objection_rows(con, rows)
             con.execute(
-                "DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ? AND extractor_version = ?",
-                (tenant_id, OBJECTION_EXTRACTOR_VERSION),
+                "DELETE FROM customer_objection_summary_v1 WHERE tenant_id = ?",
+                (tenant_id,),
             )
             _refresh_objection_summary(con, tenant_id=tenant_id, extracted_at=computed_at)
+            _record_objection_run(
+                con,
+                tenant_id=tenant_id,
+                extracted_at=computed_at,
+                metrics=metrics,
+                crm_objections_enabled=coverage_gate_passed,
+            )
             con.commit()
         return {
             "schema_version": OBJECTION_SCHEMA_VERSION,
             "apply": bool(apply),
             "candidate_events": len(candidates),
+            **metrics,
+            "coverage_gate_passed": coverage_gate_passed,
             "objections": len(rows),
             "objection_type_counts": dict(Counter(row["objection_type"] for row in rows)),
             "price_sensitivity_counts": dict(Counter(row["price_sensitivity"] for row in rows)),
+            "speaker_counts": dict(Counter(row["speaker"] for row in rows)),
+            "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
             "extractor_version": OBJECTION_EXTRACTOR_VERSION,
         }
 
@@ -187,6 +232,9 @@ def _ensure_objection_tables(con: sqlite3.Connection) -> None:
           quote_preview TEXT NOT NULL,
           budget_hint_rub INTEGER,
           price_sensitivity TEXT NOT NULL,
+          speaker TEXT NOT NULL DEFAULT 'unknown',
+          direction TEXT NOT NULL DEFAULT 'unknown',
+          confidence TEXT NOT NULL DEFAULT 'low',
           extracted_at TEXT NOT NULL,
           extractor_version TEXT NOT NULL,
           PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
@@ -203,6 +251,32 @@ def _ensure_objection_tables(con: sqlite3.Connection) -> None:
           extractor_version TEXT NOT NULL,
           PRIMARY KEY (tenant_id, customer_id)
         );
+        CREATE TABLE IF NOT EXISTS customer_objection_extraction_runs_v1 (
+          tenant_id TEXT NOT NULL,
+          extractor_version TEXT NOT NULL,
+          extracted_at TEXT NOT NULL,
+          call_events_total INTEGER NOT NULL,
+          call_events_matched INTEGER NOT NULL,
+          call_events_with_client_transcript INTEGER NOT NULL,
+          call_match_coverage REAL NOT NULL,
+          crm_objections_enabled INTEGER NOT NULL,
+          metrics_json TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, extractor_version)
+        );
+        """
+    )
+    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(customer_objections_v1)").fetchall()}
+    for name, ddl in {
+        "speaker": "ALTER TABLE customer_objections_v1 ADD COLUMN speaker TEXT NOT NULL DEFAULT 'unknown'",
+        "direction": "ALTER TABLE customer_objections_v1 ADD COLUMN direction TEXT NOT NULL DEFAULT 'unknown'",
+        "confidence": "ALTER TABLE customer_objections_v1 ADD COLUMN confidence TEXT NOT NULL DEFAULT 'low'",
+    }.items():
+        if name not in columns:
+            con.execute(ddl)
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_customer_objections_v1_crm_eligible
+          ON customer_objections_v1(tenant_id, customer_id, speaker, confidence)
         """
     )
 
@@ -213,7 +287,7 @@ def _load_objection_candidate_events(con: sqlite3.Connection, *, tenant_id: str)
         con.execute(
             f"""
             SELECT tenant_id, customer_id, event_id, event_type, source_system, event_at,
-                   subject, text_preview, summary, record_json
+                   source_id, direction, subject, text_preview, summary, record_json
             FROM timeline_events
             WHERE tenant_id = ?
               AND customer_id IS NOT NULL
@@ -240,6 +314,106 @@ def _event_text(row: sqlite3.Row) -> str:
     return "\n".join(str(value) for value in values if value)
 
 
+def _objection_source_texts(
+    events: Sequence[sqlite3.Row],
+    *,
+    canonical_calls: Mapping[str, CanonicalCallText],
+) -> tuple[list[ObjectionSourceText], dict[str, Any]]:
+    sources: list[ObjectionSourceText] = []
+    metrics: Counter[str] = Counter()
+    for event in events:
+        event_type = str(event["event_type"])
+        direction = str(event["direction"] or "unknown").lower()
+        if event_type == "email_message":
+            metrics["email_events_total"] += 1
+            if direction != "inbound":
+                metrics["email_events_skipped_non_client"] += 1
+                continue
+            text = _strip_quoted_email_tail(_event_text(event))
+            if text.strip():
+                metrics["email_events_client_source"] += 1
+                sources.append(
+                    ObjectionSourceText(
+                        event=event,
+                        text=text,
+                        speaker="client",
+                        direction=direction,
+                        confidence="high",
+                        source_kind="email_inbound",
+                    )
+                )
+            continue
+        if event_type in {"mango_call", "call_transcript"}:
+            metrics["call_events_total"] += 1
+            canonical = canonical_calls.get(str(event["source_id"]))
+            if canonical is None:
+                metrics["call_events_unmatched"] += 1
+                continue
+            metrics["call_events_matched"] += 1
+            if not canonical.transcript_client.strip():
+                metrics["call_events_without_client_transcript"] += 1
+                continue
+            metrics["call_events_with_client_transcript"] += 1
+            sources.append(
+                ObjectionSourceText(
+                    event=event,
+                    text=canonical.transcript_client,
+                    speaker="client",
+                    direction=direction or canonical.direction or "unknown",
+                    confidence="high",
+                    source_kind="call_transcript_client",
+                )
+            )
+    call_total = int(metrics["call_events_total"])
+    call_matched = int(metrics["call_events_matched"])
+    result = {key: int(value) for key, value in metrics.items()}
+    result["call_match_coverage"] = round(call_matched / call_total, 6) if call_total else 1.0
+    result["source_texts"] = len(sources)
+    return sources, result
+
+
+def _load_canonical_call_texts(path: Path | str | None) -> Mapping[str, CanonicalCallText]:
+    if path is None:
+        return {}
+    db = Path(path).expanduser().resolve(strict=False)
+    if not db.exists() or not db.is_file():
+        raise FileNotFoundError(f"canonical calls DB does not exist: {db}")
+    uri = f"{db.as_uri()}?mode=ro&immutable=1"
+    with sqlite3.connect(uri, uri=True) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT canonical_call_id, transcript_client, direction
+            FROM canonical_calls
+            """
+        ).fetchall()
+    result: dict[str, CanonicalCallText] = {}
+    for row in rows:
+        result[str(row["canonical_call_id"])] = CanonicalCallText(
+            transcript_client=str(row["transcript_client"] or ""),
+            direction=str(row["direction"] or "unknown").lower(),
+        )
+    return result
+
+
+def _strip_quoted_email_tail(text: str) -> str:
+    lines: list[str] = []
+    in_context = False
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if QUOTE_HEADER_RE.match(stripped) or SIGNATURE_DIVIDER_RE.match(stripped):
+            in_context = True
+        if in_context:
+            continue
+        if stripped.startswith(">"):
+            continue
+        if FOOTER_HINT_RE.search(stripped) and len("\n".join(lines)) > 120:
+            in_context = True
+            continue
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def _source_channel(row: sqlite3.Row) -> str:
     return "email" if str(row["event_type"]) == "email_message" else "call"
 
@@ -251,17 +425,22 @@ def _upsert_objection_rows(con: sqlite3.Connection, rows: Sequence[Mapping[str, 
         """
         INSERT INTO customer_objections_v1 (
           tenant_id, customer_id, source_event_id, source_channel, objection_type,
-          quote_preview, budget_hint_rub, price_sensitivity, extracted_at, extractor_version
+          quote_preview, budget_hint_rub, price_sensitivity, speaker, direction, confidence,
+          extracted_at, extractor_version
         )
         VALUES (
           :tenant_id, :customer_id, :source_event_id, :source_channel, :objection_type,
-          :quote_preview, :budget_hint_rub, :price_sensitivity, :extracted_at, :extractor_version
+          :quote_preview, :budget_hint_rub, :price_sensitivity, :speaker, :direction, :confidence,
+          :extracted_at, :extractor_version
         )
         ON CONFLICT(tenant_id, customer_id, source_event_id, objection_type) DO UPDATE SET
           source_channel = excluded.source_channel,
           quote_preview = excluded.quote_preview,
           budget_hint_rub = excluded.budget_hint_rub,
           price_sensitivity = excluded.price_sensitivity,
+          speaker = excluded.speaker,
+          direction = excluded.direction,
+          confidence = excluded.confidence,
           extracted_at = excluded.extracted_at,
           extractor_version = excluded.extractor_version
         """,
@@ -276,9 +455,12 @@ def _refresh_objection_summary(con: sqlite3.Connection, *, tenant_id: str, extra
         SELECT *
         FROM customer_objections_v1
         WHERE tenant_id = ?
+          AND speaker = 'client'
+          AND confidence = 'high'
+          AND extractor_version = ?
         ORDER BY extracted_at ASC, source_event_id ASC
         """,
-        (tenant_id,),
+        (tenant_id, OBJECTION_EXTRACTOR_VERSION),
     ):
         grouped[str(row["customer_id"])].append(row)
     rows = []
@@ -325,6 +507,45 @@ def _refresh_objection_summary(con: sqlite3.Connection, *, tenant_id: str, extra
             """,
             rows,
         )
+
+
+def _record_objection_run(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    extracted_at: str,
+    metrics: Mapping[str, Any],
+    crm_objections_enabled: bool,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO customer_objection_extraction_runs_v1 (
+          tenant_id, extractor_version, extracted_at, call_events_total,
+          call_events_matched, call_events_with_client_transcript, call_match_coverage,
+          crm_objections_enabled, metrics_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tenant_id, extractor_version) DO UPDATE SET
+          extracted_at = excluded.extracted_at,
+          call_events_total = excluded.call_events_total,
+          call_events_matched = excluded.call_events_matched,
+          call_events_with_client_transcript = excluded.call_events_with_client_transcript,
+          call_match_coverage = excluded.call_match_coverage,
+          crm_objections_enabled = excluded.crm_objections_enabled,
+          metrics_json = excluded.metrics_json
+        """,
+        (
+            tenant_id,
+            OBJECTION_EXTRACTOR_VERSION,
+            extracted_at,
+            int(metrics.get("call_events_total") or 0),
+            int(metrics.get("call_events_matched") or 0),
+            int(metrics.get("call_events_with_client_transcript") or 0),
+            float(metrics.get("call_match_coverage") or 0.0),
+            1 if crm_objections_enabled else 0,
+            json.dumps(dict(metrics), ensure_ascii=False, sort_keys=True),
+        ),
+    )
 
 
 def _normalize_text(text: str) -> str:

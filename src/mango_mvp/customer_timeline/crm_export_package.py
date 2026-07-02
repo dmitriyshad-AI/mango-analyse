@@ -195,7 +195,7 @@ def _candidate_row(
         "purchase_total_in": str(extras.get("purchase_total_in") or "0"),
         "purchase_deals_cnt": str(extras.get("purchase_deals_cnt") or "0"),
         "objections_count": str(extras.get("objections_count") or "0"),
-        "active_signals_count": str(extras.get("active_signals_count") or "0"),
+        "active_signals_count": int(extras.get("active_signals_count") or 0),
         "mail_stage2_events_count": str(meta.get("mail_stage2_events_count") or "0"),
         "crm_card_contact_payload_json": _json_dumps(contact_payload).strip(),
         "crm_card_deal_payload_json": _json_dumps(deal_payload).strip(),
@@ -225,6 +225,7 @@ def _select_candidate_meta(
     if batch_limit and int(batch_limit) > 0:
         limit_clause = " LIMIT ?"
         params.append(int(batch_limit))
+    objection_counts_filter = _crm_objections_sql_filter(con, tenant_id=tenant_id)
     rows = con.execute(
         f"""
         WITH contacts AS (
@@ -270,6 +271,7 @@ def _select_candidate_meta(
           SELECT customer_id, COUNT(*) AS objections_count
           FROM customer_objections_v1
           WHERE tenant_id = ?
+          {objection_counts_filter}
           GROUP BY customer_id
         ),
         signal_counts AS (
@@ -339,19 +341,7 @@ def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_i
             (tenant_id, customer_id),
         ).fetchall()
     ]
-    objections = [
-        dict(row)
-        for row in con.execute(
-            """
-            SELECT source_channel, objection_type, quote_preview, budget_hint_rub, price_sensitivity
-            FROM customer_objections_v1
-            WHERE tenant_id = ? AND customer_id = ?
-            ORDER BY extracted_at DESC, source_event_id
-            LIMIT 8
-            """,
-            (tenant_id, customer_id),
-        ).fetchall()
-    ]
+    objections = _load_crm_eligible_objections(con, tenant_id=tenant_id, customer_id=customer_id)
     signals = []
     for row in con.execute(
         """
@@ -380,6 +370,58 @@ def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_i
         "objections_count": len(objections),
         "active_signals_count": len(signals),
     }
+
+
+def _load_crm_eligible_objections(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+) -> list[dict[str, Any]]:
+    if not _crm_objections_enabled(con, tenant_id=tenant_id):
+        return []
+    filter_sql = _crm_objections_sql_filter(con, tenant_id=tenant_id)
+    return [
+        dict(row)
+        for row in con.execute(
+            f"""
+            SELECT source_channel, objection_type, quote_preview, budget_hint_rub, price_sensitivity
+            FROM customer_objections_v1
+            WHERE tenant_id = ? AND customer_id = ?
+            {filter_sql}
+            ORDER BY extracted_at DESC, source_event_id
+            LIMIT 8
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+    ]
+
+
+def _crm_objections_sql_filter(con: sqlite3.Connection, *, tenant_id: str) -> str:
+    if not _crm_objections_enabled(con, tenant_id=tenant_id):
+        return "AND 0"
+    columns = _table_columns(con, "customer_objections_v1")
+    if {"speaker", "confidence"} <= columns:
+        return "AND speaker = 'client' AND confidence = 'high'"
+    return "AND 0"
+
+
+def _crm_objections_enabled(con: sqlite3.Connection, *, tenant_id: str) -> bool:
+    if not _table_exists(con, "customer_objection_extraction_runs_v1"):
+        return True
+    row = con.execute(
+        """
+        SELECT crm_objections_enabled
+        FROM customer_objection_extraction_runs_v1
+        WHERE tenant_id = ?
+        ORDER BY extracted_at DESC
+        LIMIT 1
+        """,
+        (tenant_id,),
+    ).fetchone()
+    if row is None:
+        return True
+    return bool(int(row["crm_objections_enabled"] or 0))
 
 
 def _inject_e5_blocks(projection: Mapping[str, Any], extras: Mapping[str, Any]) -> None:
@@ -577,6 +619,22 @@ def _connect_ro(db_path: Path) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only = ON")
     return con
+
+
+def _table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return (
+        con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _table_columns(con: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(con, table):
+        return set()
+    return {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
 def _guard_staging_db(path: Path) -> Path:

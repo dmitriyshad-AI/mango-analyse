@@ -105,6 +105,87 @@ def test_crm_export_package_blocks_raw_email_thread_payload(tmp_path: Path) -> N
     assert (out_dir / "batch_ready_crm_card_candidates.jsonl").read_text(encoding="utf-8") == ""
 
 
+def test_crm_export_package_filters_non_client_objections(tmp_path: Path) -> None:
+    db_path = _seed_db(tmp_path)
+    out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE customer_objections_v1 SET speaker = 'manager', confidence = 'high'")
+        con.execute(
+            """
+            CREATE TABLE customer_objection_extraction_runs_v1 (
+              tenant_id TEXT NOT NULL,
+              extractor_version TEXT NOT NULL,
+              extracted_at TEXT NOT NULL,
+              call_events_total INTEGER NOT NULL,
+              call_events_matched INTEGER NOT NULL,
+              call_events_with_client_transcript INTEGER NOT NULL,
+              call_match_coverage REAL NOT NULL,
+              crm_objections_enabled INTEGER NOT NULL,
+              metrics_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, extractor_version)
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO customer_objection_extraction_runs_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "ob_v1", NOW.isoformat(), 10, 10, 10, 1.0, 1, "{}"),
+        )
+        con.commit()
+
+    build_crm_export_package(
+        CrmExportPackageConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=out_dir,
+            pilot_size=1,
+        )
+    )
+    row = json.loads((out_dir / "pilot_20_crm_card_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert "Возражения и бюджет" not in row["contact_payload"]["Авто история общения"]
+    assert "дорого, просит скидку" not in row["contact_payload"]["Авто история общения"]
+
+
+def test_crm_export_package_omits_objections_when_coverage_gate_failed(tmp_path: Path) -> None:
+    db_path = _seed_db(tmp_path)
+    out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE customer_objection_extraction_runs_v1 (
+              tenant_id TEXT NOT NULL,
+              extractor_version TEXT NOT NULL,
+              extracted_at TEXT NOT NULL,
+              call_events_total INTEGER NOT NULL,
+              call_events_matched INTEGER NOT NULL,
+              call_events_with_client_transcript INTEGER NOT NULL,
+              call_match_coverage REAL NOT NULL,
+              crm_objections_enabled INTEGER NOT NULL,
+              metrics_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, extractor_version)
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO customer_objection_extraction_runs_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "ob_v1", NOW.isoformat(), 10, 5, 5, 0.5, 0, "{}"),
+        )
+        con.commit()
+
+    build_crm_export_package(
+        CrmExportPackageConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=out_dir,
+            pilot_size=1,
+        )
+    )
+    row = json.loads((out_dir / "pilot_20_crm_card_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert "Возражения и бюджет" not in row["contact_payload"]["Авто история общения"]
+    assert row["objections_count"] == "0"
+
+
 def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
     stage = tmp_path / ".codex_local" / "staging"
     stage.mkdir(parents=True)
@@ -231,6 +312,9 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
               quote_preview TEXT NOT NULL,
               budget_hint_rub INTEGER,
               price_sensitivity TEXT NOT NULL,
+              speaker TEXT NOT NULL DEFAULT 'unknown',
+              direction TEXT NOT NULL DEFAULT 'unknown',
+              confidence TEXT NOT NULL DEFAULT 'low',
               extracted_at TEXT NOT NULL,
               extractor_version TEXT NOT NULL,
               PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
@@ -242,7 +326,7 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
             ("foton", "customer:e5", "all", 12000, 0, 1, NOW.isoformat(), "{}", "computed", "test"),
         )
         con.execute(
-            "INSERT INTO customer_objections_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO customer_objections_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "foton",
                 "customer:e5",
@@ -252,6 +336,9 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
                 "дорого, просит скидку",
                 12000,
                 "medium",
+                "client",
+                "outbound",
+                "high",
                 NOW.isoformat(),
                 "test",
             ),

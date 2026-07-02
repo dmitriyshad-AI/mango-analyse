@@ -33,6 +33,7 @@ class Stage3MaintenanceConfig:
     timeline_db_path: Path
     allowed_root: Path
     out_dir: Path
+    canonical_calls_db_path: Path | None = None
     tenant_id: str = "foton"
     apply: bool = True
     batch_size: int = 1000
@@ -42,6 +43,8 @@ class Stage3MaintenanceConfig:
         object.__setattr__(self, "timeline_db_path", Path(self.timeline_db_path).expanduser())
         object.__setattr__(self, "allowed_root", Path(self.allowed_root).expanduser())
         object.__setattr__(self, "out_dir", Path(self.out_dir).expanduser())
+        if self.canonical_calls_db_path is not None:
+            object.__setattr__(self, "canonical_calls_db_path", Path(self.canonical_calls_db_path).expanduser())
         if self.batch_size < 1 or self.batch_size > 1000:
             raise ValueError("batch_size must be between 1 and 1000")
         if self.signal_as_of.tzinfo is None:
@@ -121,6 +124,7 @@ def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]
         objections = backfill_customer_objections_v1(
             db_path,
             allowed_root=config.allowed_root,
+            canonical_calls_db_path=config.canonical_calls_db_path,
             tenant_id=config.tenant_id,
             apply=True,
             as_of=config.signal_as_of,

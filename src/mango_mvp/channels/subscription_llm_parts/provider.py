@@ -79,6 +79,10 @@ from mango_mvp.channels.draft_prompt_builder import (
     safe_schedule_template,
     should_force_manager_only,
 )
+from mango_mvp.knowledge_base.product_existence_axes_catalog import (
+    build_product_existence_axes_catalog,
+    verify_product_format_exists,
+)
 from mango_mvp.insights.sanitizers import sanitize_answer
 from mango_mvp.insights.phase2_detectors import detect_anxiety, detect_objection
 from mango_mvp.insights.tone_score import score_tone
@@ -277,6 +281,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _semantic_frame_decision_shadow_enabled,
     _semantic_frame_manager_action_gate_enabled,
     _semantic_frame_self_answer_shadow_enabled,
+    _semantic_frame_existence_proof_shadow_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
@@ -981,7 +986,8 @@ class SubscriptionLlmDraftProvider:
                 client_message=client_message,
                 context=context,
             )
-            manager_gated = apply_semantic_frame_manager_action_gate(framed, context=context)
+            proof_shadowed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
+            manager_gated = apply_semantic_frame_manager_action_gate(proof_shadowed, context=context)
             self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
             return apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
         if dialogue_contract_pipeline_enabled(context):
@@ -2554,6 +2560,7 @@ def _apply_direct_path_model_p0_route(
 SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION = "semantic_frame_decision_shadow_v1_2026_07_01"
 SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION = "semantic_frame_manager_action_gate_v1_2026_07_01"
 SEMANTIC_FRAME_SELF_ANSWER_SHADOW_SCHEMA_VERSION = "semantic_frame_self_answer_shadow_v1_2026_07_02"
+SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_SCHEMA_VERSION = "semantic_frame_existence_proof_shadow_v1_2026_07_02"
 
 _SEMANTIC_FRAME_P0_FLAGS = {
     "p0",
@@ -2771,17 +2778,127 @@ def _semantic_frame_truthy_text(value: Any) -> bool:
     return normalized in {"1", "true", "yes", "y", "да", "on"}
 
 
+def _semantic_frame_existence_proof_shadow_trace(
+    frame: Mapping[str, Any],
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    active_brand = _active_brand(context)
+    base: dict[str, Any] = {
+        "schema_version": SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "route_text_shadow_only": True,
+        "status": "blocked",
+        "reason": "",
+        "exact_fact_keys": [],
+        "fact_metadata": {},
+    }
+    if not frame:
+        return {**base, "reason": "no_frame"}
+    if _semantic_frame_value(frame, "requested_action") != "answer_question":
+        return {**base, "reason": "requested_action_not_answer_question"}
+    if _semantic_frame_bool(frame.get("must_handoff")) is True and _semantic_frame_value(frame, "risk_class") in {
+        "p0",
+        "manager_action",
+    }:
+        return {**base, "reason": "protected_handoff_frame"}
+    if _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
+        return {**base, "reason": "payment_readiness_blocked"}
+    if _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:
+        return {**base, "reason": "deal_stage_blocked"}
+
+    requested = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
+    requested_brand = _semantic_frame_requested_product_brand(frame)
+    brand = requested_brand if requested_brand in {"foton", "unpk"} else active_brand
+    if brand not in {"foton", "unpk"}:
+        return {**base, "reason": "unknown_brand"}
+    if requested_brand and requested_brand != brand:
+        return {**base, "reason": "brand_mismatch", "brand": brand, "requested_brand": requested_brand}
+
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    records = [
+        fact
+        for fact in _direct_path_snapshot_facts(snapshot)
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=brand)
+    ]
+    if not records:
+        return {**base, "reason": "no_client_safe_snapshot_facts", "brand": brand}
+
+    proof = verify_product_format_exists(
+        build_product_existence_axes_catalog(records),
+        brand=brand,
+        grade=str(requested.get("grade") or ""),
+        subject=str(requested.get("subject") or ""),
+        format=str(requested.get("format") or ""),
+        program_kind=str(requested.get("program_kind") or ""),
+        product_family=str(requested.get("raw_text") or ""),
+    )
+    status = str(proof.get("status") or "").strip()
+    entry = proof.get("entry") if isinstance(proof.get("entry"), Mapping) else {}
+    if status not in {"exists", "not_offered"} or not entry:
+        return {
+            **base,
+            "reason": str(proof.get("reason") or status or "no_exact_product_existence_fact"),
+            "brand": brand,
+            "proof_status": status,
+            "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        }
+
+    fact_key = str(entry.get("source_fact_key") or "").strip()
+    valid_until = str(entry.get("valid_until") or "").strip()
+    if not fact_key:
+        return {**base, "reason": "empty_source_fact_key", "brand": brand, "proof_status": status}
+    fact_metadata = {
+        fact_key: {
+            "brand": brand,
+            "client_safe": "true",
+            "valid_until": valid_until,
+            "source": "semantic_frame_existence_proof_shadow",
+            "proof_status": status,
+            "fact_type": str(entry.get("source_fact_type") or ""),
+            "product_family": str(entry.get("product_family") or ""),
+            "program_kind": str(entry.get("program_kind") or ""),
+            "format": str(entry.get("format") or ""),
+        }
+    }
+    return {
+        **base,
+        "status": status,
+        "reason": str(proof.get("reason") or "exact_product_existence_fact"),
+        "brand": brand,
+        "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        "exact_fact_keys": [fact_key],
+        "fact_metadata": fact_metadata,
+        "source_fact_key": fact_key,
+        "valid_until": valid_until,
+    }
+
+
 def _semantic_frame_fresh_client_safe_fact_trace(
     direct: Mapping[str, Any],
     *,
     active_brand: str,
 ) -> dict[str, Any]:
     exact_keys = [str(key or "").strip() for key in (direct.get("wide_fact_exact_keys") or ()) if str(key or "").strip()]
-    fact_meta = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
+    fact_meta = dict(direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {})
+    proof_shadow = direct.get("semantic_frame_existence_proof_shadow")
+    proof_keys: list[str] = []
+    if isinstance(proof_shadow, Mapping) and str(proof_shadow.get("status") or "") in {"exists", "not_offered"}:
+        proof_keys = [
+            str(key or "").strip()
+            for key in (proof_shadow.get("exact_fact_keys") or ())
+            if str(key or "").strip()
+        ]
+        proof_meta = proof_shadow.get("fact_metadata") if isinstance(proof_shadow.get("fact_metadata"), Mapping) else {}
+        for key, value in proof_meta.items():
+            if str(key or "").strip() and isinstance(value, Mapping):
+                fact_meta[str(key)] = dict(value)
+        exact_keys = list(dict.fromkeys([*exact_keys, *proof_keys]))
     checked: list[dict[str, str]] = []
     fresh_checked: list[dict[str, str]] = []
     base = {
         "exact_fact_count": len(exact_keys),
+        "existence_proof_shadow_count": len(proof_keys),
         "checked_count": 0,
         "fresh_client_safe_count": 0,
         "all_exact_facts_fresh_client_safe": False,
@@ -2802,6 +2919,7 @@ def _semantic_frame_fresh_client_safe_fact_trace(
                 "client_safe": "true" if client_safe else "false",
                 "valid_until": valid_until,
                 "valid_until_ok": "true" if valid_until_ok else "false",
+                "source": str(meta.get("source") or "wide_fact_pack"),
             }
         )
         if brand == active_brand and client_safe and valid_until_ok:
@@ -2970,6 +3088,22 @@ def _semantic_frame_manager_action_gate_reason(frame: Mapping[str, Any]) -> tupl
     }:
         return True, f"manager_action:payment_{payment_readiness}"
     return False, "unsupported_manager_action"
+
+
+def apply_semantic_frame_existence_proof_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_existence_proof_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace = _semantic_frame_existence_proof_shadow_trace(_semantic_frame_from_result(result), context=context)
+    metadata["semantic_frame_existence_proof_shadow"] = trace
+    direct["semantic_frame_existence_proof_shadow"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
 
 
 def apply_semantic_frame_manager_action_gate(

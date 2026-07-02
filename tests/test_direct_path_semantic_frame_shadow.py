@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     SEMANTIC_FRAME_DECISION_SHADOW_ENV,
     SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
+    SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV,
     SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
     SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
@@ -44,6 +46,18 @@ def test_semantic_frame_decision_shadow_flag_is_default_off_and_not_profile_on(m
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({"semantic_frame_decision_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "0"}) is False
+
+
+def test_semantic_frame_existence_proof_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({}) is False
+    assert subscription_llm._semantic_frame_existence_proof_shadow_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({"semantic_frame_existence_proof_shadow": "1"}) is True
+    assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_manager_action_gate_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,6 +550,113 @@ def test_semantic_frame_self_answer_shadow_reports_partial_freshness() -> None:
     assert freshness["checked_count"] == 2
     assert freshness["fresh_client_safe_count"] == 1
     assert freshness["all_exact_facts_fresh_client_safe"] is False
+
+
+def _write_existence_snapshot(tmp_path: Path) -> Path:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "unpk",
+                "fact_id": "unpk.olympiad.physics.online_11",
+                "fact_key": "unpk.olympiad.physics.online_11",
+                "fact_type": "program",
+                "product": "олимпиадная физика онлайн",
+                "client_safe_text": "УНПК: для 11 класса есть онлайн-подготовка по олимпиадной физике.",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "valid_until": "2026-12-31",
+                "structured_value": {"format": "online", "classes": [11]},
+            }
+        ]
+    }
+    path = tmp_path / "kb_release_v3_snapshot.json"
+    path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _existence_frame_metadata() -> dict:
+    return {
+        "semantic_frame_posthoc_shadow": {"status": "ok"},
+        "semantic_frame": {
+            "schema_version": "semantic_frame_v1_2026_07_01",
+            "mode": "shadow",
+            "intent": "спросить, есть ли олимпиадная физика онлайн для 11 класса",
+            "risk_class": "safe",
+            "deal_stage": "interest",
+            "payment_readiness": "none",
+            "requested_product": {
+                "brand": "unpk",
+                "subject": "physics",
+                "grade": "11",
+                "format": "online",
+                "program_kind": "olympiad",
+                "raw_text": "олимпиадная физика онлайн для 11 класса",
+            },
+            "requested_action": "answer_question",
+            "answerability": "answer_self",
+            "must_handoff": False,
+            "confidence": 0.94,
+        },
+        "direct_path": {
+            "wide_fact_exact_keys": [],
+            "wide_fact_metadata": {},
+        },
+    }
+
+
+def test_semantic_frame_existence_proof_shadow_supplies_freshness_without_route_text_change(tmp_path: Path) -> None:
+    snapshot_path = _write_existence_snapshot(tmp_path)
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="УНПК: для 11 класса есть онлайн-подготовка по олимпиадной физике.",
+        safety_flags=("manager_approval_required", "no_auto_send"),
+        manager_checklist=("Проверить перед отправкой.",),
+        metadata=_existence_frame_metadata(),
+    )
+    context = {
+        "active_brand": "unpk",
+        "snapshot_path": str(snapshot_path),
+        SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV: "1",
+        SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+    }
+
+    proofed = subscription_llm.apply_semantic_frame_existence_proof_shadow(base_result, context=context)
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(proofed, context=context)
+
+    assert result.route == base_result.route
+    assert result.draft_text == base_result.draft_text
+    proof = result.metadata["direct_path"]["semantic_frame_existence_proof_shadow"]
+    assert proof["status"] == "exists"
+    assert proof["exact_fact_keys"] == ["unpk.olympiad.physics.online_11"]
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    freshness = shadow["guards"]["freshness"]
+    assert shadow["status"] == "would_demote_to_self"
+    assert freshness["ok"] is True
+    assert freshness["existence_proof_shadow_count"] == 1
+    assert freshness["checked"][0]["source"] == "semantic_frame_existence_proof_shadow"
+
+
+def test_semantic_frame_existence_proof_shadow_default_off_does_not_supply_freshness(tmp_path: Path) -> None:
+    snapshot_path = _write_existence_snapshot(tmp_path)
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="УНПК: для 11 класса есть онлайн-подготовка по олимпиадной физике.",
+        metadata=_existence_frame_metadata(),
+    )
+    context = {
+        "active_brand": "unpk",
+        "snapshot_path": str(snapshot_path),
+        SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV: "1",
+    }
+
+    proofed = subscription_llm.apply_semantic_frame_existence_proof_shadow(base_result, context=context)
+    result = subscription_llm.apply_semantic_frame_self_answer_shadow(proofed, context=context)
+
+    assert "semantic_frame_existence_proof_shadow" not in result.metadata
+    shadow = result.metadata["semantic_frame_self_answer_shadow"]
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "no_exact_fact_keys"
 
 
 def test_semantic_frame_self_answer_shadow_blocks_p0_even_when_frame_says_safe() -> None:

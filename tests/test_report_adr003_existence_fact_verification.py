@@ -139,7 +139,8 @@ def test_handoff_without_exact_evidence_stays_blocked(tmp_path: Path) -> None:
 
     assert result["totals"]["handoff_without_exact_kb_evidence"] == 1
     example = result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]
-    assert example["evidence_level"] == "kb_partial"
+    assert example["evidence_level"] == "unknown"
+    assert example["product_existence_check"]["status"] == "unknown"
 
 
 def test_wrong_brand_fact_is_not_evidence(tmp_path: Path) -> None:
@@ -151,7 +152,9 @@ def test_wrong_brand_fact_is_not_evidence(tmp_path: Path) -> None:
     )
 
     assert result["groups"]["handoff_without_exact_kb_evidence"]["count"] == 1
-    assert result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]["evidence_level"] == "none"
+    example = result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]
+    assert example["evidence_level"] == "unknown"
+    assert example["product_existence_check"]["status"] == "unknown"
 
 
 def test_stale_or_not_client_safe_fact_is_not_evidence(tmp_path: Path) -> None:
@@ -166,7 +169,73 @@ def test_stale_or_not_client_safe_fact_is_not_evidence(tmp_path: Path) -> None:
     )
 
     assert result["groups"]["handoff_without_exact_kb_evidence"]["count"] == 1
-    assert result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]["evidence_level"] == "none"
+    example = result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]
+    assert example["evidence_level"] == "unknown"
+    assert example["product_existence_check"]["status"] == "unknown"
+
+
+def test_payment_deadline_fact_is_not_product_existence_evidence(tmp_path: Path) -> None:
+    payment_fact = _fact(
+        fact_key="payment.deadline",
+        text="После записи срок оплаты: для выездной школы — 5 дней.",
+    )
+
+    result = _build(
+        tmp_path,
+        dialogs=[
+            _dialog(
+                "d1",
+                requested_product={
+                    "brand": "unpk",
+                    "subject": "",
+                    "grade": "",
+                    "format": "",
+                    "program_kind": "лагерь",
+                    "product_family": "летняя школа",
+                    "raw_text": "летняя школа",
+                },
+            )
+        ],
+        gold_rows=[_gold("d1")],
+        facts=[payment_fact],
+    )
+
+    assert result["groups"]["handoff_without_exact_kb_evidence"]["count"] == 1
+    example = result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]
+    assert example["evidence_level"] == "unknown"
+    assert example["product_existence_check"]["status"] == "unknown"
+
+
+def test_registration_fact_is_not_product_existence_evidence(tmp_path: Path) -> None:
+    registration_fact = _fact(
+        fact_key="registration.open",
+        text="Регистрация на летнюю школу для 5 класса открыта.",
+    )
+
+    result = _build(
+        tmp_path,
+        dialogs=[
+            _dialog(
+                "d1",
+                requested_product={
+                    "brand": "unpk",
+                    "subject": "",
+                    "grade": "5 класс",
+                    "format": "",
+                    "program_kind": "лагерь",
+                    "product_family": "летняя школа",
+                    "raw_text": "летняя школа для 5 класса",
+                },
+            )
+        ],
+        gold_rows=[_gold("d1")],
+        facts=[registration_fact],
+    )
+
+    assert result["groups"]["handoff_without_exact_kb_evidence"]["count"] == 1
+    example = result["groups"]["handoff_without_exact_kb_evidence"]["examples"][0]
+    assert example["evidence_level"] == "unknown"
+    assert example["product_existence_check"]["status"] == "unknown"
 
 
 def test_danger_money_p0_rows_are_excluded(tmp_path: Path) -> None:

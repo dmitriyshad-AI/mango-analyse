@@ -150,3 +150,61 @@ def test_noisy_grade_string_does_not_broaden_to_grade_9() -> None:
     assert result["status"] == "needs_slot"
     assert result["reason"] == "invalid_axis"
     assert result["invalid_slots"] == ["grade"]
+
+
+def test_ordinal_grade_phrase_is_accepted_for_product_existence() -> None:
+    result = verify_product_format_exists(
+        _catalog(),
+        brand="УНПК",
+        grade="закончил 5-й класс",
+        product_family="летняя школа",
+    )
+
+    assert result["status"] == "exists"
+    assert 5 in result["entry"]["grade_values"]
+
+
+def test_arbitrary_word_before_class_is_not_parsed_as_grade() -> None:
+    catalog = _catalog()
+
+    for noisy_grade in ("5 дней класс", "9 кабинет класс", "5 смена класс"):
+        result = verify_product_format_exists(
+            catalog,
+            brand="УНПК",
+            grade=noisy_grade,
+            product_family="летняя школа",
+        )
+
+        assert result["status"] == "needs_slot"
+        assert result["reason"] == "invalid_axis"
+        assert result["invalid_slots"] == ["grade"]
+
+
+def test_enrollment_facts_do_not_prove_product_existence() -> None:
+    facts = [
+        {
+            "brand": "unpk",
+            "fact_key": "synthetic.registration.open",
+            "fact_type": "deadline",
+            "product": "summer_school",
+            "client_safe_text": "Регистрация на летнюю школу для 5 класса открыта.",
+            "allowed_for_client_answer": True,
+            "forbidden_for_client": False,
+            "internal_only": False,
+            "valid_until": "2027-05-30",
+        },
+        {
+            "brand": "unpk",
+            "fact_key": "synthetic.application.open",
+            "fact_type": "program",
+            "product": "summer_school",
+            "client_safe_text": "Можно оставить заявку на летнюю школу для 5 класса.",
+            "allowed_for_client_answer": True,
+            "forbidden_for_client": False,
+            "internal_only": False,
+            "valid_until": "2027-05-30",
+        },
+    ]
+    catalog = build_product_existence_axes_catalog(facts)
+
+    assert catalog["entries"] == []

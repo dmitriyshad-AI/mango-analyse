@@ -1,0 +1,5 @@
+ M scripts/report_adr003_existence_fact_verification.py
+ M src/mango_mvp/knowledge_base/product_existence_axes_catalog.py
+ M tests/test_kb_product_existence_axes_catalog.py
+ M tests/test_report_adr003_existence_fact_verification.py
+?? tasks/_done/2026-07-02_TZ_ADR003_F2e_existence_report_uses_product_catalog_dlya_D1.md

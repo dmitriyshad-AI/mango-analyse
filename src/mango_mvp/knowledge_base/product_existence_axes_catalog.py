@@ -370,6 +370,10 @@ def _positive_fact_is_operational_or_payment_like(haystack: str) -> bool:
             "реквизит",
             "записаться",
             "запишет",
+            "регистрац",
+            "набор",
+            "зачислен",
+            "заявк",
             "запись до",
             "записи до",
             "лист ожидания",
@@ -410,7 +414,11 @@ def _parse_grade_values(value: Any, *, allow_bare: bool) -> list[int]:
     range_pattern = (
         r"\b([1-9]|1[01])\s*[-–—]\s*([1-9]|1[01])\b"
         if allow_bare
-        else r"\b([1-9]|1[01])\s*[-–—]\s*([1-9]|1[01])\s*(?:класс|классы|классов|класса|кл)\b"
+        else (
+            r"\b([1-9]|1[01])\s*[-–—]\s*([1-9]|1[01])"
+            r"(?:\s*[-–—]?\s*(?:й|го|ый|ого|ых|х|е|м))?\s*"
+            r"(?:класс|классы|классов|класса|кл)\b"
+        )
     )
     for start, end in re.findall(range_pattern, raw_text):
         a, b = int(start), int(end)
@@ -424,7 +432,9 @@ def _parse_grade_values(value: Any, *, allow_bare: bool) -> list[int]:
         result.extend(
             int(item)
             for item in re.findall(
-                r"\b([1-9]|1[01])\s*(?:класс|классе|класса|классов|кл)\b", text_without_ranges
+                r"\b([1-9]|1[01])(?:\s*[-–—]?\s*(?:й|го|ый|ого|ых|х|е|м))?\s*"
+                r"(?:класс|классе|класса|классов|кл)\b",
+                text_without_ranges,
             )
         )
         result.extend(
@@ -500,7 +510,11 @@ def _grade_int(value: Any) -> int | None:
     raw = _text(value).casefold()
     if re.fullmatch(r"\s*([1-9]|1[01])\s*", raw):
         return int(raw.strip())
-    match = re.search(r"\b([1-9]|1[01])\s*(?:класс|классе|класса|классов|кл)\b", raw)
+    match = re.search(
+        r"\b([1-9]|1[01])(?:\s*[-–—]?\s*(?:й|го|ый|ого|ых|х|е|м))?\s*"
+        r"(?:класс|классе|класса|классов|кл)\b",
+        raw,
+    )
     return int(match.group(1)) if match else None
 
 

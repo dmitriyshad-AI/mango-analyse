@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -18,6 +18,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.report_adr003_overhandoff_levers import _load_gold_rows
 from scripts.report_adr003_semantic_frame_eval import _load_transcripts, _strict_bool, _turns
+from mango_mvp.knowledge_base.product_existence_axes_catalog import (
+    build_product_existence_axes_catalog,
+    verify_product_format_exists,
+)
 
 
 SCHEMA_VERSION = "adr003_existence_fact_verification_v1_2026_07_02"
@@ -55,20 +59,6 @@ NON_EXISTENCE_REFERENCE_MARKERS = {
     "скид",
     "пробн",
 }
-EXISTENCE_PROOF_FACT_TYPES = {
-    "program",
-    "course_parameter",
-    "format",
-    "camp_city",
-    "camp_lvsh",
-    "camp_zvsh",
-    "intensive",
-    "deadline",
-    "location",
-}
-CLIENT_SAFE_KEYS = ("allowed_for_client_answer", "client_safe")
-TEXT_KEYS = ("client_safe_text", "fact_text", "manager_display_text", "text")
-
 SUBJECT_ALIASES = {
     "physics": ("physics", "физик"),
     "физика": ("physics", "физик"),
@@ -118,6 +108,7 @@ def build_report(*, transcripts: Path, gold: Path, kb_snapshot: Path) -> dict[st
     turn_map = _build_turn_map(dialogs)
     gold_rows = _load_gold_rows(gold)
     kb_facts = _load_kb_facts(kb_snapshot)
+    product_catalog = build_product_existence_axes_catalog(kb_facts)
     rows: list[dict[str, Any]] = []
     missing_turns: list[dict[str, Any]] = []
     for gold_row in gold_rows:
@@ -126,7 +117,7 @@ def build_report(*, transcripts: Path, gold: Path, kb_snapshot: Path) -> dict[st
         if turn is None:
             missing_turns.append({"dialog_id": key[0], "turn": key[1]})
             continue
-        row = _classify(gold_row=gold_row, turn=turn, kb_facts=kb_facts)
+        row = _classify(gold_row=gold_row, turn=turn, product_catalog=product_catalog)
         rows.append(row)
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -146,8 +137,8 @@ def build_report(*, transcripts: Path, gold: Path, kb_snapshot: Path) -> dict[st
         "acceptance": _acceptance(rows, missing_turns),
         "notes": [
             "Report-only scorer: runtime route/text/prompt behavior is unchanged.",
-            "String matching here is diagnostic only and must not be copied into runtime as a new understanding layer.",
-            "A future active step still needs a first-class fact-verification contract in the direct-path metadata.",
+            "KB evidence comes from product_existence_axes_catalog, not ad-hoc report string matching.",
+            "A future active step still needs runtime metadata wiring and paired eval before any route demotion.",
         ],
     }
     return report
@@ -226,7 +217,12 @@ def _build_turn_map(dialogs: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int
     return result
 
 
-def _classify(*, gold_row: Mapping[str, Any], turn: Mapping[str, Any], kb_facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _classify(
+    *,
+    gold_row: Mapping[str, Any],
+    turn: Mapping[str, Any],
+    product_catalog: Mapping[str, Any],
+) -> dict[str, Any]:
     expected = gold_row.get("expected") if isinstance(gold_row.get("expected"), Mapping) else gold_row
     frame = turn.get("bot_semantic_frame") if isinstance(turn.get("bot_semantic_frame"), Mapping) else {}
     requested_product = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
@@ -269,11 +265,13 @@ def _classify(*, gold_row: Mapping[str, Any], turn: Mapping[str, Any], kb_facts:
     row["existence_format_candidate"] = _is_existence_format_candidate(row)
     row["excluded_danger_money_p0"] = _danger_money_p0(turn, frame, gold_row)
     runtime_evidence = _runtime_fact_evidence(turn, row["requested_product"])
-    kb_matches = _kb_matches(kb_facts, row["requested_product"], active_brand=row["brand"])
+    product_check = _product_existence_check(product_catalog, row["requested_product"], active_brand=row["brand"])
+    kb_matches = _product_check_matches(product_check)
     row["runtime_fact_evidence"] = runtime_evidence
+    row["product_existence_check"] = product_check
     row["best_kb_match"] = kb_matches[0] if kb_matches else {}
     row["kb_match_count"] = len(kb_matches)
-    row["evidence_level"] = _evidence_level(runtime_evidence, kb_matches)
+    row["evidence_level"] = _evidence_level(runtime_evidence, product_check)
     if not is_gold_safe_self:
         row["group"] = "not_gold_safe_self"
     elif not row["existence_format_candidate"]:
@@ -301,47 +299,54 @@ def _load_kb_facts(path: Path) -> list[Mapping[str, Any]]:
     return [item for item in facts if isinstance(item, Mapping)]
 
 
-def _kb_matches(
-    facts: Sequence[Mapping[str, Any]],
+def _product_existence_check(
+    product_catalog: Mapping[str, Any],
     requested: Mapping[str, Any],
     *,
     active_brand: str,
-) -> list[dict[str, Any]]:
-    requested_axes = _requested_axes(requested)
+) -> dict[str, Any]:
+    raw_text = str(requested.get("raw_text") or "")
+    check = verify_product_format_exists(
+        product_catalog,
+        brand=active_brand or str(requested.get("brand") or ""),
+        grade=requested.get("grade"),
+        subject=str(requested.get("subject") or raw_text),
+        format=str(requested.get("format") or raw_text),
+        program_kind=str(requested.get("program_kind") or raw_text),
+        product_family=str(requested.get("product_family") or ""),
+    )
+    return dict(check)
+
+
+def _product_check_matches(product_check: Mapping[str, Any]) -> list[dict[str, Any]]:
+    matches = product_check.get("matches")
+    if not isinstance(matches, Sequence):
+        return []
     result: list[dict[str, Any]] = []
-    if not requested_axes:
-        return result
-    for fact in facts:
-        if _clean(fact.get("brand")) != active_brand:
+    requested_axes = product_check.get("query_axes") if isinstance(product_check.get("query_axes"), Mapping) else {}
+    status = str(product_check.get("status") or "")
+    for entry in matches:
+        if not isinstance(entry, Mapping):
             continue
-        if not _client_safe(fact):
-            continue
-        if not _valid_until_ok(fact.get("valid_until")):
-            continue
-        if not _existence_proof_fact(fact):
-            continue
-        haystack = _fact_haystack(fact)
-        hits = _axis_hits(requested, haystack)
-        if not hits:
-            continue
-        score = len(hits)
-        exact = _exact_axis_match(requested_axes=requested_axes, hits=hits, fact=fact)
-        if not exact and score < min(2, len(requested_axes)):
-            continue
+        match_level = "exact" if status in {"exists", "not_offered"} else status or "unknown"
         result.append(
             {
-                "fact_key": str(fact.get("fact_key") or fact.get("fact_id") or "").strip(),
-                "fact_type": str(fact.get("fact_type") or "").strip(),
-                "product": str(fact.get("product") or "").strip(),
-                "valid_until": str(fact.get("valid_until") or "").strip(),
-                "axis_hits": hits,
-                "requested_axes": requested_axes,
-                "match_level": "exact" if exact else "partial",
-                "client_safe_text_excerpt": _redacted_excerpt(_fact_text(fact), limit=240),
-                "score": score + (10 if exact else 0),
+                "fact_key": str(entry.get("source_fact_key") or entry.get("source_fact_id") or "").strip(),
+                "fact_type": str(entry.get("source_fact_type") or "").strip(),
+                "product": str(entry.get("product_family") or entry.get("program_kind") or "").strip(),
+                "valid_until": str(entry.get("valid_until") or "").strip(),
+                "axis_hits": [
+                    key
+                    for key in ("subject", "grade", "format", "program_kind", "product_family")
+                    if requested_axes.get(key)
+                ],
+                "requested_axes": [key for key, value in requested_axes.items() if value],
+                "match_level": match_level,
+                "existence_status": str(entry.get("existence_status") or ""),
+                "client_safe_text_excerpt": _redacted_excerpt(entry.get("client_safe_text"), limit=240),
+                "score": 100 if match_level == "exact" else 0,
             }
         )
-    result.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("fact_key") or "")))
     return result[:8]
 
 
@@ -366,13 +371,13 @@ def _runtime_fact_evidence(turn: Mapping[str, Any], requested: Mapping[str, Any]
     return best
 
 
-def _evidence_level(runtime: Mapping[str, Any], kb_matches: Sequence[Mapping[str, Any]]) -> str:
-    if kb_matches and kb_matches[0].get("match_level") == "exact":
+def _evidence_level(runtime: Mapping[str, Any], product_check: Mapping[str, Any]) -> str:
+    if product_check.get("status") in {"exists", "not_offered"}:
         return "kb_exact"
     if runtime.get("match_level") == "exact":
         return "runtime_exact"
-    if kb_matches:
-        return "kb_partial"
+    if product_check.get("status") in {"unknown", "needs_slot"}:
+        return str(product_check.get("status"))
     if runtime.get("match_level") == "partial":
         return "runtime_partial"
     return "none"
@@ -441,70 +446,6 @@ def _danger_money_p0(turn: Mapping[str, Any], frame: Mapping[str, Any], gold_row
         ]
     ).casefold()
     return any(marker in text for marker in RISK_MARKERS)
-
-
-def _fact_haystack(fact: Mapping[str, Any]) -> str:
-    return _normalize(
-        " ".join(
-            str(fact.get(key) or "")
-            for key in ("fact_key", "fact_id", "fact_type", "product", "client_safe_text", "fact_text", "manager_display_text")
-        )
-    )
-
-
-def _fact_text(fact: Mapping[str, Any]) -> str:
-    for key in TEXT_KEYS:
-        value = str(fact.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _existence_proof_fact(fact: Mapping[str, Any]) -> bool:
-    fact_type = _clean(fact.get("fact_type"))
-    fact_types = {_clean(item) for item in (fact.get("fact_types") or []) if str(item or "").strip()}
-    if fact_type:
-        fact_types.add(fact_type)
-    if fact_types and not fact_types.intersection(EXISTENCE_PROOF_FACT_TYPES):
-        return False
-    text = _fact_haystack(fact)
-    if any(marker in text for marker in ("discount", "скид", "certificate", "сертифик", "tax", "налог")):
-        return False
-    return True
-
-
-def _exact_axis_match(*, requested_axes: Sequence[str], hits: Sequence[str], fact: Mapping[str, Any]) -> bool:
-    if not requested_axes or set(hits) < set(requested_axes):
-        return False
-    if len(requested_axes) >= 2:
-        return True
-    only = requested_axes[0]
-    fact_type = _clean(fact.get("fact_type"))
-    if only == "program_kind":
-        return fact_type in {"program", "course_parameter", "camp_city", "camp_lvsh", "camp_zvsh", "intensive"}
-    if only == "format":
-        return fact_type == "format"
-    return False
-
-
-def _client_safe(fact: Mapping[str, Any]) -> bool:
-    if fact.get("forbidden_for_client") is True or fact.get("internal_only") is True:
-        return False
-    if "allowed_for_client_answer" in fact:
-        return fact.get("allowed_for_client_answer") is True
-    if "client_safe" in fact:
-        return fact.get("client_safe") is True
-    return bool(_fact_text(fact))
-
-
-def _valid_until_ok(value: Any) -> bool:
-    raw = str(value or "").strip()
-    if not raw:
-        return False
-    try:
-        return date.fromisoformat(raw[:10]) >= date.today()
-    except ValueError:
-        return False
 
 
 def _active_brand(turn: Mapping[str, Any], requested: Mapping[str, Any]) -> str:

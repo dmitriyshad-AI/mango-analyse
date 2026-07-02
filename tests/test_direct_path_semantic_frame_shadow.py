@@ -153,6 +153,40 @@ def test_semantic_frame_posthoc_prompt_distinguishes_existence_from_availability
     assert "check_availability/manager_only" in prompt
 
 
+def test_semantic_frame_posthoc_prompt_does_not_copy_cautious_route() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит и подскажет.",
+        metadata={
+            "direct_path": {
+                "reason_class": "manager_approval_required",
+                "model_intent": {"intent": "product_reference_question"},
+                "action_proposal": {"action": "answer_question"},
+            },
+            "conversation_intent_plan": {
+                "known_facts": [
+                    "УНПК: ЛВШ Менделеево рассчитана на 5-10 классы.",
+                ],
+            },
+        },
+    )
+
+    prompt = build_direct_path_semantic_frame_posthoc_prompt(
+        result,
+        client_message="Есть лагерь для 5 класса?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert "классифицируй смысл запроса клиента отдельно от текущего final_route" in prompt
+    assert "final_route=draft_for_manager/manager_only" in prompt
+    assert "не являются доказательством, что сам запрос требует менеджера" in prompt
+    assert "проверенная client-safe опора" in prompt
+    assert "direct_path/conversation metadata" in prompt
+    assert "осторожный final_route" in prompt
+    assert "risk_class=missing_facts ставь только" in prompt
+    assert "conversation_intent_plan" in prompt
+
+
 def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> None:
     off_result = _normalize_direct_path_payload(
         {

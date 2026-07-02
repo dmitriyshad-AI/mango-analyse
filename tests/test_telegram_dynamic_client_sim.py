@@ -2559,6 +2559,110 @@ def test_semantic_frame_enrich_transcripts_keeps_frozen_fields_if_provider_mutat
     assert turn["bot_frame_decision_shadow"]["status"] == "observed"
 
 
+def test_semantic_frame_enrich_transcripts_applies_existence_proof_shadow(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "unpk",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+
+    class FrameProvider:
+        def _apply_direct_path_semantic_frame_posthoc_shadow(self, result, *, client_message: str, context):
+            metadata = dict(result.metadata)
+            direct = dict(metadata.get("direct_path") or {})
+            frame = {
+                "intent": "exists",
+                "risk_class": "safe",
+                "deal_stage": "exploration",
+                "payment_readiness": "none",
+                "requested_product": {"brand": "unpk", "raw_text": "олимпиадная физика онлайн 9 класс"},
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "evidence": ["test"],
+                "confidence": 0.95,
+            }
+            metadata["semantic_frame"] = frame
+            direct["semantic_frame"] = frame
+            metadata["direct_path"] = direct
+            return sim.SubscriptionDraftResult(
+                route=result.route,
+                draft_text=result.draft_text,
+                safety_flags=result.safety_flags,
+                manager_checklist=result.manager_checklist,
+                missing_facts=result.missing_facts,
+                topic_id=result.topic_id,
+                message_type=result.message_type,
+                risk_level=result.risk_level,
+                metadata=metadata,
+            )
+
+    def fake_proof_shadow(result, *, context):
+        metadata = dict(result.metadata)
+        direct = dict(metadata.get("direct_path") or {})
+        trace = {
+            "enabled": True,
+            "status": "exists",
+            "exact_fact_keys": ["fact.existence"],
+            "route_text_shadow_only": True,
+        }
+        metadata["semantic_frame_existence_proof_shadow"] = trace
+        direct["semantic_frame_existence_proof_shadow"] = trace
+        metadata["direct_path"] = direct
+        return sim.SubscriptionDraftResult(
+            route=result.route,
+            draft_text=result.draft_text,
+            safety_flags=result.safety_flags,
+            manager_checklist=result.manager_checklist,
+            missing_facts=result.missing_facts,
+            topic_id=result.topic_id,
+            message_type=result.message_type,
+            risk_level=result.risk_level,
+            metadata=metadata,
+        )
+
+    monkeypatch.setattr(sim, "apply_semantic_frame_existence_proof_shadow", fake_proof_shadow)
+
+    dialogs = [
+        {
+            "dialog_id": "proof",
+            "brand": "unpk",
+            "persona": {"dialog_id": "proof", "brand": "unpk"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Есть олимпиадная физика онлайн для 9 класса?",
+                    "bot_route": "draft_for_manager",
+                    "bot_text": "Менеджер проверит.",
+                    "bot_safety_flags": ["manager_approval_required"],
+                    "bot_manager_checklist": ["Проверить группу."],
+                }
+            ],
+        }
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=FrameProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=1,
+    )
+
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "draft_for_manager"
+    assert turn["bot_text"] == "Менеджер проверит."
+    assert turn["bot_safety_flags"] == ["manager_approval_required"]
+    assert turn["bot_manager_checklist"] == ["Проверить группу."]
+    assert turn["bot_direct_path"]["semantic_frame_existence_proof_shadow"]["status"] == "exists"
+
+
 def test_semantic_frame_enrich_transcripts_parallel_counter_stress(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW", "1")
     counter = sim.LlmCallCounter()

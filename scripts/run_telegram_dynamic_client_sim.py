@@ -33,6 +33,7 @@ from mango_mvp.channels.subscription_llm import (
 )
 from mango_mvp.channels.subscription_llm_parts.provider import (
     apply_semantic_frame_decision_shadow,
+    apply_semantic_frame_existence_proof_shadow,
     apply_semantic_frame_self_answer_shadow,
 )
 from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
@@ -1865,6 +1866,7 @@ def _enrich_one_transcript_with_semantic_frame(
             client_message=client_message,
             context=context,
         )
+        framed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
         framed = apply_semantic_frame_self_answer_shadow(framed, context=context)
         framed = apply_semantic_frame_decision_shadow(framed, context=context)
         raw_frame = framed.metadata.get("semantic_frame") if isinstance(framed.metadata, Mapping) else {}

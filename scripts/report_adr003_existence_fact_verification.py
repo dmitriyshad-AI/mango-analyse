@@ -134,6 +134,7 @@ def build_report(*, transcripts: Path, gold: Path, kb_snapshot: Path) -> dict[st
         "totals": _totals(rows, missing_turns),
         "breakdowns": _breakdowns(rows),
         "groups": _groups(rows),
+        "rows": rows,
         "acceptance": _acceptance(rows, missing_turns),
         "notes": [
             "Report-only scorer: runtime route/text/prompt behavior is unchanged.",

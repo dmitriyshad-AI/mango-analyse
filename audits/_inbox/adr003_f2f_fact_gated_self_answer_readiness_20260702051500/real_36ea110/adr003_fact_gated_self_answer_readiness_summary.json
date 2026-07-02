@@ -1,0 +1,68 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "No strict draft_for_manager candidates; active F3 remains NO-GO.",
+      "Exact-proof manager_only rows exist; they need separate policy/upstream work and cannot be demoted by F3 route gate.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_no_active_candidate"
+  },
+  "breakdowns": {
+    "by_evidence_level": {
+      "kb_exact": 9,
+      "unknown": 1
+    },
+    "by_readiness_group": {
+      "already_self_exact_proof": 6,
+      "blocked_no_exact_proof": 1,
+      "excluded_danger_money_p0": 1,
+      "manager_only_exact_proof_needs_policy": 2
+    },
+    "by_requested_action": {
+      "answer_question": 3,
+      "check_availability": 7
+    },
+    "by_route": {
+      "bot_answer_self_for_pilot": 8,
+      "manager_only": 2
+    }
+  },
+  "manager_only_exact_proof_keys": [
+    {
+      "blocked_reasons": [
+        "route_is_manager_only",
+        "low_confidence"
+      ],
+      "dialog_id": "wappi_pair_missing_72h_001",
+      "route": "manager_only",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 1
+    },
+    {
+      "blocked_reasons": [
+        "route_is_manager_only",
+        "frame_risk_not_safe",
+        "frame_answerability_not_self",
+        "frame_action_not_safe_self",
+        "frame_must_handoff"
+      ],
+      "dialog_id": "wappi_pair_missing_72h_003",
+      "route": "manager_only",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 1
+    }
+  ],
+  "schema_version": "adr003_fact_gated_self_answer_readiness_v1_2026_07_02",
+  "source_rev": "113c417",
+  "totals": {
+    "already_self_exact_proof": 6,
+    "blocked_frame_not_self": 0,
+    "blocked_no_exact_proof": 1,
+    "current_handoff_rows": 2,
+    "excluded_danger_money_p0": 1,
+    "existence_format_rows": 10,
+    "manager_only_exact_proof_needs_policy": 2,
+    "strict_f3_draft_candidates": 0
+  }
+}

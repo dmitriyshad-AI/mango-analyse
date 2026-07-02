@@ -72,20 +72,36 @@ class SummaryResult:
     reasoning: str
 
 
-def clean_body(text: str, *, limit: int | None = None) -> str:
+def split_thread_context(text: str) -> tuple[str, str]:
     if not text:
-        return ""
+        return "", ""
     lines: list[str] = []
+    context: list[str] = []
+    in_context = False
     for line in text.replace("\r\n", "\n").split("\n"):
         stripped = line.strip()
         if QUOTE_HEADER.match(stripped) or SIGNATURE_DIVIDER.match(stripped):
-            break
+            in_context = True
+            context.append(line)
+            continue
+        if in_context:
+            context.append(line)
+            continue
         if stripped.startswith(">"):
+            context.append(line)
             continue
         if FOOTER_HINT.search(stripped) and len("\n".join(lines)) > 120:
-            break
+            in_context = True
+            context.append(line)
+            continue
         lines.append(line)
     cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    thread_context = re.sub(r"\n{3,}", "\n\n", "\n".join(context)).strip()
+    return cleaned, thread_context
+
+
+def clean_body(text: str, *, limit: int | None = None) -> str:
+    cleaned, _ = split_thread_context(text)
     if limit is not None:
         return cleaned[:limit]
     return cleaned

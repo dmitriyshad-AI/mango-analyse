@@ -13,6 +13,7 @@ from mango_mvp.customer_timeline.a2_mail_ingest import (
     build_local_client_review,
     create_test_db_backup,
     ensure_not_prod_apply_path,
+    current_contact_brand,
     plan_a2v3_mail_ingest,
     reconcile_a2v3_event_facts,
     validate_a2v3_mail_ingest,
@@ -20,8 +21,10 @@ from mango_mvp.customer_timeline.a2_mail_ingest import (
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
     CustomerIdentity,
+    CustomerOpportunity,
     IdentityLink,
     IdentityStatus,
+    OpportunityType,
     TimelineDirection,
     TimelineEvent,
 )
@@ -246,11 +249,27 @@ def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path
         fact = con.execute(
             """
             SELECT event_type_detail, amount_kind, amount_rub, email_brand, customer_brand,
-                   customer_brand_source, bot_visible
+                   customer_brand_source, bot_visible, client_safe, client_safe_reason,
+                   sensitivity_tags_json
             FROM a2v3_mail_event_facts
             """
         ).fetchone()
-        assert fact == ("payment", "actual", 50000.0, "foton", "foton", "a2v3_email_content", 1)
+        assert fact[:7] == ("payment", "actual", 50000.0, "foton", "foton", "a2v3_email_content", 1)
+        assert fact[7:9] == (0, "sensitive_money")
+        assert "sensitive_money" in json.loads(fact[9])
+        chunk_record = json.loads(con.execute("SELECT record_json FROM bot_context_chunks").fetchone()[0])
+        assert "Письмо о записи на курс." in chunk_record["text"]
+        assert "Ответить по условиям записи." not in chunk_record["text"]
+        assert chunk_record["metadata"]["client_safe"] is False
+        assert chunk_record["metadata"]["client_safe_reason"] == "sensitive_money"
+        profile = con.execute(
+            """
+            SELECT brand, source, reason
+            FROM a2v3_customer_brand_profiles
+            WHERE customer_id = 'customer:known'
+            """
+        ).fetchone()
+        assert profile == ("foton", "a2v3_email_content", "history_unknown_email_content_known")
 
 
 def test_a2v3_mail_ingest_content_duplicate_skips_chunk_and_facts(tmp_path: Path) -> None:
@@ -324,6 +343,198 @@ def test_reconcile_a2v3_event_facts_is_idempotent(tmp_path: Path) -> None:
     assert second == {"plans": 1, "events_found": 1, "facts_upserted": 1}
     with sqlite3.connect(config.timeline_db_path) as con:
         assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
+def test_a2v3_mail_ingest_rich_chunk_keeps_thread_context_without_manager_note(tmp_path: Path) -> None:
+    row = _row("n" * 64, email="parent@example.com")
+    row["full_clean_text"] = "Актуальный вопрос про расписание и стоимость."
+    row["thread_context"] = "Предыдущее письмо: обсуждали 8 класс и воскресенье."
+    row["thread_context_source"] = "raw_body_split_thread_context"
+    config = _config(tmp_path, [row])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plan = plan_a2v3_mail_ingest(config)[0][0]
+
+    assert plan.chunk is not None
+    assert "Актуальный вопрос про расписание" in plan.chunk.text
+    assert "Контекст переписки" in plan.chunk.text
+    assert "Предыдущее письмо" in plan.chunk.text
+    assert "Ответить по условиям записи." not in plan.chunk.text
+    assert plan.chunk.metadata["chunk_rich_text"] is True
+    assert plan.chunk.allowed_for_bot is False
+    assert plan.chunk.requires_manager_review is True
+
+
+def test_a2v3_mail_ingest_ignores_unproven_thread_context(tmp_path: Path) -> None:
+    row = _row("s" * 64, email="parent@example.com")
+    row["full_clean_text"] = "Актуальный вопрос."
+    row["thread_context"] = "Ручной хвост без raw-body provenance."
+    config = _config(tmp_path, [row])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plan = plan_a2v3_mail_ingest(config)[0][0]
+
+    assert plan.chunk is not None
+    assert "Актуальный вопрос." in plan.chunk.text
+    assert "Ручной хвост" not in plan.chunk.text
+    assert "Контекст переписки" not in plan.chunk.text
+
+
+def test_a2v3_mail_ingest_legacy_summary_chunk_still_omits_manager_note(tmp_path: Path) -> None:
+    config = replace(_config(tmp_path, [_row("o" * 64, email="parent@example.com")]), chunk_rich_text=False)
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plan = plan_a2v3_mail_ingest(config)[0][0]
+
+    assert plan.chunk is not None
+    assert "Родитель спрашивает о записи" in plan.chunk.text
+    assert "Ответить по условиям записи." not in plan.chunk.text
+
+
+def test_a2v3_customer_brand_profile_uses_dominant_history_not_email_domain(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("p" * 64, email="known@example.com", brand="none")])
+    store = CustomerTimelineSQLiteStore(config.prod_timeline_db, allowed_root=tmp_path)
+    try:
+        for index in range(4):
+            store.upsert_opportunity(
+                CustomerOpportunity(
+                    tenant_id="foton",
+                    customer_id="customer:known",
+                    opportunity_type=OpportunityType.AMO_DEAL,
+                    source_system="amo",
+                    source_id=f"foton-{index}",
+                    status="observed",
+                    product_context={"brand": "foton"},
+                )
+            )
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer:known",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amo",
+                source_id="unpk-1",
+                status="observed",
+                product_context={"brand": "unpk"},
+            )
+        )
+    finally:
+        store.close()
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plans, report = plan_a2v3_mail_ingest(config)
+
+    assert plans[0].customer_brand == "foton"
+    assert plans[0].customer_brand_reason == "dominant_brand_history"
+    assert report["counts"]["bot_gate.usable_linked_qualified"] == 1
+    with sqlite3.connect(config.prod_timeline_db) as con:
+        con.row_factory = sqlite3.Row
+        brand, reason = current_contact_brand(
+            con,
+            tenant_id="foton",
+            customer_id="customer:known",
+            as_of=plans[0].event.event_at,
+        )
+    assert (brand, reason) == ("foton", "current_opportunity_brand")
+
+
+def test_current_contact_brand_does_not_infer_from_email_domain(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:domain", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:domain",
+                event_type="email_message",
+                event_at=CustomerIdentity(tenant_id="foton", identity_status="strong", customer_id="tmp").created_at,
+                source_system="mail_archive",
+                source_id="domain-only",
+                direction=TimelineDirection.INBOUND,
+                subject="edu@kmipt.ru",
+                summary="В письме есть только служебный домен.",
+                match_status="strong_unique",
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        assert current_contact_brand(con, tenant_id="foton", customer_id="customer:domain") == (
+            "unknown",
+            "stale_brand_signal",
+        )
+
+
+def test_a2v3_customer_brand_history_ignores_email_domains(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("r" * 64, email="known@example.com", brand="none")])
+    store = CustomerTimelineSQLiteStore(config.prod_timeline_db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:known",
+                event_type="email_message",
+                event_at=CustomerIdentity(tenant_id="foton", identity_status="strong", customer_id="tmp").created_at,
+                source_system="mail_archive",
+                source_id="domain-history",
+                direction=TimelineDirection.INBOUND,
+                subject="noreply@cdpofoton.ru",
+                summary="Служебный адрес cdpofoton.ru без смыслового бренда.",
+                match_status="strong_unique",
+            )
+        )
+    finally:
+        store.close()
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plans, report = plan_a2v3_mail_ingest(config)
+
+    assert plans[0].customer_brand == "unknown"
+    assert plans[0].customer_brand_reason == "no_known_brand_in_history"
+    assert report["counts"]["bot_gate.customer_brand_unknown"] == 1
+
+
+def test_customer_purchases_v1_scaffold_does_not_use_email_amounts(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        [_row("q" * 64, email="parent@example.com", event_type="payment", amount_kind="actual", amount_rub=77777)],
+    )
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer:known",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amo",
+                source_id="paid-deal",
+                status="Оплата получена",
+                product_context={"brand": "foton"},
+            )
+        )
+    finally:
+        store.close()
+
+    backup = create_test_db_backup(config)
+    apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    with sqlite3.connect(config.timeline_db_path) as con:
+        row = con.execute(
+            """
+            SELECT total_in, total_out, deals_cnt, computability, sources_json
+            FROM customer_purchases_v1
+            WHERE customer_id = 'customer:known'
+            """
+        ).fetchone()
+        assert row[:4] == (None, None, 1, "not_computable_missing_primary_amounts")
+        assert json.loads(row[4])["email_amounts_used"] is False
 
 
 def test_a2v3_apply_path_guard_requires_allowed_root_and_rejects_prod_or_symlink(tmp_path: Path) -> None:

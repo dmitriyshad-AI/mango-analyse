@@ -24,7 +24,7 @@ from scripts.email_pipeline.brand import infer_email_brand
 from scripts.email_pipeline.classification import build_outbound_template_counts, norm_subject
 from scripts.email_pipeline.contact import contact_to_dict, resolve_customer_contact
 from scripts.email_pipeline.quality import evaluate_quality, quality_to_dict, sanitize_summary_payload_for_quality
-from scripts.email_pipeline.summary import SummaryItem, clean_body, mask_pii, summarize_items
+from scripts.email_pipeline.summary import SummaryItem, clean_body, mask_pii, split_thread_context, summarize_items
 
 
 LOCAL_OUTPUT_DIR = Path(".codex_local/email_pipeline")
@@ -123,7 +123,8 @@ def main() -> int:
 
     for row in selected:
         row["summary_payload"] = summary_result.summaries[row["message_sha256"]]
-        row["full_clean_text"] = clean_body(row["body"])
+        row["full_clean_text"], row["thread_context"] = split_thread_context(row["body"])
+        row["thread_context_source"] = "raw_body_split_thread_context" if row["thread_context"] else "none"
         row["full_clean_text_chars"] = len(row["full_clean_text"])
         row["storage_mask_token_count"] = _mask_token_count(row)
         row["source_concrete_terms"] = _concrete_terms(f"{row['subject']}\n{row['full_clean_text']}")
@@ -528,6 +529,8 @@ def write_local_outputs(selected: list[dict[str, Any]], *, local_output_dir: Pat
                 "is_mass_recipient": row.get("is_mass_recipient"),
                 "subject_full": row["subject"],
                 "full_clean_text": row["full_clean_text"],
+                "thread_context": row.get("thread_context") or "",
+                "thread_context_source": row.get("thread_context_source") or "none",
                 "full_clean_text_chars": row["full_clean_text_chars"],
                 "body_chars": row["body_chars"],
                 "summary_payload": row["summary_payload"],

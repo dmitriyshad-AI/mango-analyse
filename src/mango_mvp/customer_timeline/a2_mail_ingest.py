@@ -3,10 +3,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -51,6 +52,12 @@ from mango_mvp.customer_timeline.store import (
 A2V3_MAIL_INGEST_SCHEMA_VERSION = "a2v3_mail_timeline_ingest_v1"
 A2V3_MAIL_SOURCE_SYSTEM = "mail_archive_stage2"
 A2V3_DEDUPE_SOURCE_SYSTEMS = ("mail_archive", "mail_archive_stage2")
+CLIENT_SAFE_POLICY_VERSION = "cs_v1"
+A2V3_CUSTOMER_BRAND_PROFILE_CODE_VERSION = "a2v3_customer_brand_profile_v1"
+CUSTOMER_PURCHASES_V1_CODE_VERSION = "customer_purchases_v1_not_computable"
+DEFAULT_BRAND_DOMINANCE_RATIO = 4.0
+CHUNK_RICH_TEXT_LIMIT = 6000
+EMAIL_OR_DOMAIN_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}|\b(?:https?://)?[\w.-]+\.[a-zа-я]{2,}(?:/\S*)?", re.I)
 DEFAULT_A2V3_INPUT = Path(".codex_local/email_pipeline/A2v3_100_review_full_storage.jsonl")
 DEFAULT_TALLANTO_IDENTITY_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/"
@@ -80,6 +87,13 @@ BLOCKED_MEMORY_STATUSES = {
     "financial_unverified",
     "needs_thread_context",
 }
+SENSITIVE_TYPE_TAGS = {
+    "payment": "sensitive_money",
+    "refund": "sensitive_money",
+    "contract": "sensitive_contract",
+    "tax": "sensitive_tax",
+    "medical": "sensitive_medical",
+}
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,8 @@ class A2V3MailIngestConfig:
     tenant_id: str = "foton"
     source_ref: str = "a2v3_100_review_20260701"
     enrich_existing: bool = False
+    brand_dominance_ratio: float = DEFAULT_BRAND_DOMINANCE_RATIO
+    chunk_rich_text: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_jsonl", Path(self.input_jsonl).expanduser())
@@ -103,6 +119,9 @@ class A2V3MailIngestConfig:
         if self.tallanto_identity_db is not None:
             object.__setattr__(self, "tallanto_identity_db", Path(self.tallanto_identity_db).expanduser())
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
+        object.__setattr__(self, "brand_dominance_ratio", float(self.brand_dominance_ratio))
+        if self.brand_dominance_ratio < 1.0:
+            raise ValueError("brand_dominance_ratio must be >= 1.0")
 
 
 @dataclass(frozen=True)
@@ -132,6 +151,7 @@ class PlannedA2V3MailEvent:
     customer_brand: str = "unknown"
     customer_brand_source: str = "unknown"
     customer_brand_reason: str = "not_resolved"
+    customer_brand_profile: Mapping[str, Any] = field(default_factory=dict)
 
 
 def ensure_not_prod_apply_path(path: Path, *, allowed_root: Path | None = None) -> None:
@@ -200,6 +220,7 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
             phones=normalized_contacts["phone"],
             message_shas={_message_sha(row) for row in rows},
             tallanto_ids=tallanto_ids,
+            brand_dominance_ratio=config.brand_dominance_ratio,
         )
 
     plans: list[PlannedA2V3MailEvent] = []
@@ -230,6 +251,12 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
             row,
             resolution=resolution,
             snapshot=snapshot,
+            brand_dominance_ratio=config.brand_dominance_ratio,
+        )
+        customer_brand_profile = (
+            (snapshot.get("brand_profile_by_customer") or {}).get(resolution.customer_id) or {}
+            if resolution.customer_id
+            else {}
         )
         counters[f"customer_brand.{customer_brand}"] += 1
         if resolution.outcome == "linked" and customer_brand == "unknown":
@@ -306,12 +333,14 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 "brand": customer_brand,
                 "brand_source": customer_brand_source,
                 "brand_reason": customer_brand_reason,
+                **_client_safe_metadata(row),
                 "pending_attribution": resolution.outcome != "linked",
                 "pending_reason": None if resolution.outcome == "linked" else resolution.reason,
             },
             created_at=event_at,
         )
-        if linked_customer_id and _chunk_text(row):
+        chunk_text, chunk_overflow = _chunk_text(row, rich=config.chunk_rich_text)
+        if linked_customer_id and chunk_text:
             chunk = BotContextChunk(
                 tenant_id=config.tenant_id,
                 customer_id=linked_customer_id,
@@ -320,7 +349,7 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 source_ref=source_ref,
                 source_system=A2V3_MAIL_SOURCE_SYSTEM,
                 chunk_type="email_message",
-                text=_chunk_text(row),
+                text=chunk_text,
                 summary=compact_text(_summary_text(row), limit=700),
                 event_at=event_at,
                 freshness_score=0.72,
@@ -338,6 +367,9 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                     "thread_id": _thread_id(row),
                     "safe_next_step_note": _quality(row).get("safe_next_step_note"),
                     "requires_human_confirmation": bool(_quality(row).get("requires_human_confirmation")),
+                    "chunk_rich_text": bool(config.chunk_rich_text),
+                    "thread_context_overflow": chunk_overflow,
+                    **_client_safe_metadata(row),
                 },
                 created_at=event_at,
             )
@@ -357,6 +389,7 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 customer_brand=customer_brand,
                 customer_brand_source=customer_brand_source,
                 customer_brand_reason=customer_brand_reason,
+                customer_brand_profile=customer_brand_profile,
             )
         )
 
@@ -568,7 +601,21 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
                 connection=store._con,
                 allowed_root=config.allowed_root,
             )
+            brand_profiles_upserted = _upsert_customer_brand_profiles(
+                config.timeline_db_path,
+                fact_plans,
+                connection=store._con,
+                allowed_root=config.allowed_root,
+            )
+            purchases_upserted = _refresh_customer_purchases_v1(
+                config.timeline_db_path,
+                tenant_id=config.tenant_id,
+                connection=store._con,
+                allowed_root=config.allowed_root,
+            )
             counters["upserted_a2v3_event_facts"] += facts_upserted
+            counters["upserted_a2v3_customer_brand_profiles"] += brand_profiles_upserted
+            counters["upserted_customer_purchases_v1"] += purchases_upserted
             counters["reconciled_a2v3_event_facts"] += max(0, facts_upserted - len(accepted_plans))
         store.finish_ingestion_run(
             run.run_id,
@@ -711,6 +758,7 @@ def _upsert_a2v3_event_facts(
               amount_uncertain, email_brand, email_brand_source, customer_brand,
               customer_brand_source, customer_brand_reason, contact_email, contact_phone,
               contact_name, student_name, grade, subject_area, memory_status,
+              client_safe, client_safe_reason, client_safe_policy_version, sensitivity_tags_json,
               bot_visible, bot_gate_reason, identity_outcome, identity_reason,
               created_at
             )
@@ -720,6 +768,7 @@ def _upsert_a2v3_event_facts(
               :amount_uncertain, :email_brand, :email_brand_source, :customer_brand,
               :customer_brand_source, :customer_brand_reason, :contact_email, :contact_phone,
               :contact_name, :student_name, :grade, :subject_area, :memory_status,
+              :client_safe, :client_safe_reason, :client_safe_policy_version, :sensitivity_tags_json,
               :bot_visible, :bot_gate_reason, :identity_outcome, :identity_reason,
               :created_at
             )
@@ -744,6 +793,10 @@ def _upsert_a2v3_event_facts(
               grade = excluded.grade,
               subject_area = excluded.subject_area,
               memory_status = excluded.memory_status,
+              client_safe = excluded.client_safe,
+              client_safe_reason = excluded.client_safe_reason,
+              client_safe_policy_version = excluded.client_safe_policy_version,
+              sensitivity_tags_json = excluded.sensitivity_tags_json,
               bot_visible = excluded.bot_visible,
               bot_gate_reason = excluded.bot_gate_reason,
               identity_outcome = excluded.identity_outcome,
@@ -757,6 +810,237 @@ def _upsert_a2v3_event_facts(
         if owns_connection:
             con.close()
     return len(plans)
+
+
+def _upsert_customer_brand_profiles(
+    db_path: Path,
+    plans: Sequence[PlannedA2V3MailEvent],
+    *,
+    allowed_root: Path,
+    connection: sqlite3.Connection | None = None,
+) -> int:
+    ensure_not_prod_apply_path(db_path, allowed_root=allowed_root)
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        _ensure_a2v3_customer_brand_profiles_table(db_path, connection=con)
+        by_customer: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for plan in plans:
+            if plan.resolution.outcome != "linked" or not plan.resolution.customer_id:
+                continue
+            profile = dict(plan.customer_brand_profile or {})
+            profile_brand = _normalize_known_brand(profile.get("brand"))
+            brand = profile_brand if profile_brand in {"foton", "unpk"} else _normalize_known_brand(plan.customer_brand)
+            source = str(
+                profile.get("source")
+                if profile_brand in {"foton", "unpk"}
+                else plan.customer_brand_source or profile.get("source") or "unknown"
+            )
+            reason = str(
+                profile.get("reason")
+                if profile_brand in {"foton", "unpk"}
+                else plan.customer_brand_reason or profile.get("reason") or "unknown"
+            )
+            counts = profile.get("counts") if isinstance(profile.get("counts"), Mapping) else {}
+            sources = profile.get("sources") if isinstance(profile.get("sources"), Mapping) else {}
+            by_customer[(plan.event.tenant_id, plan.resolution.customer_id)] = {
+                "tenant_id": plan.event.tenant_id,
+                "customer_id": plan.resolution.customer_id,
+                "brand": brand,
+                "source": source,
+                "reason": reason,
+                "counts_json": json.dumps(
+                    {
+                        "counts": dict(counts),
+                        "sources": dict(sources),
+                        "brand_dominance_ratio": profile.get("brand_dominance_ratio"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "computed_at": plan.event.created_at.isoformat(),
+                "code_version": A2V3_CUSTOMER_BRAND_PROFILE_CODE_VERSION,
+            }
+        if by_customer:
+            con.executemany(
+                """
+                INSERT INTO a2v3_customer_brand_profiles (
+                  tenant_id, customer_id, brand, source, reason, counts_json, computed_at, code_version
+                )
+                VALUES (
+                  :tenant_id, :customer_id, :brand, :source, :reason, :counts_json, :computed_at, :code_version
+                )
+                ON CONFLICT(tenant_id, customer_id) DO UPDATE SET
+                  brand = excluded.brand,
+                  source = excluded.source,
+                  reason = excluded.reason,
+                  counts_json = excluded.counts_json,
+                  computed_at = excluded.computed_at,
+                  code_version = excluded.code_version
+                """,
+                list(by_customer.values()),
+            )
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
+    return len(by_customer)
+
+
+def _ensure_a2v3_customer_brand_profiles_table(
+    db_path: Path,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    try:
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS a2v3_customer_brand_profiles (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              brand TEXT NOT NULL,
+              source TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              counts_json TEXT NOT NULL,
+              computed_at TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_a2v3_customer_brand_profiles_brand
+              ON a2v3_customer_brand_profiles(tenant_id, brand, reason);
+            """
+        )
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
+
+
+def _refresh_customer_purchases_v1(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    allowed_root: Path,
+    connection: sqlite3.Connection | None = None,
+) -> int:
+    ensure_not_prod_apply_path(db_path, allowed_root=allowed_root)
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        _ensure_customer_purchases_v1_table(db_path, connection=con)
+        tenant = normalize_key(tenant_id, "tenant_id")
+        rows = con.execute(
+            """
+            SELECT
+              c.tenant_id,
+              c.customer_id,
+              COUNT(o.opportunity_id) AS deals_cnt,
+              MAX(COALESCE(o.closed_at, o.opened_at, '')) AS last_purchase_at
+            FROM customer_identities c
+            LEFT JOIN customer_opportunities o
+              ON o.tenant_id = c.tenant_id
+             AND o.customer_id = c.customer_id
+             AND o.opportunity_type = 'amo_deal'
+             AND (
+               COALESCE(o.status, '') IN ('Оплата получена', 'Успешно')
+               OR LOWER(COALESCE(o.status, '')) IN ('won', 'success', 'paid')
+             )
+            WHERE c.tenant_id = ?
+            GROUP BY c.tenant_id, c.customer_id
+            """,
+            (tenant,),
+        ).fetchall()
+        payloads = [
+            {
+                "tenant_id": str(row["tenant_id"]),
+                "customer_id": str(row["customer_id"]),
+                "period": "all_time",
+                "total_in": None,
+                "total_out": None,
+                "deals_cnt": int(row["deals_cnt"] or 0),
+                "last_purchase_at": str(row["last_purchase_at"] or "") or None,
+                "sources_json": json.dumps(
+                    {
+                        "source": "customer_opportunities",
+                        "money_source": "not_computable_from_a2_mail",
+                        "email_amounts_used": False,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "computability": "not_computable_missing_primary_amounts",
+                "code_version": CUSTOMER_PURCHASES_V1_CODE_VERSION,
+            }
+            for row in rows
+        ]
+        if payloads:
+            con.executemany(
+                """
+                INSERT INTO customer_purchases_v1 (
+                  tenant_id, customer_id, period, total_in, total_out, deals_cnt,
+                  last_purchase_at, sources_json, computability, code_version
+                )
+                VALUES (
+                  :tenant_id, :customer_id, :period, :total_in, :total_out, :deals_cnt,
+                  :last_purchase_at, :sources_json, :computability, :code_version
+                )
+                ON CONFLICT(tenant_id, customer_id, period) DO UPDATE SET
+                  total_in = excluded.total_in,
+                  total_out = excluded.total_out,
+                  deals_cnt = excluded.deals_cnt,
+                  last_purchase_at = excluded.last_purchase_at,
+                  sources_json = excluded.sources_json,
+                  computability = excluded.computability,
+                  code_version = excluded.code_version
+                """,
+                payloads,
+            )
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
+    return len(payloads)
+
+
+def _ensure_customer_purchases_v1_table(
+    db_path: Path,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    try:
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              period TEXT NOT NULL,
+              total_in REAL,
+              total_out REAL,
+              deals_cnt INTEGER NOT NULL DEFAULT 0,
+              last_purchase_at TEXT,
+              sources_json TEXT NOT NULL,
+              computability TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period)
+            );
+            CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_customer
+              ON customer_purchases_v1(tenant_id, customer_id, deals_cnt);
+            """
+        )
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
 
 
 def reconcile_a2v3_event_facts(
@@ -828,6 +1112,10 @@ def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connect
               grade TEXT,
               subject_area TEXT,
               memory_status TEXT,
+              client_safe INTEGER NOT NULL DEFAULT 1,
+              client_safe_reason TEXT,
+              client_safe_policy_version TEXT NOT NULL DEFAULT 'cs_v1',
+              sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
               bot_visible INTEGER NOT NULL,
               bot_gate_reason TEXT NOT NULL,
               identity_outcome TEXT NOT NULL,
@@ -842,6 +1130,23 @@ def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connect
               ON a2v3_mail_event_facts(tenant_id, bot_visible, customer_brand);
             """
         )
+        fact_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(a2v3_mail_event_facts)").fetchall()}
+        if "client_safe" not in fact_columns:
+            con.execute("ALTER TABLE a2v3_mail_event_facts ADD COLUMN client_safe INTEGER NOT NULL DEFAULT 1")
+        if "client_safe_reason" not in fact_columns:
+            con.execute("ALTER TABLE a2v3_mail_event_facts ADD COLUMN client_safe_reason TEXT")
+        if "client_safe_policy_version" not in fact_columns:
+            con.execute(
+                "ALTER TABLE a2v3_mail_event_facts ADD COLUMN client_safe_policy_version TEXT NOT NULL DEFAULT 'cs_v1'"
+            )
+        if "sensitivity_tags_json" not in fact_columns:
+            con.execute("ALTER TABLE a2v3_mail_event_facts ADD COLUMN sensitivity_tags_json TEXT NOT NULL DEFAULT '[]'")
+        con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_a2v3_mail_event_facts_client_safe
+              ON a2v3_mail_event_facts(tenant_id, client_safe, client_safe_reason)
+            """
+        )
         if owns_connection:
             con.commit()
     finally:
@@ -853,6 +1158,8 @@ def _a2v3_event_fact_row(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
     row = plan.row
     payload = row.get("summary_payload") or {}
     quality = _quality(row)
+    client_safe, client_safe_reason = _client_safe(row)
+    sensitivity_tags = _sensitivity_tags(row)
     return {
         "event_id": plan.event.event_id,
         "tenant_id": plan.event.tenant_id,
@@ -876,6 +1183,10 @@ def _a2v3_event_fact_row(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
         "grade": payload.get("grade"),
         "subject_area": payload.get("subject_area"),
         "memory_status": quality.get("memory_status"),
+        "client_safe": client_safe,
+        "client_safe_reason": client_safe_reason,
+        "client_safe_policy_version": CLIENT_SAFE_POLICY_VERSION,
+        "sensitivity_tags_json": json.dumps(sensitivity_tags, ensure_ascii=False),
         "bot_visible": 1 if plan.bot_eligible_candidate else 0,
         "bot_gate_reason": plan.bot_gate_reason,
         "identity_outcome": plan.resolution.outcome,
@@ -1075,6 +1386,12 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
                 "bot_eligible_candidate": int(
                     con.execute("SELECT count(*) FROM a2v3_mail_event_facts WHERE bot_visible = 1").fetchone()[0]
                 ),
+                "client_safe": int(
+                    con.execute("SELECT count(*) FROM a2v3_mail_event_facts WHERE client_safe = 1").fetchone()[0]
+                ),
+                "client_not_safe": int(
+                    con.execute("SELECT count(*) FROM a2v3_mail_event_facts WHERE client_safe = 0").fetchone()[0]
+                ),
                 "unknown_linked_customer_brand": int(
                     con.execute(
                         """
@@ -1126,6 +1443,50 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
                         """
                     )
                 },
+                "client_safe_reason_counts": {
+                    str(row["client_safe_reason"]): int(row["c"])
+                    for row in con.execute(
+                        """
+                        SELECT client_safe_reason, count(*) AS c
+                        FROM a2v3_mail_event_facts
+                        GROUP BY client_safe_reason
+                        ORDER BY client_safe_reason
+                        """
+                    )
+                },
+            }
+        brand_profile_counts: Mapping[str, Any] = {}
+        if con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_customer_brand_profiles'"
+        ).fetchone():
+            brand_profile_counts = {
+                "rows": int(con.execute("SELECT count(*) FROM a2v3_customer_brand_profiles").fetchone()[0]),
+                "brand_counts": {
+                    str(row["brand"]): int(row["c"])
+                    for row in con.execute(
+                        """
+                        SELECT brand, count(*) AS c
+                        FROM a2v3_customer_brand_profiles
+                        GROUP BY brand
+                        ORDER BY brand
+                        """
+                    )
+                },
+            }
+        purchases_counts: Mapping[str, Any] = {}
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_purchases_v1'").fetchone():
+            purchases_counts = {
+                "rows": int(con.execute("SELECT count(*) FROM customer_purchases_v1").fetchone()[0]),
+                "with_deals": int(con.execute("SELECT count(*) FROM customer_purchases_v1 WHERE deals_cnt > 0").fetchone()[0]),
+                "non_null_amounts": int(
+                    con.execute(
+                        """
+                        SELECT count(*)
+                        FROM customer_purchases_v1
+                        WHERE total_in IS NOT NULL OR total_out IS NOT NULL
+                        """
+                    ).fetchone()[0]
+                ),
             }
         chunk_gate_counts = [
             {
@@ -1149,6 +1510,8 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
         "visible_not_usable": visible_not_usable,
         "match_status_counts": match_status_counts,
         "a2_fact_counts": a2_fact_counts,
+        "brand_profile_counts": brand_profile_counts,
+        "purchases_counts": purchases_counts,
         "chunk_gate_counts": chunk_gate_counts,
     }
     write_json(config.out_dir / "test_db_verification.json", report)
@@ -1169,6 +1532,8 @@ def write_foton_report(
 ) -> None:
     counts = first_apply_report.get("counts", {})
     a2_fact_counts = test_db_verification.get("a2_fact_counts") or {}
+    brand_profile_counts = test_db_verification.get("brand_profile_counts") or {}
+    purchases_counts = test_db_verification.get("purchases_counts") or {}
     lines = [
         "# A2-v3: тестовое вливание 100 писем в customer_timeline",
         "",
@@ -1207,7 +1572,15 @@ def write_foton_report(
         f"- linked unknown-brand reasons: `{ {key.replace('linked_customer_brand_unknown.', ''): value for key, value in counts.items() if key.startswith('linked_customer_brand_unknown.')} }`",
         f"- rows with amount fields: `{a2_fact_counts.get('amount_rows', 0)}`",
         f"- bot gate counts: `{a2_fact_counts.get('bot_gate_counts', {})}`",
+        f"- client_safe rows: `{a2_fact_counts.get('client_safe', 0)}`",
+        f"- client_not_safe rows: `{a2_fact_counts.get('client_not_safe', 0)}`",
+        f"- client_safe_reason counts: `{a2_fact_counts.get('client_safe_reason_counts', {})}`",
         "- Базовый `timeline_events.event_type` остаётся `email_message`, потому что контракт TimelineEventType не принимает `payment/refund`; бизнес-тип хранится в `a2v3_mail_event_facts.event_type_detail`.",
+        "",
+        "## Side-таблицы E1.3",
+        f"- a2v3_customer_brand_profiles: `{brand_profile_counts}`",
+        f"- customer_purchases_v1: `{purchases_counts}`",
+        "- `customer_purchases_v1.total_in/total_out` остаются `NULL`: email-суммы не являются первичным реестром денег.",
         "",
         "## Apply в тест-БД",
         f"- selected events first apply: `{first_apply_report.get('selected_events')}`",
@@ -1266,6 +1639,7 @@ def _load_prod_snapshot(
     phones: set[str],
     message_shas: set[str],
     tallanto_ids: set[str],
+    brand_dominance_ratio: float,
 ) -> Mapping[str, Any]:
     direct_links = _load_direct_identity_links(con, tenant_id=tenant_id, emails=emails, phones=phones)
     tallanto_to_customers = _load_tallanto_customer_links(con, tenant_id=tenant_id, tallanto_ids=tallanto_ids)
@@ -1284,7 +1658,12 @@ def _load_prod_snapshot(
         customer_id: _customer_qualification(con, tenant_id=tenant_id, customer_id=customer_id)
         for customer_id in customer_payload_by_id
     }
-    brand_profile_by_customer = _load_customer_brand_profiles(con, tenant_id=tenant_id, customer_ids=customer_ids)
+    brand_profile_by_customer = _load_customer_brand_profiles(
+        con,
+        tenant_id=tenant_id,
+        customer_ids=customer_ids,
+        brand_dominance_ratio=brand_dominance_ratio,
+    )
     return {
         "direct_links": direct_links,
         "tallanto_to_customers": tallanto_to_customers,
@@ -1310,6 +1689,7 @@ def _load_customer_brand_profiles(
     *,
     tenant_id: str,
     customer_ids: set[str],
+    brand_dominance_ratio: float,
 ) -> Mapping[str, Mapping[str, Any]]:
     if not customer_ids:
         return {}
@@ -1372,12 +1752,26 @@ def _load_customer_brand_profiles(
             }
             continue
         if len(known) > 1:
+            ordered = sorted(known.items(), key=lambda item: (-item[1], item[0]))
+            top_brand, top_count = ordered[0]
+            second_count = ordered[1][1]
+            if top_count >= second_count * brand_dominance_ratio:
+                profiles[customer_id] = {
+                    "brand": top_brand,
+                    "source": "customer_history",
+                    "reason": "dominant_brand_history",
+                    "counts": dict(counts),
+                    "sources": dict(sources),
+                    "brand_dominance_ratio": brand_dominance_ratio,
+                }
+                continue
             profiles[customer_id] = {
                 "brand": "unknown",
                 "source": "customer_history",
                 "reason": "mixed_brand_history",
                 "counts": dict(counts),
                 "sources": dict(sources),
+                "brand_dominance_ratio": brand_dominance_ratio,
             }
             continue
         brand = next(iter(known))
@@ -1404,7 +1798,8 @@ def _safe_json_object(value: Any) -> Mapping[str, Any]:
 
 
 def _infer_brand_from_mapping(values: Mapping[str, Any]) -> str:
-    return _normalize_known_brand(infer_offline_brand(values))
+    cleaned = {key: EMAIL_OR_DOMAIN_RE.sub(" ", str(value or "")) for key, value in values.items()}
+    return _normalize_known_brand(infer_offline_brand(cleaned))
 
 
 def _normalize_known_brand(value: Any) -> str:
@@ -1414,6 +1809,58 @@ def _normalize_known_brand(value: Any) -> str:
     if text in {"unpk", "унпк", "мфти"}:
         return "unpk"
     return "unknown"
+
+
+def current_contact_brand(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    as_of: Optional[datetime] = None,
+    window_days: int = 365,
+) -> tuple[str, str]:
+    anchor = as_of or datetime.now(timezone.utc)
+    if anchor.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    since = anchor - timedelta(days=window_days)
+    deal_rows = con.execute(
+        """
+        SELECT opened_at, closed_at, record_json
+        FROM customer_opportunities
+        WHERE tenant_id = ? AND customer_id = ?
+        ORDER BY COALESCE(opened_at, closed_at, '') DESC, opportunity_id DESC
+        """,
+        (normalize_key(tenant_id, "tenant_id"), customer_id),
+    ).fetchall()
+    for row in deal_rows:
+        stamp = str(row["opened_at"] or row["closed_at"] or "")
+        if stamp and parse_datetime(stamp, "opportunity_brand_at") < since:
+            continue
+        payload = _safe_json_object(row["record_json"])
+        product_context = payload.get("product_context") if isinstance(payload.get("product_context"), Mapping) else {}
+        brand = _normalize_known_brand(product_context.get("brand"))
+        if brand in {"foton", "unpk"}:
+            return brand, "current_opportunity_brand"
+    event_rows = con.execute(
+        """
+        SELECT event_at, record_json
+        FROM timeline_events
+        WHERE tenant_id = ? AND customer_id = ?
+        ORDER BY event_at DESC, event_id DESC
+        """,
+        (normalize_key(tenant_id, "tenant_id"), customer_id),
+    ).fetchall()
+    for row in event_rows:
+        stamp = str(row["event_at"] or "")
+        if stamp and parse_datetime(stamp, "event_brand_at") < since:
+            continue
+        payload = _safe_json_object(row["record_json"])
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        record = payload.get("record") if isinstance(payload.get("record"), Mapping) else {}
+        brand = _normalize_known_brand(metadata.get("brand") or record.get("brand"))
+        if brand in {"foton", "unpk"}:
+            return brand, "current_event_brand"
+    return "unknown", "stale_brand_signal"
 
 
 def _load_direct_identity_links(
@@ -1775,6 +2222,7 @@ def _event_record(
 ) -> Mapping[str, Any]:
     payload = row.get("summary_payload") or {}
     quality = _quality(row)
+    client_safe_meta = _client_safe_metadata(row)
     return {
         "source": "A2v3_email_pipeline",
         "message_sha256": _message_sha(row),
@@ -1792,6 +2240,7 @@ def _event_record(
         "topic": payload.get("topic"),
         "next_step_model": payload.get("next_step"),
         "safe_next_step_note": quality.get("safe_next_step_note"),
+        **client_safe_meta,
         "event_type_detail": payload.get("event_type"),
         "money_direction": payload.get("money_direction"),
         "amount_kind": payload.get("amount_kind"),
@@ -1832,6 +2281,7 @@ def _resolve_customer_brand(
     *,
     resolution: CustomerResolution,
     snapshot: Mapping[str, Any],
+    brand_dominance_ratio: float,
 ) -> tuple[str, str, str]:
     if resolution.outcome == "linked" and resolution.customer_id:
         profile = (snapshot.get("brand_profile_by_customer") or {}).get(resolution.customer_id) or {}
@@ -1842,11 +2292,31 @@ def _resolve_customer_brand(
         email_brand = _brand(row)
         if email_brand in {"foton", "unpk"} and reason != "mixed_brand_history":
             return email_brand, "a2v3_email_content", "history_unknown_email_content_known"
+        if reason == "mixed_brand_history":
+            profile_counts = profile.get("counts") if isinstance(profile.get("counts"), Mapping) else {}
+            dominant = _dominant_brand_from_counts(profile_counts, brand_dominance_ratio=brand_dominance_ratio)
+            if dominant in {"foton", "unpk"}:
+                return dominant, "customer_history", "dominant_brand_history"
         return "unknown", str(profile.get("source") or "customer_history"), reason
     email_brand = _brand(row)
     if email_brand in {"foton", "unpk"}:
         return email_brand, "a2v3_email_content_unlinked", "unlinked_email_content_known"
     return "unknown", "unresolved_identity", resolution.reason
+
+
+def _dominant_brand_from_counts(counts: Mapping[str, Any], *, brand_dominance_ratio: float) -> str:
+    known = []
+    for brand in ("foton", "unpk"):
+        try:
+            count = int(counts.get(brand) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            known.append((brand, count))
+    if len(known) != 2:
+        return known[0][0] if known else "unknown"
+    ordered = sorted(known, key=lambda item: (-item[1], item[0]))
+    return ordered[0][0] if ordered[0][1] >= ordered[1][1] * brand_dominance_ratio else "unknown"
 
 
 def _match_status_for_resolution(resolution: CustomerResolution) -> IdentityMatchClass:
@@ -1861,6 +2331,55 @@ def _quality(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return row.get("quality") or {}
 
 
+def _sensitivity_tags(row: Mapping[str, Any]) -> tuple[str, ...]:
+    payload = row.get("summary_payload") or {}
+    quality = _quality(row)
+    tags: list[str] = []
+    detail = str(payload.get("event_type") or "")
+    mapped = SENSITIVE_TYPE_TAGS.get(detail)
+    if mapped:
+        tags.append(mapped)
+    money_values = list(quality.get("money_amounts_rub") or [])
+    money_fields = (
+        payload.get("amount_rub"),
+        quality.get("paid_amount_rub"),
+        quality.get("quoted_amount_rub"),
+        quality.get("refund_amount_rub"),
+    )
+    if (money_values or any(value is not None for value in money_fields)) and "sensitive_money" not in tags:
+        tags.append("sensitive_money")
+    if bool(quality.get("requires_human_confirmation")):
+        tags.append("manager_action_required")
+    if quality.get("safe_next_step_note"):
+        tags.append("has_manager_note")
+    return tuple(dict.fromkeys(tags))
+
+
+def _client_safe(row: Mapping[str, Any]) -> tuple[int, str]:
+    tags = _sensitivity_tags(row)
+    for tag in (
+        "sensitive_money",
+        "sensitive_contract",
+        "sensitive_tax",
+        "sensitive_medical",
+        "manager_action_required",
+        "has_manager_note",
+    ):
+        if tag in tags:
+            return 0, tag
+    return 1, "no_sensitive_signals"
+
+
+def _client_safe_metadata(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    client_safe, reason = _client_safe(row)
+    return {
+        "client_safe": bool(client_safe),
+        "client_safe_reason": reason,
+        "client_safe_policy_version": CLIENT_SAFE_POLICY_VERSION,
+        "sensitivity_tags": _sensitivity_tags(row),
+    }
+
+
 def _message_sha(row: Mapping[str, Any]) -> str:
     value = str(row.get("message_sha256") or "").strip().lower()
     if not value:
@@ -1873,14 +2392,26 @@ def _summary_text(row: Mapping[str, Any]) -> str:
     return str(payload.get("summary") or row.get("summary") or row.get("subject_full") or "")
 
 
-def _chunk_text(row: Mapping[str, Any]) -> str:
+def _chunk_text(row: Mapping[str, Any], *, rich: bool) -> tuple[str, bool]:
     payload = row.get("summary_payload") or {}
+    if rich:
+        parts = [str(row.get("full_clean_text") or "").strip()]
+        thread_context = (
+            str(row.get("thread_context") or "").strip()
+            if row.get("thread_context_source") == "raw_body_split_thread_context"
+            else ""
+        )
+        if thread_context:
+            parts.append(f"Контекст переписки:\n{thread_context}")
+        raw_text = "\n\n".join(part for part in parts if part)
+        text = compact_text(raw_text, limit=CHUNK_RICH_TEXT_LIMIT)
+        return text, len(raw_text) > len(text)
     parts = [
         str(payload.get("summary") or "").strip(),
         f"Тема: {payload.get('topic')}" if payload.get("topic") else "",
-        f"Безопасная заметка: {_quality(row).get('safe_next_step_note')}" if _quality(row).get("safe_next_step_note") else "",
     ]
-    return compact_text("\n".join(part for part in parts if part), limit=1200)
+    raw_text = "\n".join(part for part in parts if part)
+    return compact_text(raw_text, limit=1200), False
 
 
 def _thread_id(row: Mapping[str, Any]) -> str:

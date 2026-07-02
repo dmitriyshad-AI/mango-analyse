@@ -8,7 +8,7 @@ from scripts.email_pipeline.contact import resolve_customer_contact
 from scripts.email_pipeline.pilot_100 import ensure_local_output_dir_allowed
 from scripts.email_pipeline.quality import evaluate_quality, sanitize_summary_payload_for_quality
 from scripts.email_pipeline import summary as summary_module
-from scripts.email_pipeline.summary import SummaryItem, build_summary_prompt, mask_pii, summarize_items
+from scripts.email_pipeline.summary import SummaryItem, build_summary_prompt, mask_pii, split_thread_context, summarize_items
 
 
 def test_brand_uses_explicit_content_words() -> None:
@@ -68,6 +68,19 @@ def test_summary_prompt_keeps_names_but_masks_contacts() -> None:
     assert "[phone]" in prompt
     assert "[email]" in prompt
     assert "[name]" not in prompt
+
+
+def test_split_thread_context_preserves_current_body_and_quotes_separately() -> None:
+    current, context = split_thread_context(
+        "Здравствуйте, актуальный вопрос.\n\n"
+        "On Mon, Parent wrote:\n"
+        "> Старое письмо про расписание\n"
+        "> и оплату"
+    )
+
+    assert current == "Здравствуйте, актуальный вопрос."
+    assert "On Mon" in context
+    assert "Старое письмо" in context
 
 
 def test_mask_pii_preserves_business_numbers() -> None:

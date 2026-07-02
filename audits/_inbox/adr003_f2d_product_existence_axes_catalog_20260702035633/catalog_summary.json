@@ -1,0 +1,157 @@
+{
+  "schema_version": "product_existence_axes_catalog_v1_2026_07_02",
+  "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+  "entry_count": 299,
+  "issue_count": 55,
+  "status_counts": {
+    "exists": 293,
+    "not_offered": 6
+  },
+  "brand_counts": {
+    "foton": 133,
+    "unpk": 166
+  },
+  "product_family_counts": {
+    "": 51,
+    "camp": 82,
+    "intensive": 36,
+    "regular_course": 116,
+    "platform": 14
+  },
+  "program_kind_counts": {
+    "": 59,
+    "camp": 76,
+    "intensive": 36,
+    "olympiad": 42,
+    "regular": 86
+  },
+  "sample_queries": {
+    "unpk_online_olympiad_physics_grade9": {
+      "query": {
+        "brand": "УНПК",
+        "grade": 9,
+        "subject": "физика",
+        "format": "онлайн",
+        "program_kind": "олимпиадная подготовка"
+      },
+      "status": "exists",
+      "reason": "exact_product_existence_fact",
+      "source_fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+      "grade_values": [
+        9
+      ],
+      "subjects": [
+        "physics"
+      ]
+    },
+    "unpk_summer_school_grade7": {
+      "query": {
+        "brand": "УНПК",
+        "grade": 7,
+        "product_family": "летняя школа"
+      },
+      "status": "exists",
+      "reason": "exact_product_existence_fact",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "subjects": [
+        "math",
+        "physics"
+      ]
+    },
+    "unpk_camp_broad": {
+      "query": {
+        "brand": "УНПК",
+        "product_family": "летняя школа"
+      },
+      "status": "exists",
+      "reason": "exact_product_existence_fact",
+      "source_fact_key": "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+      "grade_values": [],
+      "subjects": []
+    },
+    "foton_intensive_broad": {
+      "query": {
+        "brand": "Фотон",
+        "product_family": "интенсив"
+      },
+      "status": "exists",
+      "reason": "exact_product_existence_fact",
+      "source_fact_key": "intensives_2026.oge_foton.classes",
+      "grade_values": [
+        8,
+        9
+      ],
+      "subjects": []
+    },
+    "unpk_chemistry": {
+      "query": {
+        "brand": "УНПК",
+        "subject": "химия"
+      },
+      "status": "not_offered",
+      "reason": "explicit_not_offered_fact",
+      "source_fact_key": "tg_unpk_verified_2026_05_21.client_facts.unavailable_chemistry_robotics.client_safe_text",
+      "grade_values": [],
+      "subjects": [
+        "chemistry"
+      ]
+    },
+    "foton_chemistry": {
+      "query": {
+        "brand": "Фотон",
+        "subject": "химия"
+      },
+      "status": "unknown",
+      "reason": "no_exact_product_existence_fact",
+      "source_fact_key": null,
+      "grade_values": null,
+      "subjects": null
+    },
+    "unpk_online_only": {
+      "query": {
+        "brand": "УНПК",
+        "format": "онлайн"
+      },
+      "status": "needs_slot",
+      "reason": "required_axis_missing",
+      "source_fact_key": null,
+      "grade_values": null,
+      "subjects": null
+    },
+    "unpk_biology_grade3_online": {
+      "query": {
+        "brand": "УНПК",
+        "grade": 3,
+        "subject": "биология",
+        "format": "онлайн"
+      },
+      "status": "unknown",
+      "reason": "no_exact_product_existence_fact",
+      "source_fact_key": null,
+      "grade_values": null,
+      "subjects": null
+    },
+    "noisy_grade_room_9": {
+      "query": {
+        "brand": "УНПК",
+        "grade": "кабинет 9",
+        "subject": "физика",
+        "format": "онлайн",
+        "program_kind": "олимпиадная подготовка"
+      },
+      "status": "needs_slot",
+      "reason": "invalid_axis",
+      "source_fact_key": null,
+      "grade_values": null,
+      "subjects": null
+    }
+  }
+}

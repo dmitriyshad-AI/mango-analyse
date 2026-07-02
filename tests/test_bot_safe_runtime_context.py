@@ -6,6 +6,9 @@ from pathlib import Path
 
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BotSafeLookup,
+    BOT_SAFE_CRM_CONTEXT_ENV,
+    TIMELINE_MEMORY_IN_PROMPT_ENV,
+    TIMELINE_MEMORY_SHADOW_ENV,
     bot_safe_crm_context_enabled,
     build_bot_safe_crm_context,
 )
@@ -26,6 +29,29 @@ def test_bot_safe_crm_context_default_off() -> None:
     assert bot_safe_crm_context_enabled(None) is False
     assert bot_safe_crm_context_enabled("") is False
     assert bot_safe_crm_context_enabled("1") is True
+
+
+def test_timeline_memory_in_prompt_env_enables_runtime_builder(monkeypatch) -> None:
+    monkeypatch.delenv(BOT_SAFE_CRM_CONTEXT_ENV, raising=False)
+    monkeypatch.setenv(TIMELINE_MEMORY_IN_PROMPT_ENV, "1")
+
+    assert bot_safe_crm_context_enabled() is True
+
+
+def test_timeline_memory_shadow_env_enables_runtime_builder(monkeypatch) -> None:
+    monkeypatch.delenv(BOT_SAFE_CRM_CONTEXT_ENV, raising=False)
+    monkeypatch.delenv(TIMELINE_MEMORY_IN_PROMPT_ENV, raising=False)
+    monkeypatch.setenv(TIMELINE_MEMORY_SHADOW_ENV, "1")
+
+    assert bot_safe_crm_context_enabled() is True
+
+
+def test_explicit_bot_safe_off_overrides_timeline_memory_alias(monkeypatch) -> None:
+    monkeypatch.setenv(BOT_SAFE_CRM_CONTEXT_ENV, "0")
+    monkeypatch.setenv(TIMELINE_MEMORY_IN_PROMPT_ENV, "1")
+    monkeypatch.setenv(TIMELINE_MEMORY_SHADOW_ENV, "1")
+
+    assert bot_safe_crm_context_enabled() is False
 
 
 def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: Path) -> None:

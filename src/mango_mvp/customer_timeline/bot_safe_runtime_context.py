@@ -10,6 +10,8 @@ from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, Custom
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
+TIMELINE_MEMORY_SHADOW_ENV = "TELEGRAM_TIMELINE_MEMORY_SHADOW"
 BOT_SAFE_CRM_CONTEXT_DB_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"
 BOT_SAFE_CRM_CONTEXT_TENANT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT_TENANT"
 BOT_SAFE_CRM_CONTEXT_SCHEMA_VERSION = "bot_safe_crm_context_v1_2026_06_21"
@@ -50,7 +52,10 @@ class BotSafeLookup:
 
 def bot_safe_crm_context_enabled(value: object = None) -> bool:
     if value is None:
-        value = os.getenv(BOT_SAFE_CRM_CONTEXT_ENV)
+        if BOT_SAFE_CRM_CONTEXT_ENV in os.environ:
+            value = os.getenv(BOT_SAFE_CRM_CONTEXT_ENV)
+        else:
+            value = os.getenv(TIMELINE_MEMORY_IN_PROMPT_ENV) or os.getenv(TIMELINE_MEMORY_SHADOW_ENV)
     return str(value or "").strip().casefold() in _TRUTHY_VALUES
 
 

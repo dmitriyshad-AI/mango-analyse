@@ -882,6 +882,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "derived_product_number": "downgrade_keep_text",
     "derived_product_claim": "downgrade_keep_text",
     "individual_diagnosis": "downgrade_keep_text",
+    "unsafe_future_commitment": "downgrade_keep_text",
     "invented_generalization": "annotate",
 }
 
@@ -1022,6 +1023,7 @@ CONTENT_DELIVERY_ACTION_RE = re.compile(
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 BOT_SAFE_MEMORY_STEP_GUARD_FLAG = "bot_safe_memory_unconfirmed_step_detected"
 BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT = "Уточню актуальный шаг с менеджером и вернусь с ответом."
 BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES = frozenset({"active", "needs_manager_review", "empty"})
@@ -1049,8 +1051,37 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r")",
     re.I,
 )
-
-
+UNSAFE_FUTURE_COMMITMENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:верн(?:[её]м|у)|возврат(?:им|у)|оформ(?:им|лю)\s+возврат|перевед(?:[её]м|у)|компенсир(?:уем|ую))\b"
+    r"[^.!?\n]{0,100}?\b(?:деньг\w*|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*|руб|₽)\b"
+    r"|"
+    r"\b(?:пришл(?:ю|[её]м)|отправ(?:лю|им)|выстав(?:лю|им)|подготов(?:лю|им))\b"
+    r"[^.!?\n]{0,90}?\b(?:ссылк\w*\s+на\s+оплат|сч[её]т|квитанц\w*)\b"
+    r"|"
+    r"\b(?:дад(?:им|у)|сдела(?:ем|ю)|оформ(?:им|лю)|закреп(?:им|лю)|примен(?:им|ю))\b"
+    r"[^.!?\n]{0,80}?\b(?:скидк\w*|\d+\s*%)\b"
+    r"|"
+    r"\b(?:забронир(?:уем|ую)|закреп(?:им|лю)|сохран(?:им|ю)|оформ(?:им|лю)|запиш(?:ем|у)|зачисл(?:им|ю))\b"
+    r"[^.!?\n]{0,90}?\b(?:место|брон\w*|заявк\w*|запис\w*|групп\w*)\b"
+    r"|"
+    r"\b(?:место|брон\w*|заявк\w*|запис\w*|групп\w*)\b"
+    r"[^.!?\n]{0,90}?\b(?:забронир(?:уем|ую)|закреп(?:им|лю)|сохран(?:им|ю)|оформ(?:им|лю)|запиш(?:ем|у)|зачисл(?:им|ю))\b"
+    r")",
+    re.I,
+)
+SAFE_FUTURE_COMMITMENT_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"не\s+(?:обещаю|гарантирую|могу\s+обещать|буду\s+обещать)"
+    r"|без\s+проверки"
+    r"|после\s+проверки"
+    r"|сначала\s+менеджер\s+проверит"
+    r"|если\s+(?:место|группа|вариант)\s+(?:есть|будет)"
+    r"|менеджер\s+(?:проверит|уточнит|подскажет|сверит)"
+    r"|передам\s+(?:вопрос\s+)?менеджеру"
+    r")\b",
+    re.I,
+)
 def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
     rules = metadata.get("rules_engine") if isinstance(metadata.get("rules_engine"), Mapping) else {}
     applied = str(rules.get("applied") or "").strip()
@@ -2796,7 +2827,13 @@ def apply_authoritative_output_gate(
     if not actionable:
         return apply_night_hours_note(replace(result, metadata=metadata), context=context)
 
-    route = "draft_for_manager" if direct_path_keep_text else _authoritative_gate_downgraded_route(result.route, actions)
+    route = (
+        result.route
+        if direct_path_keep_text and result.route == "manager_only"
+        else "draft_for_manager"
+        if direct_path_keep_text
+        else _authoritative_gate_downgraded_route(result.route, actions)
+    )
     metadata["authoritative_output_gate"]["route_after"] = route
     codes = tuple(dict.fromkeys(str(item["code"]) for item in actionable))
     flags = tuple(
@@ -3685,6 +3722,7 @@ def _authoritative_gate_findings(
             facts=facts,
         )
     )
+    findings.extend(_authoritative_gate_unsafe_future_commitment_findings(result))
     contract = _pipeline_contract(result, active_brand=_active_brand(gate_context), fact_keys=tuple(facts.keys()))
     previous_bot_texts = _humanity_previous_bot_texts(gate_context)
     p0_already_guarded = _authoritative_gate_p0_already_guarded(result)
@@ -3791,6 +3829,37 @@ def _manager_deadline_promise_detail(text: str) -> str:
         ):
             return value[:240]
     return ""
+
+
+def _authoritative_gate_unsafe_future_commitment_findings(result: SubscriptionDraftResult) -> list[dict[str, str]]:
+    details = _unsafe_future_commitment_details(result.draft_text)
+    return [
+        _authoritative_gate_finding(
+            "unsafe_future_commitment",
+            detail=detail,
+            source="draft_future_commitment_gate",
+        )
+        for detail in details
+    ]
+
+
+def _unsafe_future_commitment_details(text: str) -> tuple[str, ...]:
+    details: list[str] = []
+    for sentence in _guard_sentences(text):
+        if not UNSAFE_FUTURE_COMMITMENT_RE.search(sentence):
+            continue
+        if SAFE_FUTURE_COMMITMENT_CONTEXT_RE.search(sentence):
+            continue
+        details.append(sentence[:240])
+    return tuple(dict.fromkeys(details))
+
+
+def _guard_sentences(text: str) -> tuple[str, ...]:
+    return tuple(
+        " ".join(part.split())
+        for part in re.split(r"(?<=[.?!])\s+|\n+", str(text or ""))
+        if part.strip()
+    )
 
 
 def _authoritative_gate_a2_findings(
@@ -4522,6 +4591,8 @@ def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) ->
                 "bot_safe_crm_context_enabled",
                 "bot_safe_summary_context",
                 "bot_safe_summary_context_enabled",
+                TIMELINE_MEMORY_IN_PROMPT_ENV,
+                "timeline_memory_in_prompt",
             ),
         )
         is True

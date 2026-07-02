@@ -2285,8 +2285,8 @@ def build_judge_prompt(
         "Если класс вне диапазона или нет ни диапазона, ни факта продукта для активного бренда, риск fabrication сохраняется; "
         "если отдельно не подтверждён конкретный предмет внутри подтверждённого курса, это максимум soft/scope-флаг, а не hard gate fabrication. "
         f"Используй сверку фактов {JUDGE_FACT_AUDIT_VERSION}: retrieved_match и same_brand_global_match означают, что сам факт подтверждён для активного бренда; "
-        "memory_grounded означает, что НЕчисловой контекстный клейм про ранее обсуждённое/стадию/следующий шаг поддержан выданной bot-safe выжимкой клиента, это не fabrication; "
-        "memory_grounded НЕ подтверждает цены, проценты, даты, адреса, расписание, числовые условия или факты чужого бренда — для них нужны факты базы; "
+        "verified_by_memory означает, что НЕчисловой контекстный клейм про ранее обсуждённое/стадию/следующий шаг поддержан выданной bot-safe выжимкой клиента, это не fabrication; "
+        "verified_by_memory НЕ подтверждает цены, проценты, даты, адреса, расписание, числовые условия или факты чужого бренда — для них нужны факты базы; "
         "wrong_scope означает, что факт существует, но отвечает не на текущий вопрос — это оценивай как wrong_scope/ignored_question/over_handoff, а не как fabrication; "
         "no_match или other_brand_match оставляют риск fabrication и требуют строгой проверки. "
         "Сам текст ответа бота, safe-template и элементы с префиксом verified_safe_template не являются подтверждёнными фактами; если они попали в факты, игнорируй их. "
@@ -2801,7 +2801,7 @@ def hard_gate_cause(dialog: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
         return "bot_issue"
     if any(level in {"other_brand_match", "no_match"} for level in levels):
         return "bot_issue"
-    if any(level in {"same_brand_global_match", "retrieved_match", "memory_grounded"} for level in fact_levels):
+    if any(level in {"same_brand_global_match", "retrieved_match", "verified_by_memory"} for level in fact_levels):
         return "measurement_suspect"
     if any(level in {"same_brand_global_match", "retrieved_match"} for level in levels):
         return "measurement_suspect"
@@ -3969,7 +3969,7 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
         return "legitimate"
     if _turn_is_manager_only_legitimate(turn, fact_level=fact_level):
         return "legitimate"
-    if fact_level in {"retrieved_match", "same_brand_global_match", "memory_grounded", "wrong_scope"}:
+    if fact_level in {"retrieved_match", "same_brand_global_match", "verified_by_memory", "wrong_scope"}:
         return "upsell_miss"
     return "unclassified"
 
@@ -4302,8 +4302,8 @@ def _handoff_fact_level(turn: Mapping[str, Any]) -> str:
         for item in (fact_audit.get("items") or [])
         if isinstance(item, Mapping)
     }
-    if "memory_grounded" in fact_audit_levels:
-        return "memory_grounded"
+    if "verified_by_memory" in fact_audit_levels:
+        return "verified_by_memory"
     if "same_brand_global_match" in fact_audit_levels:
         return "same_brand_global_match"
     if "retrieved_match" in fact_audit_levels:

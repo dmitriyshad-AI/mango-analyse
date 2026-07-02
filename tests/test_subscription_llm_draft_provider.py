@@ -14975,6 +14975,88 @@ def test_direct_path_gate_allows_manager_contact_without_deadline() -> None:
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
+def test_direct_path_gate_downgrades_future_booking_commitment_but_keeps_text() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Запишем вас в группу и закрепим место.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Что дальше?", context={"active_brand": "foton"})
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == result.draft_text
+    assert gate["action"] == "downgrade_keep_text"
+    assert "unsafe_future_commitment" in {item["code"] for item in gate["findings"]}
+    assert "direct_path_gate_text_preserved" in gated.safety_flags
+
+
+@pytest.mark.parametrize(
+    "draft_text",
+    (
+        "Я запишу вас в группу и закреплю место.",
+        "Забронирую вам место в группе.",
+        "Я верну вам деньги за оплату.",
+        "Оформлю возврат оплаты.",
+        "Выставлю счет.",
+    ),
+)
+def test_direct_path_gate_downgrades_first_person_future_commitments(draft_text: str) -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=draft_text,
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Что дальше?", context={"active_brand": "foton"})
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route in {"draft_for_manager", "manager_only"}
+    assert gate["action"] in {"downgrade_keep_text", "block"}
+    assert {"unsafe_future_commitment", "p0_promise"} & {item["code"] for item in gate["findings"]}
+
+
+def test_direct_path_gate_keeps_safe_manager_check_before_booking() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Сначала менеджер проверит наличие. Если место есть, он подскажет оформление заявки.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Есть места?", context={"active_brand": "foton"})
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.draft_text == result.draft_text
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_brand_guard_blocks_any_brand_token_when_active_brand_unknown() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Фотон поможет подобрать группу по математике.",
+    )
+
+    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "unknown"})
+
+    assert guarded.route == "manager_only"
+    assert "brand_unknown_client_text_blocked" in guarded.safety_flags
+    assert guarded.metadata["forbidden_brand_terms"] == ["foton"]
+
+
+def test_brand_guard_blocks_two_brands_even_when_active_brand_known() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В Фотоне и УНПК МФТИ условия похожи, можно выбрать любой вариант.",
+    )
+
+    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "foton"})
+
+    assert guarded.route == "manager_only"
+    assert "cross_brand_client_text_blocked" in guarded.safety_flags
+    assert set(guarded.metadata["forbidden_brand_terms"]) == {"foton", "unpk"}
+
+
 def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")

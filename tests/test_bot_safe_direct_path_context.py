@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_SAFE_CRM_CONTEXT_ENV,
+    TIMELINE_MEMORY_IN_PROMPT_ENV,
+    TIMELINE_MEMORY_SHADOW_ENV,
     _build_direct_path_prompt,
     _direct_path_bot_safe_memory_prompt_text,
     _direct_path_bot_safe_context_prompt_block,
     _direct_path_bot_safe_context_items,
+    _direct_path_bot_safe_context_trace,
 )
 
 
@@ -16,6 +19,42 @@ def test_bot_safe_context_prompt_block_is_default_off() -> None:
 
     assert "Безопасная выжимка клиента" not in prompt
     assert _direct_path_bot_safe_context_items(context) == ()
+
+
+def test_timeline_memory_shadow_collects_trace_without_prompt_injection() -> None:
+    context = _context(flag=False)
+    context.pop(BOT_SAFE_CRM_CONTEXT_ENV)
+    context[TIMELINE_MEMORY_SHADOW_ENV] = "1"
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+    trace = _direct_path_bot_safe_context_trace(context)
+
+    assert "Безопасная выжимка клиента" not in prompt
+    assert trace["enabled"] is False
+    assert trace["shadow"] is True
+    assert trace["visible_items"] == 2
+
+
+def test_explicit_bot_safe_off_disables_timeline_memory_shadow() -> None:
+    context = _context(flag=False)
+    context[TIMELINE_MEMORY_SHADOW_ENV] = "1"
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+    trace = _direct_path_bot_safe_context_trace(context)
+
+    assert "Безопасная выжимка клиента" not in prompt
+    assert trace == {"enabled": False, "shadow": False, "reason": "timeline_memory_flag_off"}
+
+
+def test_timeline_memory_in_prompt_alias_enables_existing_bot_safe_context() -> None:
+    context = _context(flag=False)
+    context.pop(BOT_SAFE_CRM_CONTEXT_ENV)
+    context[TIMELINE_MEMORY_IN_PROMPT_ENV] = "1"
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+
+    assert "Безопасная выжимка клиента" in prompt
+    assert "Фотон: клиент уже спрашивал про онлайн-курс" in prompt
 
 
 def test_bot_safe_context_prompt_filters_by_active_brand_and_strips_ids() -> None:

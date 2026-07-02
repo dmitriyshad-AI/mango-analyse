@@ -111,6 +111,14 @@ SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
 PAYMENT_REFUND_DISPUTE_SPLIT_ENV = "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT"
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
+TIMELINE_MEMORY_SHADOW_ENV = "TELEGRAM_TIMELINE_MEMORY_SHADOW"
+BOT_SAFE_CRM_CONTEXT_ALIASES = (
+    "bot_safe_crm_context",
+    "bot_safe_crm_context_enabled",
+    "bot_safe_summary_context",
+    "bot_safe_summary_context_enabled",
+)
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
 
@@ -347,13 +355,33 @@ def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -
     return _default_off_flag_enabled(
         context,
         BOT_SAFE_CRM_CONTEXT_ENV,
+        aliases=(*BOT_SAFE_CRM_CONTEXT_ALIASES, TIMELINE_MEMORY_IN_PROMPT_ENV, "timeline_memory_in_prompt"),
+    )
+
+
+def _timeline_memory_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if _bot_safe_crm_context_explicitly_disabled(context):
+        return False
+    return _default_off_flag_enabled(
+        context,
+        TIMELINE_MEMORY_SHADOW_ENV,
         aliases=(
-            "bot_safe_crm_context",
-            "bot_safe_crm_context_enabled",
-            "bot_safe_summary_context",
-            "bot_safe_summary_context_enabled",
+            "timeline_memory_shadow",
+            "timeline_memory_shadow_enabled",
+            "bot_safe_crm_context_shadow",
         ),
     )
+
+
+def _bot_safe_crm_context_explicitly_disabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (BOT_SAFE_CRM_CONTEXT_ENV, *BOT_SAFE_CRM_CONTEXT_ALIASES):
+            if key in context:
+                return not _truthy_value(context.get(key))
+    if BOT_SAFE_CRM_CONTEXT_ENV in os.environ:
+        return not _truthy_value(os.getenv(BOT_SAFE_CRM_CONTEXT_ENV))
+    return False
+
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
@@ -469,8 +497,15 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
     return dict(list(items.items())[:limit])
 
 
-def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[Mapping[str, Any], ...]:
-    if not _bot_safe_crm_context_enabled(context) or not isinstance(context, Mapping):
+def _direct_path_bot_safe_context_items(
+    context: Optional[Mapping[str, Any]],
+    *,
+    limit: int = 3,
+    require_prompt_enabled: bool = True,
+) -> tuple[Mapping[str, Any], ...]:
+    if require_prompt_enabled and not _bot_safe_crm_context_enabled(context):
+        return ()
+    if not isinstance(context, Mapping):
         return ()
     active_brand = _active_brand(context)
     if active_brand not in {"foton", "unpk"}:
@@ -597,11 +632,14 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
 
 
 def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    if not _bot_safe_crm_context_enabled(context):
-        return {"enabled": False, "reason": "bot_safe_crm_context_flag_off"}
-    items = _direct_path_bot_safe_context_items(context)
+    prompt_enabled = _bot_safe_crm_context_enabled(context)
+    shadow_enabled = _timeline_memory_shadow_enabled(context)
+    if not prompt_enabled and not shadow_enabled:
+        return {"enabled": False, "shadow": False, "reason": "timeline_memory_flag_off"}
+    items = _direct_path_bot_safe_context_items(context, require_prompt_enabled=False)
     return {
-        "enabled": True,
+        "enabled": prompt_enabled,
+        "shadow": shadow_enabled and not prompt_enabled,
         "visible_items": len(items),
         "active_brand": _active_brand(context),
         "source": "read_only_customer_context.timeline_context.bot_context",

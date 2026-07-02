@@ -1,0 +1,16 @@
+No runtime code changed.
+
+Report commands executed:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_existence_fact_verification.py --transcripts /tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl --gold /tmp/adr003_f2j_existence_subset_gold.jsonl --kb-snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir /tmp/adr003_f2j_existing_fact_reports/existence
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_fact_gated_self_answer_readiness.py --transcripts /tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl --gold /tmp/adr003_f2j_existence_subset_gold.jsonl --kb-snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir /tmp/adr003_f2j_existing_fact_reports/readiness
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_exact_proof_injection_shadow.py --transcripts /tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl --gold /tmp/adr003_f2j_existence_subset_gold.jsonl --kb-snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir /tmp/adr003_f2j_existing_fact_reports/exact_proof
+
+Key outputs:
+
+- strict_f3_draft_candidates=0
+- current_handoff_rows=0
+- manager_only_exact_proof_rows=0
+- active_readiness=no_go

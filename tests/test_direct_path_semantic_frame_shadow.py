@@ -19,6 +19,7 @@ from mango_mvp.channels.subscription_llm import (
     _build_direct_path_prompt,
     _normalize_direct_path_payload,
 )
+from mango_mvp.channels.subscription_llm_parts.provider import build_direct_path_semantic_frame_posthoc_prompt
 
 
 def test_semantic_frame_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,6 +104,39 @@ def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
     assert "SemanticFrame SHADOW" in on_prompt
     assert "не меняй из-за него route, draft_text" in on_prompt
     assert '"must_handoff": false' in on_prompt
+
+
+def test_semantic_frame_shadow_prompt_distinguishes_existence_from_availability() -> None:
+    prompt = _build_direct_path_prompt(
+        "Есть лагерь для 5 класса?",
+        context={"active_brand": "unpk", DIRECT_PATH_ENV: "1", SEMANTIC_FRAME_SHADOW_ENV: "1"},
+    )
+
+    assert "стабильная справка" in prompt
+    assert "есть ли такой курс/лагерь/формат/направление для класса X" in prompt
+    assert "это answer_question" in prompt
+    assert "check_availability ставь только" in prompt
+    assert "свободных местах/подходящей группе" in prompt
+
+
+def test_semantic_frame_posthoc_prompt_distinguishes_existence_from_availability() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="УНПК: ЛВШ Менделеево рассчитана на 5-10 классы.",
+        metadata={"direct_path": {}},
+    )
+
+    prompt = build_direct_path_semantic_frame_posthoc_prompt(
+        result,
+        client_message="Есть лагерь для 5 класса?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert "Не путай стабильную справку о существовании продукта с живым наличием мест" in prompt
+    assert "есть ли курс/лагерь/формат для 5 класса" in prompt
+    assert "requested_action=answer_question" in prompt
+    assert "есть места" in prompt
+    assert "check_availability/manager_only" in prompt
 
 
 def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> None:

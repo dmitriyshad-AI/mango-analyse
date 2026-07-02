@@ -2674,6 +2674,10 @@ def _build_direct_path_prompt(
             "requested_product — объект с brand, subject, grade, format, venue, program_kind, raw_text; "
             "requested_action — что клиент просит сделать: answer_question|check_availability|enroll|send_materials|"
             "send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown; "
+            "Граница requested_action: стабильная справка «есть ли такой курс/лагерь/формат/направление для класса X», "
+            "«подходит ли класс/возраст», «онлайн или очно?» — это answer_question, если клиент НЕ просит проверить "
+            "живые места, запись, бронь, конкретную группу или личный статус. check_availability ставь только для "
+            "настоящего запроса о свободных местах/подходящей группе/можно ли попасть сейчас/бронь/лист ожидания. "
             "answerability — answer_self|manager_only|uncertain; must_handoff — true только если по смыслу нужен менеджер/P0; "
             "evidence — короткие неперсональные причины без телефонов, email и ФИО; confidence — 0..1.\n\n"
         )

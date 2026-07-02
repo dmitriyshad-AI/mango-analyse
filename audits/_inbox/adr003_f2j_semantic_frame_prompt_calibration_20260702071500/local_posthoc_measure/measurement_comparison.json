@@ -1,0 +1,40 @@
+{
+  "interpretation": {
+    "must_handoff_not_fixed": "8 wrong -> 8 wrong; active remains no-go",
+    "next_blocker": "risk_class/answerability still missing_facts/manager_only on safe reference rows",
+    "requested_action_improved": "6 wrong -> 1 wrong; check_availability disappeared on subset"
+  },
+  "measurement_type": "local_posthoc_semantic_frame_enrich_subset",
+  "new": {
+    "answerability_wrong": 9,
+    "by_requested_action": {
+      "answer_question": 9,
+      "enroll": 2,
+      "handoff_manager": 1,
+      "refund_or_cancel": 1
+    },
+    "must_handoff_wrong": 8,
+    "requested_action_wrong": 1,
+    "risk_class_wrong": 9,
+    "rows": 13,
+    "too_cautious": 8,
+    "too_confident": 0
+  },
+  "old": {
+    "answerability_wrong": 9,
+    "by_requested_action": {
+      "answer_question": 4,
+      "check_availability": 6,
+      "enroll": 2,
+      "refund_or_cancel": 1
+    },
+    "must_handoff_wrong": 8,
+    "requested_action_wrong": 6,
+    "risk_class_wrong": 9,
+    "rows": 13,
+    "too_cautious": 8,
+    "too_confident": 0
+  },
+  "schema_version": "adr003_f2j_prompt_calibration_measurement_v1_2026_07_02",
+  "source_subset": "7 F2i semanticframe_existence_vs_availability dialogs, 13 gold rows"
+}

@@ -1,0 +1,485 @@
+{
+  "acceptance": {
+    "notes": [
+      "Frame remains too cautious on safe/self rows; active autonomy needs calibration before Ф3.",
+      "Some gold rows are unclear/not comparable."
+    ],
+    "status": "needs_review"
+  },
+  "created_at": "2026-07-02T08:34:38.555608+00:00",
+  "inputs": {
+    "gold": "/tmp/adr003_f2j_existence_subset_gold.jsonl",
+    "transcripts": "/tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl"
+  },
+  "rows": [
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "draft_for_manager",
+      "current_route_handoff": true,
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe reference: compare formats/prices; live availability must remain excluded from self text",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "camp availability as general format/class reference; do not claim live free seats",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.88,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe direction suitability reference",
+      "review_label": "frame_too_cautious",
+      "turn": 2
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.90-1.00",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "expected": {
+        "answerability": "manager_only",
+        "must_handoff": true,
+        "requested_action": "enroll",
+        "risk_class": "manager_action"
+      },
+      "field_results": {
+        "answerability": "correct",
+        "must_handoff": "correct",
+        "requested_action": "correct",
+        "risk_class": "correct"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.96,
+        "must_handoff": true,
+        "requested_action": "enroll",
+        "risk_class": "manager_action"
+      },
+      "notes": "actual enrollment request",
+      "review_label": "frame_correct",
+      "turn": 3
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_pos_unpk_exam_group_signup",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe course/format existence reference without enrollment",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.90-1.00",
+      "current_p0_signal": true,
+      "current_route": "manager_only",
+      "current_route_handoff": true,
+      "dialog_id": "cf142_pos_unpk_exam_group_signup",
+      "expected": {
+        "answerability": "manager_only",
+        "must_handoff": true,
+        "requested_action": "enroll",
+        "risk_class": "manager_action"
+      },
+      "field_results": {
+        "answerability": "correct",
+        "must_handoff": "correct",
+        "requested_action": "correct",
+        "risk_class": "correct"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.96,
+        "must_handoff": true,
+        "requested_action": "enroll",
+        "risk_class": "manager_action"
+      },
+      "notes": "client wants enrollment",
+      "review_label": "frame_correct",
+      "turn": 3
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "general existence of camp for grade; no live-place check",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe format/class reference if answer avoids live seats",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.90-1.00",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "expected": {
+        "answerability": "uncertain",
+        "must_handoff": null,
+        "requested_action": "answer_question",
+        "risk_class": "unknown"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "not_labeled",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.93,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "unclear without checking primary fact on accommodation/meals in this transcript row",
+      "review_label": "unclear",
+      "turn": 2
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.90-1.00",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "expected": {
+        "answerability": "manager_only",
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "field_results": {
+        "answerability": "correct",
+        "must_handoff": "correct",
+        "requested_action": "wrong",
+        "risk_class": "correct"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.95,
+        "must_handoff": true,
+        "requested_action": "handoff_manager",
+        "risk_class": "missing_facts"
+      },
+      "notes": "round-the-clock nurse is missing/operational fact",
+      "review_label": "frame_correct",
+      "turn": 3
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_fabrication_unpk_camp_security",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe existence/class reference",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.80-0.89",
+      "current_p0_signal": false,
+      "current_route": "bot_answer_self_for_pilot",
+      "current_route_handoff": false,
+      "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+      "expected": {
+        "answerability": "answer_self",
+        "must_handoff": false,
+        "requested_action": "answer_question",
+        "risk_class": "safe"
+      },
+      "field_results": {
+        "answerability": "wrong",
+        "must_handoff": "wrong",
+        "requested_action": "correct",
+        "risk_class": "wrong"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "must_handoff": true,
+        "requested_action": "answer_question",
+        "risk_class": "missing_facts"
+      },
+      "notes": "safe online course existence reference",
+      "review_label": "frame_too_cautious",
+      "turn": 1
+    },
+    {
+      "brand": "",
+      "confidence_bucket": "0.90-1.00",
+      "current_p0_signal": true,
+      "current_route": "manager_only",
+      "current_route_handoff": true,
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "expected": {
+        "answerability": "manager_only",
+        "must_handoff": true,
+        "requested_action": "refund_or_cancel",
+        "risk_class": "p0"
+      },
+      "field_results": {
+        "answerability": "correct",
+        "must_handoff": "correct",
+        "requested_action": "correct",
+        "risk_class": "correct"
+      },
+      "frame": {
+        "answerability": "manager_only",
+        "confidence": 0.98,
+        "must_handoff": true,
+        "requested_action": "refund_or_cancel",
+        "risk_class": "p0"
+      },
+      "notes": "turn3 paid transfer/refund context must remain handoff; no guarantee or self-answer lowering",
+      "review_label": "frame_correct",
+      "turn": 3
+    }
+  ],
+  "schema_version": "adr003_frame_gold_calibration_v1_2026_07_01",
+  "summary": {
+    "compared_rows": 12,
+    "confidence_buckets": {
+      "0.00-0.59": {
+        "must_handoff_accuracy": null,
+        "must_handoff_correct": 0,
+        "rows": 0,
+        "too_cautious": 0,
+        "too_confident": 0
+      },
+      "0.60-0.79": {
+        "must_handoff_accuracy": null,
+        "must_handoff_correct": 0,
+        "rows": 0,
+        "too_cautious": 0,
+        "too_confident": 0
+      },
+      "0.80-0.89": {
+        "must_handoff_accuracy": 0.0,
+        "must_handoff_correct": 0,
+        "rows": 8,
+        "too_cautious": 8,
+        "too_confident": 0
+      },
+      "0.90-1.00": {
+        "must_handoff_accuracy": 1.0,
+        "must_handoff_correct": 4,
+        "rows": 4,
+        "too_cautious": 0,
+        "too_confident": 0
+      },
+      "missing": {
+        "must_handoff_accuracy": null,
+        "must_handoff_correct": 0,
+        "rows": 0,
+        "too_cautious": 0,
+        "too_confident": 0
+      }
+    },
+    "current_over_handoff_candidates": 1,
+    "duplicate_gold_rows": 0,
+    "field_accuracy": {
+      "answerability": {
+        "accuracy": 0.3077,
+        "correct": 4,
+        "total": 13
+      },
+      "must_handoff": {
+        "accuracy": 0.3333,
+        "correct": 4,
+        "total": 12
+      },
+      "requested_action": {
+        "accuracy": 0.9231,
+        "correct": 12,
+        "total": 13
+      },
+      "risk_class": {
+        "accuracy": 0.3077,
+        "correct": 4,
+        "total": 13
+      }
+    },
+    "labeled_rows": 13,
+    "missing_transcript_examples": [],
+    "missing_transcript_rows": 0,
+    "must_handoff_accuracy": 0.3333,
+    "p0_misses": 0,
+    "review_labels": {
+      "frame_correct": 4,
+      "frame_too_cautious": 8,
+      "unclear": 1
+    },
+    "safe_self_candidates": 8,
+    "skipped_rows": 1,
+    "too_cautious": 8,
+    "too_confident": 0
+  }
+}

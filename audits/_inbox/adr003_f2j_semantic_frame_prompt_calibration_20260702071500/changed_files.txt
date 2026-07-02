@@ -1,0 +1,13 @@
+M  src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+M  src/mango_mvp/channels/subscription_llm_parts/provider.py
+M  tests/test_direct_path_semantic_frame_shadow.py
+?? tasks/_done/2026-07-02_TZ_ADR003_F2j_semantic_frame_prompt_calibration_dlya_D1.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/backward_compatibility.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/changed_files.txt
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/implementation_notes.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/local_posthoc_measure/adr003_frame_gold_calibration_report.json
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/local_posthoc_measure/adr003_frame_gold_calibration_report.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/local_posthoc_measure/measurement_comparison.json
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/risk_review.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/semantic_review.md
+!! audits/_inbox/adr003_f2j_semantic_frame_prompt_calibration_20260702071500/test_output.txt

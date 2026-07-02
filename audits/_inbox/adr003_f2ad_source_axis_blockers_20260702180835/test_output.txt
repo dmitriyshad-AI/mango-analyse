@@ -1,0 +1,16 @@
+......................                                                   [100%]
+22 passed in 2.19s
+
+Full pytest:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3928 passed, 5 skipped, 1 warning in 87.30s (0:01:27)
+
+git diff --check: clean
+
+No-text check:
+
+- `client_excerpt` absent from F2ad output JSON.
+- `bot_excerpt` absent from F2ad output JSON.
+- Real client excerpts from current handoff cases absent from F2ad audit pack.

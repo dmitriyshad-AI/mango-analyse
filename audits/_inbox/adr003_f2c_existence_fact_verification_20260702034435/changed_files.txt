@@ -1,0 +1,16 @@
+Changed repo files:
+
+- scripts/report_adr003_existence_fact_verification.py
+- tests/test_report_adr003_existence_fact_verification.py
+- tasks/_running/2026-07-02_TZ_ADR003_F2c_existence_fact_verification_shadow_dlya_D1.md
+
+Audit pack files:
+
+- adr003_existence_fact_verification_report.json
+- adr003_existence_fact_verification_report.md
+- implementation_notes.md
+- semantic_review.md
+- risk_review.md
+- backward_compatibility.md
+- changed_files.txt
+- test_output.txt

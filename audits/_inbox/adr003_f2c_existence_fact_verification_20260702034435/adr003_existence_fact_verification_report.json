@@ -1,0 +1,2331 @@
+{
+  "acceptance": {
+    "notes": [
+      "There are current handoff rows with exact KB evidence; these are candidates for a future fact-gated shadow, not active use.",
+      "Some already-self existence/format answers lack exact KB evidence in metadata/scorer; improve fact trace before active policy.",
+      "Any active self-answer still requires verified exact facts in runtime metadata, not this offline diagnostic matcher."
+    ],
+    "status": "pass"
+  },
+  "breakdowns": {
+    "by_evidence_level": {
+      "kb_exact": 9,
+      "kb_partial": 1
+    },
+    "by_group": {
+      "already_self_with_exact_kb_evidence": 6,
+      "already_self_without_exact_kb_evidence": 1,
+      "excluded_danger_money_p0": 1,
+      "handoff_with_exact_kb_evidence": 2
+    },
+    "by_requested_action": {
+      "answer_question": 3,
+      "check_availability": 7
+    },
+    "by_route": {
+      "bot_answer_self_for_pilot": 8,
+      "manager_only": 2
+    }
+  },
+  "created_at": "2026-07-02T00:44:17.416979+00:00",
+  "groups": {
+    "already_self_with_exact_kb_evidence": {
+      "count": 6,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+            "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_per_day",
+            "fact_type": "camp_lvsh",
+            "match_level": "exact",
+            "product": "lvsh_mendeleevo_2026",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-08-31"
+          },
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 7 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "camp availability as general format/class reference; do not claim live free seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 7,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная школа",
+            "grade": "7",
+            "program_kind": "ЛВШ",
+            "raw_text": "Выездная школа УНПК для 7 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_accommodation_meals_per_day:f9c7d957ee: УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 14,
+            "valid_until": "2027-05-30"
+          },
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 11 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course/format existence reference without enrollment",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "онлайн",
+            "grade": "11",
+            "program_kind": "олимпиадная подготовка",
+            "raw_text": "Олимпиадная физика онлайн для 11 класса есть?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_olympiad_targets_client_sa: Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+            "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_per_day",
+            "fact_type": "camp_lvsh",
+            "match_level": "exact",
+            "product": "lvsh_mendeleevo_2026",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-08-31"
+          },
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «По УНПК выездная школа для 7 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe format/class reference if answer avoids live seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 7,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная школа",
+            "grade": "7",
+            "program_kind": "ЛВШ",
+            "raw_text": "По УНПК выездная школа для 7 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_accommodation_meals_per_day:f9c7d957ee: УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смены 6–17 июля (ФизМат «Формула Физтеха» и ИИ «AI Lab») и 20–31 июля (только ФизМат «Формула Физтеха»). Тарифы: «База» — 39 500 ₽; «База + факуль",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 9 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe existence/class reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная школа",
+            "grade": "9",
+            "program_kind": "ЛВШ",
+            "raw_text": "Выездная школа УНПК для 9 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_subjects_1:566cb6f8a9: УНПК: в ЛВШ Менделеево для IT-направления есть предмет «Python»."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Физика, 10 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_c29_krasnoselskaya_sat_1000_1200_physics_10_base_before_2027_05_22.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2027-05-22"
+          },
+          "bot_excerpt": "Да, в Фотоне есть очная физика для 10 класса. Очно группы обычно небольшие — 6-12 человек, а для 5-11 классов нагрузка обычно 1 занятие в неделю. Чтобы точнее сориентировать по уровню группы, подскажите, какая сейчас гла",
+          "brand": "foton",
+          "client_excerpt": "Спроси: «Фотон, физика очно для 10 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_brand_foton_mipt_place",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "course existence/basic schedule reference without free-seat check",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "10 класс",
+            "program_kind": "regular_course",
+            "raw_text": "Фотон, физика очно для 10 класса есть?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "subject",
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 2,
+            "text_excerpt": "fact:v3:foton:presentation_format_facts_2026_05_21_client_facts_subjects_by_clas: По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, "
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 14,
+            "valid_until": "2027-05-30"
+          },
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 9 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe online course existence reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "онлайн",
+            "grade": "9",
+            "program_kind": "олимпиадная подготовка",
+            "raw_text": "Олимпиадная физика онлайн для 9 класса",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_olympiad_targets_client_sa: Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО."
+          },
+          "turn": 1
+        }
+      ]
+    },
+    "already_self_without_exact_kb_evidence": {
+      "count": 1,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели ",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "partial",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 2,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Да, для 8 класса у Фотона есть городская летняя школа. Это очный формат в Москве, без проживания; занятия проходят на Верхней Красносельской ул., 30. Можно рассмотреть этот вариант, если нужна летняя учебная смена без вы",
+          "brand": "foton",
+          "client_excerpt": "Спроси: «У Фотона летняя школа для 8 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_fabrication_foton_camp_laptop",
+          "evidence_level": "kb_partial",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe existence of summer school, no booking",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_without_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очный",
+            "grade": "8",
+            "program_kind": "городская летняя школа",
+            "raw_text": "У Фотона летняя школа для 8 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format",
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 2,
+            "text_excerpt": "fact:v3:foton:ls_city_2026_foton_format:e60d3a4050: Фотон: городской летний лагерь — Очная городская школа, без проживания."
+          },
+          "turn": 1
+        }
+      ]
+    },
+    "excluded_danger_money_p0": {
+      "count": 1,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смены 6–17 июля (ФизМат «Формула Физтеха» и ИИ «AI Lab») и 20–31 июля (только ФизМат «Формула Физтеха»). Тарифы: «База» — 39 500 ₽; «База + факуль",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа для 8 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general existence of camp for grade; no live-place check",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "excluded_danger_money_p0",
+          "is_gold_safe_self": true,
+          "kb_match_count": 7,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная школа",
+            "grade": "8",
+            "program_kind": "лагерь",
+            "raw_text": "Выездная школа для 8 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_audience:8fbc0262b0: УНПК: ЛВШ Менделеево — 5-10 класс (окончившие)."
+          },
+          "turn": 1
+        }
+      ]
+    },
+    "handoff_with_exact_kb_evidence": {
+      "count": 2,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс в",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Да:) Она очень заинтересовала:) у меня ребёнок закончил 5 класс:)",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: age, format, address, schedule without booking action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "handoff_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "5",
+            "program_kind": "летняя школа",
+            "raw_text": "ребёнок закончил 5 класс",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс в",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Поняла вас: если ребёнок закончил 5-й класс, эта смена может не подойти по возрасту/классу. Лучше не будем предлагать неподходящий вариант, а проверим, есть ли у УНПК МФТИ программы для вашего класса. Я передам менеджеру",
+          "brand": "unpk",
+          "client_excerpt": "Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "wappi_pair_missing_72h_003",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: age suitability; actual free seats remain manager-only",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "handoff_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "check_availability",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "закончил 5-й класс",
+            "program_kind": "летняя смена",
+            "raw_text": "Это для 7-х, а мой 5-й закончил",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        }
+      ]
+    },
+    "handoff_without_exact_kb_evidence": {
+      "count": 0,
+      "examples": []
+    },
+    "not_existence_format": {
+      "count": 22,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс в",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "program_kind"
+            ],
+            "score": 11,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Расскажу про обе: можно рассмотреть дневной формат и выездную летнюю школу, а точные условия лучше подбирать по классу ребёнка. Дневной вариант обычно выбирают, когда хочется занятий без проживания, а выездной — когда ва",
+          "brand": "unpk",
+          "client_excerpt": "Расскажите про обе",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "wappi_pair_missing_72h_002",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: compare formats/prices; live availability must remain excluded from self text",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "дневной и выездной",
+            "grade": "",
+            "program_kind": "летняя школа",
+            "raw_text": "Расскажите про обе",
+            "subject": ""
+          },
+          "route": "draft_for_manager",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "program_kind"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смены 6–17 июля (ФизМат «Формула Физтеха» и ИИ «AI Lab») и 20–31 июля (только ФизМат «Формула Физтеха»). Тарифы: «База» — 39 500 ₽; «База + факуль",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "partial",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "program_kind"
+            ],
+            "score": 2,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Понимаю, конечно, подумайте спокойно. Если нужно, я могу коротко сориентировать по программе смены для 9 класса: что будет по математике и физике и кому такой формат лучше подходит. Напишите, пожалуйста, что сейчас важне",
+          "brand": "unpk",
+          "client_excerpt": "Добрый день,пока нет думаем",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "wappi_pair_missing_72h_004",
+          "evidence_level": "kb_partial",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "acknowledge_pause",
+              "risk_class": "safe"
+            },
+            "notes": "client pauses decision; no action requested",
+            "review_label": "frame_correct"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "9",
+            "program_kind": "летняя школа",
+            "raw_text": "смена дневного пребывания, направление Физмат, 9 класс",
+            "subject": "математика, физика"
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "program_kind"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели ",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "partial",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 3,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Понимаю, спасибо! Если решите вернуться к варианту Летней очной школы по ИИ для 6 класса, напишите — сориентируем по актуальным местам и оформлению.",
+          "brand": "foton",
+          "client_excerpt": "Спасибо за информацию, подумаем ))",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "wappi_pair_missing_72h_013",
+          "evidence_level": "kb_partial",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "acknowledge_pause",
+              "risk_class": "safe"
+            },
+            "notes": "thanks/pause; no action requested",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очная смена",
+            "grade": "6",
+            "program_kind": "летняя очная школа",
+            "raw_text": "Ребенок перешел в 6 класс, интересует смена в конце августа в Москве, ИИ",
+            "subject": "ИИ"
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade"
+            ],
+            "client_safe_text_excerpt": "Математика, 9 класс, ОГЭ, онлайн, Онлайн: вторник и четверг 18:00-19:30, старт 22.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_ab8_onlajn_ano_tue_thu_1800_1930_math_9_oge_before_2027_05_27.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade"
+            ],
+            "score": 12,
+            "valid_until": "2027-05-27"
+          },
+          "bot_excerpt": "Стоимость второго семестра отдельно в подтверждённых данных не указана, поэтому сумму наугад не называю. По годовому курсу математики для 8 класса оплату можно делать не только сразу за учебный год, но и по семестрам; ит",
+          "brand": "unpk",
+          "client_excerpt": "так как не указана стоимость за второй семестр непонятно, меняется ли стоимость общая. Второй семестр [phone]=[id]?",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "wappi_pair_missing_72h_020",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "price question; if tied to an individual invoice it becomes manager-only",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 7,
+          "requested_action": "handoff_manager",
+          "requested_axes": [
+            "subject",
+            "grade"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "8 класс",
+            "program_kind": "годовой курс",
+            "raw_text": "годовой курс по математике 8 класс",
+            "subject": "математика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "subject",
+              "grade"
+            ],
+            "score": 0,
+            "text_excerpt": "fact:v3:unpk:ls_city_2026_unpk_free_morning_club_time:decd807aa5: УНПК: городской летний лагерь — 09:45-11:45."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {},
+          "bot_excerpt": "В УНПК рассрочки нет, это не банковская рассрочка, поэтому одобрение банка не требуется. Можно платить помесячно, за семестр или за год. При оплате за семестр действует скидка 10%, за год - 14%. Если нужно растянуть опла",
+          "brand": "unpk",
+          "client_excerpt": "Если оплатить сразу за год, это выгоднее?",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "forward_payment_unpk_semester_year_01",
+          "evidence_level": "none",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general discount/benefit explanation without action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 0,
+          "requested_action": "answer_question",
+          "requested_axes": [],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "",
+            "program_kind": "",
+            "raw_text": "УНПК",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {},
+          "bot_excerpt": "Сначала нужно понять класс ребёнка: от этого зависит, понадобится ли тестирование перед подбором группы или можно сразу сориентировать по подходящему варианту. Тестирование используют, чтобы подобрать группу по уровню и ",
+          "brand": "unpk",
+          "client_excerpt": "Подскажите, как дальше: сначала тестирование или сразу группа? Я не понимаю порядок.",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "p0_model_led_pos_how_next",
+          "evidence_level": "none",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general enrollment order without actual enrollment",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 0,
+          "requested_action": "answer_question",
+          "requested_axes": [],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "",
+            "program_kind": "",
+            "raw_text": "",
+            "subject": ""
+          },
+          "route": "draft_for_manager",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade"
+            ],
+            "client_safe_text_excerpt": "Физика, 10 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_c29_krasnoselskaya_sat_1000_1200_physics_10_base_before_2027_05_22.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade"
+            ],
+            "score": 12,
+            "valid_until": "2027-05-22"
+          },
+          "bot_excerpt": "В такой ситуации главное — не перегружать ребёнка сразу, а подобрать старт по текущему уровню физики за 8 класс. Обычно сначала разбираемся, где именно проседает база и какая цель: подтянуть школьную программу, увереннее",
+          "brand": "foton",
+          "client_excerpt": "Ребёнок в 8 классе, физика слабая, вдруг не потянет? Что обычно делаете в такой ситуации?",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "p0_model_led_pos_anxiety_level",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general pedagogical guidance without live status/action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 3,
+          "requested_action": "handoff_manager",
+          "requested_axes": [
+            "subject",
+            "grade"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "",
+            "grade": "8",
+            "program_kind": "regular_course",
+            "raw_text": "Ребёнок в 8 классе, физика слабая",
+            "subject": "физика"
+          },
+          "route": "draft_for_manager",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [
+              "subject",
+              "grade"
+            ],
+            "score": 0
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Информатика, 9 класс, ОГЭ, онлайн, Онлайн: суббота 10:00-12:00, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+            "fact_key": "schedule_2026_27.groups.group_start_date_p52_onlajn_sat_1000_1200_informatics_9_oge_before_2027_05_30.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "schedule_2026_27",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2027-05-30"
+          },
+          "bot_excerpt": "Да, в Фотоне есть онлайн-информатика для 8 класса. Онлайн-занятия проходят на SohoLMS в формате вебинаров: можно задавать вопросы в чате, а записи уроков доступны для пересмотра. Для 5-11 классов нагрузка обычно 1 заняти",
+          "brand": "foton",
+          "client_excerpt": "спроси про онлайн информатику 8 класс",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_foton_refund_sneaky_info_03",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course/platform/price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "онлайн",
+            "grade": "8",
+            "program_kind": "regular_course",
+            "raw_text": "спроси про онлайн информатику 8 класс",
+            "subject": "информатика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "subject",
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 2,
+            "text_excerpt": "fact:v3:foton:presentation_format_facts_2026_05_21_client_facts_subjects_by_clas: По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, "
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 клас",
+            "fact_key": "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "presentation_format_facts_2026_05_21",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Очно физика для 9 класса в Фотоне стоит 44 600 ₽ за семестр или 74 500 ₽ за год. При оплате за семестр или за год выгодная цена уже учтена в прайсе. Чтобы подобрать подходящую группу, подскажите, какая сейчас главная цел",
+          "brand": "foton",
+          "client_excerpt": "'сколько стоит очно физика 9 класс?'",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_foton_offline_price_06",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "9",
+            "program_kind": "regular_course",
+            "raw_text": "сколько стоит очно физика 9 класс?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semest: Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 клас",
+            "fact_key": "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "presentation_format_facts_2026_05_21",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "За год очно физика для 9 класса в Фотоне стоит 74 500 ₽. Это стоимость курса на 2026/27 учебный год; также есть вариант оплаты за семестр — 44 600 ₽. Чтобы подобрать подходящую группу, подскажите, какая сейчас главная це",
+          "brand": "foton",
+          "client_excerpt": "'а за год сколько?'",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_foton_offline_price_06",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe yearly price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "9",
+            "program_kind": "regular_course",
+            "raw_text": "а за год сколько?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semest: Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽."
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс в",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Для 10 класса очно в УНПК стоимость на 2026/27 учебный год: 49 000 ₽ за семестр или 82 000 ₽ за год. В учебном году 35 занятий, при оплате за семестр действует дополнительная скидка 10%. Подскажите, какой предмет или нап",
+          "brand": "unpk",
+          "client_excerpt": "'цена очно 10 класс?'",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_unpk_offline_price_07",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "очно",
+            "grade": "10",
+            "program_kind": "regular_course",
+            "raw_text": "цена очно 10 класс?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semeste: УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс в",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "За год для 10 класса очно в УНПК выходит 82 000 ₽. Это стоимость на 2026/27 учебный год для очного формата 5-11 классов; оплата за год уже выгоднее, чем по семестрам. Подскажите, какой предмет или направление рассматрива",
+          "brand": "unpk",
+          "client_excerpt": "'за год сколько выйдет?'",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_unpk_offline_price_07",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe yearly price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "очно",
+            "grade": "10",
+            "program_kind": "regular_course",
+            "raw_text": "за год сколько выйдет?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semeste: УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽."
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели ",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Мы не даём и не гарантируем конкретный балл: результат зависит от ученика, регулярности занятий и самостоятельной работы. Менеджер свяжется, уточнит цель и может показать, какая у нас статистика результатов.",
+          "brand": "foton",
+          "client_excerpt": "'а результат вы гарантируете?'",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe no-guarantee explanation; avoid unsupported statistics",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "11",
+            "program_kind": "подготовка к ЕГЭ",
+            "raw_text": "а результат вы гарантируете?",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semest: Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽."
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели ",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Примерный прирост в баллах без диагностики и понимания текущего уровня честно не назову. Мы можем оценить стартовую точку, цель по ЕГЭ и регулярность занятий, а дальше предложить реалистичный план подготовки без обещания",
+          "brand": "foton",
+          "client_excerpt": "'ну хоть примерно на сколько баллов поднимете?'",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe answer: no personal score promise without diagnostics",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "11",
+            "program_kind": "regular_course",
+            "raw_text": "подготовка к ЕГЭ",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semest: Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽."
+          },
+          "turn": 3
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "format"
+            ],
+            "client_safe_text_excerpt": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели ",
+            "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+            "fact_type": "program",
+            "match_level": "partial",
+            "product": "kb_v6_5_client_safe_facts_2026_06_03",
+            "requested_axes": [
+              "format"
+            ],
+            "score": 1,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "В Фотоне нагрузка зависит от класса и формата: для 5-11 классов обычно 1 занятие в неделю по 3 академических часа (очное занятие длится около 2 часов); для младших очных групп и онлайн-групп 3-4 классов — по 2 академичес",
+          "brand": "foton",
+          "client_excerpt": "Где проходят очные занятия и можно ли записаться на пробное?",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "ra1_foton_address_and_trial",
+          "evidence_level": "runtime_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "address and general trial process without actual booking",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "enroll",
+          "requested_axes": [
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "",
+            "program_kind": "regular_course",
+            "raw_text": "Где проходят очные занятия и можно ли записаться на пробное?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "format"
+            ],
+            "score": 11,
+            "text_excerpt": "fact:v3:foton:presentation_format_facts_2026_05_21_client_facts_lesson_load_by_a: В Фотоне нагрузка зависит от класса и формата: для 5-11 классов обычно 1 занятие в неделю по 3 академических часа (очное занятие длится около 2 часов); для мл"
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "format"
+            ],
+            "client_safe_text_excerpt": "Очные группы — от 3 до 12 человек, обычно 7-8. Онлайн-группы — 10-20 человек, обычно 12-15.",
+            "fact_key": "r4_1_owner_2026_06_12.foton.regular_group_size",
+            "fact_type": "format",
+            "match_level": "exact",
+            "product": "regular_courses_2026_27",
+            "requested_axes": [
+              "format"
+            ],
+            "score": 11,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Передам менеджеру вопрос по доступу к личному кабинету; он подскажет порядок входа по вашей группе.",
+          "brand": "foton",
+          "client_excerpt": "На какой платформе онлайн и сколько стоит семестр?",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "ra1_foton_platform_and_price",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "platform and price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "онлайн",
+            "grade": "",
+            "program_kind": "regular_course",
+            "raw_text": "онлайн, семестр",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "format"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "format"
+            ],
+            "score": 11,
+            "text_excerpt": "fact:v3:foton:prices_regular_2026_27_online_3_4_class_before_2026_08_01_semester: Фотон: цены на 2026/27 учебный год, 3-4 класс, онлайн, семестр — 19 000 ₽."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "УНПК МФТИ: годовые онлайн-курсы по математике и физике для 5–11 классов проходят по выходным: 35 занятий в год, 1 занятие в неделю по 3 ак.ч. Стоимость: семестр — 37 000 ₽, год — 59 000 ₽.",
+            "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "kb_v6_6_client_safe_facts_2026_06_08",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 12,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Точную стоимость онлайн в УНПК для 9 класса смогу назвать после выбора предмета. Цена зависит от направления, поэтому не хочу называть неподтверждённую сумму. Подскажите, какой предмет рассматриваете?",
+          "brand": "unpk",
+          "client_excerpt": "Сколько стоит онлайн в УНПК для 9 класса?",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "price/format reference; no live action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "онлайн",
+            "grade": "9",
+            "program_kind": "regular_course",
+            "raw_text": "Сколько стоит онлайн в УНПК для 9 класса?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "grade",
+              "format"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:academic_year_2026_27_start_by_location_mfti_institutsky_9:c9b8640b: УНПК: учебный год 2026/27 — 20 сентября 2026."
+          },
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+            "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_per_day",
+            "fact_type": "camp_lvsh",
+            "match_level": "partial",
+            "product": "lvsh_mendeleevo_2026",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "program_kind"
+            ],
+            "score": 2,
+            "valid_until": "2026-08-31"
+          },
+          "bot_excerpt": "УНПК: ЛВШ Менделеево — 5-10 класс (окончившие). Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «ФизМат подойдёт?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "evidence_level": "kb_partial",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe direction suitability reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 7,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная школа",
+            "grade": "7",
+            "program_kind": "ЛВШ",
+            "raw_text": "ФизМат подойдёт?",
+            "subject": "ФизМат"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "program_kind"
+            ],
+            "score": 2,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_classes:bbd85fed38: УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы."
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 клас",
+            "fact_key": "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "presentation_format_facts_2026_05_21",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Обычно оформление проходит дистанционно: подбираем подходящую онлайн-группу, затем менеджер присылает условия и шаги по оформлению. Для 7 класса онлайн-информатика в Фотоне подходит; перед записью важно понять цель, чтоб",
+          "brand": "foton",
+          "client_excerpt": "Уточни: «Хорошо, как обычно оформляют?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_p0_foton_payment_dispute_close",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general enrollment procedure; no action requested in this turn",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "онлайн",
+            "grade": "7",
+            "program_kind": "",
+            "raw_text": "Информатика онлайн для 7 класса; как обычно оформляют",
+            "subject": "информатика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "text_excerpt": "fact:v3:foton:presentation_format_facts_2026_05_21_client_facts_subjects_by_clas: По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, "
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "client_safe_text_excerpt": "По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 клас",
+            "fact_key": "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+            "fact_type": "program",
+            "match_level": "exact",
+            "product": "presentation_format_facts_2026_05_21",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 13,
+            "valid_until": "2026-12-31"
+          },
+          "bot_excerpt": "Да, адрес Фотона: Москва, Верхняя Красносельская ул., 30, метро Красносельская. Это очная площадка для занятий. Чтобы дальше подобрать подходящую группу по математике для 7 класса, подскажите, какая сейчас главная цель: ",
+          "brand": "foton",
+          "client_excerpt": "Спроси: «Адрес на Красносельской?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_brand_foton_unpk_compare",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.95,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "address is safe reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 8,
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format"
+          ],
+          "requested_product": {
+            "brand": "foton",
+            "format": "очно",
+            "grade": "7",
+            "program_kind": "",
+            "raw_text": "Адрес на Красносельской?",
+            "subject": "математика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "format"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format"
+            ],
+            "score": 2,
+            "text_excerpt": "fact:v3:foton:locations_foton_free_trial_offline_client_safe_text:c7c7eabe19: Отдельного бесплатного пробного очного по умолчанию нет; менеджер при записи подскажет, как познакомиться с форматом."
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {},
+          "bot_excerpt": "Отлично, спасибо, что написали. Если ссылка не откроется или с доступом что-то будет не так, напишите сюда — поможем разобраться.",
+          "brand": "unpk",
+          "client_excerpt": "Все получили.",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "tz147_un_benign_link_sent_01",
+          "evidence_level": "none",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "simple receipt confirmation",
+            "review_label": "frame_correct"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 0,
+          "requested_action": "answer_question",
+          "requested_axes": [],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "",
+            "grade": "",
+            "program_kind": "",
+            "raw_text": "",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [],
+            "score": 0
+          },
+          "turn": 2
+        },
+        {
+          "best_kb_match": {},
+          "bot_excerpt": "Отлично, спасибо, что сообщили. Если позже с доступом или материалами снова возникнет вопрос, напишите сюда — сориентируем по следующему шагу.",
+          "brand": "foton",
+          "client_excerpt": "Активировали аккаунт, всё работает.",
+          "current_handoff": true,
+          "current_self": false,
+          "dialog_id": "tz147_ft_benign_activated_01",
+          "evidence_level": "none",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": false,
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.95,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "simple account works confirmation",
+            "review_label": "frame_correct"
+          },
+          "group": "not_existence_format",
+          "is_gold_safe_self": true,
+          "kb_match_count": 0,
+          "requested_action": "answer_question",
+          "requested_axes": [],
+          "requested_product": {
+            "brand": "foton",
+            "format": "",
+            "grade": "",
+            "program_kind": "",
+            "raw_text": "",
+            "subject": ""
+          },
+          "route": "manager_only",
+          "runtime_fact_evidence": {
+            "axis_hits": [],
+            "match_level": "none",
+            "requested_axes": [],
+            "score": 0
+          },
+          "turn": 1
+        }
+      ]
+    }
+  },
+  "inputs": {
+    "gold": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/gold_calibration/adr003_frame_gold_calibration_report.json",
+    "gold_sha256": "32b17c7196bcc192da3bdb1834f05199753e4aae80aeb75be8d683df4c7a1342",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "kb_snapshot_sha256": "f2f211a56cafc213326d4841752e38a081172de867bd598b08724a510b065ba5",
+    "transcripts": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/ON/dynamic_dialog_transcripts.jsonl",
+    "transcripts_sha256": "e36b08908c24631fe54fefcac22494f318717bec46751d925f4ad9f57f46541b"
+  },
+  "notes": [
+    "Report-only scorer: runtime route/text/prompt behavior is unchanged.",
+    "String matching here is diagnostic only and must not be copied into runtime as a new understanding layer.",
+    "A future active step still needs a first-class fact-verification contract in the direct-path metadata."
+  ],
+  "schema_version": "adr003_existence_fact_verification_v1_2026_07_02",
+  "source_rev": "67e6020",
+  "totals": {
+    "already_self_with_exact_kb_evidence": 6,
+    "already_self_without_exact_kb_evidence": 1,
+    "current_handoff_rows": 2,
+    "excluded_danger_money_p0": 1,
+    "existence_format_rows": 10,
+    "gold_rows": 79,
+    "gold_safe_self_rows": 32,
+    "handoff_with_exact_kb_evidence": 2,
+    "handoff_without_exact_kb_evidence": 0,
+    "missing_gold_turn_examples": [],
+    "missing_gold_turns": 0
+  }
+}

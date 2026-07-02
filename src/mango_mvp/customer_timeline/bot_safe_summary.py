@@ -12,6 +12,7 @@ from mango_mvp.customer_timeline.channel_preview_from_pack import redact_text
 from mango_mvp.customer_timeline.contracts import BotContextChunk, now_utc
 from mango_mvp.customer_timeline.ids import stable_chunk_id, stable_digest
 from mango_mvp.customer_timeline.next_step_resolver import (
+    CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
     PERSON_NAME_RE as NEXT_STEP_PERSON_NAME_RE,
     ROLE_PERSON_RE as NEXT_STEP_ROLE_PERSON_RE,
     NextStepResolution,
@@ -50,9 +51,15 @@ UNSAFE_INTEREST_MARKERS = (
     "пропуск",
     "receipt",
     "скидк",
+    "spam",
     "счет",
     "счёт",
     "чек",
+)
+UNSAFE_NEXT_STEP_MARKERS = UNSAFE_INTEREST_MARKERS + (
+    "диадок",
+    "закрывающ",
+    "льгот",
 )
 INTEREST_NAME_PLACEHOLDER = "<name_masked>"
 INTEREST_ROLE_WORD_RE = re.compile(
@@ -75,6 +82,102 @@ SAFE_INTEREST_PHRASE_PATTERNS = (
     re.compile(r"\bМ9\b", re.IGNORECASE),
     re.compile(r"\bМ11\b", re.IGNORECASE),
 )
+BOT_SAFE_SOURCE_CHUNK_TYPES = {
+    "mango_call_summary",
+    "customer_history_summary",
+    "channel_message",
+    "email_message",
+}
+CLASS_RE = re.compile(
+    r"(?<!\d)(?P<class>1[01]|[5-9])\s*"
+    r"(?:[-–—]?\s*(?:й|ый|ой|го|ого|му|ому|м|ом|е|х|ых))?\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
+CLASS_RANGE_RE = re.compile(
+    r"(?<!\d)(?P<start>[5-9])\s*[-–—]\s*(?P<end>1[01]|[5-9])\s*(?:класс(?:[аеов])?|кл\.?)\b",
+    re.IGNORECASE,
+)
+COORDINATED_CLASS_RE = re.compile(
+    r"(?<!\d)(?P<first>1[01]|[5-9])\s*(?:,|/|\+|и)\s*(?P<second>1[01]|[5-9])\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
+DIRECT_DIGIT_CLASS_RE = re.compile(
+    r"(?<!\d)(?P<class>1[01]|[1-9])\s*"
+    r"(?:[-–—]?\s*(?:й|ый|ой|го|ого|му|ому|м|ом|е|х|ых))?\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
+DIRECT_DIGIT_CLASS_RANGE_RE = re.compile(
+    r"(?<!\d)(?P<start>1[01]|[1-9])\s*[-–—]\s*(?P<end>1[01]|[1-9])\s*(?:класс(?:[аеов])?|кл\.?)\b",
+    re.IGNORECASE,
+)
+DIRECT_DIGIT_COORDINATED_CLASS_RE = re.compile(
+    r"(?<!\d)(?P<first>1[01]|[1-9])\s*(?:,|/|\+|и)\s*(?P<second>1[01]|[1-9])\s*"
+    r"(?:класс\w*|кл\.?)\b",
+    re.IGNORECASE,
+)
+M_CLASS_RE = re.compile(r"\bм\s*(?P<class>9|11)\b", re.IGNORECASE)
+WORD_CLASS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("5", re.compile(r"\bпят\w+\s+класс\w*", re.IGNORECASE)),
+    ("6", re.compile(r"\bшест\w+\s+класс\w*", re.IGNORECASE)),
+    ("7", re.compile(r"\bседьм\w+\s+класс\w*", re.IGNORECASE)),
+    ("8", re.compile(r"\bвосьм\w+\s+класс\w*", re.IGNORECASE)),
+    ("9", re.compile(r"\bдевят\w+\s+класс\w*", re.IGNORECASE)),
+    ("10", re.compile(r"\bдесят\w+\s+класс\w*", re.IGNORECASE)),
+    ("11", re.compile(r"\bодиннадцат\w+\s+класс\w*", re.IGNORECASE)),
+)
+SUBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("математика", re.compile(r"\b(?:матем\w*|мат(?:\.|\b))", re.IGNORECASE)),
+    ("физика", re.compile(r"\b(?:физик\w*|физ(?:\.|\b))", re.IGNORECASE)),
+    ("информатика", re.compile(r"\b(?:информат\w*|инф(?:\.|\b))", re.IGNORECASE)),
+    ("русский язык", re.compile(r"\bрусск\w+\s+язык\w*", re.IGNORECASE)),
+    ("английский язык", re.compile(r"\bанглийск\w+\s+язык\w*", re.IGNORECASE)),
+    ("химия", re.compile(r"\bхими\w*", re.IGNORECASE)),
+    ("биология", re.compile(r"\bбиологи\w*", re.IGNORECASE)),
+)
+FORMAT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("онлайн", re.compile(r"\b(?:онлайн|дистанц\w*|мтс\s*линк|mts\s*link)\b", re.IGNORECASE)),
+    (
+        "очно",
+        re.compile(
+            r"\b(?:очно|очная|очный|москва|долгопрудн\w*|сретенк\w*|скорняжн\w*|кампус)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("выездная школа", re.compile(r"\b(?:выездн\w+|лвш|лагер\w*|проживан\w*|смен[аы])\b", re.IGNORECASE)),
+)
+INTEREST_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("годовые курсы", re.compile(r"\bгодов\w+\s+курс\w*", re.IGNORECASE)),
+    ("онлайн-курсы", re.compile(r"\bонлайн[-\s]+курс\w*", re.IGNORECASE)),
+    ("летняя школа", re.compile(r"\bлетн\w+\s+(?:очная\s+)?школ\w*", re.IGNORECASE)),
+    ("летняя выездная школа", re.compile(r"\b(?:летн\w+\s+)?выездн\w+\s+школ\w*|\bлвш\b", re.IGNORECASE)),
+    ("летний лагерь", re.compile(r"\bлетн\w+\s+лагер\w*", re.IGNORECASE)),
+    ("выездная смена", re.compile(r"\bвыездн\w+\s+смен\w*", re.IGNORECASE)),
+    ("интенсив", re.compile(r"\bинтенсив\w*", re.IGNORECASE)),
+    ("подготовка к ЕГЭ", re.compile(r"\b(?:подготовк\w+\s+к\s+)?егэ\b", re.IGNORECASE)),
+    ("подготовка к ОГЭ", re.compile(r"\b(?:подготовк\w+\s+к\s+)?огэ\b", re.IGNORECASE)),
+    ("олимпиадная подготовка", re.compile(r"\bолимпиад\w*|\bфизтех\b", re.IGNORECASE)),
+    ("индивидуальные занятия", re.compile(r"\bиндивидуальн\w+\s+заняти\w*", re.IGNORECASE)),
+    ("пробное занятие", re.compile(r"\bпробн\w+\s+заняти\w*", re.IGNORECASE)),
+)
+MULTI_CHILD_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:двое|двоих|двух|два|оба|обоих|трое|троих|тр[её]х|три|нескольк\w+)\s+"
+    r"(?:дет(?:ей|и)|реб[её]нк\w*|сын\w*|доч\w*|дочер\w*|дочк\w*|ученик\w*|школьник\w*)|"
+    r"(?:две|обе)\s+(?:дочер\w*|дочк\w*)|"
+    r"дети|детей|многодетн\w+|близнец\w+|"
+    r"(?:старш\w+|младш\w+|средн\w+|втор\w+|друг\w+)\s+"
+    r"(?:реб[её]н\w*|сын\w*|доч\w*|дочер\w*|дочк\w*)|"
+    r"(?:старш(?!\w*\s+класс)|младш(?!\w*\s+класс)|средн(?!\w*\s+класс))\w+|"
+    r"сын\w*[^.!?\n]{0,120}доч\w*|доч\w*[^.!?\n]{0,120}сын\w*|"
+    r"брат\w*|сестр\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+SON_MARKER_RE = re.compile(r"\bсын\w*\b", re.IGNORECASE)
+DAUGHTER_MARKER_RE = re.compile(r"\b(?:доч\w*|дочер\w*|дочк\w*)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -95,7 +198,16 @@ class CustomerBotSafeSummaryDraft:
     brand_source: str
     source_opportunity_count: int
     source_event_count: int
+    source_chunk_count: int
     next_step_status: str
+
+
+@dataclass(frozen=True)
+class BotSafeExtractedSlots:
+    child_class: str = ""
+    subjects: tuple[str, ...] = ()
+    interests: tuple[str, ...] = ()
+    formats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,24 +256,30 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     )
     opportunities = _opportunities_by_customer(db_path, config.tenant_id)
     events = _events_by_customer(db_path, config.tenant_id)
+    source_chunks = _source_chunks_by_customer(db_path, config.tenant_id)
     conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
     drafts = [
         draft
         for customer_id in customers
-        for draft in _build_customer_brand_drafts(
-            tenant_id=config.tenant_id,
-            customer_id=customer_id,
-            all_opportunities=opportunities.get(customer_id, ()),
-            all_events=events.get(customer_id, ()),
-            conflicts=conflicts.get(customer_id, ()),
-            existing_chunks=existing_chunks,
+        for draft in _non_empty_drafts(
+            _build_customer_brand_drafts(
+                tenant_id=config.tenant_id,
+                customer_id=customer_id,
+                all_opportunities=opportunities.get(customer_id, ()),
+                all_events=events.get(customer_id, ()),
+                all_source_chunks=source_chunks.get(customer_id, ()),
+                conflicts=conflicts.get(customer_id, ()),
+                existing_chunks=existing_chunks,
+            )
         )
     ]
     expected_source_refs = {draft.chunk.source_ref or "" for draft in drafts}
+    retire_customer_scope = set(customers) if config.customer_ids else None
     stale_chunks = [
         existing
         for source_ref, existing in existing_chunks.items()
         if source_ref not in expected_source_refs and _chunk_allowed_for_bot(existing.record)
+        and (retire_customer_scope is None or str(existing.record.get("customer_id") or "") in retire_customer_scope)
     ]
 
     created = updated = duplicate = skipped = 0
@@ -231,20 +349,23 @@ def _build_customer_draft(
     brand: str,
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
     conflicts: Sequence[Mapping[str, Any]],
     existing_chunk: Mapping[str, Any] | None,
-) -> CustomerBotSafeSummaryDraft:
-    brand_source = _brand_source(opportunities, events, brand=brand)
-    status = _latest_status(opportunities)
-    interest = _resolve_interest(opportunities, brand=brand)
+) -> CustomerBotSafeSummaryDraft | None:
+    brand_source = _brand_source(opportunities, events, source_chunks, brand=brand)
+    slots = _extract_bot_safe_slots(opportunities, events, source_chunks, brand=brand)
     next_step = resolve_customer_next_step(
         events,
         readiness={"open_conflicts": len(conflicts)},
         conflicts=conflicts,
         customer_id=customer_id,
     )
-    text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step)
-    latest_at = _latest_event_at(opportunities, events)
+    safe_next_step = _safe_next_step(next_step)
+    text = _render_safe_text(brand=brand, slots=slots, safe_next_step=safe_next_step)
+    if not text:
+        return None
+    latest_at = _latest_event_at(opportunities, events, source_chunks)
     created_at = _existing_created_at(existing_chunk) or now_utc()
     source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
     chunk = BotContextChunk(
@@ -266,7 +387,15 @@ def _build_customer_draft(
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
-            "next_step": next_step.to_json_dict(),
+            "source_chunk_count": len(source_chunks),
+            "next_step": _safe_next_step_metadata(next_step),
+            "safe_next_step": safe_next_step,
+            "safe_slots": {
+                "child_class": slots.child_class,
+                "subjects": list(slots.subjects),
+                "interests": list(slots.interests),
+                "formats": list(slots.formats),
+            },
         },
         created_at=created_at,
     )
@@ -277,6 +406,7 @@ def _build_customer_draft(
         brand_source=brand_source,
         source_opportunity_count=len(opportunities),
         source_event_count=len(events),
+        source_chunk_count=len(source_chunks),
         next_step_status=next_step.status,
     )
 
@@ -287,15 +417,21 @@ def _build_customer_brand_drafts(
     customer_id: str,
     all_opportunities: Sequence[Mapping[str, Any]],
     all_events: Sequence[Mapping[str, Any]],
+    all_source_chunks: Sequence[Mapping[str, Any]],
     conflicts: Sequence[Mapping[str, Any]],
     existing_chunks: Mapping[str, ExistingBotSafeChunk],
-) -> tuple[CustomerBotSafeSummaryDraft, ...]:
-    drafts: list[CustomerBotSafeSummaryDraft] = []
-    brands = _customer_summary_brands(all_opportunities, all_events)
+) -> tuple[CustomerBotSafeSummaryDraft | None, ...]:
+    drafts: list[CustomerBotSafeSummaryDraft | None] = []
+    brands = _customer_summary_brands(all_opportunities, all_events, all_source_chunks)
     include_unbranded_events = len([brand for brand in brands if brand in KNOWN_BRANDS]) == 1
     for brand in brands:
         opportunities = _opportunities_for_brand(all_opportunities, brand=brand)
         events = _events_for_brand(all_events, brand=brand, include_unbranded=include_unbranded_events)
+        source_chunks = _source_chunks_for_brand(
+            all_source_chunks,
+            brand=brand,
+            include_unbranded=include_unbranded_events,
+        )
         source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
         drafts.append(
             _build_customer_draft(
@@ -304,6 +440,7 @@ def _build_customer_brand_drafts(
                 brand=brand,
                 opportunities=opportunities,
                 events=events,
+                source_chunks=source_chunks,
                 conflicts=conflicts,
                 existing_chunk=existing_chunks[source_ref].record if source_ref in existing_chunks else None,
             )
@@ -311,25 +448,48 @@ def _build_customer_brand_drafts(
     return tuple(drafts)
 
 
-def _render_safe_text(*, brand: str, status: str, interest: str, next_step: NextStepResolution) -> str:
+def _non_empty_drafts(
+    values: Sequence[CustomerBotSafeSummaryDraft | None],
+) -> tuple[CustomerBotSafeSummaryDraft, ...]:
+    return tuple(value for value in values if value is not None)
+
+
+def _render_safe_text(*, brand: str, slots: BotSafeExtractedSlots, safe_next_step: str) -> str:
     parts: list[str] = []
     if brand in KNOWN_BRANDS:
         parts.append(f"Бренд: {_brand_label(brand)}.")
-    parts.append(f"Стадия: {status or 'не определена'}.")
-    parts.append(f"Интерес: {interest or 'не определён'}.")
-    parts.append(f"Следующий шаг: {_safe_fragment(next_step.display_text) or 'активный шаг не найден'}.")
+    if slots.child_class:
+        parts.append(f"Ребёнок: {slots.child_class} класс.")
+    interest_parts = _join_unique((*slots.subjects, *slots.interests), max_items=6)
+    if interest_parts:
+        parts.append(f"Интерес: {interest_parts}.")
+    if slots.formats:
+        if len(slots.formats) == 1:
+            parts.append(f"Формат: {slots.formats[0]}.")
+        else:
+            parts.append(f"Рассматривались форматы: {_join_unique(slots.formats, max_items=3)}.")
+    known_fields = _known_field_labels(slots)
+    if known_fields:
+        parts.append(f"Уже известно: {'; '.join(known_fields)}.")
+        parts.append(f"Не переспрашивать: {', '.join(_known_field_names(slots))}.")
+    if safe_next_step:
+        parts.append(f"Следующий безопасный шаг: {safe_next_step}.")
+    if len(parts) <= 1:
+        return ""
     return " ".join(parts)
 
 
 def _customer_summary_brands(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
 ) -> tuple[str, ...]:
     brands = {
         brand
         for brand in (
             *(_opportunity_brand(opportunity) for opportunity in opportunities),
             *(_event_brand(event) for event in events),
+            *(_source_chunk_brand(chunk) for chunk in source_chunks),
         )
         if brand in KNOWN_BRANDS
     }
@@ -359,11 +519,19 @@ def _events_for_brand(
     )
 
 
-def _brand_source(opportunities: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]], *, brand: str) -> str:
+def _brand_source(
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
+    *,
+    brand: str,
+) -> str:
     if brand in KNOWN_BRANDS and any(_opportunity_brand(opportunity) == brand for opportunity in opportunities):
         return "customer_opportunities.product_context.brand"
     if brand in KNOWN_BRANDS and any(_event_brand(event) == brand for event in events):
         return "timeline_events.metadata_or_record.brand"
+    if brand in KNOWN_BRANDS and any(_source_chunk_brand(chunk) == brand for chunk in source_chunks):
+        return "bot_context_chunks.relevance_tags_or_metadata.brand"
     return "unknown"
 
 
@@ -376,6 +544,299 @@ def _event_brand(event: Mapping[str, Any]) -> str:
     metadata = _mapping(event.get("metadata"))
     record = _mapping(event.get("record"))
     return _normalize_brand(metadata.get("brand") or record.get("brand"))
+
+
+def _source_chunk_brand(chunk: Mapping[str, Any]) -> str:
+    metadata = _mapping(chunk.get("metadata"))
+    brand = _normalize_brand(metadata.get("brand"))
+    if brand in KNOWN_BRANDS:
+        return brand
+    for tag in _text_values(chunk.get("relevance_tags")):
+        text = str(tag or "").strip().casefold()
+        if text.startswith("brand:"):
+            brand = _normalize_brand(text.split(":", 1)[1])
+            if brand in KNOWN_BRANDS:
+                return brand
+        brand = _normalize_brand(text)
+        if brand in KNOWN_BRANDS:
+            return brand
+    return "unknown"
+
+
+def _source_chunks_for_brand(
+    chunks: Sequence[Mapping[str, Any]],
+    *,
+    brand: str,
+    include_unbranded: bool = False,
+) -> tuple[Mapping[str, Any], ...]:
+    if brand not in KNOWN_BRANDS:
+        return tuple(chunk for chunk in chunks if _source_chunk_brand(chunk) not in KNOWN_BRANDS)
+    return tuple(
+        chunk
+        for chunk in chunks
+        if _source_chunk_brand(chunk) == brand or (include_unbranded and _source_chunk_brand(chunk) not in KNOWN_BRANDS)
+    )
+
+
+def _extract_bot_safe_slots(
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
+    *,
+    brand: str,
+) -> BotSafeExtractedSlots:
+    text_sources = _bot_safe_slot_sources(opportunities, events, source_chunks)
+    raw_text_sources = _bot_safe_slot_sources(opportunities, events, source_chunks, safe=False)
+    child_class = _confirmed_child_class(text_sources, raw_text_sources=raw_text_sources)
+    subjects = _extract_fixed_labels(text_sources, SUBJECT_PATTERNS, max_items=4)
+    formats = _extract_fixed_labels(text_sources, FORMAT_PATTERNS, max_items=3)
+    derived_interests = _extract_fixed_labels(text_sources, INTEREST_PATTERNS, max_items=5)
+    opportunity_interest = _resolve_interest(opportunities, brand=brand)
+    interests = _join_interest_labels(
+        (*derived_interests, *_split_joined_interest(opportunity_interest)),
+        brand=brand,
+        max_items=6,
+    )
+    return BotSafeExtractedSlots(
+        child_class=child_class,
+        subjects=subjects,
+        interests=interests,
+        formats=formats,
+    )
+
+
+def _bot_safe_slot_sources(
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
+    *,
+    safe: bool = True,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for opportunity in opportunities:
+        product_context = _mapping(opportunity.get("product_context"))
+        values.extend(_product_context_text_values(product_context))
+        values.append(str(opportunity.get("title") or ""))
+    for event in events:
+        values.extend(
+            str(event.get(key) or "")
+            for key in ("subject", "summary", "text_preview")
+        )
+        record = _mapping(event.get("record"))
+        values.extend(str(record.get(key) or "") for key in ("summary", "text", "title"))
+    for chunk in source_chunks:
+        values.extend(str(chunk.get(key) or "") for key in ("summary", "text"))
+    if not safe:
+        return tuple(str(value) for value in values if str(value or "").strip())
+    return tuple(_safe_fragment(value, max_len=1200) for value in values if str(value or "").strip())
+
+
+def _product_context_text_values(product_context: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("title", "subject", "format", "class", "product_of_interest", "products_of_interest"):
+        values.extend(_plain_text_values(product_context.get(key)))
+    return values
+
+
+def _plain_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for key in ("title", "name", "subject", "format", "class"):
+            result.extend(_plain_text_values(value.get(key)))
+        return result
+    if isinstance(value, Iterable):
+        result: list[str] = []
+        for item in value:
+            result.extend(_plain_text_values(item))
+        return result
+    return []
+
+
+def _confirmed_child_class(
+    text_sources: Sequence[str],
+    *,
+    raw_text_sources: Sequence[str] | None = None,
+) -> str:
+    guard_sources = raw_text_sources if raw_text_sources is not None else text_sources
+    if _has_multi_child_context(guard_sources):
+        return ""
+    if len(_direct_digit_child_class_candidates(guard_sources, include_lower_grades=True)) >= 2:
+        return ""
+    candidates = _child_class_candidates(text_sources)
+    if len(candidates) != 1:
+        return ""
+    return next(iter(candidates))
+
+
+def _child_class_candidates(text_sources: Sequence[str]) -> frozenset[str]:
+    values: set[str] = set()
+    values.update(_direct_digit_child_class_candidates(text_sources))
+    for text in text_sources:
+        for match in M_CLASS_RE.finditer(text):
+            values.add(match.group("class"))
+        for value, pattern in WORD_CLASS_PATTERNS:
+            if pattern.search(text):
+                values.add(value)
+    for text in text_sources:
+        normalized = text.casefold().replace("ё", "е")
+        if re.search(r"\bегэ\b", normalized):
+            values.add("11")
+        if re.search(r"\bогэ\b", normalized):
+            values.add("9")
+    return frozenset(values)
+
+
+def _direct_digit_child_class_candidates(
+    text_sources: Sequence[str],
+    *,
+    include_lower_grades: bool = False,
+) -> frozenset[str]:
+    values: set[str] = set()
+    range_re = DIRECT_DIGIT_CLASS_RANGE_RE if include_lower_grades else CLASS_RANGE_RE
+    coordinated_re = DIRECT_DIGIT_COORDINATED_CLASS_RE if include_lower_grades else COORDINATED_CLASS_RE
+    class_re = DIRECT_DIGIT_CLASS_RE if include_lower_grades else CLASS_RE
+    minimum_class = 1 if include_lower_grades else 5
+    for text in text_sources:
+        for match in range_re.finditer(text):
+            start = int(match.group("start"))
+            end = int(match.group("end"))
+            lower, upper = sorted((start, end))
+            values.update(str(item) for item in range(lower, upper + 1) if minimum_class <= item <= 11)
+        for match in coordinated_re.finditer(text):
+            values.add(match.group("first"))
+            values.add(match.group("second"))
+        for match in class_re.finditer(text):
+            values.add(match.group("class"))
+    return frozenset(values)
+
+
+def _has_multi_child_context(text_sources: Sequence[str]) -> bool:
+    if any(MULTI_CHILD_CONTEXT_RE.search(text) for text in text_sources):
+        return True
+    combined = " ".join(str(text or "") for text in text_sources)
+    return bool(SON_MARKER_RE.search(combined) and DAUGHTER_MARKER_RE.search(combined))
+
+
+def _extract_fixed_labels(
+    text_sources: Sequence[str],
+    patterns: Sequence[tuple[str, re.Pattern[str]]],
+    *,
+    max_items: int,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for text in text_sources:
+        safe_text = _text_without_unsafe_finance_fragments(text)
+        for label, pattern in patterns:
+            key = label.casefold()
+            if key in seen:
+                continue
+            if pattern.search(safe_text):
+                values.append(label)
+                seen.add(key)
+                if len(values) >= max_items:
+                    return tuple(values)
+    return tuple(values)
+
+
+def _text_without_unsafe_finance_fragments(value: str) -> str:
+    fragments = re.split(r"(?<=[.!?])\s+|[;|]", str(value or ""))
+    safe = [
+        fragment
+        for fragment in fragments
+        if not any(marker in fragment.casefold().replace("ё", "е") for marker in UNSAFE_INTEREST_MARKERS)
+    ]
+    return " ".join(safe)
+
+
+def _split_joined_interest(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(value or "").split(";") if part.strip())
+
+
+def _join_interest_labels(values: Sequence[str], *, brand: str, max_items: int) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _safe_interest_fragment(value, max_len=120)
+        if not text or not _interest_fragment_allowed(text, brand=brand):
+            continue
+        key = text.casefold().replace("ё", "е")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+        if len(result) >= max_items:
+            break
+    return tuple(result)
+
+
+def _known_field_labels(slots: BotSafeExtractedSlots) -> tuple[str, ...]:
+    labels: list[str] = []
+    if slots.child_class:
+        labels.append(f"класс {slots.child_class}")
+    if slots.subjects:
+        labels.append("предметы: " + ", ".join(slots.subjects))
+    if slots.formats:
+        if len(slots.formats) == 1:
+            labels.append("формат: " + slots.formats[0])
+    if slots.interests:
+        labels.append("интерес: " + ", ".join(slots.interests[:3]))
+    return tuple(labels)
+
+
+def _known_field_names(slots: BotSafeExtractedSlots) -> tuple[str, ...]:
+    names: list[str] = []
+    if slots.child_class:
+        names.append("класс")
+    if slots.subjects:
+        names.append("предмет")
+    if len(slots.formats) == 1:
+        names.append("формат")
+    if slots.interests:
+        names.append("интерес")
+    return tuple(names)
+
+
+def _safe_next_step(next_step: NextStepResolution) -> str:
+    if next_step.status != "active":
+        return ""
+    value = _safe_fragment(next_step.display_text, max_len=180)
+    if not value:
+        return ""
+    text = value.casefold().replace("ё", "е")
+    if any(marker in text for marker in UNSAFE_NEXT_STEP_MARKERS):
+        return ""
+    if scan_like_pii(value):
+        return ""
+    if re.search(r"\b(?:ссылк|приглашени|логин|доступ|платформ)\w*", text):
+        return "помочь с доступом или ссылкой по выбранному занятию"
+    if re.search(r"\b(?:расписан|слот|врем|групп)\w*", text):
+        return "дать расписание или варианты групп по выбранному направлению"
+    if re.search(r"\b(?:материал|программ|презентац)\w*", text):
+        return "дать материалы по выбранному направлению"
+    if re.search(r"\b(?:запис|зачисл|оформ)\w*", text):
+        return "помочь с записью на выбранный курс"
+    return ""
+
+
+def _safe_next_step_metadata(next_step: NextStepResolution) -> Mapping[str, str]:
+    return {
+        "schema_version": CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
+        "status": next_step.status,
+        "confidence": next_step.confidence,
+        "reason_code": next_step.reason_code,
+        "source_event_id": next_step.source_event_id,
+        "source_event_at": next_step.source_event_at,
+        "source_event_type": next_step.source_event_type,
+    }
+
+
+def scan_like_pii(value: str) -> bool:
+    return bool(re.search(r"[\w.+-]+@[\w.-]+\.\w+", value) or re.search(r"(?:\+7|8|7)[\s\-()]?\d{3}", value))
 
 
 def _resolve_interest(opportunities: Sequence[Mapping[str, Any]], *, brand: str) -> str:
@@ -419,7 +880,11 @@ def _latest_status(opportunities: Sequence[Mapping[str, Any]]) -> str:
     return ""
 
 
-def _latest_event_at(opportunities: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]]) -> datetime | None:
+def _latest_event_at(
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    source_chunks: Sequence[Mapping[str, Any]],
+) -> datetime | None:
     values: list[datetime] = []
     for opportunity in opportunities:
         for key in ("closed_at", "opened_at"):
@@ -428,6 +893,10 @@ def _latest_event_at(opportunities: Sequence[Mapping[str, Any]], events: Sequenc
                 values.append(parsed)
     for event in events:
         parsed = _parse_iso_datetime(event.get("event_at"))
+        if parsed:
+            values.append(parsed)
+    for chunk in source_chunks:
+        parsed = _parse_iso_datetime(chunk.get("event_at"))
         if parsed:
             values.append(parsed)
     return max(values) if values else None
@@ -512,6 +981,28 @@ def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mappin
         for row in rows:
             grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
     return {customer_id: tuple(items[-500:]) for customer_id, items in grouped.items()}
+
+
+def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    placeholders = ",".join("?" for _ in BOT_SAFE_SOURCE_CHUNK_TYPES)
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"""
+            SELECT customer_id, record_json
+            FROM bot_context_chunks
+            WHERE tenant_id = ?
+              AND customer_id IS NOT NULL
+              AND customer_id != ''
+              AND chunk_type IN ({placeholders})
+            ORDER BY event_at ASC, created_at ASC, chunk_id ASC
+            """,
+            (tenant_id, *sorted(BOT_SAFE_SOURCE_CHUNK_TYPES)),
+        )
+        for row in rows:
+            grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
+    return {customer_id: tuple(items[-700:]) for customer_id, items in grouped.items()}
 
 
 def _open_conflicts_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
@@ -738,6 +1229,10 @@ def _interest_fragment_allowed(value: str, *, brand: str) -> bool:
     text = str(value or "").casefold().replace("ё", "е")
     semantic_text = _interest_semantic_text_without_person_markers(value).casefold().replace("ё", "е")
     if not re.search(r"[a-zа-я]", semantic_text, flags=re.IGNORECASE):
+        return False
+    if any(marker in text for marker in ("<phone_masked>", "<email_masked>", "<number_masked>")):
+        return False
+    if re.search(r"(?<!\d)[1-4]\s*(?:класс|кл\.?)\b", text, flags=re.IGNORECASE):
         return False
     if FILE_NAME_FRAGMENT_RE.search(text):
         return False

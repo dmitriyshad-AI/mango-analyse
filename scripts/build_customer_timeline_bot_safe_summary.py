@@ -14,6 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allowed-root", required=True, type=Path)
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--customer-id", action="append", default=())
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--report-out", type=Path)
     return parser.parse_args()
@@ -28,6 +29,7 @@ def main() -> int:
             tenant_id=args.tenant_id,
             apply=args.apply,
             limit=args.limit,
+            customer_ids=tuple(args.customer_id or ()),
         )
     ).to_json_dict()
     text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)

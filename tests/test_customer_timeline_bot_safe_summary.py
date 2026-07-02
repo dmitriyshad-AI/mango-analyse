@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -134,6 +135,19 @@ def _load_bot_safe_payload(db_path: Path) -> dict:
     return json.loads(_load_bot_safe_text(db_path))
 
 
+def _load_bot_safe_payload_for_customer(db_path: Path, customer_id: str) -> dict:
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchall()
+    for row in rows:
+        payload = json.loads(row[0])
+        if payload.get("customer_id") == customer_id:
+            return payload
+    raise AssertionError(f"bot-safe payload not found for {customer_id}")
+
+
 def _load_bot_safe_records(db_path: Path) -> list[tuple[str, str]]:
     with sqlite3.connect(db_path) as con:
         return con.execute(
@@ -168,10 +182,12 @@ def test_bot_safe_summary_uses_structural_fields_redacts_title_and_keeps_raw_blo
     assert "RAW_SECRET_SUMMARY" not in dumped
     assert "parent@example.com" not in dumped
     assert "+7 916 123-45-67" not in dumped
-    assert "<phone_masked>" in dumped
     assert "Бренд: Фотон" in dumped
-    assert "Ожидание оплаты" in dumped
-    assert "Позвонить клиенту по оплате" in dumped
+    assert "Ребёнок: 8 класс" in dumped
+    assert "математика" in dumped
+    assert "онлайн" in dumped
+    assert "Ожидание оплаты" not in dumped
+    assert "Позвонить клиенту по оплате" not in dumped
     with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
         assert con.execute(
             "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type != ? AND allowed_for_bot = 1",
@@ -222,16 +238,16 @@ def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_pat
     assert report.next_step_status_counts["active"] == 1
     assert next_step["status"] == "active"
     assert next_step["source_event_id"] == event.event_id
-    assert "Следующий шаг:" in dumped
-    assert "договор" in dumped.casefold()
+    assert "Следующий безопасный шаг:" not in dumped
+    assert "договор" not in dumped.casefold()
     assert "Клычева" not in dumped
     assert "Дарья" not in dumped
     assert "Смирнов" not in dumped
     assert "Арсени" not in dumped
     assert "64-64-58" not in dumped
     assert "parent@example.com" not in dumped
-    assert "<number_masked>" in dumped
-    assert "<email_masked>" in dumped
+    assert "<number_masked>" not in dumped
+    assert "<email_masked>" not in dumped
 
 
 def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path: Path) -> None:
@@ -279,7 +295,8 @@ def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path
     assert report.next_step_status_counts["needs_manager_review"] == 1
     assert next_step["status"] == "needs_manager_review"
     assert next_step["reason_code"] == "ambiguous_identity_open"
-    assert "Уточнить у менеджера: открыт конфликт идентичности" in dumped
+    assert "Уточнить у менеджера" not in dumped
+    assert "конфликт идентичности" not in dumped
     assert "отправить договор" not in dumped.casefold()
 
 
@@ -311,6 +328,59 @@ def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) ->
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchall()
     assert rows == [(expected_id, f"botsafe:{customer.customer_id}:foton", BOT_SAFE_SUMMARY_SOURCE_SYSTEM, 1, 0)]
+
+
+def test_bot_safe_summary_customer_id_scope_does_not_retire_other_customers(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    selected = _customer("customer:selected")
+    other = _customer("customer:other")
+    store.upsert_customer(selected)
+    store.upsert_customer(other)
+    store.upsert_opportunity(_opportunity(selected, brand="foton", source_id="lead-selected"))
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=other.tenant_id,
+            customer_id=other.customer_id,
+            chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+            text="Бренд: Фотон. Интерес: математика.",
+            summary="Бренд: Фотон. Интерес: математика.",
+            source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+            source_ref=f"botsafe:{other.customer_id}:foton",
+            event_at=NOW,
+            relevance_tags=("bot_safe", "structured", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+            customer_ids=(selected.customer_id,),
+        )
+    )
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        rows = con.execute(
+            """
+            SELECT customer_id, allowed_for_bot, requires_manager_review
+            FROM bot_context_chunks
+            WHERE source_system = ?
+            ORDER BY customer_id
+            """,
+            (BOT_SAFE_SUMMARY_SOURCE_SYSTEM,),
+        ).fetchall()
+
+    assert report.retired_stale == 0
+    assert rows == [
+        (other.customer_id, 1, 0),
+        (selected.customer_id, 1, 0),
+    ]
 
 
 def test_bot_safe_summary_cross_brand_customer_gets_separate_brand_scoped_chunks(tmp_path: Path) -> None:
@@ -382,7 +452,12 @@ def test_bot_safe_summary_uses_event_brand_when_deal_brand_unknown(tmp_path: Pat
     customer = _customer()
     store.upsert_customer(customer)
     store.upsert_opportunity(_opportunity(customer, brand="unknown", source_id="lead-unknown", title="Заявка"))
-    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    event = replace(
+        _event(customer, source_id="event-unpk", brand="unpk"),
+        summary="Клиент интересуется очной подготовкой к ОГЭ по физике для 9 класса.",
+        text_preview="Клиент интересуется очной подготовкой к ОГЭ по физике для 9 класса.",
+    )
+    store.upsert_event(event)
     store.close()
 
     report = build_bot_safe_summaries(
@@ -421,7 +496,12 @@ def test_bot_safe_summary_retires_stale_unknown_chunk_after_brand_resolution(tmp
         created_at=NOW,
     )
     store.upsert_bot_context_chunk(old_unknown)
-    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    event = replace(
+        _event(customer, source_id="event-unpk", brand="unpk"),
+        summary="Клиент интересуется очной подготовкой к ОГЭ по физике для 9 класса.",
+        text_preview="Клиент интересуется очной подготовкой к ОГЭ по физике для 9 класса.",
+    )
+    store.upsert_event(event)
     store.close()
 
     report = build_bot_safe_summaries(
@@ -477,6 +557,15 @@ def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_pa
             status="open",
         )
     )
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="mail-spam",
+            title="***SPAM*** Re: Вы записаны на математику онлайн",
+            status="open",
+        )
+    )
     store.close()
 
     build_bot_safe_summaries(
@@ -494,6 +583,7 @@ def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_pa
     assert "Задолженность" not in dumped
     assert "квитанц" not in dumped.casefold()
     assert "оплат" not in dumped.casefold()
+    assert "spam" not in dumped.casefold()
 
 
 def test_bot_safe_summary_drops_attachment_file_names_from_interest(tmp_path: Path) -> None:
@@ -665,13 +755,359 @@ def test_bot_safe_summary_drops_interest_that_is_only_person_name(tmp_path: Path
             apply=True,
         )
     )
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_does_not_confirm_ambiguous_format_or_low_grade(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-ambiguous-format",
+            title="3 класс математика онлайн и очно сравниваем",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
     dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
 
-    assert "Интерес: не определён" in dumped
-    assert "Иванова" not in dumped
-    assert "Мария" not in dumped
-    assert "Петровна" not in dumped
-    assert "<name_masked>" not in dumped
+    assert "Ребёнок: 3 класс" not in dumped
+    assert "Рассматривались форматы: онлайн; очно" in dumped
+    assert "Не переспрашивать: предмет" in dumped
+    assert "Не переспрашивать: предмет, формат" not in dumped
+
+
+def test_bot_safe_summary_does_not_merge_multi_child_grade(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    cases = (
+        ("multi-child-dvoih", "У клиента двоих детей, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-dvuh", "У клиента двух детей, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-troe", "У клиента трое детей, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-deti", "Дети в 8 классе, обсуждали математику онлайн."),
+        ("multi-child-shkolniki", "Двое школьников, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-ucheniki", "Два ученика, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-docheri", "Две дочери, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-dochki", "Обе дочки, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-bliznetsy", "Близнецы в 8 классе, обсуждали математику онлайн."),
+        ("multi-child-many", "Многодетная семья, 8 класс, обсуждали математику онлайн."),
+        ("multi-child-starshaya", "Старшая дочь 8 класс, обсуждали математику онлайн."),
+        ("multi-child-mladshiy", "Младший сын 8 класс, обсуждали математику онлайн."),
+        ("multi-child-starshiy", "Старший в 8 классе, младшая тоже хочет математику онлайн."),
+        ("multi-child-son-daughter", "У клиента сын 8 класс и дочь 10 класс, обсуждали математику онлайн."),
+        ("multi-child-two-sentences", "Сын в 8 классе. Дочь тоже интересуется математикой онлайн."),
+    )
+    for customer_id, summary in cases:
+        customer = _customer(f"customer:{customer_id}")
+        event = TimelineEvent(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            event_type=TimelineEventType.MANGO_CALL,
+            event_at=NOW,
+            source_system="mango_processed_summary",
+            source_id=f"{customer_id}-call",
+            direction=TimelineDirection.INBOUND,
+            match_status="strong_unique",
+            confidence=0.9,
+            importance=3,
+            summary=summary,
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+            created_at=NOW,
+        )
+        store.upsert_customer(customer)
+        store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    for customer_id, _summary in cases:
+        payload = _load_bot_safe_payload_for_customer(tmp_path / "customer_timeline.sqlite", f"customer:{customer_id}")
+        dumped = payload["text"]
+
+        assert "Ребёнок:" not in dumped
+        assert "Не переспрашивать: класс" not in dumped
+        assert payload["metadata"]["safe_slots"]["child_class"] == ""
+        assert "математика" in dumped
+        assert "онлайн" in dumped
+
+
+def test_bot_safe_summary_detects_multi_child_context_across_sources(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    for source_id, summary in (
+        ("son-source", "Сын в 8 классе, нужна математика."),
+        ("daughter-source", "Дочь тоже интересуется занятиями онлайн."),
+    ):
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id=customer.tenant_id,
+                customer_id=customer.customer_id,
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id=source_id,
+                direction=TimelineDirection.INBOUND,
+                match_status="strong_unique",
+                confidence=0.9,
+                importance=3,
+                summary=summary,
+                record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+                created_at=NOW,
+            )
+        )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    dumped = payload["text"]
+
+    assert "Ребёнок:" not in dumped
+    assert "Не переспрашивать: класс" not in dumped
+    assert payload["metadata"]["safe_slots"]["child_class"] == ""
+    assert "математика" in dumped
+    assert "онлайн" in dumped
+
+
+def test_bot_safe_summary_does_not_confirm_conflicting_child_classes(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    for source_id, summary in (
+        ("class-5", "Клиент интересовался: 5 класс математика онлайн."),
+        ("class-10", "Повторно обсуждали: десятый класс математика онлайн."),
+    ):
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id=customer.tenant_id,
+                customer_id=customer.customer_id,
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW,
+                source_system="mango_processed_summary",
+                source_id=source_id,
+                direction=TimelineDirection.INBOUND,
+                match_status="strong_unique",
+                confidence=0.9,
+                importance=3,
+                summary=summary,
+                record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+                created_at=NOW,
+            )
+        )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    dumped = payload["text"]
+
+    assert "Ребёнок:" not in dumped
+    assert "Не переспрашивать: класс" not in dumped
+    assert payload["metadata"]["safe_slots"]["child_class"] == ""
+    assert "математика" in dumped
+    assert "онлайн" in dumped
+
+
+def test_bot_safe_summary_does_not_confirm_multiple_direct_digit_classes(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    cases = (
+        ("direct-two-sources", ("Клиент интересовался: 5 класс математика онлайн.", "Повторно обсуждали: 7 класс математика онлайн.")),
+        ("direct-one-source", ("Сначала был 5 класс, позже в источнике появился 7 класс, математика онлайн.",)),
+        ("direct-coordinated", ("Семья выбирает 5 и 7 класс, математика онлайн.",)),
+        ("direct-cases", ("Для 8-го класса и 10 класса нужна математика онлайн.",)),
+        ("direct-lower-grade-conflict", ("Для младшего ребёнка 4 класс, для старшего 5 класс, математика онлайн.",)),
+        ("named-child-history-conflict", ("Иван сейчас в 10 классе, нужна математика онлайн.", "В другой записи указан 8 класс.")),
+    )
+    for customer_suffix, summaries in cases:
+        customer = _customer(f"customer:{customer_suffix}")
+        store.upsert_customer(customer)
+        for index, summary in enumerate(summaries, start=1):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id=customer.tenant_id,
+                    customer_id=customer.customer_id,
+                    event_type=TimelineEventType.MANGO_CALL,
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=f"{customer_suffix}-call-{index}",
+                    direction=TimelineDirection.INBOUND,
+                    match_status="strong_unique",
+                    confidence=0.9,
+                    importance=3,
+                    summary=summary,
+                    record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+                    created_at=NOW,
+                )
+            )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    for customer_suffix, _summaries in cases:
+        payload = _load_bot_safe_payload_for_customer(tmp_path / "customer_timeline.sqlite", f"customer:{customer_suffix}")
+        dumped = payload["text"]
+
+        assert "Ребёнок:" not in dumped
+        assert "Не переспрашивать: класс" not in dumped
+        assert payload["metadata"]["safe_slots"]["child_class"] == ""
+        assert "математика" in dumped
+        assert "онлайн" in dumped
+
+
+def test_bot_safe_summary_confirms_single_daughter_class(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="single-daughter-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Дочка в 8 классе, нужна математика онлайн.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    dumped = payload["text"]
+
+    assert "Ребёнок: 8 класс" in dumped
+    assert "Не переспрашивать: класс" in dumped
+    assert payload["metadata"]["safe_slots"]["child_class"] == "8"
+
+
+def test_bot_safe_summary_does_not_confirm_class_ranges(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="class-range-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Семья выбирает между 5-7 класс и 9 класс, обсуждали математику онлайн.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    dumped = payload["text"]
+
+    assert "Ребёнок:" not in dumped
+    assert "Не переспрашивать: класс" not in dumped
+    assert payload["metadata"]["safe_slots"]["child_class"] == ""
+    assert "математика" in dumped
+    assert "онлайн" in dumped
+
+
+def test_bot_safe_summary_confirms_single_child_class(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="single-class-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Клиент подтвердил: 8 класс, нужна математика онлайн.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    dumped = payload["text"]
+
+    assert "Ребёнок: 8 класс" in dumped
+    assert "Не переспрашивать: класс" in dumped
+    assert payload["metadata"]["safe_slots"]["child_class"] == "8"
 
 
 def test_bot_safe_summary_scrubs_single_person_name_from_interest_title(tmp_path: Path) -> None:

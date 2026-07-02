@@ -25,6 +25,19 @@ _SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
     re.I,
 )
+_JUNK_PHRASE_MARKERS = (
+    "не определен",
+    "не определена",
+    "не определено",
+    "не определён",
+    "не определёна",
+    "не определёно",
+    "не указан",
+    "не указана",
+    "не указано",
+    "нет данных",
+    "данные отсутствуют",
+)
 
 
 @dataclass(frozen=True)
@@ -177,7 +190,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         if str(item.get("chunk_type") or "").strip().casefold() != BOT_SAFE_CHUNK_TYPE:
             continue
         text = _clean_text(item.get("summary")) or _clean_text(item.get("text"))
-        if not text or scan_bot_safe_context_pii(text):
+        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
             continue
         result.append(
             {
@@ -186,7 +199,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
                 "event_at": _clean_text(item.get("event_at")),
                 "next_step_status": _next_step_status(item),
                 "freshness_score": item.get("freshness_score"),
-                "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand, "unknown"}],
+                "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
                 "allowed_for_bot": True,
                 "requires_manager_review": False,
             }
@@ -214,7 +227,28 @@ def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) ->
     known_brand_tags = tag_set & _KNOWN_BRANDS
     if known_brand_tags - {active_brand}:
         return False
-    return active_brand in tag_set or "unknown" in tag_set
+    return active_brand in tag_set
+
+
+def _is_junk_bot_safe_summary(text: object) -> bool:
+    value = _clean_text(text).casefold().replace("ё", "е")
+    if not value:
+        return True
+    if "***" in value:
+        return True
+    if any(marker.replace("ё", "е") in value for marker in _JUNK_PHRASE_MARKERS):
+        return True
+    if re.fullmatch(r"[\s*._\-—–=]+", str(text or "")):
+        return True
+    fragments = [
+        part.strip(" .;,-—–*").casefold()
+        for part in re.split(r"[\n|]+|(?<=[.!?])\s+", str(text or ""))
+        if part.strip(" .;,-—–*")
+    ]
+    if len(fragments) >= 3 and len(set(fragments)) == 1:
+        return True
+    words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", value)
+    return len(words) >= 8 and len(set(words)) <= 2
 
 
 def _render_summary(items: Sequence[Mapping[str, Any]]) -> str:

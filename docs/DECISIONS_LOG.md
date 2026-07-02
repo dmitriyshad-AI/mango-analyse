@@ -462,3 +462,29 @@ Manifest:
 - живых ссылок из `src/` и `tests/` на вынесенные deal-aware папки нет;
 - confidence recalibration test проходит на frozen fixture;
 - current runtime check остаётся зелёным: `validation_ok=true`, `blocked=0`, missing ASR/R+A = `0/0`.
+
+### D-033. Почта + Customer Timeline: safety-границы марафона Э1-Э5
+
+Решение: марафон Э1-Э5 по почте и Customer Timeline ведётся только через
+staging-копию и `.codex_local`; prod-БД открывается только read-only
+`mode=ro&immutable=1`, CRM получает только export package, а применение к prod
+и AMO остаётся отдельным решением владельца. Принят отдельный журнал решений
+Codex 2 с обязательным аудитом пакетов решений.
+
+Журнал:
+
+`/Users/dmitrijfabarisov/Claude Projects/Foton/2026-07-03_MARATHON_DECISIONS_Codex2.md`
+
+Ключевые safety-уточнения:
+
+- hard safety issue не может быть закрыт как «известное ограничение»;
+- apply customer_timeline разрешён только внутри `.codex_local/staging/`;
+- `mail_archive_stage2` может открываться боту только staging-only и за флагом
+  default OFF;
+- AMO/Tallanto в Э5-pre только через allowlist read-methods с доказательством
+  `write_calls=0` и отсутствием токенов в логах;
+- при конфликте документов для Э2-Э5 приоритет имеет марафонское ТЗ
+  2026-07-03, а не старый план 2026-07-02.
+
+Статус: принято после аудита subagent `Mendel` (`PASS_WITH_NOTES`, правки
+включены в журнал). Реализация начинается только после repo-preflight.

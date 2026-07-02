@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.crm_export_package import (
     CrmExportPackageConfig,
+    _row_blockers,
     build_crm_export_package,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
@@ -105,6 +106,67 @@ def test_crm_export_package_blocks_raw_email_thread_payload(tmp_path: Path) -> N
     assert row["Готово к записи в AMO"] == "нет"
     assert "crm_text_quality:raw_email_thread_artifact" in row["CRM writeback blockers"]
     assert (out_dir / "batch_ready_crm_card_candidates.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_crm_export_package_blocks_weak_summary_and_manual_review_next_step() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nСтандартный",
+            "История общения": "Сводка:\nСм. поле «Последняя сводка».",
+        },
+        deal_payload={
+            "Следующий шаг": "Уточнить у менеджера: более позднее событие противоречит закрытию шага",
+        },
+    )
+
+    assert "weak_or_empty_summary" in blockers
+    assert "manual_review_next_step_not_live_ready" in blockers
+
+
+def test_crm_export_package_blocks_raw_timeline_and_sensitive_payload() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент выбрал курс и попросил ссылку на оплату.",
+            "История общения": "Клиент прислал паспортные данные для договора.",
+        },
+        deal_payload={
+            "Следующий шаг": "Позвонить 10.07 и подтвердить способ оплаты.",
+            "Tallanto": "Tallanto: out 2026-06-20",
+        },
+    )
+
+    assert "raw_timeline_or_email_artifact" in blockers
+    assert "sensitive_personal_data_requires_review" in blockers
+
+
+def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {
+                "ready_for_amo": True,
+                "blockers": [],
+                "fields": {"Возражения": "Клиент обсуждал скидку [сжато]"},
+            },
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент выбрал курс и ждёт ссылку.",
+            "История общения": "Клиент попросил оформить запись.",
+        },
+        deal_payload={
+            "Следующий шаг": "Позвонить клиенту, срок: <phone_masked>",
+        },
+    )
+
+    assert "masked_or_debug_placeholder" in blockers
 
 
 def test_crm_export_package_filters_non_client_objections(tmp_path: Path) -> None:

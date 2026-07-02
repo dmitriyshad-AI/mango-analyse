@@ -3,12 +3,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from mango_mvp.crm_card_aggregator import build_crm_card_projection, normalize_manager_multiline_text
+from mango_mvp.crm_card_aggregator import (
+    build_crm_card_projection,
+    normalize_manager_multiline_text,
+    normalize_manager_text,
+)
 from mango_mvp.crm_card_amo_writeback import build_crm_card_amo_payloads
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
@@ -22,6 +27,32 @@ CONTACT_WRITER_REVIEW_POLICY = "manual_review_required"
 AMO_BASE_URL = "https://educent.amocrm.ru"
 MAX_AMO_TEXTAREA_CHARS = 60000
 HISTORY_HEADROOM_CHARS = 52000
+WEAK_SUMMARY_VALUES = {
+    "стандартный",
+    "стандартная",
+    "стандартное",
+    "см. поле «последняя сводка».",
+    "см. поле \"последняя сводка\".",
+}
+MANUAL_REVIEW_NEXT_STEP_RE = re.compile(
+    r"^\s*(?:уточнить|проверить|сверить)\s+у\s+менеджер\w*\b|"
+    r"\b(?:противоречит|ручн\w+\s+провер\w+|manual\s+review)\b",
+    re.I,
+)
+RAW_TIMELINE_SOURCE_RE = re.compile(r"\bTallanto:\s*(?:in|out)\b|---\s*part\s*---|&nbsp;|Links:", re.I)
+SENSITIVE_CRM_TEXT_RE = re.compile(
+    r"\b(?:паспорт\w*|серия\s+и\s+номер|снилс|дата\s+рождени\w+|"
+    r"инвалидност\w*|инвалид\w*|маткапитал\w*|материнск\w+\s+капитал\w*|"
+    r"банковск\w+\s+реквизит\w*|реквизит\w*|расч[её]тн\w+\s+сч[её]т|"
+    r"\bр/?с\b|\bбик\b|\bкпп\b|\bинн\b)\b",
+    re.I,
+)
+MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
+    r"<[^>\n]{1,80}>|"
+    r"\b[a-zа-я0-9_]*masked\b|"
+    r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|сжато|текст\s+сжат[^\]]*)\]",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -490,6 +521,16 @@ def _row_blockers(
         blockers.append("empty_deal_payload")
     if any(len(str(value)) > MAX_AMO_TEXTAREA_CHARS for value in (*contact_payload.values(), *deal_payload.values())):
         blockers.append("payload_field_over_amo_textarea_limit")
+    blockers.extend(
+        _semantic_ready_blockers(
+            contact_payload=contact_payload,
+            deal_payload=deal_payload,
+            extra_payloads=(
+                _mapping(contact_card.get("fields")),
+                _mapping(deal_card.get("fields")),
+            ),
+        )
+    )
     # Contact and deal are written as different AMO entities. Cross-entity
     # duplication is expected; quality gate must run per payload, like writeback.
     findings = [
@@ -498,6 +539,53 @@ def _row_blockers(
     ]
     blockers.extend(f"crm_text_quality:{item.risk_type}" for item in findings)
     return _dedupe(blockers)
+
+
+def _semantic_ready_blockers(
+    *,
+    contact_payload: Mapping[str, Any],
+    deal_payload: Mapping[str, Any],
+    extra_payloads: Sequence[Mapping[str, Any]] = (),
+) -> list[str]:
+    blockers: list[str] = []
+    summary = _summary_without_label(
+        _first_payload_text(contact_payload, ("Последняя сводка", "Последняя AI-сводка", "AI-краткая сводка клиента"))
+    )
+    if not summary or summary in WEAK_SUMMARY_VALUES:
+        blockers.append("weak_or_empty_summary")
+    next_step = normalize_manager_text(
+        _first_payload_text(deal_payload, ("Следующий шаг", "AI-рекомендованный следующий шаг", "recommended_next_step"))
+    )
+    if not next_step:
+        blockers.append("weak_or_empty_next_step")
+    elif MANUAL_REVIEW_NEXT_STEP_RE.search(next_step):
+        blockers.append("manual_review_next_step_not_live_ready")
+    payload_text = "\n".join(
+        _payload_text(payload)
+        for payload in (contact_payload, deal_payload, *extra_payloads)
+        if payload
+    )
+    if RAW_TIMELINE_SOURCE_RE.search(payload_text):
+        blockers.append("raw_timeline_or_email_artifact")
+    if SENSITIVE_CRM_TEXT_RE.search(payload_text):
+        blockers.append("sensitive_personal_data_requires_review")
+    if MASKED_OR_DEBUG_PLACEHOLDER_RE.search(payload_text):
+        blockers.append("masked_or_debug_placeholder")
+    return blockers
+
+
+def _first_payload_text(payload: Mapping[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        text = str(payload.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _summary_without_label(value: str) -> str:
+    text = normalize_manager_multiline_text(value).strip()
+    text = re.sub(r"^\s*сводка\s*:\s*", "", text, flags=re.I).strip()
+    return text.casefold()
 
 
 def _format_purchases(rows: Sequence[Mapping[str, Any]]) -> str:

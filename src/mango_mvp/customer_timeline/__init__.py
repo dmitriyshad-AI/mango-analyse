@@ -221,6 +221,12 @@ from mango_mvp.customer_timeline.mail_stage2_enrich import (
     MailStage2ExistingEnrichConfig,
     enrich_existing_mail_stage2_from_archives,
 )
+from mango_mvp.customer_timeline.stage3_maintenance import (
+    CHUNK_LABEL_POLICY_VERSION,
+    STAGE3_MAINTENANCE_SCHEMA_VERSION,
+    Stage3MaintenanceConfig,
+    run_stage3_maintenance,
+)
 from mango_mvp.customer_timeline.store import (
     CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,
     CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
@@ -269,6 +275,7 @@ __all__ = [
     "ChannelMessageNormalizer",
     "CHANNEL_PREVIEW_FROM_PACK_STATUS_BLOCKED",
     "CHANNEL_PREVIEW_FROM_PACK_STATUS_READY",
+    "CHUNK_LABEL_POLICY_VERSION",
     "CustomerIdentity",
     "CustomerOpportunity",
     "CustomerTimelineAuditEntry",
@@ -321,6 +328,8 @@ __all__ = [
     "SignalSeverity",
     "SignalStatus",
     "SOURCE_KIND_TO_SYSTEM",
+    "STAGE3_MAINTENANCE_SCHEMA_VERSION",
+    "Stage3MaintenanceConfig",
     "SyntheticPreviewCase",
     "TallantoSnapshotNormalizer",
     "TelegramReplyPair",
@@ -406,6 +415,7 @@ __all__ = [
     "run_timeline_import_cli",
     "resolve_customer_next_step",
     "run_customer_timeline_approval_decisions",
+    "run_stage3_maintenance",
     "route_customer_timeline_request",
     "safe_copy_file_sha256",
     "safe_copy_prod_snapshot",

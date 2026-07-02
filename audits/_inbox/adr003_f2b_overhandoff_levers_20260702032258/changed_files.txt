@@ -1,0 +1,4 @@
+ M docs/worktrees_registry.md
+?? scripts/report_adr003_overhandoff_levers.py
+?? tasks/_done/2026-07-02_TZ_ADR003_F2b_harmless_context_update_shadow_dlya_D1.md
+?? tests/test_report_adr003_overhandoff_levers.py

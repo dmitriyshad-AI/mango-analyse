@@ -247,6 +247,12 @@ def test_factless_ack_status_is_reported_separately(tmp_path: Path) -> None:
     assert real["totals"]["fact_assertion_required"] == 0
     assert real["totals"]["clean_route_only_discussion"] == 1
     assert real["by_lever_class"] == {"clean_factless_ack_status_discussion": 1}
+    assert real["current_handoff_queue"]["total"] == 1
+    assert real["current_handoff_queue"]["clean_route_only_discussion"] == 1
+    assert real["current_handoff_queue"]["by_next_autonomy_workstream"] == {
+        "route_only_ack_status_candidate_review": 1
+    }
+    assert real["examples"][0]["next_autonomy_workstream"] == "route_only_ack_status_candidate_review"
 
 
 def test_true_enroll_booking_request_is_negative_control(tmp_path: Path) -> None:
@@ -359,6 +365,11 @@ def test_proof_reconciliation_shadow_is_reported_but_not_active_go(tmp_path: Pat
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_text_blocked"] == 1
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 0
     assert result["real_lever_analysis"]["totals"]["proof_text_source_fact_ready"] == 1
+    assert result["real_lever_analysis"]["current_handoff_queue"]["total"] == 1
+    assert result["real_lever_analysis"]["current_handoff_queue"]["by_next_autonomy_workstream"] == {
+        "renderer_or_structured_fact_needed": 1
+    }
+    assert result["real_lever_analysis"]["examples"][0]["next_autonomy_workstream"] == "renderer_or_structured_fact_needed"
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 
@@ -463,7 +474,157 @@ def test_shadow_text_renderer_reports_atomic_structured_candidate_without_export
     assert readiness["active_behavior_allowed"] is False
     assert result["totals"]["proof_text_shadow_renderer_candidates"] == 1
     assert result["real_lever_analysis"]["totals"]["proof_text_shadow_renderer_candidates"] == 1
+    assert result["real_lever_analysis"]["current_handoff_queue"]["by_next_autonomy_workstream"] == {
+        "text_policy_semantic_review_needed": 1
+    }
     assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_duplicate_fact_key_uses_active_brand_but_axis_mismatch_blocks_renderer(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "camp-food",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["lvsh_mendeleevo_2026.directions.fizmat.classes"],
+                    "result_missing_facts": ["подтвержденное наличие проживания", "подтвержденное наличие питания"],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("camp-food", notes="safe reference: boarding/food format without live seats")],
+        facts=[
+            _fact() | {"brand": "foton", "client_safe_text": "Фотон: ЛВШ Менделеево рассчитана на 5-10 классы."},
+            _fact() | {"brand": "unpk", "client_safe_text": "УНПК: ЛВШ Менделеево рассчитана на 5-10 классы."},
+        ],
+    )
+
+    row = result["proof_reconciliation_text_readiness"]["examples"][0]
+    assert row["source_fact_candidate_count"] == 2
+    assert row["source_fact_candidate_brands"] == ["foton", "unpk"]
+    assert row["source_fact_selected_brand"] == "unpk"
+    assert row["source_fact_brand_index_collision"] is True
+    assert row["source_fact_lookup_status"] == "found"
+    assert row["source_alignment_status"] == "blocked_source_axis_mismatch"
+    assert row["source_alignment_missing_fact_categories"] == ["boarding_food"]
+    assert row["source_alignment_fact_categories"] == ["class_grade"]
+    assert row["source_alignment_uncovered_categories"] == ["boarding_food"]
+    assert row["shadow_text_renderer_status"] == "blocked_source_axis_mismatch"
+    assert result["proof_reconciliation_text_readiness"]["source_fact_brand_index_collisions"] == 1
+    assert result["proof_reconciliation_text_readiness"]["source_alignment_by_status"] == {
+        "blocked_source_axis_mismatch": 1
+    }
+    assert result["real_lever_analysis"]["current_handoff_queue"]["by_next_autonomy_workstream"] == {
+        "fix_proof_axis_alignment": 1
+    }
+
+
+def test_classes_fact_does_not_cover_medical_security_availability_or_payment_access(tmp_path: Path) -> None:
+    unsafe_missing_fact_examples = [
+        "круглосуточное присутствие медсестры",
+        "наличие охраны и камер",
+        "актуальное наличие мест по смене",
+        "подтвержденный срок появления доступа после оплаты",
+    ]
+    for index, missing_fact in enumerate(unsafe_missing_fact_examples):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        result = _build(
+            case_dir,
+            [
+                _turn(
+                    f"axis-{index}",
+                    route="draft_for_manager",
+                    message_type="question",
+                    missing_facts=[],
+                    proof_reconciliation={
+                        "status": "would_reconcile_to_safe_reference",
+                        "reason": "fresh_proof_contradicts_missing_facts_frame",
+                        "route_before": "draft_for_manager",
+                        "exact_fact_keys": ["lvsh_mendeleevo_2026.directions.fizmat.classes"],
+                        "result_missing_facts": [missing_fact],
+                    },
+                    semantic_output_verifier={"action": "pass", "findings": []},
+                )
+            ],
+            [_gold(f"axis-{index}", notes="safe reference: camp details without live seats")],
+        )
+
+        row = result["proof_reconciliation_text_readiness"]["examples"][0]
+        assert row["source_alignment_status"] == "blocked_source_axis_mismatch"
+        assert row["shadow_text_renderer_status"] == "blocked_source_axis_mismatch"
+        assert row["shadow_text_candidate_hash"] == ""
+
+
+def test_current_handoff_queue_ignores_already_self_rows(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "self",
+                route="bot_answer_self_for_pilot",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "manager_action",
+                    "answerability": "manager_only",
+                    "requested_action": "check_availability",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "bot_answer_self_for_pilot",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            ),
+            _turn(
+                "handoff",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            ),
+        ],
+        [
+            _gold("self", notes="safe reference: platform/format without live seats"),
+            _gold("handoff", notes="safe reference: platform/format without live seats"),
+        ],
+    )
+
+    real = result["real_lever_analysis"]
+    assert real["totals"]["too_cautious_total"] == 2
+    assert real["totals"]["already_self_or_no_route_leverage"] == 1
+    assert real["current_handoff_queue"]["total"] == 1
+    assert real["by_next_autonomy_workstream"]["no_current_route_leverage"] == 1
+    assert real["current_handoff_queue"]["by_next_autonomy_workstream"] == {
+        "renderer_or_structured_fact_needed": 1
+    }
+    assert real["current_handoff_queue"]["examples"][0]["dialog_id"] == "handoff"
 
 
 def test_proof_text_policy_reports_template_registry_without_exporting_template_text(tmp_path: Path) -> None:

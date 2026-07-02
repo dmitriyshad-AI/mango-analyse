@@ -23,7 +23,7 @@ from scripts.report_adr003_manager_only_exact_proof_root_cause import build_repo
 from scripts.report_adr003_overhandoff_levers import build_report as build_overhandoff_report
 
 
-SCHEMA_VERSION = "adr003_frame_calibration_queue_v1_2026_07_02"
+SCHEMA_VERSION = "adr003_frame_calibration_queue_v2_2026_07_02"
 HANDOFF_ROUTES = {"manager_only", "draft_for_manager"}
 SAFE_ACTIONS = {"answer_question", "acknowledge", "acknowledge_status", "acknowledge_pause"}
 OPERATIONAL_ACTIONS = {"check_availability", "enroll", "book", "reserve", "handoff_manager", "send_payment_link"}
@@ -312,6 +312,37 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         by_scope_action = scope_confusion.get("by_requested_action") if isinstance(scope_confusion.get("by_requested_action"), Mapping) else {}
         for action, count in sorted(by_scope_action.items(), key=lambda item: (-item[1], item[0])):
             lines.append(f"- `{action or 'missing'}`: `{count}`")
+    current_queue = (
+        real_lever.get("current_handoff_queue") if isinstance(real_lever.get("current_handoff_queue"), Mapping) else {}
+    )
+    if current_queue:
+        lines.extend(["", "### Current Handoff Queue", ""])
+        lines.append(f"- total: `{current_queue.get('total', 0)}`")
+        lines.append(f"- fact assertion required: `{current_queue.get('fact_assertion_required', 0)}`")
+        lines.append(f"- factless ack/status: `{current_queue.get('factless_ack_status', 0)}`")
+        lines.append(f"- clean route-only discussion: `{current_queue.get('clean_route_only_discussion', 0)}`")
+        lines.append(f"- proof reconciliation would fix frame: `{current_queue.get('proof_reconciliation_would_reconcile', 0)}`")
+        lines.append(f"- shadow renderer candidates: `{current_queue.get('shadow_text_renderer_candidates', 0)}`")
+        by_next = (
+            current_queue.get("by_next_autonomy_workstream")
+            if isinstance(current_queue.get("by_next_autonomy_workstream"), Mapping)
+            else {}
+        )
+        if by_next:
+            lines.extend(["", "#### Current handoff by next workstream", ""])
+            for name, count in sorted(by_next.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{name or 'missing'}`: `{count}`")
+        current_examples = current_queue.get("examples") if isinstance(current_queue.get("examples"), list) else []
+        if current_examples:
+            lines.extend(["", "#### Current handoff examples", ""])
+            for item in current_examples[:10]:
+                lines.append(
+                    f"- `{item.get('dialog_id')}#{item.get('turn')}` "
+                    f"route=`{item.get('route')}` action=`{item.get('requested_action')}` "
+                    f"next=`{item.get('next_autonomy_workstream')}`"
+                )
+                if item.get("active_unlock_reason"):
+                    lines.append(f"  - reason: `{item.get('active_unlock_reason')}`")
     negative_controls = real_lever.get("negative_controls") if isinstance(real_lever.get("negative_controls"), list) else []
     if negative_controls:
         lines.extend(["", "### Negative controls", ""])
@@ -329,7 +360,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             lines.append(
                 f"- `{item.get('dialog_id')}#{item.get('turn')}` "
                 f"route=`{item.get('route')}` action=`{item.get('requested_action')}` "
-                f"class=`{item.get('lever_class')}` confidence=`{item.get('frame_confidence')}`"
+                f"class=`{item.get('lever_class')}` next=`{item.get('next_autonomy_workstream')}` "
+                f"confidence=`{item.get('frame_confidence')}`"
             )
             if item.get("active_blockers"):
                 lines.append(f"  - blockers: `{', '.join(item.get('active_blockers') or [])}`")
@@ -367,6 +399,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"- template registry found: `{proof_text_readiness.get('template_registry_found', 0)}`")
         lines.append(f"- direct quote forbidden: `{proof_text_readiness.get('direct_quote_forbidden', 0)}`")
         lines.append(f"- structured_value available: `{proof_text_readiness.get('structured_value_available', 0)}`")
+        lines.append(f"- source fact brand index collisions: `{proof_text_readiness.get('source_fact_brand_index_collisions', 0)}`")
         lines.append(f"- shadow renderer candidates: `{proof_text_readiness.get('shadow_text_renderer_candidates', 0)}`")
         by_status = (
             proof_text_readiness.get("by_status") if isinstance(proof_text_readiness.get("by_status"), Mapping) else {}
@@ -426,6 +459,15 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if renderer_status:
             lines.extend(["", "### Shadow text renderer", ""])
             for status, count in sorted(renderer_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        alignment_status = (
+            proof_text_readiness.get("source_alignment_by_status")
+            if isinstance(proof_text_readiness.get("source_alignment_by_status"), Mapping)
+            else {}
+        )
+        if alignment_status:
+            lines.extend(["", "### Source fact alignment", ""])
+            for status, count in sorted(alignment_status.items(), key=lambda item: (-item[1], item[0])):
                 lines.append(f"- `{status or 'missing'}`: `{count}`")
     lines.extend(
         [
@@ -772,7 +814,7 @@ def _load_turns_by_turn(transcripts: Path) -> dict[str, Mapping[str, Any]]:
     return turns_by_key
 
 
-def _load_fact_index(kb_snapshot: Path) -> dict[str, Mapping[str, Any]]:
+def _load_fact_index(kb_snapshot: Path) -> dict[str, list[Mapping[str, Any]]]:
     facts: list[Mapping[str, Any]] = []
     if not kb_snapshot.exists():
         return {}
@@ -798,12 +840,12 @@ def _load_fact_index(kb_snapshot: Path) -> dict[str, Mapping[str, Any]]:
                 facts.extend(item for item in payload if isinstance(item, Mapping))
     except Exception:
         return {}
-    index: dict[str, Mapping[str, Any]] = {}
+    index: dict[str, list[Mapping[str, Any]]] = {}
     for fact in facts:
         for key_name in ("fact_key", "source_fact_key", "fact_id", "id", "key"):
             key = str(fact.get(key_name) or "").strip()
             if key:
-                index.setdefault(key, fact)
+                index.setdefault(key, []).append(fact)
     return index
 
 
@@ -870,7 +912,7 @@ def _proof_text_readiness_summary(
     *,
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
     turns_by_key: Mapping[str, Mapping[str, Any]],
-    fact_index: Mapping[str, Mapping[str, Any]],
+    fact_index: Mapping[str, Sequence[Mapping[str, Any]]],
     template_index: Mapping[str, Mapping[str, Any]],
     as_of_date: date,
 ) -> dict[str, Any]:
@@ -897,6 +939,12 @@ def _proof_text_readiness_summary(
     policy_statuses = Counter(str(row.get("text_policy_readiness_status") or "") for row in by_turn.values())
     template_statuses = Counter(str(row.get("template_registry_status") or "") for row in by_turn.values())
     renderer_statuses = Counter(str(row.get("shadow_text_renderer_status") or "") for row in by_turn.values())
+    alignment_statuses = Counter(str(row.get("source_alignment_status") or "") for row in by_turn.values())
+    alignment_blockers = Counter(
+        str(blocker)
+        for row in by_turn.values()
+        for blocker in (row.get("source_alignment_blockers") or [])
+    )
     candidates = [row for row in by_turn.values() if row.get("send_as_is_review_candidate")]
     renderer_candidates = [row for row in by_turn.values() if row.get("shadow_text_renderer_status") == "candidate_rendered"]
     return {
@@ -912,6 +960,8 @@ def _proof_text_readiness_summary(
         "text_policy_readiness_by_status": dict(policy_statuses),
         "template_registry_by_status": dict(template_statuses),
         "shadow_text_renderer_by_status": dict(renderer_statuses),
+        "source_alignment_by_status": dict(alignment_statuses),
+        "source_alignment_by_blocker": dict(alignment_blockers),
         "source_fact_client_safe_text_present": sum(
             1 for row in by_turn.values() if row.get("source_fact_client_safe_text_present")
         ),
@@ -922,6 +972,9 @@ def _proof_text_readiness_summary(
         "template_registry_found": sum(1 for row in by_turn.values() if row.get("template_registry_status") == "found"),
         "direct_quote_forbidden": sum(1 for row in by_turn.values() if row.get("direct_quote_forbidden")),
         "structured_value_available": sum(1 for row in by_turn.values() if row.get("structured_value_available")),
+        "source_fact_brand_index_collisions": sum(
+            1 for row in by_turn.values() if row.get("source_fact_brand_index_collision")
+        ),
         "by_turn": by_turn,
         "examples": list(by_turn.values())[:50],
         "notes": [
@@ -941,7 +994,7 @@ def _proof_text_readiness_for_turn(
     turn_key: str,
     trace: Mapping[str, Any],
     turn: Mapping[str, Any] | None,
-    fact_index: Mapping[str, Mapping[str, Any]],
+    fact_index: Mapping[str, Sequence[Mapping[str, Any]]],
     template_index: Mapping[str, Mapping[str, Any]],
     as_of_date: date,
 ) -> dict[str, Any]:
@@ -1036,6 +1089,10 @@ def _source_fact_text_readiness(
     base = {
         "source_fact_key": fact_key,
         "source_fact_lookup_status": "",
+        "source_fact_candidate_count": 0,
+        "source_fact_candidate_brands": [],
+        "source_fact_selected_brand": "",
+        "source_fact_brand_index_collision": False,
         "source_fact_client_safe_text_present": False,
         "source_fact_client_safe_text_length": 0,
         "source_fact_client_safe_text_hash": "",
@@ -1053,6 +1110,10 @@ def _source_fact_text_readiness(
         "text_policy_readiness_status": "blocked",
         "text_candidate_blockers": [],
         "text_policy_blockers": [],
+        "source_alignment_status": "",
+        "source_alignment_blockers": [],
+        "source_alignment_missing_fact_categories": [],
+        "source_alignment_fact_categories": [],
         "shadow_text_renderer_status": "blocked",
         "shadow_text_renderer_blockers": [],
         "shadow_text_renderer_source": "",
@@ -1073,10 +1134,13 @@ def _source_fact_text_readiness(
             "text_policy_readiness_status": "blocked_missing_source_fact_key",
             "text_policy_blockers": [*policy_blockers, "missing_source_fact_key"],
         }
-    fact = fact_index.get(fact_key)
+    fact_candidates = list(fact_index.get(fact_key) or [])
+    fact = _select_fact_candidate(fact_candidates, active_brand=active_brand)
     if not isinstance(fact, Mapping):
         return {
             **base,
+            "source_fact_candidate_count": len(fact_candidates),
+            "source_fact_candidate_brands": _candidate_brands(fact_candidates),
             "source_fact_lookup_status": "missing",
             "text_candidate_readiness_status": "blocked_missing_source_fact",
             "text_candidate_blockers": [*blockers, "missing_source_fact"],
@@ -1090,6 +1154,9 @@ def _source_fact_text_readiness(
     pii_signal = _pii_signal(raw_text)
     if pii_signal:
         fact_blockers.append("client_safe_text_pii_signal")
+    alignment_status, alignment_blockers, alignment_details = _source_alignment_status(trace, fact=fact)
+    if alignment_blockers:
+        fact_blockers.extend(alignment_blockers)
     text_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest() if raw_text else ""
     text_ready = status == "found" and not fact_blockers and bool(raw_text)
     template = _template_for_fact(fact, template_index=template_index)
@@ -1112,6 +1179,10 @@ def _source_fact_text_readiness(
     )
     return {
         **base,
+        "source_fact_candidate_count": len(fact_candidates),
+        "source_fact_candidate_brands": _candidate_brands(fact_candidates),
+        "source_fact_selected_brand": str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold(),
+        "source_fact_brand_index_collision": len(set(_candidate_brands(fact_candidates))) > 1,
         "source_fact_lookup_status": status,
         "source_fact_client_safe_text_present": bool(raw_text),
         "source_fact_client_safe_text_length": len(raw_text),
@@ -1134,8 +1205,33 @@ def _source_fact_text_readiness(
             *policy_specific_blockers,
             *(["direct_quote_forbidden"] if direct_quote_forbidden else []),
         ],
+        "source_alignment_status": alignment_status,
+        "source_alignment_blockers": alignment_blockers,
+        **alignment_details,
         **renderer,
     }
+
+
+def _select_fact_candidate(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    active_brand: str,
+) -> Mapping[str, Any]:
+    if active_brand:
+        for fact in candidates:
+            brand = str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
+            if brand == active_brand:
+                return fact
+    return candidates[0] if candidates else {}
+
+
+def _candidate_brands(candidates: Sequence[Mapping[str, Any]]) -> list[str]:
+    brands = {
+        str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
+        for fact in candidates
+        if str(fact.get("brand") or fact.get("active_brand") or "").strip()
+    }
+    return sorted(brands)
 
 
 def _source_fact_key(trace: Mapping[str, Any]) -> str:
@@ -1183,6 +1279,108 @@ def _source_fact_status(fact: Mapping[str, Any], *, active_brand: str, as_of_dat
     if fact.get("bot_template_required") is True:
         blockers.append("bot_template_required")
     return "found", blockers
+
+
+def _source_alignment_status(
+    trace: Mapping[str, Any],
+    *,
+    fact: Mapping[str, Any],
+) -> tuple[str, list[str], dict[str, Any]]:
+    missing_facts = " ".join(str(item or "") for item in _listish(trace.get("result_missing_facts"))).casefold()
+    if not missing_facts:
+        return (
+            "aligned_no_missing_facts_trace",
+            [],
+            {
+                "source_alignment_missing_fact_categories": [],
+                "source_alignment_fact_categories": _fact_categories(fact),
+            },
+        )
+    missing_categories = _missing_fact_categories(missing_facts)
+    fact_categories = _fact_categories(fact)
+    if not missing_categories:
+        return (
+            "alignment_review_unclear",
+            ["source_axis_review_unclear"],
+            {
+                "source_alignment_missing_fact_categories": [],
+                "source_alignment_fact_categories": fact_categories,
+            },
+        )
+    uncovered = [category for category in missing_categories if category not in fact_categories]
+    if uncovered:
+        return (
+            "blocked_source_axis_mismatch",
+            ["source_axis_mismatch"],
+            {
+                "source_alignment_missing_fact_categories": missing_categories,
+                "source_alignment_fact_categories": fact_categories,
+                "source_alignment_uncovered_categories": uncovered,
+            },
+        )
+    return (
+        "aligned_covers_missing_fact_axis",
+        [],
+        {
+            "source_alignment_missing_fact_categories": missing_categories,
+            "source_alignment_fact_categories": fact_categories,
+            "source_alignment_uncovered_categories": [],
+        },
+    )
+
+
+def _missing_fact_categories(value: str) -> list[str]:
+    categories: list[str] = []
+    marker_map = (
+        ("live_availability", ("наличие мест", "свободн", "места", "актуальные смены", "смены")),
+        ("boarding_food", ("прожив", "питан", "дневн", "выездн", "условия")),
+        ("medical", ("медсестр", "медицин")),
+        ("security", ("охран", "камер", "видеонаблюд")),
+        ("payment_access", ("после оплаты", "доступ", "оплат")),
+        ("dates_schedule", ("даты", "распис", "время", "старт")),
+        ("location_address", ("локац", "адрес", "площадк", "где")),
+        ("price_cost", ("стоим", "цена", "прайс")),
+        ("class_grade", ("класс", "возраст", "уровень")),
+        ("program_direction", ("программа", "направлен", "физмат", "ит-направ", "ит направление")),
+    )
+    for category, markers in marker_map:
+        if any(marker in value for marker in markers):
+            categories.append(category)
+    return categories
+
+
+def _fact_categories(fact: Mapping[str, Any]) -> list[str]:
+    fact_type = str(fact.get("fact_type") or "").casefold()
+    fact_key = str(fact.get("fact_key") or fact.get("source_fact_key") or "").casefold()
+    program_kind = str(fact.get("program_kind") or "").casefold()
+    product = str(fact.get("product") or "").casefold()
+    structured = fact.get("structured_value") if isinstance(fact.get("structured_value"), Mapping) else {}
+    structured_keys = {str(key).casefold() for key in structured.keys()}
+    text = f"{fact_type} {fact_key} {program_kind} {product} {' '.join(structured_keys)} {fact.get('client_safe_text') or ''}".casefold()
+    categories: set[str] = set()
+    if {"classes", "classes_raw"} & structured_keys or "classes" in fact_key or "класс" in text:
+        categories.add("class_grade")
+    if fact_type in {"deadline", "schedule"} or {"number"} & structured_keys or any(
+        marker in text for marker in ("распис", "воскресенье", "старт", "10:00", "12:00", "даты")
+    ):
+        categories.add("dates_schedule")
+    if any(marker in text for marker in ("адрес", "красносельск", "площадк", "локац", "где")):
+        categories.add("location_address")
+    if any(marker in text for marker in ("стоим", "цена", "₽", "руб")):
+        categories.add("price_cost")
+    if any(marker in text for marker in ("прожив", "интернат", "номере", "дневные")):
+        categories.add("boarding_food")
+    if any(marker in text for marker in ("медсестр", "медицин")):
+        categories.add("medical")
+    if any(marker in text for marker in ("охран", "камер", "видеонаблюд")):
+        categories.add("security")
+    if any(marker in text for marker in ("доступ", "после оплаты")):
+        categories.add("payment_access")
+    if any(marker in text for marker in ("направлен", "физико", "физмат", "ит-направ", "ит направление", "программа")):
+        categories.add("program_direction")
+    if any(marker in text for marker in ("наличие мест", "свободн")):
+        categories.add("live_availability")
+    return sorted(categories)
 
 
 def _template_for_fact(
@@ -1408,7 +1606,15 @@ def _real_lever_analysis(
         "by_lever_class": dict(Counter(str(row.get("lever_class") or "") for row in classified)),
         "by_proof_reconciliation_status": dict(Counter(str(row.get("proof_reconciliation_status") or "") for row in classified)),
         "by_text_readiness_status": dict(Counter(str(row.get("text_readiness_status") or "") for row in classified)),
+        "by_next_autonomy_workstream": dict(Counter(str(row.get("next_autonomy_workstream") or "") for row in classified)),
+        "current_handoff_by_frame_requested_action": dict(
+            Counter(str(row.get("requested_action") or "") for row in classified if row.get("current_handoff"))
+        ),
+        "current_handoff_by_next_autonomy_workstream": dict(
+            Counter(str(row.get("next_autonomy_workstream") or "") for row in classified if row.get("current_handoff"))
+        ),
         "scope_confusion": _scope_confusion_summary(classified),
+        "current_handoff_queue": _current_handoff_queue(classified),
         "negative_controls": negative_controls[:50],
         "examples": classified[:50],
         "notes": [
@@ -1474,7 +1680,7 @@ def _real_lever_row(
         lever_class = "manager_only_policy_required"
     else:
         lever_class = "measurement_review_required"
-    return {
+    result = {
         "dialog_id": dialog_id,
         "turn": _int_or_zero(row.get("turn")),
         "route": route,
@@ -1506,6 +1712,12 @@ def _real_lever_row(
         else [],
         "send_as_is_review_candidate": bool(text_readiness.get("send_as_is_review_candidate")),
         "source_fact_lookup_status": str(text_readiness.get("source_fact_lookup_status") or ""),
+        "source_fact_candidate_count": text_readiness.get("source_fact_candidate_count", 0),
+        "source_fact_candidate_brands": list(text_readiness.get("source_fact_candidate_brands") or [])
+        if isinstance(text_readiness.get("source_fact_candidate_brands"), list)
+        else [],
+        "source_fact_selected_brand": str(text_readiness.get("source_fact_selected_brand") or ""),
+        "source_fact_brand_index_collision": bool(text_readiness.get("source_fact_brand_index_collision")),
         "source_fact_client_safe_text_present": bool(text_readiness.get("source_fact_client_safe_text_present")),
         "source_fact_client_safe_text_length": text_readiness.get("source_fact_client_safe_text_length", 0),
         "source_fact_client_safe_text_hash": str(text_readiness.get("source_fact_client_safe_text_hash") or ""),
@@ -1529,6 +1741,19 @@ def _real_lever_row(
         "text_policy_blockers": list(text_readiness.get("text_policy_blockers") or [])
         if isinstance(text_readiness.get("text_policy_blockers"), list)
         else [],
+        "source_alignment_status": str(text_readiness.get("source_alignment_status") or ""),
+        "source_alignment_blockers": list(text_readiness.get("source_alignment_blockers") or [])
+        if isinstance(text_readiness.get("source_alignment_blockers"), list)
+        else [],
+        "source_alignment_missing_fact_categories": list(text_readiness.get("source_alignment_missing_fact_categories") or [])
+        if isinstance(text_readiness.get("source_alignment_missing_fact_categories"), list)
+        else [],
+        "source_alignment_fact_categories": list(text_readiness.get("source_alignment_fact_categories") or [])
+        if isinstance(text_readiness.get("source_alignment_fact_categories"), list)
+        else [],
+        "source_alignment_uncovered_categories": list(text_readiness.get("source_alignment_uncovered_categories") or [])
+        if isinstance(text_readiness.get("source_alignment_uncovered_categories"), list)
+        else [],
         "shadow_text_renderer_status": str(text_readiness.get("shadow_text_renderer_status") or ""),
         "shadow_text_renderer_blockers": list(text_readiness.get("shadow_text_renderer_blockers") or [])
         if isinstance(text_readiness.get("shadow_text_renderer_blockers"), list)
@@ -1542,6 +1767,82 @@ def _real_lever_row(
         "review_question": _real_lever_review_question(lever_class),
         "notes": str(row.get("notes") or ""),
     }
+    result["next_autonomy_workstream"] = _next_autonomy_workstream(result)
+    result["active_unlock_reason"] = _active_unlock_reason(result)
+    return result
+
+
+def _current_handoff_queue(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    current = [row for row in rows if row.get("current_handoff")]
+    return {
+        "total": len(current),
+        "by_route": dict(Counter(str(row.get("route") or "") for row in current)),
+        "by_frame_requested_action": dict(Counter(str(row.get("requested_action") or "") for row in current)),
+        "by_lever_class": dict(Counter(str(row.get("lever_class") or "") for row in current)),
+        "by_next_autonomy_workstream": dict(Counter(str(row.get("next_autonomy_workstream") or "") for row in current)),
+        "fact_assertion_required": sum(1 for row in current if row.get("requires_fact_assertion")),
+        "factless_ack_status": sum(1 for row in current if row.get("factless_ack_status")),
+        "danger_adjacent": sum(1 for row in current if row.get("danger_adjacent")),
+        "clean_route_only_discussion": sum(1 for row in current if row.get("clean_route_only_discussion")),
+        "proof_reconciliation_would_reconcile": sum(1 for row in current if row.get("proof_reconciliation_would_reconcile")),
+        "shadow_text_renderer_candidates": sum(
+            1 for row in current if row.get("shadow_text_renderer_status") == "candidate_rendered"
+        ),
+        "examples": current[:50],
+        "notes": [
+            "Only current handoff rows can improve autonomy by changing routing.",
+            "Rows that already answer self are kept for frame calibration, but are not active autonomy leverage.",
+            "Fact-assertion rows need a verified fact/text path before any route change.",
+        ],
+    }
+
+
+def _next_autonomy_workstream(row: Mapping[str, Any]) -> str:
+    if not row.get("current_handoff"):
+        return "no_current_route_leverage"
+    if row.get("danger_adjacent"):
+        return "danger_adjacent_do_not_lower"
+    if row.get("clean_route_only_discussion"):
+        return "route_only_ack_status_candidate_review"
+    if row.get("requires_fact_assertion"):
+        if row.get("proof_reconciliation_would_reconcile"):
+            renderer_status = str(row.get("shadow_text_renderer_status") or "")
+            source_status = str(row.get("source_fact_lookup_status") or "")
+            alignment_status = str(row.get("source_alignment_status") or "")
+            if alignment_status.startswith("blocked_source_axis") or alignment_status == "alignment_review_unclear":
+                return "fix_proof_axis_alignment"
+            if renderer_status == "candidate_rendered":
+                return "text_policy_semantic_review_needed"
+            if source_status == "wrong_brand" or renderer_status == "blocked_wrong_brand":
+                return "fix_wrong_brand_proof_alignment"
+            if renderer_status == "blocked_template_renderer_not_implemented":
+                return "template_renderer_needed"
+            if renderer_status == "blocked_unsupported_structured_value":
+                return "renderer_or_structured_fact_needed"
+            return "proof_text_policy_needed"
+        return "fact_verification_or_retrieval_needed"
+    if str(row.get("route") or "") == "manager_only":
+        return "manager_only_policy_review"
+    return "measurement_review_required"
+
+
+def _active_unlock_reason(row: Mapping[str, Any]) -> str:
+    workstream = str(row.get("next_autonomy_workstream") or "")
+    reasons = {
+        "no_current_route_leverage": "runtime_already_self_answered",
+        "danger_adjacent_do_not_lower": "near_p0_money_fabrication_or_safety_case",
+        "route_only_ack_status_candidate_review": "possible_route_only_but_requires_owner_semantic_review",
+        "fact_verification_or_retrieval_needed": "needs_verified_client_safe_fact_before_self_answer",
+        "text_policy_semantic_review_needed": "shadow_renderer_candidate_exists_but_active_text_policy_not_approved",
+        "fix_wrong_brand_proof_alignment": "proof_points_to_other_brand_or_wrong_active_brand",
+        "fix_proof_axis_alignment": "proof_fact_does_not_cover_requested_missing_fact_axis",
+        "template_renderer_needed": "fact_requires_template_renderer_before_self_answer",
+        "renderer_or_structured_fact_needed": "fresh_proof_exists_but_no_safe_renderer_for_structured_value",
+        "proof_text_policy_needed": "fresh_proof_exists_but_text_policy_is_not_sendable",
+        "manager_only_policy_review": "manager_only_route_needs_owner_policy_before_any_demotion",
+        "measurement_review_required": "needs_measurement_or_gold_review_before_implementation",
+    }
+    return reasons.get(workstream, "review_required")
 
 
 def _negative_control_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -40,6 +40,11 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     _sha16,
 )
 from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
+from mango_mvp.customer_timeline.purchases import (
+    PURCHASE_MONEY_KIND_PLAN,
+    ensure_customer_purchases_v1_table,
+    upsert_customer_purchase_rows,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     existing_timeline_email_content_signatures,
@@ -938,7 +943,7 @@ def _refresh_customer_purchases_v1(
     con = connection or sqlite3.connect(Path(db_path))
     con.row_factory = sqlite3.Row
     try:
-        _ensure_customer_purchases_v1_table(db_path, connection=con)
+        ensure_customer_purchases_v1_table(con)
         tenant = normalize_key(tenant_id, "tenant_id")
         rows = con.execute(
             """
@@ -966,6 +971,7 @@ def _refresh_customer_purchases_v1(
                 "tenant_id": str(row["tenant_id"]),
                 "customer_id": str(row["customer_id"]),
                 "period": "all_time",
+                "money_kind": PURCHASE_MONEY_KIND_PLAN,
                 "total_in": None,
                 "total_out": None,
                 "deals_cnt": int(row["deals_cnt"] or 0),
@@ -984,68 +990,13 @@ def _refresh_customer_purchases_v1(
             }
             for row in rows
         ]
-        if payloads:
-            con.executemany(
-                """
-                INSERT INTO customer_purchases_v1 (
-                  tenant_id, customer_id, period, total_in, total_out, deals_cnt,
-                  last_purchase_at, sources_json, computability, code_version
-                )
-                VALUES (
-                  :tenant_id, :customer_id, :period, :total_in, :total_out, :deals_cnt,
-                  :last_purchase_at, :sources_json, :computability, :code_version
-                )
-                ON CONFLICT(tenant_id, customer_id, period) DO UPDATE SET
-                  total_in = excluded.total_in,
-                  total_out = excluded.total_out,
-                  deals_cnt = excluded.deals_cnt,
-                  last_purchase_at = excluded.last_purchase_at,
-                  sources_json = excluded.sources_json,
-                  computability = excluded.computability,
-                  code_version = excluded.code_version
-                """,
-                payloads,
-            )
+        upsert_customer_purchase_rows(con, payloads, protect_computed_plan=True)
         if owns_connection:
             con.commit()
     finally:
         if owns_connection:
             con.close()
     return len(payloads)
-
-
-def _ensure_customer_purchases_v1_table(
-    db_path: Path,
-    *,
-    connection: sqlite3.Connection | None = None,
-) -> None:
-    owns_connection = connection is None
-    con = connection or sqlite3.connect(Path(db_path))
-    try:
-        con.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
-              tenant_id TEXT NOT NULL,
-              customer_id TEXT NOT NULL,
-              period TEXT NOT NULL,
-              total_in REAL,
-              total_out REAL,
-              deals_cnt INTEGER NOT NULL DEFAULT 0,
-              last_purchase_at TEXT,
-              sources_json TEXT NOT NULL,
-              computability TEXT NOT NULL,
-              code_version TEXT NOT NULL,
-              PRIMARY KEY (tenant_id, customer_id, period)
-            );
-            CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_customer
-              ON customer_purchases_v1(tenant_id, customer_id, deals_cnt);
-            """
-        )
-        if owns_connection:
-            con.commit()
-    finally:
-        if owns_connection:
-            con.close()
 
 
 def reconcile_a2v3_event_facts(

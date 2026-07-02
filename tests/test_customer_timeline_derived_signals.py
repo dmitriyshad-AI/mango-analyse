@@ -437,6 +437,48 @@ def test_sg_v1_backfill_is_idempotent(tmp_path: Path) -> None:
     assert fetch_signal_rows(db_path)[0]["status"] == "resolved"
 
 
+def test_sg_v1_backfill_uses_fact_purchases_not_plan_for_season_return(tmp_path: Path) -> None:
+    store = seeded_store(tmp_path)
+    db_path = store.db_path
+    store.close()
+    old_purchase_at = (NOW - timedelta(days=220)).isoformat()
+    with sqlite3.connect(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE customer_purchases_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              period TEXT NOT NULL,
+              money_kind TEXT NOT NULL DEFAULT 'plan'
+                CHECK (money_kind IN ('plan', 'fact')),
+              total_in REAL,
+              total_out REAL,
+              deals_cnt INTEGER NOT NULL DEFAULT 0,
+              last_purchase_at TEXT,
+              sources_json TEXT NOT NULL,
+              computability TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period, money_kind)
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO customer_purchases_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (TENANT, CUSTOMER, "all_time", "plan", 50000, 0, 1, old_purchase_at, "{}", "computed", "test"),
+        )
+
+    plan_only = backfill_sg_v1_signals(db_path, allowed_root=tmp_path, tenant_id=TENANT, as_of=NOW, apply=False)
+    assert plan_only["signal_type_counts"] == {}
+
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO customer_purchases_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (TENANT, CUSTOMER, "all_time", "fact", 12000, 0, 1, old_purchase_at, "{}", "computed", "test"),
+        )
+    with_fact = backfill_sg_v1_signals(db_path, allowed_root=tmp_path, tenant_id=TENANT, as_of=NOW, apply=False)
+    assert with_fact["signal_type_counts"] == {SEASON_RETURN_SIGNAL: 1}
+
+
 def test_sg_v1_backfill_rejects_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "missing.sqlite"
 

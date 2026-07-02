@@ -532,13 +532,76 @@ def test_customer_purchases_v1_scaffold_does_not_use_email_amounts(tmp_path: Pat
     with sqlite3.connect(config.timeline_db_path) as con:
         row = con.execute(
             """
-            SELECT total_in, total_out, deals_cnt, computability, sources_json
+            SELECT money_kind, total_in, total_out, deals_cnt, computability, sources_json
             FROM customer_purchases_v1
             WHERE customer_id = 'customer:known'
             """
         ).fetchone()
-        assert row[:4] == (None, None, 1, "not_computable_missing_primary_amounts")
-        assert json.loads(row[4])["email_amounts_used"] is False
+        assert row[:5] == ("plan", None, None, 1, "not_computable_missing_primary_amounts")
+        assert json.loads(row[5])["email_amounts_used"] is False
+
+
+def test_customer_purchases_v1_scaffold_does_not_overwrite_computed_plan(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        [_row("r" * 64, email="parent@example.com", event_type="payment", amount_kind="actual", amount_rub=77777)],
+    )
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer:known",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amo",
+                source_id="paid-deal",
+                status="Оплата получена",
+                product_context={"brand": "foton"},
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(config.timeline_db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE customer_purchases_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              period TEXT NOT NULL,
+              money_kind TEXT NOT NULL DEFAULT 'plan'
+                CHECK (money_kind IN ('plan', 'fact')),
+              total_in REAL,
+              total_out REAL,
+              deals_cnt INTEGER NOT NULL DEFAULT 0,
+              last_purchase_at TEXT,
+              sources_json TEXT NOT NULL,
+              computability TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period, money_kind)
+            );
+            INSERT INTO customer_purchases_v1 VALUES (
+              'foton', 'customer:known', 'all_time', 'plan', 12000, 0, 1,
+              '2026-06-01T00:00:00+00:00', '{"source":"stage5"}', 'computed', 'stage5'
+            );
+            """
+        )
+
+    backup = create_test_db_backup(config)
+    apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    with sqlite3.connect(config.timeline_db_path) as con:
+        row = con.execute(
+            """
+            SELECT money_kind, total_in, total_out, deals_cnt, computability, sources_json
+            FROM customer_purchases_v1
+            WHERE customer_id = 'customer:known'
+            """
+        ).fetchone()
+    assert row[:5] == ("plan", 12000, 0, 1, "computed")
+    assert json.loads(row[5])["source"] == "stage5"
 
 
 def test_a2v3_apply_path_guard_requires_allowed_root_and_rejects_prod_or_symlink(tmp_path: Path) -> None:

@@ -56,6 +56,8 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     row = json.loads((out_dir / "pilot_20_crm_card_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
 
     assert "Покупки и оплаты" in row["contact_payload"]["Авто история общения"]
+    assert "оплачено факт 12 000" in row["contact_payload"]["Авто история общения"]
+    assert "план сделки 50 000" in row["contact_payload"]["Авто история общения"]
     assert "Возражения и бюджет" in row["contact_payload"]["Авто история общения"]
     assert "Сигналы" in row["contact_payload"]["Авто история общения"]
     assert "Письмо: отправлено расписание" in row["contact_payload"]["Авто история общения"]
@@ -294,6 +296,8 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
               tenant_id TEXT NOT NULL,
               customer_id TEXT NOT NULL,
               period TEXT NOT NULL,
+              money_kind TEXT NOT NULL DEFAULT 'plan'
+                CHECK (money_kind IN ('plan', 'fact')),
               total_in REAL,
               total_out REAL,
               deals_cnt INTEGER NOT NULL DEFAULT 0,
@@ -301,7 +305,7 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
               sources_json TEXT NOT NULL,
               computability TEXT NOT NULL,
               code_version TEXT,
-              PRIMARY KEY (tenant_id, customer_id, period)
+              PRIMARY KEY (tenant_id, customer_id, period, money_kind)
             );
             CREATE TABLE customer_objections_v1 (
               tenant_id TEXT NOT NULL,
@@ -322,8 +326,12 @@ def _seed_db(tmp_path: Path, *, raw_email_artifact: bool = False) -> Path:
             """
         )
         con.execute(
-            "INSERT INTO customer_purchases_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("foton", "customer:e5", "all", 12000, 0, 1, NOW.isoformat(), "{}", "computed", "test"),
+            "INSERT INTO customer_purchases_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "customer:e5", "all", "fact", 12000, 0, 1, NOW.isoformat(), "{}", "computed", "test"),
+        )
+        con.execute(
+            "INSERT INTO customer_purchases_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "customer:e5", "all", "plan", 50000, 0, 1, NOW.isoformat(), "{}", "computed", "test"),
         )
         con.execute(
             "INSERT INTO customer_objections_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

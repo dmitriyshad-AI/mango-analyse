@@ -465,11 +465,13 @@ def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             }
         )
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_purchases_v1'").fetchone():
+        money_kind_filter = "AND money_kind = 'fact'" if _has_column(con, "customer_purchases_v1", "money_kind") else ""
         for row in con.execute(
-            """
+            f"""
             SELECT tenant_id, customer_id, period, deals_cnt, last_purchase_at, computability
             FROM customer_purchases_v1
             WHERE tenant_id = ?
+              {money_kind_filter}
             """,
             (tenant_id,),
         ):

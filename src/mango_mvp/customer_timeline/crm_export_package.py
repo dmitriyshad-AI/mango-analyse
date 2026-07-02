@@ -226,6 +226,7 @@ def _select_candidate_meta(
         limit_clause = " LIMIT ?"
         params.append(int(batch_limit))
     objection_counts_filter = _crm_objections_sql_filter(con, tenant_id=tenant_id)
+    purchase_kind_expr = "COALESCE(money_kind, 'plan')" if "money_kind" in _table_columns(con, "customer_purchases_v1") else "'fact'"
     rows = con.execute(
         f"""
         WITH contacts AS (
@@ -262,7 +263,12 @@ def _select_candidate_meta(
           GROUP BY customer_id
         ),
         purchase_counts AS (
-          SELECT customer_id, SUM(COALESCE(total_in, 0)) AS purchase_total_in, SUM(deals_cnt) AS purchase_deals_cnt
+          SELECT
+            customer_id,
+            SUM(CASE WHEN {purchase_kind_expr} = 'fact' THEN COALESCE(total_in, 0) ELSE 0 END) AS purchase_fact_total_in,
+            SUM(CASE WHEN {purchase_kind_expr} = 'plan' THEN COALESCE(total_in, 0) ELSE 0 END) AS purchase_plan_total_in,
+            SUM(CASE WHEN {purchase_kind_expr} = 'fact' THEN deals_cnt ELSE 0 END) AS purchase_fact_deals_cnt,
+            SUM(CASE WHEN {purchase_kind_expr} = 'plan' THEN deals_cnt ELSE 0 END) AS purchase_plan_deals_cnt
           FROM customer_purchases_v1
           WHERE tenant_id = ?
           GROUP BY customer_id
@@ -296,14 +302,19 @@ def _select_candidate_meta(
           open_deals.open_deal_count,
           open_deals.deal_brand,
           COALESCE(mail_counts.mail_stage2_events_count, 0) AS mail_stage2_events_count,
-          COALESCE(purchase_counts.purchase_total_in, 0) AS purchase_total_in,
-          COALESCE(purchase_counts.purchase_deals_cnt, 0) AS purchase_deals_cnt,
+          COALESCE(purchase_counts.purchase_fact_total_in, 0) AS purchase_total_in,
+          COALESCE(purchase_counts.purchase_fact_total_in, 0) AS purchase_fact_total_in,
+          COALESCE(purchase_counts.purchase_plan_total_in, 0) AS purchase_plan_total_in,
+          COALESCE(purchase_counts.purchase_fact_deals_cnt, 0) AS purchase_deals_cnt,
+          COALESCE(purchase_counts.purchase_fact_deals_cnt, 0) AS purchase_fact_deals_cnt,
+          COALESCE(purchase_counts.purchase_plan_deals_cnt, 0) AS purchase_plan_deals_cnt,
           COALESCE(objection_counts.objections_count, 0) AS objections_count,
           COALESCE(signal_counts.active_signals_count, 0) AS active_signals_count,
           COALESCE(call_types.last_call_type, '') AS last_call_type,
           (
             COALESCE(mail_counts.mail_stage2_events_count, 0)
-            + COALESCE(purchase_counts.purchase_deals_cnt, 0) * 5
+            + COALESCE(purchase_counts.purchase_fact_deals_cnt, 0) * 5
+            + COALESCE(purchase_counts.purchase_plan_deals_cnt, 0) * 2
             + COALESCE(objection_counts.objections_count, 0) * 3
             + COALESCE(signal_counts.active_signals_count, 0) * 3
           ) AS richness_score
@@ -329,14 +340,15 @@ def _select_candidate_meta(
 
 
 def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> Mapping[str, Any]:
+    purchase_kind_select = "money_kind" if "money_kind" in _table_columns(con, "customer_purchases_v1") else "'fact' AS money_kind"
     purchases = [
         dict(row)
         for row in con.execute(
-            """
-            SELECT period, total_in, total_out, deals_cnt, last_purchase_at, computability
+            f"""
+            SELECT period, {purchase_kind_select}, total_in, total_out, deals_cnt, last_purchase_at, computability
             FROM customer_purchases_v1
             WHERE tenant_id = ? AND customer_id = ?
-            ORDER BY period DESC
+            ORDER BY period DESC, money_kind ASC
             """,
             (tenant_id, customer_id),
         ).fetchall()
@@ -365,8 +377,11 @@ def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_i
         "purchase_text": _format_purchases(purchases),
         "objections_text": _format_objections(objections),
         "signals_text": _format_signals(signals),
-        "purchase_total_in": sum(float(row.get("total_in") or 0) for row in purchases),
-        "purchase_deals_cnt": sum(int(row.get("deals_cnt") or 0) for row in purchases),
+        "purchase_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
+        "purchase_fact_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
+        "purchase_plan_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "plan"),
+        "purchase_deals_cnt": sum(int(row.get("deals_cnt") or 0) for row in purchases if row.get("money_kind") == "fact"),
+        "purchase_plan_deals_cnt": sum(int(row.get("deals_cnt") or 0) for row in purchases if row.get("money_kind") == "plan"),
         "objections_count": len(objections),
         "active_signals_count": len(signals),
     }
@@ -494,7 +509,9 @@ def _format_purchases(rows: Sequence[Mapping[str, Any]]) -> str:
         deals = int(row.get("deals_cnt") or 0)
         period = str(row.get("period") or "all")
         last_at = str(row.get("last_purchase_at") or "")[:10]
-        parts.append(f"{period}: оплачено {total_in}; сделок {deals}" + (f"; последняя дата {last_at}" if last_at else ""))
+        money_kind = str(row.get("money_kind") or "fact")
+        label = "оплачено факт" if money_kind == "fact" else "план сделки"
+        parts.append(f"{period}: {label} {total_in}; сделок {deals}" + (f"; последняя дата {last_at}" if last_at else ""))
     return "\n".join(f"- {part}" for part in parts)
 
 

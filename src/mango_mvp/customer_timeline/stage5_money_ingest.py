@@ -17,6 +17,12 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.ids import stable_digest
+from mango_mvp.customer_timeline.purchases import (
+    PURCHASE_MONEY_KIND_FACT,
+    PURCHASE_MONEY_KIND_PLAN,
+    ensure_customer_purchases_v1_table,
+    upsert_customer_purchase_rows,
+)
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, json_dumps, json_loads
 
@@ -141,31 +147,10 @@ def refresh_customer_purchases_v1(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
-        _ensure_customer_purchases_v1_table(con)
+        ensure_customer_purchases_v1_table(con)
         aggregates = _purchase_aggregates(con, tenant_id=tenant_id)
         rows = [_purchase_row(row) for row in aggregates.values()]
-        if rows:
-            con.executemany(
-                """
-                INSERT INTO customer_purchases_v1 (
-                  tenant_id, customer_id, period, total_in, total_out, deals_cnt,
-                  last_purchase_at, sources_json, computability, code_version
-                )
-                VALUES (
-                  :tenant_id, :customer_id, :period, :total_in, :total_out, :deals_cnt,
-                  :last_purchase_at, :sources_json, :computability, :code_version
-                )
-                ON CONFLICT(tenant_id, customer_id, period) DO UPDATE SET
-                  total_in = excluded.total_in,
-                  total_out = excluded.total_out,
-                  deals_cnt = excluded.deals_cnt,
-                  last_purchase_at = excluded.last_purchase_at,
-                  sources_json = excluded.sources_json,
-                  computability = excluded.computability,
-                  code_version = excluded.code_version
-                """,
-                rows,
-            )
+        upsert_customer_purchase_rows(con, rows)
         con.commit()
         return {
             "rows_upserted": len(rows),
@@ -173,6 +158,7 @@ def refresh_customer_purchases_v1(
             "total_in": round(sum(float(row["total_in"] or 0) for row in rows), 2),
             "total_out": round(sum(float(row["total_out"] or 0) for row in rows), 2),
             "computability": dict(Counter(str(row["computability"]) for row in rows)),
+            "money_kind": dict(Counter(str(row["money_kind"]) for row in rows)),
         }
     finally:
         con.close()
@@ -286,12 +272,13 @@ def _build_money_event_plan(
     return tuple(plans), dict(skipped)
 
 
-def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[str, dict[str, Any]]:
-    aggregates: dict[str, dict[str, Any]] = defaultdict(
+def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+    aggregates: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "tenant_id": tenant_id,
             "customer_id": "",
             "period": "all_time",
+            "money_kind": PURCHASE_MONEY_KIND_PLAN,
             "total_in": 0.0,
             "total_out": 0.0,
             "deals": set(),
@@ -321,14 +308,17 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[str
             continue
         direction = _money_direction(record)
         customer_id = str(row["customer_id"])
-        item = aggregates[customer_id]
+        money_kind = PURCHASE_MONEY_KIND_FACT if row["source_system"] == "tallanto_crm_call" else PURCHASE_MONEY_KIND_PLAN
+        item = aggregates[(customer_id, money_kind)]
         item["customer_id"] = customer_id
+        item["money_kind"] = money_kind
         if direction == "out":
             item["total_out"] += amount
         else:
             item["total_in"] += amount
-        if row["opportunity_id"]:
-            item["deals"].add(str(row["opportunity_id"]))
+        deal_or_payment_key = row["opportunity_id"] or (row["source_id"] if money_kind == PURCHASE_MONEY_KIND_FACT else None)
+        if deal_or_payment_key:
+            item["deals"].add(str(deal_or_payment_key))
         current_at = str(row["event_at"] or "")
         if current_at and (item["last_purchase_at"] is None or current_at > item["last_purchase_at"]):
             item["last_purchase_at"] = current_at
@@ -342,6 +332,7 @@ def _purchase_row(row: Mapping[str, Any]) -> Mapping[str, Any]:
         "tenant_id": row["tenant_id"],
         "customer_id": row["customer_id"],
         "period": row["period"],
+        "money_kind": row["money_kind"],
         "total_in": round(float(row["total_in"]), 2),
         "total_out": round(float(row["total_out"]), 2),
         "deals_cnt": len(row["deals"]),
@@ -351,36 +342,12 @@ def _purchase_row(row: Mapping[str, Any]) -> Mapping[str, Any]:
                 "source": "stage5_primary_money_events",
                 "email_amounts_used": False,
                 "source_event_system_counts": dict(sorted(sources.items())),
-                "money_source": "primary_amo_price_or_tallanto_payment",
+                "money_source": "tallanto_payment" if row["money_kind"] == PURCHASE_MONEY_KIND_FACT else "amo_lead_price",
             }
         ),
         "computability": "computed",
         "code_version": STAGE5_MONEY_CODE_VERSION,
     }
-
-
-def _ensure_customer_purchases_v1_table(con: sqlite3.Connection) -> None:
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
-          tenant_id TEXT NOT NULL,
-          customer_id TEXT NOT NULL,
-          period TEXT NOT NULL,
-          total_in REAL,
-          total_out REAL,
-          deals_cnt INTEGER NOT NULL DEFAULT 0,
-          last_purchase_at TEXT,
-          sources_json TEXT NOT NULL,
-          computability TEXT NOT NULL,
-          code_version TEXT NOT NULL,
-          PRIMARY KEY (tenant_id, customer_id, period)
-        );
-        CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_customer
-          ON customer_purchases_v1(tenant_id, customer_id, deals_cnt);
-        CREATE INDEX IF NOT EXISTS idx_customer_purchases_v1_computability
-          ON customer_purchases_v1(tenant_id, computability, last_purchase_at);
-        """
-    )
 
 
 def _load_source(source_path: Path) -> Mapping[str, Any]:
@@ -457,6 +424,17 @@ def _metrics(con: sqlite3.Connection) -> Mapping[str, Any]:
             """
         ).fetchone()
         purchases = dict(row)
+        if "money_kind" in {str(item[1]) for item in con.execute("PRAGMA table_info(customer_purchases_v1)").fetchall()}:
+            purchases["by_money_kind"] = {
+                str(row["money_kind"]): int(row["cnt"])
+                for row in con.execute(
+                    """
+                    SELECT money_kind, count(*) AS cnt
+                    FROM customer_purchases_v1
+                    GROUP BY money_kind
+                    """
+                ).fetchall()
+            }
     return {"tables": tables, "purchases": purchases}
 
 

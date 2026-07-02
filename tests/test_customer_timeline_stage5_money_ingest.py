@@ -12,11 +12,15 @@ from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     CustomerOpportunity,
     IdentityStatus,
+    TimelineDirection,
+    TimelineEvent,
+    TimelineEventType,
     OpportunityType,
 )
 from mango_mvp.customer_timeline.stage5_money_ingest import (
     STAGE5_AMO_PRICE_SOURCE_SYSTEM,
     Stage5MoneyIngestConfig,
+    refresh_customer_purchases_v1,
     run_stage5_money_ingest,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
@@ -70,6 +74,7 @@ def test_stage5_money_ingest_apply_is_idempotent_and_keeps_money_out_of_bot_cont
             (STAGE5_AMO_PRICE_SOURCE_SYSTEM,),
         ).fetchone()[0] == 1
         row = con.execute("SELECT * FROM customer_purchases_v1").fetchone()
+        assert row["money_kind"] == "plan"
         assert row["total_in"] == 12000
         assert row["total_out"] == 0
         assert row["deals_cnt"] == 1
@@ -78,6 +83,102 @@ def test_stage5_money_ingest_apply_is_idempotent_and_keeps_money_out_of_bot_cont
         assert sources["email_amounts_used"] is False
         assert sources["source_event_system_counts"] == {STAGE5_AMO_PRICE_SOURCE_SYSTEM: 1}
         assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == 0
+
+
+def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    run_stage5_money_ingest(
+        Stage5MoneyIngestConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            source_path=source_path,
+            out_dir=out_dir,
+            apply=True,
+        )
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer-1",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="most_finances:pay-1",
+                source_ref="tallanto:most_finances:pay-1",
+                direction=TimelineDirection.SYSTEM,
+                subject="Tallanto payment",
+                summary="Оплата Tallanto",
+                match_status="strong_unique",
+                record={"amount": 7000, "payment_direction": "in"},
+                created_at=NOW,
+            )
+        )
+
+    result = refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+
+    assert result["money_kind"] == {"plan": 1, "fact": 1}
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = {
+            row["money_kind"]: row
+            for row in con.execute(
+                "SELECT money_kind, total_in, deals_cnt, sources_json FROM customer_purchases_v1 ORDER BY money_kind"
+            ).fetchall()
+        }
+    assert rows["plan"]["total_in"] == 12000
+    assert rows["plan"]["deals_cnt"] == 1
+    assert rows["fact"]["total_in"] == 7000
+    assert rows["fact"]["deals_cnt"] == 1
+    assert json.loads(rows["fact"]["sources_json"])["money_source"] == "tallanto_payment"
+
+
+def test_stage5_migrates_legacy_customer_purchases_to_plan(tmp_path: Path) -> None:
+    db_path, source_path, out_dir = _fixture(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE customer_purchases_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              period TEXT NOT NULL,
+              total_in REAL,
+              total_out REAL,
+              deals_cnt INTEGER NOT NULL DEFAULT 0,
+              last_purchase_at TEXT,
+              sources_json TEXT NOT NULL,
+              computability TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period)
+            );
+            INSERT INTO customer_purchases_v1 VALUES (
+              'foton', 'legacy-customer', 'all_time', 5000, 0, 1,
+              '2026-01-01T00:00:00+00:00', '{}', 'computed', 'legacy'
+            );
+            """
+        )
+
+    run_stage5_money_ingest(
+        Stage5MoneyIngestConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            source_path=source_path,
+            out_dir=out_dir,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT money_kind, total_in
+            FROM customer_purchases_v1
+            WHERE customer_id = 'legacy-customer'
+            """
+        ).fetchone()
+    assert row["money_kind"] == "plan"
+    assert row["total_in"] == 5000
 
 
 def test_stage5_money_ingest_refuses_prod_and_non_staging_paths(tmp_path: Path) -> None:

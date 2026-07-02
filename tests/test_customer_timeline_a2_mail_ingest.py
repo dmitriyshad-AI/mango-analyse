@@ -2,17 +2,29 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from mango_mvp.customer_timeline.a2_mail_ingest import (
     A2V3MailIngestConfig,
     apply_a2v3_mail_ingest,
     build_local_client_review,
     create_test_db_backup,
+    ensure_not_prod_apply_path,
     plan_a2v3_mail_ingest,
+    reconcile_a2v3_event_facts,
     validate_a2v3_mail_ingest,
 )
-from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityStatus, TimelineDirection, TimelineEvent
+from mango_mvp.customer_timeline.contracts import (
+    BotContextChunk,
+    CustomerIdentity,
+    IdentityLink,
+    IdentityStatus,
+    TimelineDirection,
+    TimelineEvent,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -210,17 +222,24 @@ def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path
     assert report["counts"]["linked"] == 1
     assert plans[0].resolution.method == "tallanto_email"
     assert plans[0].identity_links[0].link_type.value == "email"
-    assert plans[0].bot_visible is True
+    assert plans[0].bot_eligible_candidate is True
 
     backup = create_test_db_backup(config)
     first = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
     second = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
 
     assert first["counts"]["created_events"] == 1
-    assert first["counts"]["created_bot_visible_chunks"] == 1
+    assert first["counts"]["created_bot_eligible_candidate_chunks"] == 1
     assert second["selected_events"] == 0
     with sqlite3.connect(config.timeline_db_path) as con:
-        assert con.execute("SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks").fetchall() == [(1, 0)]
+        assert con.execute("SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks").fetchall() == [(0, 1)]
+        event_record = json.loads(con.execute("SELECT record_json FROM timeline_events").fetchone()[0])
+        assert "bot_visibility" not in event_record["record"]
+        assert event_record["record"]["bot_eligible_candidate"] == {
+            "eligible": True,
+            "qualified": True,
+            "reason": "usable_linked_qualified",
+        }
         assert con.execute("SELECT link_type, link_value FROM identity_links WHERE link_type='email'").fetchall() == [
             ("email", "parent@example.com")
         ]
@@ -260,6 +279,143 @@ def test_a2v3_mail_ingest_content_duplicate_skips_chunk_and_facts(tmp_path: Path
         assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
 
 
+def test_a2v3_mail_ingest_reconciles_facts_for_existing_event_after_partial_crash(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("j" * 64, email="parent@example.com")])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    plans, _ = plan_a2v3_mail_ingest(config)
+    plan = plans[0]
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        assert plan.customer is not None
+        assert plan.opportunity is not None
+        store.upsert_customer(plan.customer)
+        store.upsert_opportunity(plan.opportunity)
+        store.upsert_event(plan.event)
+    finally:
+        store.close()
+
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+        ).fetchone() is None
+
+    backup = create_test_db_backup(config)
+    applied = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert applied["selected_events"] == 0
+    assert applied["counts"]["upserted_a2v3_event_facts"] == 1
+    assert applied["counts"]["reconciled_a2v3_event_facts"] == 1
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT count(*) FROM timeline_events").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
+def test_reconcile_a2v3_event_facts_is_idempotent(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("k" * 64, email="parent@example.com")])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    plans, _ = plan_a2v3_mail_ingest(config)
+    backup = create_test_db_backup(config)
+    apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    first = reconcile_a2v3_event_facts(config.timeline_db_path, plans, allowed_root=config.allowed_root)
+    second = reconcile_a2v3_event_facts(config.timeline_db_path, plans, allowed_root=config.allowed_root)
+
+    assert first == {"plans": 1, "events_found": 1, "facts_upserted": 1}
+    assert second == {"plans": 1, "events_found": 1, "facts_upserted": 1}
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
+def test_a2v3_apply_path_guard_requires_allowed_root_and_rejects_prod_or_symlink(tmp_path: Path) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    ensure_not_prod_apply_path(allowed_root / "timeline.sqlite", allowed_root=allowed_root)
+
+    with pytest.raises(ValueError, match="outside allowed_root"):
+        ensure_not_prod_apply_path(tmp_path / "outside.sqlite", allowed_root=allowed_root)
+
+    with pytest.raises(ValueError, match="prod timeline"):
+        ensure_not_prod_apply_path(
+            allowed_root / "customer_timeline_prod_20260621" / "customer_timeline.sqlite",
+            allowed_root=allowed_root,
+        )
+
+    outside = tmp_path / "outside_real.sqlite"
+    outside.write_text("", encoding="utf-8")
+    symlink = allowed_root / "linked.sqlite"
+    symlink.symlink_to(outside)
+    with pytest.raises(ValueError, match="outside allowed_root"):
+        ensure_not_prod_apply_path(symlink, allowed_root=allowed_root)
+
+
+def test_a2v3_mail_ingest_requires_explicit_enrich_for_hash_mismatch(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("l" * 64, email="parent@example.com")])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    plans, _ = plan_a2v3_mail_ingest(config)
+    plan = plans[0]
+    old_event = replace(plan.event, summary="Старая сжатая версия письма.")
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        assert plan.customer is not None
+        assert plan.opportunity is not None
+        store.upsert_customer(plan.customer)
+        store.upsert_opportunity(plan.opportunity)
+        store.upsert_event(old_event)
+    finally:
+        store.close()
+
+    backup = create_test_db_backup(config)
+    with pytest.raises(ValueError, match="enrich_existing required"):
+        apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert (config.out_dir / "enrich_existing_required.json").exists()
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT summary FROM timeline_events").fetchone()[0] == "Старая сжатая версия письма."
+        assert con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+        ).fetchone() is None
+
+
+def test_a2v3_mail_ingest_enrich_existing_preserves_metadata_and_updates_summary(tmp_path: Path) -> None:
+    base_config = _config(tmp_path, [_row("m" * 64, email="parent@example.com")])
+    config = replace(base_config, enrich_existing=True)
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    plans, _ = plan_a2v3_mail_ingest(config)
+    plan = plans[0]
+    old_event = replace(
+        plan.event,
+        summary="Старая сжатая версия письма.",
+        metadata={"fresh_relink": True, "existing_only": "keep"},
+        record={"legacy_field": "keep", "bot_visibility": {"allowed_for_bot": True}},
+    )
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        assert plan.customer is not None
+        assert plan.opportunity is not None
+        store.upsert_customer(plan.customer)
+        store.upsert_opportunity(plan.opportunity)
+        store.upsert_event(old_event)
+    finally:
+        store.close()
+
+    backup = create_test_db_backup(config)
+    applied = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert applied["counts"]["enrich_existing_events"] == 1
+    assert applied["counts"].get("created_events", 0) == 0
+    assert (config.out_dir / "enrich_existing_diff.json").exists()
+    with sqlite3.connect(config.timeline_db_path) as con:
+        row = con.execute("SELECT summary, record_json FROM timeline_events").fetchone()
+        payload = json.loads(row[1])
+        assert row[0] == "Родитель спрашивает о записи на курс."
+        assert payload["metadata"]["fresh_relink"] is True
+        assert payload["metadata"]["existing_only"] == "keep"
+        assert payload["record"]["legacy_field"] == "keep"
+        assert "bot_visibility" not in payload["record"]
+        assert payload["record"]["bot_eligible_candidate"]["eligible"] is True
+        assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
 def test_a2v3_mail_ingest_blocks_ambiguous_identity_and_non_usable_memory(tmp_path: Path) -> None:
     rows = [
         _row("b" * 64, email="amb@example.com"),
@@ -274,7 +430,7 @@ def test_a2v3_mail_ingest_blocks_ambiguous_identity_and_non_usable_memory(tmp_pa
     assert by_sha["b" * 64].resolution.outcome == "blocked"
     assert by_sha["b" * 64].chunk is None
     assert by_sha["c" * 64].resolution.outcome == "linked"
-    assert by_sha["c" * 64].bot_visible is False
+    assert by_sha["c" * 64].bot_eligible_candidate is False
     assert by_sha["c" * 64].chunk is not None
     assert by_sha["c" * 64].chunk.allowed_for_bot is False
     assert by_sha["c" * 64].chunk.requires_manager_review is True
@@ -291,7 +447,29 @@ def test_a2v3_mail_ingest_blocks_bot_visibility_when_customer_brand_unknown(tmp_
     assert report["counts"]["linked"] == 1
     assert report["counts"]["bot_gate.customer_brand_unknown"] == 1
     assert plans[0].customer_brand == "unknown"
-    assert plans[0].bot_visible is False
+    assert plans[0].bot_eligible_candidate is False
+
+
+def test_store_rejects_mail_archive_stage2_bot_visible_chunk(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    try:
+        customer = CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        store.upsert_customer(customer)
+        with pytest.raises(ValueError, match="mail_archive_stage2 bot context chunks"):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id="customer:known",
+                    chunk_type="email_message",
+                    text="Почтовый чанк не должен открываться боту на Э1.",
+                    source_system="mail_archive_stage2",
+                    source_ref="test",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                )
+            )
+    finally:
+        store.close()
 
 
 def test_a2v3_mail_ingest_checks_prod_dedupe_across_both_mail_namespaces(tmp_path: Path) -> None:

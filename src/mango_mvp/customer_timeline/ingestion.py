@@ -48,6 +48,7 @@ from mango_mvp.customer_timeline.store import (
     scrub_timeline_persisted_json,
 )
 from mango_mvp.utils.phone import normalize_phone
+from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTEMS
 
 
 CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION = "customer_timeline_ingestion_v1"
@@ -65,19 +66,6 @@ FORBIDDEN_IMPORT_HINTS = (
     "mango_mvp.amocrm_runtime.tallanto_api",
 )
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
-BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
-    {
-        "mail_archive",
-        "channel_snapshot",
-        "telegram_history",
-        "amo_events_created_at",
-        "amo_leads_updated_at",
-        "amo_contacts_updated_at",
-        "amocrm_event",
-    }
-)
-
-
 @dataclass(frozen=True)
 class TimelineSourceRecord:
     source_system: str

@@ -31,6 +31,7 @@ from mango_mvp.customer_timeline.safety import (
     customer_timeline_safety_contract,
     guard_customer_timeline_output_path,
 )
+from mango_mvp.customer_timeline.source_policy import assert_bot_context_chunk_source_policy
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
@@ -1154,6 +1155,11 @@ class CustomerTimelineSQLiteStore:
             self._assert_opportunity_exists(chunk.tenant_id, chunk.opportunity_id)
         if chunk.event_id:
             self._assert_event_exists(chunk.tenant_id, chunk.event_id)
+        assert_bot_context_chunk_source_policy(
+            source_system=chunk.source_system,
+            allowed_for_bot=chunk.allowed_for_bot,
+            requires_manager_review=chunk.requires_manager_review,
+        )
         payload = chunk.to_json_dict()
         record_hash = stable_digest(scrub_timeline_persisted_json(payload))
         result = self._upsert_record(

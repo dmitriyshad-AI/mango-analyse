@@ -5,7 +5,7 @@ import hashlib
 import json
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -25,6 +25,7 @@ from mango_mvp.customer_timeline.ids import (
     normalize_email,
     normalize_identity_value,
     normalize_key,
+    stable_digest,
 )
 from mango_mvp.customer_timeline.ingestion import (
     compact_text,
@@ -41,6 +42,8 @@ from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     existing_timeline_email_content_signatures,
+    parse_datetime,
+    scrub_timeline_persisted_json,
     timeline_email_content_signature,
 )
 
@@ -89,6 +92,7 @@ class A2V3MailIngestConfig:
     tallanto_identity_db: Optional[Path] = DEFAULT_TALLANTO_IDENTITY_DB
     tenant_id: str = "foton"
     source_ref: str = "a2v3_100_review_20260701"
+    enrich_existing: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_jsonl", Path(self.input_jsonl).expanduser())
@@ -123,17 +127,24 @@ class PlannedA2V3MailEvent:
     chunk: Optional[BotContextChunk]
     resolution: CustomerResolution
     prod_duplicate_keys: tuple[str, ...] = ()
-    bot_visible: bool = False
+    bot_eligible_candidate: bool = False
     bot_gate_reason: str = ""
     customer_brand: str = "unknown"
     customer_brand_source: str = "unknown"
     customer_brand_reason: str = "not_resolved"
 
 
-def ensure_not_prod_apply_path(path: Path) -> None:
-    resolved = str(Path(path).expanduser().resolve(strict=False))
+def ensure_not_prod_apply_path(path: Path, *, allowed_root: Path | None = None) -> None:
+    resolved_path = Path(path).expanduser().resolve(strict=False)
+    resolved = str(resolved_path)
     if "customer_timeline_prod_" in resolved:
         raise ValueError(f"refusing to apply A2 mail ingest to prod timeline path: {resolved}")
+    if allowed_root is not None:
+        root = Path(allowed_root).expanduser().resolve(strict=False)
+        try:
+            resolved_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"refusing to apply A2 mail ingest outside allowed_root: {resolved}") from exc
 
 
 def load_a2v3_rows(path: Path) -> list[dict[str, Any]]:
@@ -173,7 +184,7 @@ def prod_readonly_check(db_path: Path) -> Mapping[str, Any]:
 
 def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V3MailEvent], Mapping[str, Any]]:
     rows = load_a2v3_rows(config.input_jsonl)
-    ensure_not_prod_apply_path(config.timeline_db_path)
+    ensure_not_prod_apply_path(config.timeline_db_path, allowed_root=config.allowed_root)
     normalized_contacts = _collect_contact_values(rows)
     tallanto_matches = _load_tallanto_identity_matches(
         config.tallanto_identity_db,
@@ -223,17 +234,17 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
         counters[f"customer_brand.{customer_brand}"] += 1
         if resolution.outcome == "linked" and customer_brand == "unknown":
             counters[f"linked_customer_brand_unknown.{customer_brand_reason}"] += 1
-        bot_visible, bot_gate_reason = _bot_visibility(
+        bot_eligible_candidate, bot_gate_reason = _bot_visibility(
             row,
             resolution=resolution,
             qualified=qualified,
             customer_brand=customer_brand,
         )
         counters[f"bot_gate.{bot_gate_reason}"] += 1
-        if bot_visible:
-            counters["bot_visible"] += 1
+        if bot_eligible_candidate:
+            counters["bot_eligible_candidate"] += 1
         else:
-            counters["stored_not_visible"] += 1
+            counters["bot_ineligible_candidate"] += 1
         new_links = _identity_links_for_row(
             row,
             tenant_id=config.tenant_id,
@@ -284,7 +295,8 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 row,
                 resolution=resolution,
                 qualified=qualified,
-                bot_visible=bot_visible,
+                bot_eligible_candidate=bot_eligible_candidate,
+                bot_gate_reason=bot_gate_reason,
                 customer_brand=customer_brand,
                 customer_brand_source=customer_brand_source,
                 customer_brand_reason=customer_brand_reason,
@@ -312,12 +324,13 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 summary=compact_text(_summary_text(row), limit=700),
                 event_at=event_at,
                 freshness_score=0.72,
-                relevance_tags=_relevance_tags(row, bot_visible=bot_visible),
-                allowed_for_bot=bot_visible,
-                requires_manager_review=not bot_visible,
+                relevance_tags=_relevance_tags(row, bot_eligible_candidate=bot_eligible_candidate),
+                allowed_for_bot=False,
+                requires_manager_review=True,
                 metadata={
                     "message_sha256": message_sha,
                     "memory_status": _quality(row).get("memory_status"),
+                    "bot_eligible_candidate": bot_eligible_candidate,
                     "bot_gate_reason": bot_gate_reason,
                     "brand": customer_brand,
                     "brand_source": customer_brand_source,
@@ -339,7 +352,7 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 chunk=chunk,
                 resolution=resolution,
                 prod_duplicate_keys=prod_duplicate_keys,
-                bot_visible=bot_visible,
+                bot_eligible_candidate=bot_eligible_candidate,
                 bot_gate_reason=bot_gate_reason,
                 customer_brand=customer_brand,
                 customer_brand_source=customer_brand_source,
@@ -358,7 +371,7 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
 
 
 def create_test_db_backup(config: A2V3MailIngestConfig, *, label: str = "a2v3_mail") -> Mapping[str, Any]:
-    ensure_not_prod_apply_path(config.timeline_db_path)
+    ensure_not_prod_apply_path(config.timeline_db_path, allowed_root=config.allowed_root)
     if not config.timeline_db_path.exists():
         raise FileNotFoundError(f"test timeline DB does not exist: {config.timeline_db_path}")
     backup_dir = config.out_dir / "backups" / f"{label}_{_now_stamp()}"
@@ -433,14 +446,17 @@ def validate_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> Mapping[str, Any]
 
 
 def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path: Path) -> Mapping[str, Any]:
-    ensure_not_prod_apply_path(config.timeline_db_path)
+    ensure_not_prod_apply_path(config.timeline_db_path, allowed_root=config.allowed_root)
     _validate_backup_manifest(config, backup_manifest_path)
     plans, planning_report = plan_a2v3_mail_ingest(config)
     test_existing = existing_event_dedupe_keys(config.timeline_db_path)
     test_existing_content = existing_timeline_email_content_signatures(config.timeline_db_path)
+    existing_event_actions = _classify_existing_a2v3_events(config.timeline_db_path, plans)
     seen: set[str] = set()
     seen_content: set[str] = set()
     selected: list[PlannedA2V3MailEvent] = []
+    enrich_conflicts: list[Mapping[str, Any]] = []
+    enrich_diffs: list[Mapping[str, Any]] = []
     counters: Counter[str] = Counter()
     for plan in plans:
         key = plan.event.dedupe_key
@@ -448,7 +464,19 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
             counters["skipped_duplicate_in_input"] += 1
             continue
         seen.add(key)
-        if key in test_existing:
+        existing_action = existing_event_actions.get(_message_sha(plan.row))
+        if existing_action is not None and existing_action["status"] == "identical":
+            counters["skipped_identical_events"] += 1
+            continue
+        if existing_action is not None and existing_action["status"] == "hash_mismatch":
+            if not config.enrich_existing:
+                counters["hash_mismatch_events"] += 1
+                enrich_conflicts.append(existing_action)
+                continue
+            counters["enrich_existing_events"] += 1
+            enrich_diffs.append(_a2v3_enrich_diff(plan, existing_action))
+            plan = replace(plan, event=_merged_existing_event(plan.event, existing_action))
+        elif key in test_existing:
             counters["skipped_existing_test"] += 1
             continue
         content_signature = timeline_email_content_signature(
@@ -472,8 +500,18 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
             counters["prod_duplicate_events_observed"] += 1
         selected.append(plan)
 
+    if enrich_conflicts:
+        config.out_dir.mkdir(parents=True, exist_ok=True)
+        write_json(config.out_dir / "enrich_existing_required.json", {"conflicts": enrich_conflicts})
+        ids = ", ".join(str(item["event_id"]) for item in enrich_conflicts[:10])
+        raise ValueError(f"enrich_existing required for existing A2v3 event hash mismatch: {ids}")
+    if enrich_diffs:
+        config.out_dir.mkdir(parents=True, exist_ok=True)
+        write_json(config.out_dir / "enrich_existing_diff.json", {"diffs": enrich_diffs})
+
     store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=config.allowed_root)
     accepted_plans: list[PlannedA2V3MailEvent] = []
+    facts_upserted = 0
     try:
         input_hash = _input_fingerprint(config)
         run = store.start_ingestion_run(
@@ -521,8 +559,17 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
                     )
                     if chunk_result.created:
                         counters["created_chunks"] += 1
-                        if plan.chunk.allowed_for_bot:
-                            counters["created_bot_visible_chunks"] += 1
+                        if plan.bot_eligible_candidate:
+                            counters["created_bot_eligible_candidate_chunks"] += 1
+            fact_plans = _plans_with_existing_a2v3_events(store._con, plans)
+            facts_upserted = _upsert_a2v3_event_facts(
+                config.timeline_db_path,
+                fact_plans,
+                connection=store._con,
+                allowed_root=config.allowed_root,
+            )
+            counters["upserted_a2v3_event_facts"] += facts_upserted
+            counters["reconciled_a2v3_event_facts"] += max(0, facts_upserted - len(accepted_plans))
         store.finish_ingestion_run(
             run.run_id,
             status="completed",
@@ -534,8 +581,6 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
         )
     finally:
         store.close()
-    facts_upserted = _upsert_a2v3_event_facts(config.timeline_db_path, accepted_plans)
-    counters["upserted_a2v3_event_facts"] += facts_upserted
     report = {
         **planning_report,
         "mode": "apply",
@@ -547,11 +592,115 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
     return report
 
 
-def _upsert_a2v3_event_facts(db_path: Path, plans: Sequence[PlannedA2V3MailEvent]) -> int:
+def _classify_existing_a2v3_events(
+    db_path: Path,
+    plans: Sequence[PlannedA2V3MailEvent],
+) -> Mapping[str, Mapping[str, Any]]:
+    path = Path(db_path)
+    if not path.exists() or not plans:
+        return {}
+    source_ids = [_message_sha(plan.row) for plan in plans]
+    placeholders = ",".join("?" for _ in source_ids)
+    by_sha = {_message_sha(plan.row): plan for plan in plans}
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_events'").fetchone()
+        if not exists:
+            return {}
+        rows = con.execute(
+            f"""
+            SELECT event_id, source_id, record_hash, record_json
+            FROM timeline_events
+            WHERE source_system = ?
+              AND source_id IN ({placeholders})
+            """,
+            (A2V3_MAIL_SOURCE_SYSTEM, *source_ids),
+        ).fetchall()
+    result: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        message_sha = str(row["source_id"]).lower()
+        plan = by_sha.get(message_sha)
+        if plan is None:
+            continue
+        incoming_hash = stable_digest(scrub_timeline_persisted_json(plan.event.to_json_dict()))
+        existing_hash = str(row["record_hash"])
+        result[message_sha] = {
+            "status": "identical" if incoming_hash == existing_hash else "hash_mismatch",
+            "event_id": str(row["event_id"]),
+            "message_sha256": message_sha,
+            "existing_hash": existing_hash,
+            "incoming_hash": incoming_hash,
+            "record_json": str(row["record_json"]),
+        }
+    return result
+
+
+def _merged_existing_event(event: TimelineEvent, existing_action: Mapping[str, Any]) -> TimelineEvent:
+    existing_payload = json.loads(str(existing_action["record_json"]))
+    existing_metadata = existing_payload.get("metadata") if isinstance(existing_payload.get("metadata"), Mapping) else {}
+    existing_record = existing_payload.get("record") if isinstance(existing_payload.get("record"), Mapping) else {}
+    merged_metadata = {**dict(event.metadata), **dict(existing_metadata)}
+    existing_record_dict = dict(existing_record)
+    existing_record_dict.pop("bot_visibility", None)
+    merged_record = {**existing_record_dict, **dict(event.record)}
+    existing_source_refs = existing_payload.get("source_refs")
+    if not isinstance(existing_source_refs, Sequence) or isinstance(existing_source_refs, (str, bytes, bytearray)):
+        existing_source_refs = (existing_payload.get("source_ref") or event.source_ref,)
+    return replace(
+        event,
+        event_at=parse_datetime(str(existing_payload["event_at"]), "event_at"),
+        source_system=str(existing_payload["source_system"]),
+        source_id=str(existing_payload["source_id"]),
+        source_ref=str(existing_payload.get("source_ref") or event.source_ref),
+        source_refs=tuple(str(item) for item in existing_source_refs if item),
+        direction=str(existing_payload["direction"]),
+        created_at=parse_datetime(str(existing_payload["created_at"]), "created_at"),
+        metadata=merged_metadata,
+        record=merged_record,
+    )
+
+
+def _a2v3_enrich_diff(plan: PlannedA2V3MailEvent, existing_action: Mapping[str, Any]) -> Mapping[str, Any]:
+    existing_payload = json.loads(str(existing_action["record_json"]))
+    incoming_payload = plan.event.to_json_dict()
+    fields = ("subject", "text_preview", "summary")
+    changes = {}
+    for field in fields:
+        if existing_payload.get(field) != incoming_payload.get(field):
+            changes[field] = {
+                "old": compact_text(existing_payload.get(field), limit=80),
+                "new": compact_text(incoming_payload.get(field), limit=80),
+            }
+    old_metadata = existing_payload.get("metadata") if isinstance(existing_payload.get("metadata"), Mapping) else {}
+    new_metadata = incoming_payload.get("metadata") if isinstance(incoming_payload.get("metadata"), Mapping) else {}
+    preserved_metadata_keys = sorted(set(old_metadata) & set(new_metadata))
+    added_metadata_keys = sorted(set(new_metadata) - set(old_metadata))
+    return {
+        "event_id": existing_action["event_id"],
+        "message_sha256": str(existing_action["message_sha256"])[:16],
+        "existing_hash": existing_action["existing_hash"],
+        "incoming_hash": existing_action["incoming_hash"],
+        "changes": changes,
+        "preserved_existing_metadata_keys": preserved_metadata_keys,
+        "added_metadata_keys": added_metadata_keys,
+    }
+
+
+def _upsert_a2v3_event_facts(
+    db_path: Path,
+    plans: Sequence[PlannedA2V3MailEvent],
+    *,
+    allowed_root: Path,
+    connection: sqlite3.Connection | None = None,
+) -> int:
+    ensure_not_prod_apply_path(db_path, allowed_root=allowed_root)
     if not plans:
-        _ensure_a2v3_event_facts_table(db_path)
+        _ensure_a2v3_event_facts_table(db_path, connection=connection)
         return 0
-    with sqlite3.connect(Path(db_path)) as con:
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    try:
         _ensure_a2v3_event_facts_table(db_path, connection=con)
         rows = [_a2v3_event_fact_row(plan) for plan in plans]
         con.executemany(
@@ -574,7 +723,8 @@ def _upsert_a2v3_event_facts(db_path: Path, plans: Sequence[PlannedA2V3MailEvent
               :bot_visible, :bot_gate_reason, :identity_outcome, :identity_reason,
               :created_at
             )
-            ON CONFLICT(event_id) DO UPDATE SET
+            ON CONFLICT(message_sha256) DO UPDATE SET
+              event_id = excluded.event_id,
               customer_id = excluded.customer_id,
               event_type_detail = excluded.event_type_detail,
               money_direction = excluded.money_direction,
@@ -601,8 +751,52 @@ def _upsert_a2v3_event_facts(db_path: Path, plans: Sequence[PlannedA2V3MailEvent
             """,
             rows,
         )
-        con.commit()
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
     return len(plans)
+
+
+def reconcile_a2v3_event_facts(
+    db_path: Path,
+    plans: Sequence[PlannedA2V3MailEvent],
+    *,
+    allowed_root: Path,
+) -> Mapping[str, Any]:
+    ensure_not_prod_apply_path(db_path, allowed_root=allowed_root)
+    with sqlite3.connect(Path(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        fact_plans = _plans_with_existing_a2v3_events(con, plans)
+        upserted = _upsert_a2v3_event_facts(db_path, fact_plans, connection=con, allowed_root=allowed_root)
+        con.commit()
+    return {
+        "plans": len(plans),
+        "events_found": len(fact_plans),
+        "facts_upserted": upserted,
+    }
+
+
+def _plans_with_existing_a2v3_events(
+    con: sqlite3.Connection,
+    plans: Sequence[PlannedA2V3MailEvent],
+) -> list[PlannedA2V3MailEvent]:
+    if not plans:
+        return []
+    source_ids = [_message_sha(plan.row) for plan in plans]
+    placeholders = ",".join("?" for _ in source_ids)
+    rows = con.execute(
+        f"""
+        SELECT source_id
+        FROM timeline_events
+        WHERE source_system = ?
+          AND source_id IN ({placeholders})
+        """,
+        (A2V3_MAIL_SOURCE_SYSTEM, *source_ids),
+    ).fetchall()
+    existing = {str(row["source_id"]).lower() for row in rows}
+    return [plan for plan in plans if _message_sha(plan.row) in existing]
 
 
 def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connection | None = None) -> None:
@@ -682,7 +876,7 @@ def _a2v3_event_fact_row(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
         "grade": payload.get("grade"),
         "subject_area": payload.get("subject_area"),
         "memory_status": quality.get("memory_status"),
-        "bot_visible": 1 if plan.bot_visible else 0,
+        "bot_visible": 1 if plan.bot_eligible_candidate else 0,
         "bot_gate_reason": plan.bot_gate_reason,
         "identity_outcome": plan.resolution.outcome,
         "identity_reason": plan.resolution.reason,
@@ -737,7 +931,7 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
                     "resolution": dict(Counter(plan.resolution.outcome for plan in new_plans)),
                     "resolution_reasons": sorted({plan.resolution.reason for plan in new_plans}),
                     "current_next_step": next_step,
-                    "bot_visible_new_chunks": sum(1 for plan in new_plans if plan.bot_visible),
+                    "bot_eligible_candidate_new_chunks": sum(1 for plan in new_plans if plan.bot_eligible_candidate),
                 }
             )
     config.out_dir.mkdir(parents=True, exist_ok=True)
@@ -767,7 +961,7 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
             "current_next_step_status",
             "current_next_step",
             "current_next_step_reason",
-            "bot_visible_new_chunks",
+            "bot_eligible_candidate_new_chunks",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -797,7 +991,7 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
                     "current_next_step_status": row["current_next_step"].get("status", ""),
                     "current_next_step": row["current_next_step"].get("display_text", ""),
                     "current_next_step_reason": row["current_next_step"].get("reason_code", ""),
-                    "bot_visible_new_chunks": row["bot_visible_new_chunks"],
+                    "bot_eligible_candidate_new_chunks": row["bot_eligible_candidate_new_chunks"],
                 }
             )
     return {
@@ -878,7 +1072,7 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
         if a2_facts_table_exists:
             a2_fact_counts = {
                 "rows": int(con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0]),
-                "bot_visible": int(
+                "bot_eligible_candidate": int(
                     con.execute("SELECT count(*) FROM a2v3_mail_event_facts WHERE bot_visible = 1").fetchone()[0]
                 ),
                 "unknown_linked_customer_brand": int(
@@ -1000,10 +1194,10 @@ def write_foton_report(
         f"- identity_links обновлено/повторно подтверждено при apply: `{counts.get('updated_identity_links', 0)}`",
         "",
         "## Bot visibility gate",
-        f"- bot-visible chunks: `{counts.get('created_bot_visible_chunks', 0)}`",
-        f"- stored-not-visible: `{counts.get('stored_not_visible', 0)}`",
-        "- Правило: `allowed_for_bot=1` и `requires_manager_review=0` только для `usable_memory + qualified + linked + non-ambiguous`.",
-        "- Дополнительное правило A2: bot-visible только при разрешённом `customer_brand` (`foton`/`unpk`).",
+        f"- bot-eligible candidate chunks: `{counts.get('created_bot_eligible_candidate_chunks', 0)}`",
+        f"- bot-ineligible candidate rows: `{counts.get('bot_ineligible_candidate', 0)}`",
+        "- Правило Э1 v4: все `mail_archive_stage2` chunks записаны `allowed_for_bot=0`, `requires_manager_review=1`.",
+        "- `_bot_visibility` в Э1 является только диагностикой `bot_eligible_candidate`; открытие боту переносится в Э4б.",
         "",
         "## A2 first-class факты в тест-БД",
         f"- a2v3_mail_event_facts rows: `{a2_fact_counts.get('rows', 0)}`",
@@ -1573,7 +1767,8 @@ def _event_record(
     *,
     resolution: CustomerResolution,
     qualified: bool,
-    bot_visible: bool,
+    bot_eligible_candidate: bool,
+    bot_gate_reason: str,
     customer_brand: str,
     customer_brand_source: str,
     customer_brand_reason: str,
@@ -1618,10 +1813,10 @@ def _event_record(
             "blocked": resolution.blocked,
             "ambiguous": resolution.ambiguous,
         },
-        "bot_visibility": {
+        "bot_eligible_candidate": {
             "qualified": qualified,
-            "allowed_for_bot": bot_visible,
-            "requires_manager_review": not bot_visible,
+            "eligible": bot_eligible_candidate,
+            "reason": bot_gate_reason,
         },
     }
 
@@ -1705,12 +1900,12 @@ def _direction(row: Mapping[str, Any]) -> TimelineDirection:
     return TimelineDirection.INBOUND
 
 
-def _relevance_tags(row: Mapping[str, Any], *, bot_visible: bool) -> tuple[str, ...]:
+def _relevance_tags(row: Mapping[str, Any], *, bot_eligible_candidate: bool) -> tuple[str, ...]:
     payload = row.get("summary_payload") or {}
     tags = ["email", _brand(row), str(_quality(row).get("memory_status") or "unknown")]
     if payload.get("event_type"):
         tags.append(str(payload["event_type"]))
-    tags.append("bot_visible" if bot_visible else "manager_review")
+    tags.append("bot_eligible_candidate" if bot_eligible_candidate else "manager_review")
     return tuple(tag for tag in tags if tag)
 
 
@@ -1901,9 +2096,9 @@ def _new_event_for_review(
         "blocked": plan.resolution.blocked,
         "ambiguous": plan.resolution.ambiguous,
     }
-    record["bot_visibility"] = {
-        "allowed_for_bot": bool(fact.get("bot_visible")) if fact else plan.bot_visible,
-        "requires_manager_review": not (bool(fact.get("bot_visible")) if fact else plan.bot_visible),
+    record["bot_eligible_candidate"] = {
+        "eligible": bool(fact.get("bot_visible")) if fact else plan.bot_eligible_candidate,
+        "qualified": (plan.resolution.outcome == "linked"),
         "reason": fact.get("bot_gate_reason") or plan.bot_gate_reason,
     }
     event["record"] = record
@@ -1917,9 +2112,9 @@ def _timeline_review_item(event: Mapping[str, Any], *, source: str) -> Mapping[s
     metadata = event.get("metadata") or {}
     if not isinstance(metadata, Mapping):
         metadata = {}
-    bot_visibility = record.get("bot_visibility") or {}
-    if not isinstance(bot_visibility, Mapping):
-        bot_visibility = {}
+    bot_eligible = record.get("bot_eligible_candidate") or {}
+    if not isinstance(bot_eligible, Mapping):
+        bot_eligible = {}
     identity_resolution = record.get("identity_resolution") or {}
     if not isinstance(identity_resolution, Mapping):
         identity_resolution = {}
@@ -1941,7 +2136,7 @@ def _timeline_review_item(event: Mapping[str, Any], *, source: str) -> Mapping[s
         "amount_rub": record.get("amount_rub"),
         "amount_kind": record.get("amount_kind"),
         "memory_status": record.get("memory_status") or (metadata.get("memory_status") if metadata else None),
-        "bot_visible": bot_visibility.get("allowed_for_bot"),
+        "bot_eligible_candidate": bot_eligible.get("eligible"),
         "resolution": identity_resolution.get("outcome"),
         "resolution_reason": identity_resolution.get("reason"),
     }
@@ -1980,7 +2175,7 @@ def _review_new_event(
         "customer_brand": fact.get("customer_brand") or plan.customer_brand,
         "customer_brand_source": fact.get("customer_brand_source") or plan.customer_brand_source,
         "customer_brand_reason": fact.get("customer_brand_reason") or plan.customer_brand_reason,
-        "bot_visible": bool(fact.get("bot_visible")) if fact else plan.bot_visible,
+        "bot_eligible_candidate": bool(fact.get("bot_visible")) if fact else plan.bot_eligible_candidate,
         "bot_gate_reason": fact.get("bot_gate_reason") or plan.bot_gate_reason,
         "resolution": fact.get("identity_outcome") or plan.resolution.outcome,
         "resolution_reason": fact.get("identity_reason") or plan.resolution.reason,

@@ -1,0 +1,125 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active remains NO-GO: this phase only simulates telemetry evidence injection.",
+      "Fresh exact proof alone is not enough if route, frame, message_type or missing-fact blockers remain.",
+      "Any active work needs a separate shadow phase and Claude #1 reggrade.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_shadow_diagnosed"
+  },
+  "breakdowns": {
+    "by_message_type": {
+      "context_update": 2
+    },
+    "by_non_policy_residual_blocker": {
+      "frame_action_not_safe_reference": 1,
+      "frame_answerability_not_self": 1,
+      "frame_confidence_below_threshold": 1,
+      "frame_must_handoff": 1,
+      "frame_risk_not_safe": 1,
+      "runtime_missing_live_or_operational_facts": 2
+    },
+    "by_requested_action": {
+      "answer_question": 1,
+      "check_availability": 1
+    },
+    "by_residual_blocker": {
+      "frame_action_not_safe_reference": 1,
+      "frame_answerability_not_self": 1,
+      "frame_confidence_below_threshold": 1,
+      "frame_must_handoff": 1,
+      "frame_risk_not_safe": 1,
+      "message_type_context_update": 2,
+      "route_is_manager_only": 2,
+      "runtime_missing_live_or_operational_facts": 2
+    }
+  },
+  "cases": [
+    {
+      "active_readiness": "no_go",
+      "dialog_id": "wappi_pair_missing_72h_001",
+      "evidence_only_sufficient": false,
+      "frame_answerability": "answer_self",
+      "frame_confidence": 0.86,
+      "frame_must_handoff": false,
+      "frame_risk_class": "safe",
+      "fresh_client_safe_exact_proof": true,
+      "message_type": "context_update",
+      "missing_fact_count": 3,
+      "non_policy_residual_blockers": [
+        "frame_confidence_below_threshold",
+        "runtime_missing_live_or_operational_facts"
+      ],
+      "requested_action": "answer_question",
+      "residual_blockers": [
+        "route_is_manager_only",
+        "message_type_context_update",
+        "frame_confidence_below_threshold",
+        "runtime_missing_live_or_operational_facts"
+      ],
+      "route": "manager_only",
+      "runtime_exact_fact_was_missing": true,
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "source_fact_valid_until": "2026-08-31",
+      "turn": 1
+    },
+    {
+      "active_readiness": "no_go",
+      "dialog_id": "wappi_pair_missing_72h_003",
+      "evidence_only_sufficient": false,
+      "frame_answerability": "manager_only",
+      "frame_confidence": 0.92,
+      "frame_must_handoff": true,
+      "frame_risk_class": "manager_action",
+      "fresh_client_safe_exact_proof": true,
+      "message_type": "context_update",
+      "missing_fact_count": 2,
+      "non_policy_residual_blockers": [
+        "frame_risk_not_safe",
+        "frame_answerability_not_self",
+        "frame_action_not_safe_reference",
+        "frame_must_handoff",
+        "runtime_missing_live_or_operational_facts"
+      ],
+      "requested_action": "check_availability",
+      "residual_blockers": [
+        "route_is_manager_only",
+        "message_type_context_update",
+        "frame_risk_not_safe",
+        "frame_answerability_not_self",
+        "frame_action_not_safe_reference",
+        "frame_must_handoff",
+        "runtime_missing_live_or_operational_facts"
+      ],
+      "route": "manager_only",
+      "runtime_exact_fact_was_missing": true,
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "source_fact_valid_until": "2026-08-31",
+      "turn": 1
+    }
+  ],
+  "created_at": "2026-07-02T08:11:16.024932+00:00",
+  "inputs": {
+    "as_of_date": "2026-07-02",
+    "confidence_threshold": 0.9,
+    "gold": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "transcripts": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/ON/dynamic_dialog_transcripts.jsonl"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is unchanged.",
+    "Exact-proof injection is hypothetical telemetry only; no fact is injected into the bot.",
+    "manager_only remains non-demotable by this phase."
+  ],
+  "schema_version": "adr003_exact_proof_injection_shadow_v1_2026_07_02",
+  "source_rev": "d7a4057",
+  "totals": {
+    "evidence_only_sufficient_rows": 0,
+    "fresh_client_safe_exact_proof": 2,
+    "manager_only_exact_proof_rows": 2,
+    "readiness_strict_f3_draft_candidates": 0,
+    "still_blocked_after_injection": 2
+  }
+}

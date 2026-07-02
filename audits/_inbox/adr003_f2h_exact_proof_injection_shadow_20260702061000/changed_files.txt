@@ -1,0 +1,4 @@
+scripts/report_adr003_exact_proof_injection_shadow.py
+tests/test_report_adr003_exact_proof_injection_shadow.py
+tasks/_done/2026-07-02_TZ_ADR003_F2h_exact_proof_injection_shadow_dlya_D1.md
+audits/_inbox/adr003_f2h_exact_proof_injection_shadow_20260702061000/

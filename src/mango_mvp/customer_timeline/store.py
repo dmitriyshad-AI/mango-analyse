@@ -1220,6 +1220,7 @@ class CustomerTimelineSQLiteStore:
             source_system=chunk.source_system,
             allowed_for_bot=chunk.allowed_for_bot,
             requires_manager_review=chunk.requires_manager_review,
+            timeline_db_path=self.db_path,
         )
         payload = chunk.to_json_dict()
         record_hash = stable_digest(scrub_timeline_persisted_json(payload))

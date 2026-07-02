@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.source_policy import MAIL_STAGE2_SOURCE_SYSTEM
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
@@ -17,16 +18,44 @@ BOT_SAFE_CRM_CONTEXT_TENANT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT_TENANT"
 BOT_SAFE_CRM_CONTEXT_SCHEMA_VERSION = "bot_safe_crm_context_v1_2026_06_21"
 BOT_SAFE_TIMELINE_CONTEXT_SOURCE = "customer_timeline_bot_context"
 BOT_SAFE_CHUNK_TYPE = "bot_safe_summary"
+MAIL_STAGE2_CHUNK_TYPE = "email_message"
 DEFAULT_BOT_SAFE_TENANT_ID = "foton"
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
 _KNOWN_BRANDS = {"foton", "unpk"}
-_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+\s*7|8|7)?(?:[\s\u00a0()./\-–—]*\d){10}(?!\d)")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
+_LOOSE_AT_TOKEN_RE = re.compile(r"\S*@\S*")
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9.-]+\.(?:ru|рф|com|org|net)(?:/\S*)?", re.I)
+_LONG_DIGIT_TOKEN_RE = re.compile(r"(?<!\d)\d{10,}(?!\d)")
 _SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
     re.I,
 )
+_PII_PLACEHOLDER = "[контактные данные у менеджера]"
+_EMAIL_FROM_NAME_RE = re.compile(
+    r"(\bот\s+)[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}(\s*<)",
+)
+_RUSSIAN_PERSON_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
+_NON_PERSON_NAME_WORDS = {
+    "администрация",
+    "будьте",
+    "добрый",
+    "здравствуйте",
+    "клиент",
+    "курсы",
+    "москва",
+    "письмо",
+    "подготовительные",
+    "почта",
+    "расписание",
+    "среда",
+    "суббота",
+    "телеграм",
+    "учебный",
+    "физтех",
+    "фотон",
+}
 _JUNK_PHRASE_MARKERS = (
     "не определен",
     "не определена",
@@ -188,30 +217,58 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         if not isinstance(item, Mapping):
             continue
         tags = tuple(_normalize_tag(tag) for tag in item.get("relevance_tags") or ())
-        if not _item_visible_for_active_brand(tags, active_brand=active_brand):
-            continue
         if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
             continue
-        if str(item.get("chunk_type") or "").strip().casefold() != BOT_SAFE_CHUNK_TYPE:
+        projected = _safe_item_for_brand(item, tags=tags, active_brand=active_brand)
+        if not projected:
             continue
-        text = _clean_text(item.get("summary")) or _clean_text(item.get("text"))
-        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
-            continue
-        result.append(
-            {
-                "chunk_type": BOT_SAFE_CHUNK_TYPE,
-                "text": _truncate(text, 700),
-                "event_at": _clean_text(item.get("event_at")),
-                "next_step_status": _next_step_status(item),
-                "freshness_score": item.get("freshness_score"),
-                "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
-                "allowed_for_bot": True,
-                "requires_manager_review": False,
-            }
-        )
+        result.append(projected)
         if len(result) >= max(1, int(limit or 3)):
             break
     return tuple(result)
+
+
+def _safe_item_for_brand(
+    item: Mapping[str, Any],
+    *,
+    tags: Sequence[str],
+    active_brand: str,
+) -> Mapping[str, Any]:
+    source_system = _normalize_tag(item.get("source_system"))
+    chunk_type = _normalize_tag(item.get("chunk_type"))
+    if source_system == MAIL_STAGE2_SOURCE_SYSTEM and chunk_type == MAIL_STAGE2_CHUNK_TYPE:
+        if not _mail_stage2_item_visible_for_active_brand(tags, active_brand=active_brand):
+            return {}
+        text = _sanitize_mail_stage2_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary")))
+        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
+            return {}
+        return {
+            "chunk_type": MAIL_STAGE2_CHUNK_TYPE,
+            "text": _truncate(text, 700),
+            "event_at": _clean_text(item.get("event_at")),
+            "next_step_status": _next_step_status(item),
+            "freshness_score": item.get("freshness_score"),
+            "relevance_tags": [tag for tag in tags if tag in {"email", "bot_visible", MAIL_STAGE2_SOURCE_SYSTEM, active_brand}],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }
+    if chunk_type != BOT_SAFE_CHUNK_TYPE:
+        return {}
+    if not _item_visible_for_active_brand(tags, active_brand=active_brand):
+        return {}
+    text = _clean_text(item.get("summary")) or _clean_text(item.get("text"))
+    if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
+        return {}
+    return {
+        "chunk_type": BOT_SAFE_CHUNK_TYPE,
+        "text": _truncate(text, 700),
+        "event_at": _clean_text(item.get("event_at")),
+        "next_step_status": _next_step_status(item),
+        "freshness_score": item.get("freshness_score"),
+        "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
+        "allowed_for_bot": True,
+        "requires_manager_review": False,
+    }
 
 
 def _next_step_status(item: Mapping[str, Any]) -> str:
@@ -233,6 +290,38 @@ def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) ->
     if known_brand_tags - {active_brand}:
         return False
     return active_brand in tag_set
+
+
+def _mail_stage2_item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) -> bool:
+    tag_set = set(tags)
+    known_brand_tags = tag_set & _KNOWN_BRANDS
+    if known_brand_tags != {active_brand}:
+        return False
+    return {"email", "bot_visible", MAIL_STAGE2_SOURCE_SYSTEM}.issubset(tag_set)
+
+
+def _sanitize_mail_stage2_text_for_bot(text: object) -> str:
+    value = str(text or "")
+    value = _EMAIL_RE.sub(_PII_PLACEHOLDER, value)
+    value = _LOOSE_AT_TOKEN_RE.sub(_PII_PLACEHOLDER, value)
+    value = _URL_RE.sub("[ссылка скрыта]", value)
+    value = _PHONE_RE.sub(_PII_PLACEHOLDER, value)
+    value = _LONG_DIGIT_TOKEN_RE.sub("[служебный номер скрыт]", value)
+    value = _SERVICE_ID_RE.sub(_PII_PLACEHOLDER, value)
+    value = _EMAIL_FROM_NAME_RE.sub(r"\1[имя клиента у менеджера]\2", value)
+    value = _mask_russian_person_names(value)
+    value = value.replace("mailto:", "").replace("tel:", "")
+    return _clean_text(value)
+
+
+def _mask_russian_person_names(text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        words = [word.casefold().replace("ё", "е") for word in match.group(0).split()]
+        if any(word in _NON_PERSON_NAME_WORDS for word in words):
+            return match.group(0)
+        return "[имя ученика/клиента у менеджера]"
+
+    return _RUSSIAN_PERSON_NAME_RE.sub(replacement, text)
 
 
 def _is_junk_bot_safe_summary(text: object) -> bool:

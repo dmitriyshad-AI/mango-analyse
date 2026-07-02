@@ -8,17 +8,23 @@ regression review. E1 may compute candidate diagnostics, but raw mail sources
 must not write bot-visible chunks directly.
 """
 
+import os
+from pathlib import Path
 from typing import Optional
 
 from mango_mvp.customer_timeline.ids import normalize_key
 
 
 CUSTOMER_TIMELINE_SOURCE_POLICY_VERSION = "customer_timeline_source_policy_v1"
+MAIL_STAGE2_BOT_VISIBLE_ENV = "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE"
+MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV = "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS"
+MAIL_STAGE2_SOURCE_SYSTEM = "mail_archive_stage2"
+_TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
 
 BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
     {
         "mail_archive",
-        "mail_archive_stage2",
+        MAIL_STAGE2_SOURCE_SYSTEM,
         "channel_snapshot",
         "telegram_history",
         "amo_events_created_at",
@@ -29,10 +35,23 @@ BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
 )
 
 
-def is_bot_forbidden_source_system(source_system: Optional[str]) -> bool:
+def mail_stage2_bot_visible_enabled(value: object = None, *, timeline_db_path: Path | str | None = None) -> bool:
+    if value is None:
+        value = os.getenv(MAIL_STAGE2_BOT_VISIBLE_ENV)
+    if str(value or "").strip().casefold() not in _TRUTHY_VALUES:
+        return False
+    if str(os.getenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV) or "").strip().casefold() in _TRUTHY_VALUES:
+        return True
+    return _is_e4b_staging_path(timeline_db_path)
+
+
+def is_bot_forbidden_source_system(source_system: Optional[str], *, timeline_db_path: Path | str | None = None) -> bool:
     if not source_system:
         return False
-    return normalize_key(source_system, "source_system") in BOT_FORBIDDEN_SOURCE_SYSTEMS
+    normalized = normalize_key(source_system, "source_system")
+    if normalized == MAIL_STAGE2_SOURCE_SYSTEM and mail_stage2_bot_visible_enabled(timeline_db_path=timeline_db_path):
+        return False
+    return normalized in BOT_FORBIDDEN_SOURCE_SYSTEMS
 
 
 def assert_bot_context_chunk_source_policy(
@@ -40,11 +59,25 @@ def assert_bot_context_chunk_source_policy(
     source_system: Optional[str],
     allowed_for_bot: bool,
     requires_manager_review: bool,
+    timeline_db_path: Path | str | None = None,
 ) -> None:
-    if not is_bot_forbidden_source_system(source_system):
+    if not is_bot_forbidden_source_system(source_system, timeline_db_path=timeline_db_path):
         return
     if allowed_for_bot or not requires_manager_review:
         raise ValueError(
             f"{normalize_key(source_system, 'source_system')} bot context chunks must be "
             "stored with allowed_for_bot=False and requires_manager_review=True"
         )
+
+
+def _is_e4b_staging_path(path: Path | str | None) -> bool:
+    if path is None:
+        return False
+    resolved = Path(path).expanduser().resolve(strict=False)
+    parts = tuple(part.casefold() for part in resolved.parts)
+    if any("customer_timeline_prod_" in part for part in parts):
+        return False
+    for index, part in enumerate(parts[:-1]):
+        if part == ".codex_local" and parts[index + 1] == "staging":
+            return True
+    return False

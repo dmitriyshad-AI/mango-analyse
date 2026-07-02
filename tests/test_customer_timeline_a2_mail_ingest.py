@@ -28,6 +28,10 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineDirection,
     TimelineEvent,
 )
+from mango_mvp.customer_timeline.source_policy import (
+    MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
+    MAIL_STAGE2_BOT_VISIBLE_ENV,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -673,6 +677,89 @@ def test_store_rejects_mail_archive_stage2_bot_visible_chunk(tmp_path: Path) -> 
                     customer_id="customer:known",
                     chunk_type="email_message",
                     text="Почтовый чанк не должен открываться боту на Э1.",
+                    source_system="mail_archive_stage2",
+                    source_ref="test",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                )
+            )
+    finally:
+        store.close()
+
+
+def test_store_allows_mail_archive_stage2_bot_visible_chunk_only_with_e4b_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    try:
+        customer = CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        store.upsert_customer(customer)
+        result = store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id="customer:known",
+                chunk_type="email_message",
+                text="Почтовый чанк открыт только явным флагом Э4б.",
+                source_system="mail_archive_stage2",
+                source_ref="test",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+            )
+        )
+    finally:
+        store.close()
+
+    assert result.status in {"created", "updated", "unchanged"}
+
+
+def test_store_keeps_mail_archive_stage2_forbidden_on_non_staging_path_with_flag_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.delenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, raising=False)
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    try:
+        customer = CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        store.upsert_customer(customer)
+        with pytest.raises(ValueError, match="mail_archive_stage2 bot context chunks"):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id="customer:known",
+                    chunk_type="email_message",
+                    text="Флаг без staging-пути не должен открывать почту боту.",
+                    source_system="mail_archive_stage2",
+                    source_ref="test",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                )
+            )
+    finally:
+        store.close()
+
+
+def test_store_keeps_mail_archive_stage2_forbidden_on_nested_fake_staging_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.delenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, raising=False)
+    db_path = tmp_path / ".codex_local" / "foo" / "staging" / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    try:
+        customer = CustomerIdentity(tenant_id="foton", customer_id="customer:known", identity_status=IdentityStatus.STRONG)
+        store.upsert_customer(customer)
+        with pytest.raises(ValueError, match="mail_archive_stage2 bot context chunks"):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id="customer:known",
+                    chunk_type="email_message",
+                    text="Fake nested staging must not open mail memory.",
                     source_system="mail_archive_stage2",
                     source_ref="test",
                     allowed_for_bot=True,

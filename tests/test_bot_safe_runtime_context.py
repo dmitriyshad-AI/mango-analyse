@@ -11,6 +11,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     TIMELINE_MEMORY_SHADOW_ENV,
     bot_safe_crm_context_enabled,
     build_bot_safe_crm_context,
+    scan_bot_safe_context_pii,
 )
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
@@ -18,6 +19,10 @@ from mango_mvp.customer_timeline.contracts import (
     IdentityLink,
     IdentityLinkType,
     IdentityStatus,
+)
+from mango_mvp.customer_timeline.source_policy import (
+    MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
+    MAIL_STAGE2_BOT_VISIBLE_ENV,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
@@ -96,6 +101,128 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
     assert "УНПК: клиент интересовался выездной школой" in raw
     assert "Без бренда: клиент ранее уточнял удобный формат" not in raw
     assert "Фотон: клиент уже спрашивал про онлайн-курс" not in raw
+
+
+def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="email_message",
+                text="Письмо Фотон: клиент уточнял группу по субботам и просил прислать условия.",
+                source_system="mail_archive_stage2",
+                source_ref="mail:test",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("email", "bot_visible", "mail_archive_stage2", "foton"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "Письмо Фотон: клиент уточнял группу по субботам" in raw
+    assert "mail_archive_stage2" in raw
+
+
+def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="email_message",
+                text=(
+                    "Фотон: напомнить Тестовой Персоне про оплату. "
+                    "Понедельник, 9 февраля 2026, 20:31 +03:00 от Тестовая Персона <synthetic@example.invalid>. "
+                    "Запасной адрес test @ example.invalid. "
+                    "Телефон 8 (800) 550 25 88. "
+                    "Ссылка https://pay.example.invalid/?fn=7381440901&rnm=0009513397027963."
+                ),
+                source_system="mail_archive_stage2",
+                source_ref="mail:pii",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("email", "bot_visible", "mail_archive_stage2", "foton"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "8 (800) 550 25 88" not in raw
+    assert "synthetic@example.invalid" not in raw
+    assert "test @ example.invalid" not in raw
+    assert "Тестовой Персоне" not in raw
+    assert "Тестовая Персона" not in raw
+    assert "https://pay.example.invalid" not in raw
+    assert "7381440901" not in raw
+    assert "0009513397027963" not in raw
+    assert "[контактные данные у менеджера]" in raw
+    assert "[ссылка скрыта]" in raw
+    assert "[имя клиента у менеджера]" in raw
+    assert "[имя ученика/клиента у менеджера]" in raw
+    assert scan_bot_safe_context_pii(raw) == ()
+
+
+def test_bot_safe_crm_context_blocks_e4b_mail_foreign_brand(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="email_message",
+                text="УНПК: клиент просил программу выездной школы.",
+                source_system="mail_archive_stage2",
+                source_ref="mail:unpk",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("email", "bot_visible", "mail_archive_stage2", "unpk"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "УНПК: клиент просил программу" not in raw
+
+
+def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
+    assert scan_bot_safe_context_pii("Телефон 8 (800) 550 25 88") == ("phone",)
 
 
 def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None:

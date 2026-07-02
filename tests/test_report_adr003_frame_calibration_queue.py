@@ -17,7 +17,13 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _gold(dialog_id: str, *, must_handoff: bool = False, notes: str = "safe reference: course existence/format without live seats") -> dict:
+def _gold(
+    dialog_id: str,
+    *,
+    must_handoff: bool = False,
+    requested_action: str = "answer_question",
+    notes: str = "safe reference: course existence/format without live seats",
+) -> dict:
     return {
         "dialog_id": dialog_id,
         "turn": 1,
@@ -25,7 +31,7 @@ def _gold(dialog_id: str, *, must_handoff: bool = False, notes: str = "safe refe
             "must_handoff": must_handoff,
             "risk_class": "safe" if not must_handoff else "payment_dispute",
             "answerability": "answer_self" if not must_handoff else "manager_only",
-            "requested_action": "answer_question",
+            "requested_action": requested_action,
         },
         "review_label": "frame_too_cautious" if not must_handoff else "frame_too_confident",
         "notes": notes,
@@ -121,6 +127,18 @@ def test_existence_vs_availability_goes_to_frame_calibration_not_active(tmp_path
     result = _build(tmp_path, [_turn("d1")], [_gold("d1")])
 
     assert result["totals"]["true_frame_too_cautious"] == 1
+    assert result["real_lever_analysis"]["totals"]["too_cautious_total"] == 1
+    assert result["real_lever_analysis"]["totals"]["fact_assertion_required"] == 1
+    assert result["real_lever_analysis"]["totals"]["clean_route_only_discussion"] == 0
+    assert result["real_lever_analysis"]["totals"]["stable_existence_as_check_availability"] == 1
+    assert result["real_lever_analysis"]["totals"]["stable_existence_as_enroll"] == 0
+    assert result["real_lever_analysis"]["scope_confusion"]["count"] == 1
+    assert result["real_lever_analysis"]["by_frame_requested_action"] == {"check_availability": 1}
+    assert result["real_lever_analysis"]["by_lever_class"] == {"fact_assertion_required": 1}
+    example = result["real_lever_analysis"]["examples"][0]
+    assert example["user_scope"] == "stable_existence_format"
+    assert example["frame_scope"] == "live_availability_or_enroll"
+    assert example["scope_confusion"] is True
     assert result["workstreams"]["semanticframe_existence_vs_availability"]["count"] == 1
     assert result["workstreams"]["retrieval_delivery_runtime_missing_exact_proof"]["count"] == 1
     assert result["workstreams"]["conversation_plan_scope_missing"]["count"] == 1
@@ -131,6 +149,65 @@ def test_existence_vs_availability_goes_to_frame_calibration_not_active(tmp_path
     assert item["active_allowed"] is False
     assert item["active_block_reason"] == "frame_confuses_safe_reference_with_live_availability_or_enrollment"
     assert "requested_action" in item["calibration_target"]
+
+
+def test_factless_ack_status_is_reported_separately(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "ack",
+                route="draft_for_manager",
+                message_type="context_update",
+                missing_facts=[],
+                frame={
+                    "risk_class": "safe",
+                    "answerability": "answer_self",
+                    "requested_action": "acknowledge_status",
+                    "must_handoff": True,
+                    "confidence": 0.94,
+                },
+            )
+        ],
+        [_gold("ack", notes="harmless ack/status, no fact assertion")],
+    )
+
+    real = result["real_lever_analysis"]
+    assert real["totals"]["too_cautious_total"] == 1
+    assert real["totals"]["factless_ack_status"] == 1
+    assert real["totals"]["fact_assertion_required"] == 0
+    assert real["totals"]["clean_route_only_discussion"] == 1
+    assert real["by_lever_class"] == {"clean_factless_ack_status_discussion": 1}
+
+
+def test_true_enroll_booking_request_is_negative_control(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "book",
+                route="manager_only",
+                message_type="question",
+                frame={
+                    "risk_class": "manager_action",
+                    "answerability": "manager_only",
+                    "requested_action": "enroll",
+                    "must_handoff": True,
+                    "confidence": 0.96,
+                },
+            )
+        ],
+        [_gold("book", must_handoff=True, requested_action="enroll", notes="true enrollment/booking request")],
+    )
+
+    real = result["real_lever_analysis"]
+    assert real["totals"]["too_cautious_total"] == 0
+    assert real["totals"]["true_live_availability_negative_controls"] == 1
+    assert real["totals"]["true_enroll_booking_negative_controls"] == 1
+    negative = real["negative_controls"][0]
+    assert negative["expected_action"] == "enroll"
+    assert negative["expected_scope"] == "live_availability_or_enroll"
+    assert negative["active_block_reason"] == "negative_control_true_live_or_operational_request"
 
 
 def test_manual_too_cautious_label_is_separate_from_true_frame_error(tmp_path: Path) -> None:
@@ -156,6 +233,7 @@ def test_manual_too_cautious_label_is_separate_from_true_frame_error(tmp_path: P
 
     assert result["totals"]["manual_too_cautious_labels"] == 1
     assert result["totals"]["true_frame_too_cautious"] == 0
+    assert result["real_lever_analysis"]["totals"]["too_cautious_total"] == 0
     assert result["workstreams"]["already_self_no_active_leverage"]["count"] == 1
     item = result["workstreams"]["already_self_no_active_leverage"]["examples"][0]
     assert item["active_allowed"] is False

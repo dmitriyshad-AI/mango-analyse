@@ -273,6 +273,18 @@ SERVICE_TEST_MARKERS_RE = re.compile(
     r"|match-status|ai-priority|\bplaceholder\b|\blorem\b|\bfoobar\b|\bdummy\b",
     re.I,
 )
+RAW_EMAIL_THREAD_MARKERS_RE = re.compile(
+    r"\bLinks:\b|---\s*part\s*---|mailto:|https?://|&[a-zA-Z]{2,12};|"
+    r"^\s*(?:From|Sent|To|Subject):\s+|"
+    r"^\s*(?:От|Кому|Тема|Дата|Отправлено):\s+|"
+    r"^\s*>+|"
+    r"писал\(а\)|"
+    r"отправлено\s+из\s+(?:mail|mail\.ru|яндекс|yandex)|"
+    r"-{2,}\s*(?:исходн\w+|пересылаем\w+|original|forwarded)\s+(?:сообщени\w+|message)\s*-{2,}|"
+    r"пересланн\w+\s+сообщени\w+|forwarded\s+message|"
+    r"<[^>\s]+@[^>]+>|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+    re.I | re.M,
+)
 
 
 def detect_crm_text_quality_risks(
@@ -292,6 +304,7 @@ def detect_crm_text_quality_risks(
     for field, value in _iter_target_text_fields(payload):
         findings.extend(_detect_ellipsis(field, value))
         findings.extend(_detect_duplicate_label_counts(field, value))
+        findings.extend(_detect_raw_email_thread_artifacts(field, value))
 
     objection_text = _objection_text(payload)
     next_step = _next_step_text(payload)
@@ -478,6 +491,22 @@ def _detect_duplicate_label_counts(field: str, value: str) -> list[CrmTextQualit
             )
         raw_seen.setdefault(canonical, segment)
 
+    return _dedupe_findings(result)
+
+
+def _detect_raw_email_thread_artifacts(field: str, value: str) -> list[CrmTextQualityFinding]:
+    result: list[CrmTextQualityFinding] = []
+    for match in RAW_EMAIL_THREAD_MARKERS_RE.finditer(value):
+        result.append(
+            CrmTextQualityFinding(
+                class_id="Q-email-raw-thread",
+                risk_type="raw_email_thread_artifact",
+                severity="P1",
+                field=field,
+                matched_text=_snippet(value, match.start(), match.end()),
+                reason="CRM text contains raw email thread artifacts; manager-facing AMO fields need cleaned business summary",
+            )
+        )
     return _dedupe_findings(result)
 
 

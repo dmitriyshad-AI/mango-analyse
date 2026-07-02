@@ -6,19 +6,28 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mango_mvp.customer_timeline import (
+    CALLBACK_DUE_SIGNAL,
+    CLIENT_RETURNED_SIGNAL,
+    DEAL_STALLING_SIGNAL,
     DUPLICATE_CONTACT_SIGNAL,
     HOT_LEAD_SILENT_SIGNAL,
+    HOT_STREAK_SIGNAL,
     PAID_NO_ACCESS_SIGNAL,
+    SEASON_RETURN_SIGNAL,
     CustomerIdentity,
+    CustomerOpportunity,
     CustomerTimelineReadApi,
     CustomerTimelineReadApiConfig,
     CustomerTimelineSQLiteStore,
     DerivedSignalInputs,
     IdentityStatus,
+    OpportunityType,
     TimelineDirection,
     TimelineEvent,
     TimelineEventType,
+    backfill_sg_v1_signals,
     derive_active_signals,
+    derive_sg_v1_signals,
     recompute_customer_signals,
 )
 from scripts.derive_customer_timeline_signals import (
@@ -282,6 +291,163 @@ def test_derive_signals_customer_listing_paginates_until_limit(tmp_path: Path) -
     assert len(customer_ids) == 2
     assert len(all_customer_ids) == 3
     assert len(set(all_customer_ids)) == 3
+
+
+def test_sg_v1_derives_client_returned_callback_due_stalling_hot_streak_and_season() -> None:
+    returned = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(
+            touch_event("old", NOW - timedelta(days=80), summary="Старый вопрос"),
+            touch_event("returned", NOW - timedelta(days=1), summary="Клиент снова написал"),
+        ),
+        as_of=NOW,
+    )
+    callback = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(
+            touch_event(
+                "callback",
+                NOW - timedelta(days=5),
+                summary="Завтра перезвоним клиенту",
+                direction="outbound",
+            ),
+        ),
+        as_of=NOW,
+    )
+    stalling = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(touch_event("stalled", NOW - timedelta(days=20), summary="Последний контакт"),),
+        opportunities=({"opportunity_type": "amo_deal", "status": "в работе"},),
+        as_of=NOW,
+    )
+    hot_streak = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(
+            touch_event("hot-1", NOW - timedelta(days=2), summary="Первый вопрос"),
+            touch_event("hot-2", NOW - timedelta(days=1), summary="Второй вопрос"),
+        ),
+        as_of=NOW,
+    )
+    season = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(),
+        purchases={"deals_cnt": 1, "last_purchase_at": (NOW - timedelta(days=220)).isoformat()},
+        as_of=NOW,
+    )
+
+    assert [signal.signal_type for signal in returned] == [CLIENT_RETURNED_SIGNAL]
+    assert [signal.signal_type for signal in callback] == [CALLBACK_DUE_SIGNAL]
+    assert [signal.signal_type for signal in stalling] == [DEAL_STALLING_SIGNAL]
+    assert [signal.signal_type for signal in hot_streak] == [HOT_STREAK_SIGNAL]
+    assert [signal.signal_type for signal in season] == [SEASON_RETURN_SIGNAL]
+
+
+def test_sg_v1_client_returned_tolerates_same_second_events() -> None:
+    signals = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(
+            touch_event("same-1", NOW - timedelta(days=80), summary="Первое входящее"),
+            touch_event("same-2", NOW - timedelta(days=80), summary="Второе входящее в ту же секунду"),
+        ),
+        as_of=NOW,
+    )
+
+    assert signals == ()
+
+
+def test_sg_v1_callback_due_requires_manager_promise_not_inbound_or_quote() -> None:
+    inbound_request = touch_event("inbound-callback", NOW - timedelta(days=5), summary="Пожалуйста, позвоните мне")
+    quoted_history = touch_event("quoted", NOW - timedelta(days=5), summary="Обычный ответ", direction="outbound")
+    quoted_history["record"] = {"thread_context": "В старой переписке было: завтра перезвоним клиенту"}
+
+    assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(inbound_request,), as_of=NOW) == ()
+    assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(quoted_history,), as_of=NOW) == ()
+
+
+def test_sg_v1_ignores_future_events() -> None:
+    signals = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(
+            touch_event("hot-now", NOW - timedelta(days=1), summary="Первый вопрос"),
+            touch_event("hot-future", NOW + timedelta(days=1), summary="Будущий вопрос"),
+        ),
+        as_of=NOW,
+    )
+
+    assert signals == ()
+
+
+def test_sg_v1_season_return_is_stable_inside_month() -> None:
+    purchases = {"deals_cnt": 1, "last_purchase_at": (NOW - timedelta(days=220)).isoformat()}
+
+    first = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(),
+        purchases=purchases,
+        as_of=NOW,
+    )[0]
+    second = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(),
+        purchases=purchases,
+        as_of=NOW + timedelta(days=1),
+    )[0]
+
+    assert first.signal_id == second.signal_id
+    assert first.created_at == second.created_at
+    assert first.expires_at == second.expires_at
+    assert first.metadata == second.metadata
+
+
+def test_sg_v1_backfill_is_idempotent(tmp_path: Path) -> None:
+    store = seeded_store(tmp_path)
+    try:
+        store.upsert_event(event_object(touch_event("hot-1", NOW - timedelta(days=2), summary="Первый вопрос")))
+        store.upsert_event(event_object(touch_event("hot-2", NOW - timedelta(days=1), summary="Второй вопрос")))
+    finally:
+        db_path = store.db_path
+        store.close()
+
+    first = backfill_sg_v1_signals(db_path, allowed_root=tmp_path, tenant_id=TENANT, as_of=NOW, apply=True)
+    second = backfill_sg_v1_signals(db_path, allowed_root=tmp_path, tenant_id=TENANT, as_of=NOW, apply=True)
+
+    assert first["signal_type_counts"] == {HOT_STREAK_SIGNAL: 1}
+    assert second["signal_type_counts"] == {HOT_STREAK_SIGNAL: 1}
+    assert second["write_status_counts"] == {"duplicate": 1}
+    assert count_rows(db_path, "derived_signals") == 1
+
+    resolved = backfill_sg_v1_signals(
+        db_path,
+        allowed_root=tmp_path,
+        tenant_id=TENANT,
+        as_of=NOW + timedelta(days=8),
+        apply=True,
+    )
+    assert resolved["signal_type_counts"] == {}
+    assert count_rows(db_path, "derived_signals") == 1
+    assert fetch_signal_rows(db_path)[0]["status"] == "resolved"
+
+
+def test_sg_v1_backfill_rejects_missing_db(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.sqlite"
+
+    try:
+        backfill_sg_v1_signals(missing, allowed_root=tmp_path, tenant_id=TENANT, as_of=NOW, apply=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("missing DB must not be created")
+
+    assert not missing.exists()
 
 
 def tallanto_payment(

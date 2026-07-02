@@ -191,6 +191,13 @@ def test_existence_vs_availability_goes_to_frame_calibration_not_active(tmp_path
     assert result["real_lever_analysis"]["totals"]["clean_route_only_discussion"] == 0
     assert result["real_lever_analysis"]["totals"]["stable_existence_as_check_availability"] == 1
     assert result["real_lever_analysis"]["totals"]["stable_existence_as_enroll"] == 0
+    assert result["totals"]["fact_gated_strict_f3_draft_candidates"] == 0
+    assert result["totals"]["fact_gated_manager_only_exact_proof_needs_policy"] == 1
+    assert result["totals"]["fact_gated_already_self_exact_proof"] == 0
+    assert result["totals"]["fact_gated_blocked_no_exact_proof"] == 0
+    assert result["source_report_summaries"]["fact_gated_self_answer_readiness"][
+        "manager_only_exact_proof_needs_policy"
+    ] == 1
     assert result["real_lever_analysis"]["scope_confusion"]["count"] == 1
     assert result["real_lever_analysis"]["by_frame_requested_action"] == {"check_availability": 1}
     assert result["real_lever_analysis"]["by_lever_class"] == {"fact_assertion_required": 1}
@@ -208,6 +215,9 @@ def test_existence_vs_availability_goes_to_frame_calibration_not_active(tmp_path
     assert item["active_allowed"] is False
     assert item["active_block_reason"] == "frame_confuses_safe_reference_with_live_availability_or_enrollment"
     assert "requested_action" in item["calibration_target"]
+    markdown = report.render_markdown(result)
+    assert "Fact-Gated Readiness Summary" in markdown
+    assert "manager-only exact-proof rows: `1`" in markdown
 
 
 def test_factless_ack_status_is_reported_separately(tmp_path: Path) -> None:

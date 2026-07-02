@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.report_adr003_exact_proof_injection_shadow import build_report as build_injection_report
+from scripts.report_adr003_fact_gated_self_answer_readiness import build_report as build_fact_gated_report
 from scripts.report_adr003_frame_gold_calibration import build_report as build_gold_report
 from scripts.report_adr003_manager_only_exact_proof_root_cause import build_report as build_root_cause_report
 from scripts.report_adr003_overhandoff_levers import build_report as build_overhandoff_report
@@ -148,6 +149,12 @@ def build_report(
         confidence_threshold=confidence_threshold,
         as_of_date=as_of_date or date.today(),
     )
+    fact_gated = build_fact_gated_report(
+        transcripts=transcripts,
+        gold=gold,
+        kb_snapshot=kb_snapshot,
+        confidence_threshold=confidence_threshold,
+    )
     turns_by_key = _load_turns_by_turn(transcripts)
     proof_reconciliation = _load_proof_reconciliation_by_turn(transcripts)
     fact_index = _load_fact_index(kb_snapshot)
@@ -189,6 +196,7 @@ def build_report(
             gold_report=gold_report,
             overhandoff=overhandoff,
             injection=injection,
+            fact_gated=fact_gated,
             work_items=work_items,
             proof_reconciliation=proof_reconciliation,
             proof_text_readiness=proof_text_readiness,
@@ -207,6 +215,9 @@ def build_report(
         "source_report_summaries": {
             "gold_calibration": gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {},
             "overhandoff": overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {},
+            "fact_gated_self_answer_readiness": fact_gated.get("totals")
+            if isinstance(fact_gated.get("totals"), Mapping)
+            else {},
             "manager_only_root_cause": root_cause.get("totals") if isinstance(root_cause.get("totals"), Mapping) else {},
             "exact_proof_injection": injection.get("totals") if isinstance(injection.get("totals"), Mapping) else {},
         },
@@ -243,6 +254,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- True frame too-confident: `{totals.get('true_frame_too_confident', 0)}`",
         f"- Current safe over-handoff candidates: `{totals.get('current_safe_over_handoff', 0)}`",
         f"- Strict active candidates now: `{totals.get('strict_active_candidates_now', 0)}`",
+        f"- Fact-gated strict draft candidates: `{totals.get('fact_gated_strict_f3_draft_candidates', 0)}`",
+        f"- Fact-gated manager-only exact-proof rows: `{totals.get('fact_gated_manager_only_exact_proof_needs_policy', 0)}`",
+        f"- Fact-gated already-self exact-proof rows: `{totals.get('fact_gated_already_self_exact_proof', 0)}`",
+        f"- Fact-gated blocked no-proof rows: `{totals.get('fact_gated_blocked_no_exact_proof', 0)}`",
         f"- Manager-only exact-proof rows: `{totals.get('manager_only_exact_proof_rows', 0)}`",
         f"- Proof reconciliation would-fix-frame rows: `{totals.get('proof_reconciliation_would_reconcile', 0)}`",
         "",
@@ -319,6 +334,19 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 lines.append(f"  - blockers: `{', '.join(item.get('active_blockers') or [])}`")
             if item.get("review_question"):
                 lines.append(f"  - review: {item.get('review_question')}")
+    fact_gated = (
+        report.get("source_report_summaries", {}).get("fact_gated_self_answer_readiness")
+        if isinstance(report.get("source_report_summaries"), Mapping)
+        and isinstance(report.get("source_report_summaries", {}).get("fact_gated_self_answer_readiness"), Mapping)
+        else {}
+    )
+    if fact_gated:
+        lines.extend(["", "## Fact-Gated Readiness Summary", ""])
+        lines.append(f"- strict draft candidates: `{fact_gated.get('strict_f3_draft_candidates', 0)}`")
+        lines.append(f"- manager-only exact-proof rows: `{fact_gated.get('manager_only_exact_proof_needs_policy', 0)}`")
+        lines.append(f"- already-self exact-proof rows: `{fact_gated.get('already_self_exact_proof', 0)}`")
+        lines.append(f"- blocked no exact proof: `{fact_gated.get('blocked_no_exact_proof', 0)}`")
+        lines.append(f"- excluded danger/money/P0: `{fact_gated.get('excluded_danger_money_p0', 0)}`")
     if proof_reconciliation:
         lines.extend(["", "## Proof Reconciliation Shadow", ""])
         lines.append(f"- traced rows: `{proof_reconciliation.get('total', 0)}`")
@@ -613,6 +641,7 @@ def _totals(
     gold_report: Mapping[str, Any],
     overhandoff: Mapping[str, Any],
     injection: Mapping[str, Any],
+    fact_gated: Mapping[str, Any],
     work_items: Sequence[Mapping[str, Any]],
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
     proof_text_readiness: Mapping[str, Any],
@@ -620,6 +649,7 @@ def _totals(
     gold_summary = gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {}
     over_totals = overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {}
     injection_totals = injection.get("totals") if isinstance(injection.get("totals"), Mapping) else {}
+    fact_gated_totals = fact_gated.get("totals") if isinstance(fact_gated.get("totals"), Mapping) else {}
     return {
         "gold_compared_rows": gold_summary.get("compared_rows", 0),
         "safe_self_rows": gold_summary.get("safe_self_candidates", 0),
@@ -630,6 +660,14 @@ def _totals(
         "true_frame_too_confident": gold_summary.get("too_confident", 0),
         "current_safe_over_handoff": over_totals.get("safe_handoff_total", gold_summary.get("current_over_handoff_candidates", 0)),
         "strict_active_candidates_now": injection_totals.get("readiness_strict_f3_draft_candidates", 0),
+        "fact_gated_strict_f3_draft_candidates": fact_gated_totals.get("strict_f3_draft_candidates", 0),
+        "fact_gated_manager_only_exact_proof_needs_policy": fact_gated_totals.get(
+            "manager_only_exact_proof_needs_policy", 0
+        ),
+        "fact_gated_already_self_exact_proof": fact_gated_totals.get("already_self_exact_proof", 0),
+        "fact_gated_blocked_no_exact_proof": fact_gated_totals.get("blocked_no_exact_proof", 0),
+        "fact_gated_excluded_danger_money_p0": fact_gated_totals.get("excluded_danger_money_p0", 0),
+        "fact_gated_current_handoff_rows": fact_gated_totals.get("current_handoff_rows", 0),
         "manager_only_exact_proof_rows": injection_totals.get("manager_only_exact_proof_rows", 0),
         "proof_reconciliation_would_reconcile": sum(
             1 for trace in proof_reconciliation.values() if trace.get("status") == "would_reconcile_to_safe_reference"

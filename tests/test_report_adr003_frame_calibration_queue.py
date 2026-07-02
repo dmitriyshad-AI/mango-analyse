@@ -141,17 +141,43 @@ def _online_fact(**overrides: object) -> dict:
     return fact
 
 
-def _build(tmp_path: Path, dialogs: list[dict], gold_rows: list[dict], *, facts: list[dict] | None = None) -> dict:
+def _template(fact_key: str, **overrides: object) -> dict:
+    template = {
+        "brand": "unpk",
+        "client_send": False,
+        "fact_id": f"fact:v3:unpk:{fact_key.replace('.', '_')}:test",
+        "fact_key": fact_key,
+        "fact_type": "course_parameter",
+        "fallback_route": "manager_only",
+        "template_id": "template:course_parameter:contextual_answer_v1",
+        "template_text": "Собрать человеческую фразу из structured_value и контекста вопроса.",
+    }
+    template.update(overrides)
+    return template
+
+
+def _build(
+    tmp_path: Path,
+    dialogs: list[dict],
+    gold_rows: list[dict],
+    *,
+    facts: list[dict] | None = None,
+    templates: list[dict] | None = None,
+) -> dict:
     transcripts = tmp_path / "transcripts.jsonl"
     gold = tmp_path / "gold.jsonl"
     kb = tmp_path / "kb.json"
+    template_registry = tmp_path / "bot_template_registry.json"
     _write_jsonl(transcripts, dialogs)
     _write_jsonl(gold, gold_rows)
     _write_json(kb, {"facts": facts or [_fact(), _online_fact()]})
+    if templates is not None:
+        _write_json(template_registry, {"schema_version": "bot_template_registry_v1", "templates": templates})
     return report.build_report(
         transcripts=transcripts,
         gold=gold,
         kb_snapshot=kb,
+        bot_template_registry=template_registry if templates is not None else None,
         as_of_date=report._parse_date("2026-07-02"),
     )
 
@@ -364,13 +390,61 @@ def test_proof_reconciliation_text_readiness_can_mark_manual_review_candidate(tm
     assert row["source_fact_client_safe_text_present"] is True
     assert row["source_fact_client_safe_text_hash"]
     assert row["source_fact_client_safe_text_length"] > 0
+    assert row["structured_value_available"] is True
+    assert row["structured_value_keys"] == ["raw_value", "valid_until"]
     assert row["raw_text_exported"] is False
+    assert row["direct_quote_forbidden"] is True
+    assert row["text_policy_readiness_status"] == "source_text_ready_requires_nonquote_policy"
+    assert "direct_quote_forbidden" in row["text_policy_blockers"]
+    assert "SohoLMS" not in json.dumps(row, ensure_ascii=False)
     assert row["text_candidate_blockers"] == [
         "shadow_only_text_candidate",
         "requires_template_or_text_policy",
     ]
     assert readiness["active_behavior_allowed"] is False
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 1
+    assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_proof_text_policy_reports_template_registry_without_exporting_template_text(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "template-ready",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["template.fact"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("template-ready", notes="safe reference: platform/format without live seats")],
+        facts=[_online_fact(fact_key="template.fact", bot_template_required=True)],
+        templates=[_template("template.fact")],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["template_registry_by_status"] == {"found": 1}
+    assert readiness["text_policy_readiness_by_status"] == {"template_registry_found_requires_renderer": 1}
+    assert readiness["template_registry_found"] == 1
+    assert readiness["direct_quote_forbidden"] == 1
+    row = readiness["examples"][0]
+    assert row["template_registry_status"] == "found"
+    assert row["template_id"] == "template:course_parameter:contextual_answer_v1"
+    assert row["template_text_length"] > 0
+    assert row["template_text_hash"]
+    assert "template_text" not in row
+    assert "client_safe_text" not in row
+    assert "Собрать человеческую фразу" not in json.dumps(row, ensure_ascii=False)
+    assert row["raw_text_exported"] is False
+    assert "requires_template_renderer" in row["text_policy_blockers"]
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 
@@ -479,9 +553,17 @@ def test_proof_text_source_readiness_blocks_wrong_brand_template_and_pii(tmp_pat
     assert readiness["source_fact_client_safe_text_present"] == 3
     assert readiness["source_fact_client_safe_text_pii_signal"] == 1
     assert readiness["bot_template_required"] == 1
+    assert readiness["template_registry_by_status"] == {"not_required": 2, "missing": 1}
+    assert readiness["text_policy_readiness_by_status"] == {
+        "blocked_wrong_brand": 1,
+        "blocked_missing_bot_template": 1,
+        "blocked_client_safe_text_pii_signal": 1,
+    }
     by_turn = readiness["by_turn"]
     assert by_turn["brand#1"]["text_candidate_readiness_status"] == "blocked_wrong_brand"
     assert "bot_template_required" in by_turn["template#1"]["text_candidate_blockers"]
+    assert by_turn["template#1"]["template_registry_status"] == "missing"
+    assert by_turn["template#1"]["text_policy_readiness_status"] == "blocked_missing_bot_template"
     assert "client_safe_text_pii_signal" in by_turn["pii#1"]["text_candidate_blockers"]
     assert by_turn["pii#1"]["raw_text_exported"] is False
     assert result["acceptance"]["active_readiness"] == "no_go"

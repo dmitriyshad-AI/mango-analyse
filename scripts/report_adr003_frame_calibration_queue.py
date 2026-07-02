@@ -101,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--transcripts", type=Path, required=True)
     parser.add_argument("--gold", type=Path, required=True)
     parser.add_argument("--kb-snapshot", type=Path, required=True)
+    parser.add_argument("--bot-template-registry", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--confidence-threshold", type=float, default=0.90)
     parser.add_argument("--as-of-date", default=date.today().isoformat())
@@ -110,6 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         transcripts=args.transcripts,
         gold=args.gold,
         kb_snapshot=args.kb_snapshot,
+        bot_template_registry=args.bot_template_registry,
         confidence_threshold=args.confidence_threshold,
         as_of_date=_parse_date(args.as_of_date),
     )
@@ -127,6 +129,7 @@ def build_report(
     transcripts: Path,
     gold: Path,
     kb_snapshot: Path,
+    bot_template_registry: Path | None = None,
     confidence_threshold: float = 0.90,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
@@ -148,10 +151,13 @@ def build_report(
     turns_by_key = _load_turns_by_turn(transcripts)
     proof_reconciliation = _load_proof_reconciliation_by_turn(transcripts)
     fact_index = _load_fact_index(kb_snapshot)
+    template_registry_path = bot_template_registry or _default_bot_template_registry_path(kb_snapshot)
+    template_index = _load_template_index(template_registry_path)
     proof_text_readiness = _proof_text_readiness_summary(
         proof_reconciliation=proof_reconciliation,
         turns_by_key=turns_by_key,
         fact_index=fact_index,
+        template_index=template_index,
         as_of_date=as_of_date or date.today(),
     )
 
@@ -175,6 +181,7 @@ def build_report(
             "transcripts": str(transcripts),
             "gold": str(gold),
             "kb_snapshot": str(kb_snapshot),
+            "bot_template_registry": str(template_registry_path) if template_registry_path else "",
             "confidence_threshold": confidence_threshold,
             "as_of_date": (as_of_date or date.today()).isoformat(),
         },
@@ -258,6 +265,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Proof source fact text ready: `{real_totals.get('proof_text_source_fact_ready', 0)}`",
             f"- Proof source fact text present: `{real_totals.get('proof_text_source_fact_present', 0)}`",
             f"- Proof source fact PII signal: `{real_totals.get('proof_text_source_fact_pii_signal', 0)}`",
+            f"- Proof template registry found: `{real_totals.get('proof_text_template_registry_found', 0)}`",
+            f"- Proof direct quote forbidden: `{real_totals.get('proof_text_direct_quote_forbidden', 0)}`",
             f"- Stable existence misread as check_availability: `{real_totals.get('stable_existence_as_check_availability', 0)}`",
             f"- Stable existence misread as enroll: `{real_totals.get('stable_existence_as_enroll', 0)}`",
             f"- True live availability negative controls: `{real_totals.get('true_live_availability_negative_controls', 0)}`",
@@ -326,6 +335,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"- source fact client_safe_text present: `{proof_text_readiness.get('source_fact_client_safe_text_present', 0)}`")
         lines.append(f"- source fact client_safe_text PII signal: `{proof_text_readiness.get('source_fact_client_safe_text_pii_signal', 0)}`")
         lines.append(f"- bot_template_required: `{proof_text_readiness.get('bot_template_required', 0)}`")
+        lines.append(f"- template registry found: `{proof_text_readiness.get('template_registry_found', 0)}`")
+        lines.append(f"- direct quote forbidden: `{proof_text_readiness.get('direct_quote_forbidden', 0)}`")
+        lines.append(f"- structured_value available: `{proof_text_readiness.get('structured_value_available', 0)}`")
         by_status = (
             proof_text_readiness.get("by_status") if isinstance(proof_text_readiness.get("by_status"), Mapping) else {}
         )
@@ -357,6 +369,24 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if candidate_status:
             lines.extend(["", "### Source text candidate readiness", ""])
             for status, count in sorted(candidate_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        policy_status = (
+            proof_text_readiness.get("text_policy_readiness_by_status")
+            if isinstance(proof_text_readiness.get("text_policy_readiness_by_status"), Mapping)
+            else {}
+        )
+        if policy_status:
+            lines.extend(["", "### Text policy readiness", ""])
+            for status, count in sorted(policy_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        template_status = (
+            proof_text_readiness.get("template_registry_by_status")
+            if isinstance(proof_text_readiness.get("template_registry_by_status"), Mapping)
+            else {}
+        )
+        if template_status:
+            lines.extend(["", "### Template registry", ""])
+            for status, count in sorted(template_status.items(), key=lambda item: (-item[1], item[0])):
                 lines.append(f"- `{status or 'missing'}`: `{count}`")
     lines.extend(
         [
@@ -609,6 +639,8 @@ def _totals(
         "proof_text_source_fact_client_safe_text_present": proof_text_readiness.get("source_fact_client_safe_text_present", 0),
         "proof_text_source_fact_pii_signal": proof_text_readiness.get("source_fact_client_safe_text_pii_signal", 0),
         "proof_text_bot_template_required": proof_text_readiness.get("bot_template_required", 0),
+        "proof_text_template_registry_found": proof_text_readiness.get("template_registry_found", 0),
+        "proof_text_direct_quote_forbidden": proof_text_readiness.get("direct_quote_forbidden", 0),
         "work_items_total": len(work_items),
     }
 
@@ -725,6 +757,39 @@ def _load_fact_index(kb_snapshot: Path) -> dict[str, Mapping[str, Any]]:
     return index
 
 
+def _default_bot_template_registry_path(kb_snapshot: Path) -> Path | None:
+    release_dir = kb_snapshot.parent
+    candidates = [
+        release_dir / "bot_template_registry.json",
+        release_dir.parent / f"{release_dir.name}_bot_pack" / "bot_template_registry.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_template_index(path: Path | None) -> dict[str, Mapping[str, Any]]:
+    if not path or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    templates = payload.get("templates") if isinstance(payload, Mapping) else payload
+    if not isinstance(templates, list):
+        return {}
+    index: dict[str, Mapping[str, Any]] = {}
+    for template in templates:
+        if not isinstance(template, Mapping):
+            continue
+        for key_name in ("fact_key", "fact_id"):
+            key = str(template.get(key_name) or "").strip()
+            if key:
+                index.setdefault(key, template)
+    return index
+
+
 def _proof_reconciliation_summary(traces: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     statuses = Counter(str(trace.get("status") or "") for trace in traces.values())
     reasons = Counter(str(trace.get("reason") or "") for trace in traces.values())
@@ -756,6 +821,7 @@ def _proof_text_readiness_summary(
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
     turns_by_key: Mapping[str, Mapping[str, Any]],
     fact_index: Mapping[str, Mapping[str, Any]],
+    template_index: Mapping[str, Mapping[str, Any]],
     as_of_date: date,
 ) -> dict[str, Any]:
     by_turn: dict[str, Mapping[str, Any]] = {}
@@ -767,6 +833,7 @@ def _proof_text_readiness_summary(
             trace=trace,
             turn=turns_by_key.get(key),
             fact_index=fact_index,
+            template_index=template_index,
             as_of_date=as_of_date,
         )
     statuses = Counter(str(row.get("status") or "") for row in by_turn.values())
@@ -777,6 +844,8 @@ def _proof_text_readiness_summary(
     )
     fact_statuses = Counter(str(row.get("source_fact_lookup_status") or "") for row in by_turn.values())
     text_statuses = Counter(str(row.get("text_candidate_readiness_status") or "") for row in by_turn.values())
+    policy_statuses = Counter(str(row.get("text_policy_readiness_status") or "") for row in by_turn.values())
+    template_statuses = Counter(str(row.get("template_registry_status") or "") for row in by_turn.values())
     candidates = [row for row in by_turn.values() if row.get("send_as_is_review_candidate")]
     return {
         "total": len(by_turn),
@@ -787,6 +856,8 @@ def _proof_text_readiness_summary(
         "by_blocker": dict(blockers),
         "source_fact_lookup_by_status": dict(fact_statuses),
         "text_candidate_readiness_by_status": dict(text_statuses),
+        "text_policy_readiness_by_status": dict(policy_statuses),
+        "template_registry_by_status": dict(template_statuses),
         "source_fact_client_safe_text_present": sum(
             1 for row in by_turn.values() if row.get("source_fact_client_safe_text_present")
         ),
@@ -794,6 +865,9 @@ def _proof_text_readiness_summary(
             1 for row in by_turn.values() if row.get("source_fact_client_safe_text_pii_signal")
         ),
         "bot_template_required": sum(1 for row in by_turn.values() if row.get("bot_template_required")),
+        "template_registry_found": sum(1 for row in by_turn.values() if row.get("template_registry_status") == "found"),
+        "direct_quote_forbidden": sum(1 for row in by_turn.values() if row.get("direct_quote_forbidden")),
+        "structured_value_available": sum(1 for row in by_turn.values() if row.get("structured_value_available")),
         "by_turn": by_turn,
         "examples": list(by_turn.values())[:50],
         "notes": [
@@ -801,6 +875,7 @@ def _proof_text_readiness_summary(
             "A fresh exact proof is not enough to send text as-is; existing text gates must also be clean.",
             "Fact-text candidate readiness uses only raw client_safe_text from the KB snapshot; fallback fact_text is not sendable proof.",
             "Full client_safe_text is not exported; report stores only length/hash and safety status.",
+            "A found template registry entry is not a generated answer; it only proves a future renderer has a policy source.",
             "semantic_output_verifier unavailable is treated as a blocker, not as permission.",
         ],
     }
@@ -812,6 +887,7 @@ def _proof_text_readiness_for_turn(
     trace: Mapping[str, Any],
     turn: Mapping[str, Any] | None,
     fact_index: Mapping[str, Mapping[str, Any]],
+    template_index: Mapping[str, Mapping[str, Any]],
     as_of_date: date,
 ) -> dict[str, Any]:
     if not isinstance(turn, Mapping):
@@ -824,7 +900,13 @@ def _proof_text_readiness_for_turn(
         }
     route = str(turn.get("bot_route") or trace.get("route_before") or "")
     direct_path = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
-    fact_readiness = _source_fact_text_readiness(trace, turn=turn, fact_index=fact_index, as_of_date=as_of_date)
+    fact_readiness = _source_fact_text_readiness(
+        trace,
+        turn=turn,
+        fact_index=fact_index,
+        template_index=template_index,
+        as_of_date=as_of_date,
+    )
     blockers: list[str] = []
     if route == "manager_only":
         blockers.append("current_route_manager_only")
@@ -891,6 +973,7 @@ def _source_fact_text_readiness(
     *,
     turn: Mapping[str, Any],
     fact_index: Mapping[str, Mapping[str, Any]],
+    template_index: Mapping[str, Mapping[str, Any]],
     as_of_date: date,
 ) -> dict[str, Any]:
     fact_key = _source_fact_key(trace)
@@ -902,19 +985,32 @@ def _source_fact_text_readiness(
         "source_fact_client_safe_text_length": 0,
         "source_fact_client_safe_text_hash": "",
         "source_fact_client_safe_text_pii_signal": False,
+        "structured_value_available": False,
+        "structured_value_keys": [],
+        "structured_value_field_count": 0,
         "bot_template_required": False,
+        "template_registry_status": "",
+        "template_id": "",
+        "template_text_length": 0,
+        "template_text_hash": "",
+        "direct_quote_forbidden": False,
         "text_candidate_readiness_status": "blocked",
+        "text_policy_readiness_status": "blocked",
         "text_candidate_blockers": [],
+        "text_policy_blockers": [],
         "raw_text_exported": False,
         "active_behavior_allowed": False,
     }
     blockers: list[str] = ["shadow_only_text_candidate", "requires_template_or_text_policy"]
+    policy_blockers: list[str] = ["shadow_only_text_policy", "requires_text_policy_renderer"]
     if not fact_key:
         return {
             **base,
             "source_fact_lookup_status": "missing_source_fact_key",
             "text_candidate_readiness_status": "blocked_missing_source_fact_key",
             "text_candidate_blockers": [*blockers, "missing_source_fact_key"],
+            "text_policy_readiness_status": "blocked_missing_source_fact_key",
+            "text_policy_blockers": [*policy_blockers, "missing_source_fact_key"],
         }
     fact = fact_index.get(fact_key)
     if not isinstance(fact, Mapping):
@@ -923,14 +1019,29 @@ def _source_fact_text_readiness(
             "source_fact_lookup_status": "missing",
             "text_candidate_readiness_status": "blocked_missing_source_fact",
             "text_candidate_blockers": [*blockers, "missing_source_fact"],
+            "text_policy_readiness_status": "blocked_missing_source_fact",
+            "text_policy_blockers": [*policy_blockers, "missing_source_fact"],
         }
     status, fact_blockers = _source_fact_status(fact, active_brand=active_brand, as_of_date=as_of_date)
     raw_text = str(fact.get("client_safe_text") or "").strip()
+    structured_value = fact.get("structured_value") if isinstance(fact.get("structured_value"), Mapping) else {}
+    structured_keys = sorted(str(key) for key in structured_value.keys())
     pii_signal = _pii_signal(raw_text)
     if pii_signal:
         fact_blockers.append("client_safe_text_pii_signal")
     text_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest() if raw_text else ""
     text_ready = status == "found" and not fact_blockers and bool(raw_text)
+    template = _template_for_fact(fact, template_index=template_index)
+    template_status = _template_status(fact, template)
+    template_text = str(template.get("template_text") or "").strip() if isinstance(template, Mapping) else ""
+    template_hash = hashlib.sha256(template_text.encode("utf-8")).hexdigest() if template_text else ""
+    direct_quote_forbidden = bool(raw_text)
+    policy_status, policy_specific_blockers = _text_policy_status(
+        source_status=status,
+        source_blockers=fact_blockers,
+        raw_text_present=bool(raw_text),
+        template_status=template_status,
+    )
     return {
         **base,
         "source_fact_lookup_status": status,
@@ -938,9 +1049,23 @@ def _source_fact_text_readiness(
         "source_fact_client_safe_text_length": len(raw_text),
         "source_fact_client_safe_text_hash": text_hash,
         "source_fact_client_safe_text_pii_signal": pii_signal,
+        "structured_value_available": bool(structured_value),
+        "structured_value_keys": structured_keys,
+        "structured_value_field_count": len(structured_keys),
         "bot_template_required": bool(fact.get("bot_template_required")),
+        "template_registry_status": template_status,
+        "template_id": str(template.get("template_id") or "") if isinstance(template, Mapping) else "",
+        "template_text_length": len(template_text),
+        "template_text_hash": template_hash,
+        "direct_quote_forbidden": direct_quote_forbidden,
         "text_candidate_readiness_status": "source_text_ready" if text_ready else f"blocked_{fact_blockers[0] if fact_blockers else status}",
         "text_candidate_blockers": [*blockers, *fact_blockers],
+        "text_policy_readiness_status": policy_status,
+        "text_policy_blockers": [
+            *policy_blockers,
+            *policy_specific_blockers,
+            *(["direct_quote_forbidden"] if direct_quote_forbidden else []),
+        ],
     }
 
 
@@ -989,6 +1114,52 @@ def _source_fact_status(fact: Mapping[str, Any], *, active_brand: str, as_of_dat
     if fact.get("bot_template_required") is True:
         blockers.append("bot_template_required")
     return "found", blockers
+
+
+def _template_for_fact(
+    fact: Mapping[str, Any],
+    *,
+    template_index: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    for key in (fact.get("fact_key"), fact.get("fact_id")):
+        template = template_index.get(str(key or "").strip())
+        if isinstance(template, Mapping):
+            return template
+    return {}
+
+
+def _template_status(fact: Mapping[str, Any], template: Mapping[str, Any]) -> str:
+    if fact.get("bot_template_required") is not True:
+        return "not_required"
+    if not isinstance(template, Mapping) or not template:
+        return "missing"
+    if not str(template.get("template_id") or "").strip():
+        return "missing_template_id"
+    if not str(template.get("template_text") or "").strip():
+        return "empty_template_text"
+    return "found"
+
+
+def _text_policy_status(
+    *,
+    source_status: str,
+    source_blockers: Sequence[str],
+    raw_text_present: bool,
+    template_status: str,
+) -> tuple[str, list[str]]:
+    if source_status != "found":
+        return f"blocked_{source_status}", [source_status]
+    if source_blockers:
+        non_template_blockers = [item for item in source_blockers if item != "bot_template_required"]
+        if non_template_blockers:
+            return f"blocked_{non_template_blockers[0]}", non_template_blockers
+    if not raw_text_present:
+        return "blocked_empty_client_safe_text", ["empty_client_safe_text"]
+    if template_status == "found":
+        return "template_registry_found_requires_renderer", ["requires_template_renderer"]
+    if template_status in {"missing", "missing_template_id", "empty_template_text"}:
+        return f"blocked_{template_status}_bot_template", [f"{template_status}_bot_template"]
+    return "source_text_ready_requires_nonquote_policy", ["requires_nonquote_text_policy"]
 
 
 def _valid_until_ok(value: Any, *, as_of_date: date) -> bool:
@@ -1059,6 +1230,10 @@ def _real_lever_analysis(
             "proof_text_source_fact_pii_signal": sum(
                 1 for row in classified if row.get("source_fact_client_safe_text_pii_signal")
             ),
+            "proof_text_template_registry_found": sum(
+                1 for row in classified if row.get("template_registry_status") == "found"
+            ),
+            "proof_text_direct_quote_forbidden": sum(1 for row in classified if row.get("direct_quote_forbidden")),
             "stable_existence_as_check_availability": sum(
                 1
                 for row in classified
@@ -1189,10 +1364,24 @@ def _real_lever_row(
         "source_fact_client_safe_text_length": text_readiness.get("source_fact_client_safe_text_length", 0),
         "source_fact_client_safe_text_hash": str(text_readiness.get("source_fact_client_safe_text_hash") or ""),
         "source_fact_client_safe_text_pii_signal": bool(text_readiness.get("source_fact_client_safe_text_pii_signal")),
+        "structured_value_available": bool(text_readiness.get("structured_value_available")),
+        "structured_value_keys": list(text_readiness.get("structured_value_keys") or [])
+        if isinstance(text_readiness.get("structured_value_keys"), list)
+        else [],
+        "structured_value_field_count": text_readiness.get("structured_value_field_count", 0),
         "bot_template_required": bool(text_readiness.get("bot_template_required")),
+        "template_registry_status": str(text_readiness.get("template_registry_status") or ""),
+        "template_id": str(text_readiness.get("template_id") or ""),
+        "template_text_length": text_readiness.get("template_text_length", 0),
+        "template_text_hash": str(text_readiness.get("template_text_hash") or ""),
+        "direct_quote_forbidden": bool(text_readiness.get("direct_quote_forbidden")),
         "text_candidate_readiness_status": str(text_readiness.get("text_candidate_readiness_status") or ""),
         "text_candidate_blockers": list(text_readiness.get("text_candidate_blockers") or [])
         if isinstance(text_readiness.get("text_candidate_blockers"), list)
+        else [],
+        "text_policy_readiness_status": str(text_readiness.get("text_policy_readiness_status") or ""),
+        "text_policy_blockers": list(text_readiness.get("text_policy_blockers") or [])
+        if isinstance(text_readiness.get("text_policy_blockers"), list)
         else [],
         "lever_class": lever_class,
         "active_blockers": blockers,

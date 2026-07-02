@@ -13,6 +13,7 @@ from typing import Any, Optional
 from openai import OpenAI
 
 from mango_mvp.amocrm_runtime.config import get_settings
+from mango_mvp.channels.subscription_llm_parts.codex_exec import build_codex_exec_env
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.utils.codex_cli import append_codex_service_tier
 
@@ -374,10 +375,7 @@ class DealLLMAnalyzer:
                     text=True,
                     check=False,
                     timeout=timeout_sec,
-                    env={
-                        **os.environ,
-                        "CODEX_HOME": runtime_codex_home,
-                    },
+                    env=build_codex_exec_env(codex_home=runtime_codex_home),
                 )
                 raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
 

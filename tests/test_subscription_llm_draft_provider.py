@@ -211,12 +211,59 @@ def test_codex_exec_isolated_command_ignores_user_config_and_uses_clean_cwd(tmp_
     assert "personality" not in " ".join(command)
 
 
-def test_codex_exec_env_preserves_codex_home_auth_but_drops_openai_key() -> None:
-    env = build_codex_exec_env({"CODEX_HOME": "/tmp/codex-home", "OPENAI_API_KEY": "secret", "PATH": "/bin"})
+def test_codex_exec_env_allowlist_preserves_auth_and_drops_secrets() -> None:
+    env = build_codex_exec_env(
+        {
+            "CODEX_HOME": "/tmp/codex-home",
+            "PATH": "/bin",
+            "HOME": "/home/test",
+            "USER": "bot",
+            "LOGNAME": "bot",
+            "PYTHONPATH": "src",
+            "LANG": "ru_RU.UTF-8",
+            "LC_TIME": "ru_RU.UTF-8",
+            "MANGO_CODEX_SERVICE_TIER": "flex",
+            "AMO_TOKEN": "amo",
+            "WAPPI_SECRET": "wappi",
+            "OPENAI_API_KEY": "openai",
+            "CRM_AMO_API_TOKEN": "crm",
+            "AI_OFFICE_API_KEY": "office",
+            "CUSTOM_TOKEN": "custom-token",
+            "SAFE_EXTRA": "ok",
+            "TASK_CONTAINER_ENV_PASSTHROUGH": "SAFE_EXTRA,CUSTOM_SECRET",
+            "CUSTOM_SECRET": "custom-secret",
+            "UNRELATED": "drop-me",
+        }
+    )
 
     assert env["CODEX_HOME"] == "/tmp/codex-home"
     assert env["PATH"] == "/bin"
+    assert env["HOME"] == "/home/test"
+    assert env["USER"] == "bot"
+    assert env["LOGNAME"] == "bot"
+    assert env["PYTHONPATH"] == "src"
+    assert env["LANG"] == "ru_RU.UTF-8"
+    assert env["LC_TIME"] == "ru_RU.UTF-8"
+    assert env["MANGO_CODEX_SERVICE_TIER"] == "flex"
+    assert env["SAFE_EXTRA"] == "ok"
+    assert "UNRELATED" not in env
+    assert "TASK_CONTAINER_ENV_PASSTHROUGH" not in env
     assert "OPENAI_API_KEY" not in env
+    assert "AMO_TOKEN" not in env
+    assert "WAPPI_SECRET" not in env
+    assert "CRM_AMO_API_TOKEN" not in env
+    assert "AI_OFFICE_API_KEY" not in env
+    assert "CUSTOM_TOKEN" not in env
+    assert "CUSTOM_SECRET" not in env
+
+
+def test_codex_exec_env_explicit_codex_home_overrides_base_env() -> None:
+    env = build_codex_exec_env(
+        {"CODEX_HOME": "/tmp/base-codex-home", "PATH": "/bin"},
+        codex_home="/tmp/runtime-codex-home",
+    )
+
+    assert env["CODEX_HOME"] == str(Path("/tmp/runtime-codex-home").resolve())
 
 
 def test_codex_exec_provider_isolated_bot_run_uses_clean_cwd_and_metadata(tmp_path: Path) -> None:

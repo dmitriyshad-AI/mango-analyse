@@ -7,7 +7,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from mango_mvp.utils.codex_cli import (
     CODEX_SERVICE_TIER_ENV,
@@ -36,6 +36,39 @@ _RETRYABLE_MARKERS = (
     "504",
     "overloaded",
 )
+
+
+TASK_CONTAINER_ENV_PASSTHROUGH = "TASK_CONTAINER_ENV_PASSTHROUGH"
+CODEX_EXEC_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "PYTHONPATH",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "CODEX_CA_CERTIFICATE",
+        "CODEX_HOME",
+        CODEX_SERVICE_TIER_ENV,
+    }
+)
+CODEX_EXEC_SECRET_EXACT = frozenset({"OPENAI_API_KEY"})
+CODEX_EXEC_SECRET_PREFIXES = ("AMO_", "WAPPI_", "CRM_", "AI_OFFICE_")
+CODEX_EXEC_SECRET_SUFFIXES = ("_TOKEN", "_SECRET", "_API_KEY")
 
 
 def build_codex_exec_command(
@@ -91,11 +124,41 @@ def _with_codex_exec_metadata(metadata: Mapping[str, Any], *, isolated: bool) ->
     return current
 
 
-def build_codex_exec_env(base_env: Optional[Mapping[str, str]] = None, *, codex_home: Optional[Path | str] = None) -> dict[str, str]:
-    env = dict(os.environ if base_env is None else base_env)
-    env.pop("OPENAI_API_KEY", None)
+def _csv_env_names(value: object) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(value or "").split(",") if part.strip())
+
+
+def _is_secret_env_name(name: str) -> bool:
+    upper = str(name or "").upper()
+    if upper in CODEX_EXEC_SECRET_EXACT:
+        return True
+    if upper.endswith(CODEX_EXEC_SECRET_SUFFIXES):
+        return True
+    return upper.startswith(CODEX_EXEC_SECRET_PREFIXES)
+
+
+def _is_allowed_codex_env_name(name: str, extra_passthrough: Iterable[str]) -> bool:
+    return name in CODEX_EXEC_ENV_ALLOWLIST or name.startswith("LC_") or name in extra_passthrough
+
+
+def build_codex_exec_env(
+    base_env: Optional[Mapping[str, str]] = None,
+    *,
+    codex_home: Optional[Path | str] = None,
+    extra_passthrough: Iterable[str] = (),
+) -> dict[str, str]:
+    source = os.environ if base_env is None else base_env
+    configured_passthrough = _csv_env_names(source.get(TASK_CONTAINER_ENV_PASSTHROUGH))
+    passthrough = frozenset((*configured_passthrough, *tuple(extra_passthrough or ())))
+    env: dict[str, str] = {}
+    for key, value in source.items():
+        key = str(key)
+        if _is_secret_env_name(key):
+            continue
+        if _is_allowed_codex_env_name(key, passthrough):
+            env[key] = str(value)
     if codex_home is not None:
-        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_HOME"] = str(Path(codex_home).expanduser().resolve(strict=False))
     return env
 
 

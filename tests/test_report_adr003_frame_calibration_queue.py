@@ -406,6 +406,9 @@ def test_proof_reconciliation_text_readiness_can_mark_manual_review_candidate(tm
     assert row["direct_quote_forbidden"] is True
     assert row["text_policy_readiness_status"] == "source_text_ready_requires_nonquote_policy"
     assert "direct_quote_forbidden" in row["text_policy_blockers"]
+    assert row["shadow_text_renderer_status"] == "blocked_unsupported_structured_value"
+    assert "unsupported_structured_value" in row["shadow_text_renderer_blockers"]
+    assert row["shadow_text_candidate_hash"] == ""
     assert "SohoLMS" not in json.dumps(row, ensure_ascii=False)
     assert row["text_candidate_blockers"] == [
         "shadow_only_text_candidate",
@@ -413,6 +416,53 @@ def test_proof_reconciliation_text_readiness_can_mark_manual_review_candidate(tm
     ]
     assert readiness["active_behavior_allowed"] is False
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 1
+    assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_shadow_text_renderer_reports_atomic_structured_candidate_without_exporting_text(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "classes",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["lvsh_mendeleevo_2026.directions.fizmat.classes"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("classes", notes="safe reference: course existence/format without live seats")],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["shadow_text_renderer_candidates"] == 1
+    assert readiness["shadow_text_renderer_by_status"] == {"candidate_rendered": 1}
+    row = readiness["examples"][0]
+    assert row["shadow_text_renderer_status"] == "candidate_rendered"
+    assert row["shadow_text_renderer_source"] == "structured_value:classes"
+    assert row["shadow_text_candidate_length"] > 0
+    assert row["shadow_text_candidate_hash"]
+    assert row["shadow_text_candidate_exported"] is False
+    dumped = json.dumps(row, ensure_ascii=False)
+    assert "Для этого направления" not in dumped
+    assert "5-10" not in dumped
+    assert readiness["active_behavior_allowed"] is False
+    assert result["totals"]["proof_text_shadow_renderer_candidates"] == 1
+    assert result["real_lever_analysis"]["totals"]["proof_text_shadow_renderer_candidates"] == 1
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 
@@ -453,6 +503,8 @@ def test_proof_text_policy_reports_template_registry_without_exporting_template_
     assert "template_text" not in row
     assert "client_safe_text" not in row
     assert "Собрать человеческую фразу" not in json.dumps(row, ensure_ascii=False)
+    assert row["shadow_text_renderer_status"] == "blocked_template_renderer_not_implemented"
+    assert row["shadow_text_candidate_hash"] == ""
     assert row["raw_text_exported"] is False
     assert "requires_template_renderer" in row["text_policy_blockers"]
     assert result["acceptance"]["active_readiness"] == "no_go"

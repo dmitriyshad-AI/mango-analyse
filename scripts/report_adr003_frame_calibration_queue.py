@@ -282,6 +282,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Proof source fact PII signal: `{real_totals.get('proof_text_source_fact_pii_signal', 0)}`",
             f"- Proof template registry found: `{real_totals.get('proof_text_template_registry_found', 0)}`",
             f"- Proof direct quote forbidden: `{real_totals.get('proof_text_direct_quote_forbidden', 0)}`",
+            f"- Proof shadow renderer candidates: `{real_totals.get('proof_text_shadow_renderer_candidates', 0)}`",
             f"- Stable existence misread as check_availability: `{real_totals.get('stable_existence_as_check_availability', 0)}`",
             f"- Stable existence misread as enroll: `{real_totals.get('stable_existence_as_enroll', 0)}`",
             f"- True live availability negative controls: `{real_totals.get('true_live_availability_negative_controls', 0)}`",
@@ -366,6 +367,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"- template registry found: `{proof_text_readiness.get('template_registry_found', 0)}`")
         lines.append(f"- direct quote forbidden: `{proof_text_readiness.get('direct_quote_forbidden', 0)}`")
         lines.append(f"- structured_value available: `{proof_text_readiness.get('structured_value_available', 0)}`")
+        lines.append(f"- shadow renderer candidates: `{proof_text_readiness.get('shadow_text_renderer_candidates', 0)}`")
         by_status = (
             proof_text_readiness.get("by_status") if isinstance(proof_text_readiness.get("by_status"), Mapping) else {}
         )
@@ -415,6 +417,15 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if template_status:
             lines.extend(["", "### Template registry", ""])
             for status, count in sorted(template_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        renderer_status = (
+            proof_text_readiness.get("shadow_text_renderer_by_status")
+            if isinstance(proof_text_readiness.get("shadow_text_renderer_by_status"), Mapping)
+            else {}
+        )
+        if renderer_status:
+            lines.extend(["", "### Shadow text renderer", ""])
+            for status, count in sorted(renderer_status.items(), key=lambda item: (-item[1], item[0])):
                 lines.append(f"- `{status or 'missing'}`: `{count}`")
     lines.extend(
         [
@@ -679,6 +690,7 @@ def _totals(
         "proof_text_bot_template_required": proof_text_readiness.get("bot_template_required", 0),
         "proof_text_template_registry_found": proof_text_readiness.get("template_registry_found", 0),
         "proof_text_direct_quote_forbidden": proof_text_readiness.get("direct_quote_forbidden", 0),
+        "proof_text_shadow_renderer_candidates": proof_text_readiness.get("shadow_text_renderer_candidates", 0),
         "work_items_total": len(work_items),
     }
 
@@ -884,10 +896,13 @@ def _proof_text_readiness_summary(
     text_statuses = Counter(str(row.get("text_candidate_readiness_status") or "") for row in by_turn.values())
     policy_statuses = Counter(str(row.get("text_policy_readiness_status") or "") for row in by_turn.values())
     template_statuses = Counter(str(row.get("template_registry_status") or "") for row in by_turn.values())
+    renderer_statuses = Counter(str(row.get("shadow_text_renderer_status") or "") for row in by_turn.values())
     candidates = [row for row in by_turn.values() if row.get("send_as_is_review_candidate")]
+    renderer_candidates = [row for row in by_turn.values() if row.get("shadow_text_renderer_status") == "candidate_rendered"]
     return {
         "total": len(by_turn),
         "send_as_is_review_candidates": len(candidates),
+        "shadow_text_renderer_candidates": len(renderer_candidates),
         "active_behavior_allowed": False,
         "active_readiness": "no_go",
         "by_status": dict(statuses),
@@ -896,6 +911,7 @@ def _proof_text_readiness_summary(
         "text_candidate_readiness_by_status": dict(text_statuses),
         "text_policy_readiness_by_status": dict(policy_statuses),
         "template_registry_by_status": dict(template_statuses),
+        "shadow_text_renderer_by_status": dict(renderer_statuses),
         "source_fact_client_safe_text_present": sum(
             1 for row in by_turn.values() if row.get("source_fact_client_safe_text_present")
         ),
@@ -914,6 +930,7 @@ def _proof_text_readiness_summary(
             "Fact-text candidate readiness uses only raw client_safe_text from the KB snapshot; fallback fact_text is not sendable proof.",
             "Full client_safe_text is not exported; report stores only length/hash and safety status.",
             "A found template registry entry is not a generated answer; it only proves a future renderer has a policy source.",
+            "Shadow text renderer candidates are measurement-only and exported as hash/length, not as sendable client text.",
             "semantic_output_verifier unavailable is treated as a blocker, not as permission.",
         ],
     }
@@ -1036,6 +1053,12 @@ def _source_fact_text_readiness(
         "text_policy_readiness_status": "blocked",
         "text_candidate_blockers": [],
         "text_policy_blockers": [],
+        "shadow_text_renderer_status": "blocked",
+        "shadow_text_renderer_blockers": [],
+        "shadow_text_renderer_source": "",
+        "shadow_text_candidate_length": 0,
+        "shadow_text_candidate_hash": "",
+        "shadow_text_candidate_exported": False,
         "raw_text_exported": False,
         "active_behavior_allowed": False,
     }
@@ -1080,6 +1103,13 @@ def _source_fact_text_readiness(
         raw_text_present=bool(raw_text),
         template_status=template_status,
     )
+    renderer = _shadow_text_renderer_status(
+        fact,
+        active_brand=active_brand,
+        source_status=status,
+        source_blockers=fact_blockers,
+        template_status=template_status,
+    )
     return {
         **base,
         "source_fact_lookup_status": status,
@@ -1104,6 +1134,7 @@ def _source_fact_text_readiness(
             *policy_specific_blockers,
             *(["direct_quote_forbidden"] if direct_quote_forbidden else []),
         ],
+        **renderer,
     }
 
 
@@ -1200,6 +1231,80 @@ def _text_policy_status(
     return "source_text_ready_requires_nonquote_policy", ["requires_nonquote_text_policy"]
 
 
+def _shadow_text_renderer_status(
+    fact: Mapping[str, Any],
+    *,
+    active_brand: str,
+    source_status: str,
+    source_blockers: Sequence[str],
+    template_status: str,
+) -> dict[str, Any]:
+    base = {
+        "shadow_text_renderer_status": "blocked",
+        "shadow_text_renderer_blockers": [],
+        "shadow_text_renderer_source": "",
+        "shadow_text_candidate_length": 0,
+        "shadow_text_candidate_hash": "",
+        "shadow_text_candidate_exported": False,
+    }
+    if source_status != "found":
+        return {**base, "shadow_text_renderer_status": f"blocked_{source_status}", "shadow_text_renderer_blockers": [source_status]}
+    hard_blockers = [item for item in source_blockers if item != "bot_template_required"]
+    if hard_blockers:
+        return {
+            **base,
+            "shadow_text_renderer_status": f"blocked_{hard_blockers[0]}",
+            "shadow_text_renderer_blockers": hard_blockers,
+        }
+    if fact.get("bot_template_required") is True:
+        if template_status == "found":
+            return {
+                **base,
+                "shadow_text_renderer_status": "blocked_template_renderer_not_implemented",
+                "shadow_text_renderer_blockers": ["requires_template_renderer"],
+            }
+        return {
+            **base,
+            "shadow_text_renderer_status": f"blocked_{template_status}_bot_template",
+            "shadow_text_renderer_blockers": [f"{template_status}_bot_template"],
+        }
+
+    structured_value = fact.get("structured_value") if isinstance(fact.get("structured_value"), Mapping) else {}
+    fact_type = str(fact.get("fact_type") or "").strip()
+    brand_label = "УНПК" if active_brand == "unpk" else "Фотон" if active_brand == "foton" else ""
+    candidate = ""
+    source = ""
+    if fact_type == "course_parameter":
+        classes = _shadow_renderer_clean_atomic_value(structured_value.get("classes_raw") or structured_value.get("classes"))
+        if classes and brand_label:
+            candidate = f"Для этого направления {brand_label} указан диапазон классов: {classes}."
+            source = "structured_value:classes"
+    if not candidate:
+        reason = "unsupported_structured_value" if structured_value else "missing_structured_value"
+        return {**base, "shadow_text_renderer_status": f"blocked_{reason}", "shadow_text_renderer_blockers": [reason]}
+    return {
+        **base,
+        "shadow_text_renderer_status": "candidate_rendered",
+        "shadow_text_renderer_blockers": ["shadow_only_renderer", "requires_semantic_review", "requires_runtime_text_policy"],
+        "shadow_text_renderer_source": source,
+        "shadow_text_candidate_length": len(candidate),
+        "shadow_text_candidate_hash": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    }
+
+
+def _shadow_renderer_clean_atomic_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 40:
+        return ""
+    if re.search(r"[\n\r:;.!?]", text):
+        return ""
+    if _pii_signal(text):
+        return ""
+    return text
+
+
 def _valid_until_ok(value: Any, *, as_of_date: date) -> bool:
     raw = str(value or "").strip()
     if not raw:
@@ -1272,6 +1377,9 @@ def _real_lever_analysis(
                 1 for row in classified if row.get("template_registry_status") == "found"
             ),
             "proof_text_direct_quote_forbidden": sum(1 for row in classified if row.get("direct_quote_forbidden")),
+            "proof_text_shadow_renderer_candidates": sum(
+                1 for row in classified if row.get("shadow_text_renderer_status") == "candidate_rendered"
+            ),
             "stable_existence_as_check_availability": sum(
                 1
                 for row in classified
@@ -1421,6 +1529,14 @@ def _real_lever_row(
         "text_policy_blockers": list(text_readiness.get("text_policy_blockers") or [])
         if isinstance(text_readiness.get("text_policy_blockers"), list)
         else [],
+        "shadow_text_renderer_status": str(text_readiness.get("shadow_text_renderer_status") or ""),
+        "shadow_text_renderer_blockers": list(text_readiness.get("shadow_text_renderer_blockers") or [])
+        if isinstance(text_readiness.get("shadow_text_renderer_blockers"), list)
+        else [],
+        "shadow_text_renderer_source": str(text_readiness.get("shadow_text_renderer_source") or ""),
+        "shadow_text_candidate_length": text_readiness.get("shadow_text_candidate_length", 0),
+        "shadow_text_candidate_hash": str(text_readiness.get("shadow_text_candidate_hash") or ""),
+        "shadow_text_candidate_exported": bool(text_readiness.get("shadow_text_candidate_exported")),
         "lever_class": lever_class,
         "active_blockers": blockers,
         "review_question": _real_lever_review_question(lever_class),

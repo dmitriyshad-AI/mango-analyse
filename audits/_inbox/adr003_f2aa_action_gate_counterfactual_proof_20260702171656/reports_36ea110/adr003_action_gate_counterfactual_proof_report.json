@@ -1,0 +1,424 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active autonomy remains NO-GO: counterfactuals do not change runtime behavior.",
+      "Action-only calibration is insufficient when must_handoff/risk_class remain manager_action.",
+      "Safe-reference exact proof still requires residual-missing-axis review and owner policy."
+    ],
+    "status": "pass_report_only"
+  },
+  "breakdowns": {
+    "by_counterfactual_status": {
+      "action_only_exact_proof_but_residual_hard_missing": 1,
+      "negative_control_preserved": 2,
+      "safe_reference_exact_proof_but_residual_hard_missing": 1,
+      "safe_reference_no_exact_proof": 1
+    },
+    "by_root_cause": {
+      "danger_adjacent_do_not_lower": 2,
+      "frame_action_blocks_existence_proof": 1,
+      "partial_facts_available_but_slot_needed": 1,
+      "proof_axis_mismatch": 1
+    },
+    "by_route": {
+      "draft_for_manager": 3,
+      "manager_only": 2
+    }
+  },
+  "cases": [
+    {
+      "action_only_counterfactual": {
+        "exact_fact_keys": [
+          "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.free_morning_club.from_day",
+          "ls_city_2026_unpk.free_morning_club.name",
+          "ls_city_2026_unpk.free_morning_club.time",
+          "ls_city_2026_unpk.meals"
+        ],
+        "query_axes": {
+          "brand": "unpk",
+          "format": "",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "camp",
+          "subject": ""
+        },
+        "reason": "exact_product_existence_fact",
+        "status": "exists"
+      },
+      "active_behavior_allowed": false,
+      "client_excerpt": "Расскажите про обе",
+      "counterfactual_status": "action_only_exact_proof_but_residual_hard_missing",
+      "current_existence_proof": {
+        "exact_fact_key_count": 1,
+        "reason": "exact_product_existence_fact",
+        "status": "exists"
+      },
+      "current_frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "deal_stage": "interest",
+        "must_handoff": true,
+        "payment_readiness": "none",
+        "requested_action": "answer_question",
+        "requested_product": {
+          "brand": "unpk",
+          "format": "дневной и выездной",
+          "grade": "",
+          "program_kind": "летняя школа",
+          "subject": ""
+        },
+        "risk_class": "missing_facts"
+      },
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "missing_fact_categories": [
+        "boarding_food",
+        "class_grade",
+        "dates_schedule",
+        "location_address",
+        "price_cost",
+        "program_direction"
+      ],
+      "residual_missing_categories_after_existence": [
+        "boarding_food",
+        "dates_schedule",
+        "location_address",
+        "price_cost"
+      ],
+      "root_cause": "proof_axis_mismatch",
+      "route": "draft_for_manager",
+      "safe_reference_counterfactual": {
+        "exact_fact_keys": [
+          "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.free_morning_club.from_day",
+          "ls_city_2026_unpk.free_morning_club.name",
+          "ls_city_2026_unpk.free_morning_club.time",
+          "ls_city_2026_unpk.meals"
+        ],
+        "query_axes": {
+          "brand": "unpk",
+          "format": "",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "camp",
+          "subject": ""
+        },
+        "reason": "exact_product_existence_fact",
+        "status": "exists"
+      },
+      "turn": 1,
+      "why_not_active": [
+        "report_only",
+        "active_behavior_allowed_false",
+        "residual_missing_categories_present"
+      ]
+    },
+    {
+      "action_only_counterfactual": {
+        "exact_fact_keys": [],
+        "reason": "protected_handoff_frame",
+        "status": "blocked"
+      },
+      "active_behavior_allowed": false,
+      "client_excerpt": "Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+      "counterfactual_status": "safe_reference_exact_proof_but_residual_hard_missing",
+      "current_existence_proof": {
+        "exact_fact_key_count": 0,
+        "reason": "requested_action_not_answer_question",
+        "status": "blocked"
+      },
+      "current_frame": {
+        "answerability": "manager_only",
+        "confidence": 0.92,
+        "deal_stage": "qualification",
+        "must_handoff": true,
+        "payment_readiness": "none",
+        "requested_action": "check_availability",
+        "requested_product": {
+          "brand": "unpk",
+          "format": "",
+          "grade": "закончил 5-й класс",
+          "program_kind": "летняя смена",
+          "subject": ""
+        },
+        "risk_class": "manager_action"
+      },
+      "dialog_id": "wappi_pair_missing_72h_003",
+      "missing_fact_categories": [
+        "boarding_food",
+        "class_grade",
+        "live_availability"
+      ],
+      "residual_missing_categories_after_existence": [
+        "boarding_food",
+        "live_availability"
+      ],
+      "root_cause": "frame_action_blocks_existence_proof",
+      "route": "manager_only",
+      "safe_reference_counterfactual": {
+        "exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "tg_unpk_verified_2026_05_21.client_facts.lvsh_age_rule.client_safe_text"
+        ],
+        "query_axes": {
+          "brand": "unpk",
+          "format": "",
+          "grade": 5,
+          "product_family": "",
+          "program_kind": "camp",
+          "subject": ""
+        },
+        "reason": "exact_product_existence_fact",
+        "status": "exists"
+      },
+      "turn": 1,
+      "why_not_active": [
+        "report_only",
+        "active_behavior_allowed_false",
+        "route_manager_only",
+        "residual_hard_missing_axes",
+        "residual_missing_categories_present"
+      ]
+    },
+    {
+      "action_only_counterfactual": {
+        "exact_fact_keys": [],
+        "query_axes": {
+          "brand": "unpk",
+          "format": "",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "",
+          "subject": ""
+        },
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "active_behavior_allowed": false,
+      "client_excerpt": "Подскажите, как дальше: сначала тестирование или сразу группа? Я не понимаю порядок.",
+      "counterfactual_status": "negative_control_preserved",
+      "current_existence_proof": {
+        "exact_fact_key_count": 0,
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "current_frame": {
+        "answerability": "manager_only",
+        "confidence": 0.86,
+        "deal_stage": "qualification",
+        "must_handoff": true,
+        "payment_readiness": "none",
+        "requested_action": "answer_question",
+        "requested_product": {
+          "brand": "unpk",
+          "format": "",
+          "grade": "",
+          "program_kind": "",
+          "subject": ""
+        },
+        "risk_class": "missing_facts"
+      },
+      "dialog_id": "p0_model_led_pos_how_next",
+      "missing_fact_categories": [
+        "class_grade",
+        "program_direction"
+      ],
+      "residual_missing_categories_after_existence": [
+        "class_grade",
+        "program_direction"
+      ],
+      "root_cause": "danger_adjacent_do_not_lower",
+      "route": "draft_for_manager",
+      "safe_reference_counterfactual": {
+        "exact_fact_keys": [],
+        "query_axes": {
+          "brand": "unpk",
+          "format": "",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "",
+          "subject": ""
+        },
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "turn": 1,
+      "why_not_active": [
+        "report_only",
+        "active_behavior_allowed_false",
+        "negative_control",
+        "residual_missing_categories_present"
+      ]
+    },
+    {
+      "action_only_counterfactual": {
+        "exact_fact_keys": [],
+        "reason": "protected_handoff_frame",
+        "status": "blocked"
+      },
+      "active_behavior_allowed": false,
+      "client_excerpt": "Ребёнок в 8 классе, физика слабая, вдруг не потянет? Что обычно делаете в такой ситуации?",
+      "counterfactual_status": "negative_control_preserved",
+      "current_existence_proof": {
+        "exact_fact_key_count": 0,
+        "reason": "requested_action_not_answer_question",
+        "status": "blocked"
+      },
+      "current_frame": {
+        "answerability": "manager_only",
+        "confidence": 0.82,
+        "deal_stage": "qualification",
+        "must_handoff": true,
+        "payment_readiness": "none",
+        "requested_action": "handoff_manager",
+        "requested_product": {
+          "brand": "foton",
+          "format": "",
+          "grade": "8",
+          "program_kind": "regular_course",
+          "subject": "физика"
+        },
+        "risk_class": "manager_action"
+      },
+      "dialog_id": "p0_model_led_pos_anxiety_level",
+      "missing_fact_categories": [
+        "class_grade",
+        "payment_access"
+      ],
+      "residual_missing_categories_after_existence": [
+        "payment_access"
+      ],
+      "root_cause": "danger_adjacent_do_not_lower",
+      "route": "draft_for_manager",
+      "safe_reference_counterfactual": {
+        "exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "schedule_2026_27.groups.group_start_date_h83_krasnoselskaya_sun_1000_1200_physics_8_base_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_w73_onlajn_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text"
+        ],
+        "query_axes": {
+          "brand": "foton",
+          "format": "",
+          "grade": 8,
+          "product_family": "",
+          "program_kind": "",
+          "subject": "physics"
+        },
+        "reason": "exact_product_existence_fact",
+        "status": "exists"
+      },
+      "turn": 1,
+      "why_not_active": [
+        "report_only",
+        "active_behavior_allowed_false",
+        "negative_control",
+        "residual_missing_categories_present"
+      ]
+    },
+    {
+      "action_only_counterfactual": {
+        "exact_fact_keys": [],
+        "query_axes": {
+          "brand": "foton",
+          "format": "online",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "",
+          "subject": ""
+        },
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "active_behavior_allowed": false,
+      "client_excerpt": "На какой платформе онлайн и сколько стоит семестр?",
+      "counterfactual_status": "safe_reference_no_exact_proof",
+      "current_existence_proof": {
+        "exact_fact_key_count": 0,
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "current_frame": {
+        "answerability": "manager_only",
+        "confidence": 0.88,
+        "deal_stage": "interest",
+        "must_handoff": true,
+        "payment_readiness": "asking_price",
+        "requested_action": "answer_question",
+        "requested_product": {
+          "brand": "foton",
+          "format": "онлайн",
+          "grade": "",
+          "program_kind": "regular_course",
+          "subject": ""
+        },
+        "risk_class": "missing_facts"
+      },
+      "dialog_id": "ra1_foton_platform_and_price",
+      "missing_fact_categories": [
+        "class_grade",
+        "platform_current",
+        "price_cost"
+      ],
+      "residual_missing_categories_after_existence": [
+        "class_grade",
+        "platform_current",
+        "price_cost"
+      ],
+      "root_cause": "partial_facts_available_but_slot_needed",
+      "route": "manager_only",
+      "safe_reference_counterfactual": {
+        "exact_fact_keys": [],
+        "query_axes": {
+          "brand": "foton",
+          "format": "online",
+          "grade": null,
+          "product_family": "",
+          "program_kind": "",
+          "subject": ""
+        },
+        "reason": "required_axis_missing",
+        "status": "blocked"
+      },
+      "turn": 1,
+      "why_not_active": [
+        "report_only",
+        "active_behavior_allowed_false",
+        "route_manager_only",
+        "residual_missing_categories_present"
+      ]
+    }
+  ],
+  "created_at": "2026-07-02T14:16:57.154239+00:00",
+  "inputs": {
+    "fact_gap_report": "audits/_inbox/adr003_f2y_current_handoff_fact_gap_20260702170119/reports_36ea110/adr003_current_handoff_fact_gap_report.json",
+    "fact_gap_report_sha256": "27838eb819012dce7a22c2bd06a0948f69e4940fcbbed8591279615dc75a8b7d",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "kb_snapshot_sha256": "f2f211a56cafc213326d4841752e38a081172de867bd598b08724a510b065ba5",
+    "transcripts": "audits/_inbox/adr003_f2v_existing_frame_proof_replay_20260702155709/reports_36ea110/enriched/dynamic_dialog_transcripts.jsonl",
+    "transcripts_sha256": "5a5473f5979db8229e62503035b060c9aea203f187e23f358a9c1e67ef2d95a5"
+  },
+  "notes": [
+    "Report-only counterfactual: no route/text/runtime behavior changes.",
+    "Action-only counterfactual changes only requested_action for diagnostics.",
+    "Safe-reference counterfactual changes frame fields only inside this offline report."
+  ],
+  "schema_version": "adr003_action_gate_counterfactual_proof_v1_2026_07_02",
+  "source_rev": "d6013c24",
+  "totals": {
+    "action_gate_blocked_proof_total": 2,
+    "action_only_still_blocked_total": 4,
+    "cases": 5,
+    "counterfactual_residual_hard_missing_total": 4,
+    "negative_controls_preserved_total": 2,
+    "new_active_candidates": 0,
+    "safe_reference_counterfactual_exact_proof_total": 3,
+    "scope_confusion_total": 1
+  }
+}

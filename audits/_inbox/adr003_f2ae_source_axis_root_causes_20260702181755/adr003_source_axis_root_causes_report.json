@@ -1,0 +1,193 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active autonomy remains NO-GO: this report emits no route or text changes.",
+      "No route-only active candidates were identified.",
+      "Next work should address fact/proof axis taxonomy and partial-answer policy separately."
+    ],
+    "status": "pass_report_only"
+  },
+  "breakdowns": {
+    "by_next_workstream": {
+      "danger_adjacent_do_not_lower": 2,
+      "fix_proof_axis_alignment": 2
+    },
+    "by_root_cause": {
+      "danger_adjacent_do_not_lower": 2,
+      "manager_only_with_platform_axis_taxonomy_gap": 1,
+      "missing_required_slot_partial_policy_needed": 1
+    },
+    "by_route": {
+      "draft_for_manager": 3,
+      "manager_only": 1
+    }
+  },
+  "cases": [
+    {
+      "active_behavior_allowed": false,
+      "active_readiness": "no_go",
+      "bot_text_exported": false,
+      "client_text_exported": false,
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "missing_categories": [
+        "boarding_food",
+        "class_grade"
+      ],
+      "missing_slots": [
+        "grade"
+      ],
+      "next_autonomy_workstream": "fix_proof_axis_alignment",
+      "platform_fact_count": 0,
+      "price_fact_count": 0,
+      "product_check_exact_fact_key_count": 8,
+      "product_check_reason": "exact_product_existence_fact",
+      "product_check_status": "exists",
+      "proof_reason": "fresh_proof_contradicts_missing_facts_frame",
+      "proof_source_fact_key_present": true,
+      "proof_status": "would_reconcile_to_safe_reference",
+      "proven_parts": [
+        "product_existence"
+      ],
+      "recommended_next_step": "This is not route-only. A future partial-answer policy may answer proven parts and ask the missing slot, but only after semantic review and a text policy.",
+      "requested_action": "answer_question",
+      "root_cause": "missing_required_slot_partial_policy_needed",
+      "route": "draft_for_manager",
+      "source_alignment_uncovered_categories": [
+        "class_grade"
+      ],
+      "source_axis_policy_status": "blocked_source_axis_mismatch",
+      "turn": 1,
+      "uncovered_categories": [
+        "boarding_food"
+      ]
+    },
+    {
+      "active_behavior_allowed": false,
+      "active_readiness": "no_go",
+      "bot_text_exported": false,
+      "client_text_exported": false,
+      "dialog_id": "p0_model_led_pos_how_next",
+      "missing_categories": [
+        "class_grade",
+        "program_direction"
+      ],
+      "missing_slots": [
+        "grade"
+      ],
+      "next_autonomy_workstream": "danger_adjacent_do_not_lower",
+      "platform_fact_count": 0,
+      "price_fact_count": 0,
+      "product_check_exact_fact_key_count": 8,
+      "product_check_reason": "exact_product_existence_fact",
+      "product_check_status": "exists",
+      "proof_reason": "fresh_proof_contradicts_missing_facts_frame",
+      "proof_source_fact_key_present": true,
+      "proof_status": "would_reconcile_to_safe_reference",
+      "proven_parts": [
+        "product_existence"
+      ],
+      "recommended_next_step": "Keep excluded from autonomy; do not solve with route/text demotion.",
+      "requested_action": "answer_question",
+      "root_cause": "danger_adjacent_do_not_lower",
+      "route": "draft_for_manager",
+      "source_alignment_uncovered_categories": [
+        "program_direction"
+      ],
+      "source_axis_policy_status": "blocked_danger_adjacent",
+      "turn": 1,
+      "uncovered_categories": []
+    },
+    {
+      "active_behavior_allowed": false,
+      "active_readiness": "no_go",
+      "bot_text_exported": false,
+      "client_text_exported": false,
+      "dialog_id": "p0_model_led_pos_anxiety_level",
+      "missing_categories": [
+        "class_grade",
+        "dates_schedule",
+        "live_availability",
+        "payment_access"
+      ],
+      "missing_slots": [],
+      "next_autonomy_workstream": "danger_adjacent_do_not_lower",
+      "platform_fact_count": 0,
+      "price_fact_count": 0,
+      "product_check_exact_fact_key_count": 3,
+      "product_check_reason": "exact_product_existence_fact",
+      "product_check_status": "exists",
+      "proof_reason": "requested_action_not_reconcilable",
+      "proof_source_fact_key_present": false,
+      "proof_status": "blocked",
+      "proven_parts": [
+        "product_existence"
+      ],
+      "recommended_next_step": "Keep excluded from autonomy; do not solve with route/text demotion.",
+      "requested_action": "handoff_manager",
+      "root_cause": "danger_adjacent_do_not_lower",
+      "route": "draft_for_manager",
+      "source_alignment_uncovered_categories": [],
+      "source_axis_policy_status": "blocked_danger_adjacent",
+      "turn": 1,
+      "uncovered_categories": [
+        "dates_schedule",
+        "live_availability",
+        "payment_access"
+      ]
+    },
+    {
+      "active_behavior_allowed": false,
+      "active_readiness": "no_go",
+      "bot_text_exported": false,
+      "client_text_exported": false,
+      "dialog_id": "ra1_foton_platform_and_price",
+      "missing_categories": [
+        "platform_current"
+      ],
+      "missing_slots": [],
+      "next_autonomy_workstream": "fix_proof_axis_alignment",
+      "platform_fact_count": 6,
+      "price_fact_count": 0,
+      "product_check_exact_fact_key_count": 0,
+      "product_check_reason": "required_axis_missing",
+      "product_check_status": "needs_slot",
+      "proof_reason": "fresh_proof_contradicts_missing_facts_frame",
+      "proof_source_fact_key_present": true,
+      "proof_status": "would_reconcile_to_safe_reference",
+      "proven_parts": [
+        "platform_current"
+      ],
+      "recommended_next_step": "Do not demote manager_only. Separately fix fact-axis taxonomy for platform_current, then re-measure.",
+      "requested_action": "answer_question",
+      "root_cause": "manager_only_with_platform_axis_taxonomy_gap",
+      "route": "manager_only",
+      "source_alignment_uncovered_categories": [],
+      "source_axis_policy_status": "blocked_manager_only_route",
+      "turn": 1,
+      "uncovered_categories": []
+    }
+  ],
+  "created_at": "2026-07-02T15:17:19.428182+00:00",
+  "inputs": {
+    "fact_gap_report": "audits/_inbox/adr003_f2ab_local_reenrich_20260702173307/current_handoff_fact_gap/adr003_current_handoff_fact_gap_report.json",
+    "fact_gap_report_sha256": "f44dfcedcaf961e6711fe02209ff82d0817fe5fe6dcbde70a22ae01246f2e2b8",
+    "source_axis_report": "audits/_inbox/adr003_f2ab_local_reenrich_20260702173307/source_axis_blockers/adr003_source_axis_blockers_report.json",
+    "source_axis_report_sha256": "5c5bf75aad69cfcec8a98ff233c1f91858163818cfc8952a3ce3dda7ba9e76ab"
+  },
+  "notes": [
+    "Report-only diagnostic: no route/text/runtime behavior changes.",
+    "No client message or bot answer text is exported.",
+    "This report classifies blockers; it must not be used as active policy by itself."
+  ],
+  "schema_version": "adr003_source_axis_root_causes_v1_2026_07_02",
+  "source_rev": "b992a577",
+  "totals": {
+    "cases": 4,
+    "danger_adjacent": 2,
+    "manager_only_policy": 1,
+    "missing_required_slot": 1,
+    "platform_axis_taxonomy_gap": 1,
+    "route_only_active_candidates": 0
+  }
+}

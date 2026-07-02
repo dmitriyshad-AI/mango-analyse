@@ -1,0 +1,28 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_frame_calibration_queue.py
+6 passed in 0.58s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_frame_calibration_queue.py tests/test_report_adr003_overhandoff_levers.py tests/test_report_adr003_existence_fact_verification.py tests/test_report_adr003_fact_gated_self_answer_readiness.py tests/test_report_adr003_exact_proof_injection_shadow.py tests/test_report_adr003_manager_only_exact_proof_root_cause.py tests/test_report_adr003_frame_gold_calibration.py
+50 passed in 1.34s
+
+git diff --check
+passed
+
+PII grep on selected committed audit files:
+no actual email, phone, AMO entity, contact, or lead identifiers.
+
+Report command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_frame_calibration_queue.py --transcripts audits/_inbox/adr003_f2n_enrich_existence_proof_noop_20260702130739/ON/dynamic_dialog_transcripts.jsonl --gold product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl --kb-snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir audits/_inbox/adr003_f2o_real_lever_analysis_20260702133256/calibration_queue --confidence-threshold 0.90 --as-of-date 2026-07-02
+
+Key report output:
+true_too_cautious=14
+current_handoff_among_too_cautious=6
+fact_assertion_required=12
+factless_ack_status=0
+danger_adjacent=4
+stable_existence_as_check_availability=0
+stable_existence_as_enroll=1
+true_live_availability_negative_controls=29
+true_enroll_booking_negative_controls=9
+clean_route_only_discussion=0
+strict_active_candidates_now=0
+true_too_confident=0

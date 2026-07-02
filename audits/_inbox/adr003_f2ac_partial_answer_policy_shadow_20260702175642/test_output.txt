@@ -1,0 +1,15 @@
+...........................                                              [100%]
+27 passed in 3.43s
+
+Full pytest:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3925 passed, 5 skipped, 1 warning in 86.46s (0:01:26)
+
+git diff --check: clean
+
+JSON leak check:
+
+- `client_excerpt` absent from F2ac output JSON.
+- Real client excerpts from the two candidate cases absent from audit pack output.

@@ -8,3 +8,21 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
 3882 passed, 5 skipped, 1 warning in 70.86s
 
 Warning: urllib3 NotOpenSSLWarning (system LibreSSL), pre-existing environment warning.
+
+Local direct-path provider smoke:
+
+TELEGRAM_DIRECT_PATH=1 TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1 TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_SELF_ANSWER_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW=1 TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py --scenarios /tmp/adr003_f2l_existence_subset_scenarios.jsonl --snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir /tmp/adr003_f2l_provider_measure --client-mode scripted --judge-mode fake --memory-mode fake --bot-mode codex --parallel 2 --judge-prompt-version v9.1 --timeout-sec 180 --disable-bot-cache
+
+Result:
+
+- dialogs=7
+- turns=19
+- hard_gate_failures=0
+- frames=18
+- proof_turns=15
+- freshness_with_proof=15
+- routes: draft_for_manager=3, bot_answer_self_for_pilot=14, manager_only=2
+
+PII note: full transcript was not committed because it contains public KB
+contact strings. The committed summary keeps counts and proof examples without
+those strings.

@@ -1,0 +1,86 @@
+{
+  "blocked_reasons": {
+    "low_confidence": 1,
+    "no_frame": 1,
+    "route_not_draft_for_manager": 15
+  },
+  "dialogs": 7,
+  "examples": [
+    {
+      "client": "Расскажите про обе",
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "fact": "ls_city_2026_unpk.dolgoprudny.location",
+      "status": "exists",
+      "turn": 1
+    },
+    {
+      "client": "Спроси: «Выездная школа УНПК для 7 класса есть?»",
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "fact": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "status": "exists",
+      "turn": 1
+    },
+    {
+      "client": "Спроси: «ФизМат подойдёт?»",
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "fact": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "status": "exists",
+      "turn": 2
+    },
+    {
+      "client": "Спроси: «Олимпиадная физика онлайн для 11 класса есть?»",
+      "dialog_id": "cf142_pos_unpk_exam_group_signup",
+      "fact": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+      "status": "exists",
+      "turn": 1
+    },
+    {
+      "client": "Уточни: «На какие олимпиады ориентир?»",
+      "dialog_id": "cf142_pos_unpk_exam_group_signup",
+      "fact": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+      "status": "exists",
+      "turn": 2
+    },
+    {
+      "client": "Спроси: «Выездная школа для 8 класса есть?»",
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "fact": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "status": "exists",
+      "turn": 1
+    },
+    {
+      "client": "Уточни: «ФизМат подходит, спасибо.»",
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "fact": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "status": "exists",
+      "turn": 2
+    },
+    {
+      "client": "Спроси: «По УНПК выездная школа для 7 класса есть?»",
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "fact": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "status": "exists",
+      "turn": 1
+    }
+  ],
+  "frames": 18,
+  "freshness_with_proof": 15,
+  "hard_gate_failures": 0,
+  "input_scenarios": "/tmp/adr003_f2l_existence_subset_scenarios.jsonl",
+  "notes": [
+    "Local direct-path provider smoke, not live.",
+    "TELEGRAM_DIRECT_PATH=1 and TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW=1.",
+    "No active route/text demotion was enabled."
+  ],
+  "proof_turns": 15,
+  "routes": {
+    "bot_answer_self_for_pilot": 14,
+    "draft_for_manager": 3,
+    "manager_only": 2
+  },
+  "schema_version": "adr003_f2l_provider_smoke_summary_v1_2026_07_02",
+  "transcripts_committed": false,
+  "transcripts_local_only": "local_provider_measure/dynamic_dialog_transcripts.jsonl",
+  "transcripts_not_committed_reason": "contains public KB contact strings; summary keeps counts and proof examples only",
+  "turns": 19
+}

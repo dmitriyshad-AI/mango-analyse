@@ -25,3 +25,23 @@
 
 При включенном флаге меняется только metadata. Route/text/safety_flags не
 меняются.
+
+## Локальный provider-smoke
+
+После коммита выполнен отдельный direct-path smoke на 7 existence/format
+сценариях без `--semantic-frame-enrich-from`.
+
+Результат:
+
+- dialogs: 7;
+- turns: 19;
+- hard_gate_failures: 0;
+- SemanticFrame frames: 18;
+- proof_turns: 15;
+- freshness_with_proof: 15.
+
+См. `local_provider_measure/provider_smoke_summary.json`.
+
+Полный `dynamic_dialog_transcripts.jsonl` оставлен локально и не включён в git:
+PII-греп нашёл в нём публичные контактные строки из KB, а audit pack
+не должен тащить такие строки.

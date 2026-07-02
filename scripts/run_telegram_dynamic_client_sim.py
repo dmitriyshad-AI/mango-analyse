@@ -34,6 +34,7 @@ from mango_mvp.channels.subscription_llm import (
 from mango_mvp.channels.subscription_llm_parts.provider import (
     apply_semantic_frame_decision_shadow,
     apply_semantic_frame_existence_proof_shadow,
+    apply_semantic_frame_proof_reconciliation_shadow,
     apply_semantic_frame_self_answer_shadow,
 )
 from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
@@ -1867,6 +1868,7 @@ def _enrich_one_transcript_with_semantic_frame(
             context=context,
         )
         framed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
+        framed = apply_semantic_frame_proof_reconciliation_shadow(framed, context=context)
         framed = apply_semantic_frame_self_answer_shadow(framed, context=context)
         framed = apply_semantic_frame_decision_shadow(framed, context=context)
         raw_frame = framed.metadata.get("semantic_frame") if isinstance(framed.metadata, Mapping) else {}
@@ -1874,6 +1876,11 @@ def _enrich_one_transcript_with_semantic_frame(
             raw_frame = framed.metadata.get("semantic_frame_shadow") if isinstance(framed.metadata, Mapping) else {}
         raw_shadow = framed.metadata.get("frame_decision_shadow") if isinstance(framed.metadata, Mapping) else {}
         raw_self_shadow = framed.metadata.get("semantic_frame_self_answer_shadow") if isinstance(framed.metadata, Mapping) else {}
+        raw_reconciliation_shadow = (
+            framed.metadata.get("semantic_frame_proof_reconciliation_shadow")
+            if isinstance(framed.metadata, Mapping)
+            else {}
+        )
         raw_direct = framed.metadata.get("direct_path") if isinstance(framed.metadata, Mapping) else {}
         if isinstance(raw_frame, Mapping) and raw_frame:
             turn["bot_semantic_frame"] = dict(raw_frame)
@@ -1881,6 +1888,8 @@ def _enrich_one_transcript_with_semantic_frame(
             turn["bot_frame_decision_shadow"] = dict(raw_shadow)
         if isinstance(raw_self_shadow, Mapping) and raw_self_shadow:
             turn["bot_semantic_frame_self_answer_shadow"] = dict(raw_self_shadow)
+        if isinstance(raw_reconciliation_shadow, Mapping) and raw_reconciliation_shadow:
+            turn["bot_semantic_frame_proof_reconciliation_shadow"] = dict(raw_reconciliation_shadow)
         if isinstance(raw_direct, Mapping) and raw_direct:
             turn["bot_direct_path"] = dict(raw_direct)
         turn["semantic_frame_enriched"] = True

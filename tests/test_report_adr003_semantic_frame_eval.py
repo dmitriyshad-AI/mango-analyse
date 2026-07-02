@@ -328,6 +328,36 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
     assert any("partial freshness" in note for note in result["acceptance"]["notes"])
 
 
+def test_report_summarizes_proof_reconciliation_shadow_without_active_allow(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    turn = dialog["turns"][0]
+    turn["bot_semantic_frame_proof_reconciliation_shadow"] = {
+        "status": "would_reconcile_to_safe_reference",
+        "reason": "fresh_proof_contradicts_missing_facts_frame",
+        "proof_status": "exact_fresh_client_safe_fact_found",
+        "active_behavior_allowed": False,
+        "exact_fact_keys": ["online_platform.levels.1"],
+        "active_blockers": ["shadow_only_reconciliation", "requires_text_readiness_policy"],
+    }
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    shadow = result["semantic_frame_proof_reconciliation_shadow"]
+    assert shadow["turn_count"] == 1
+    assert shadow["would_reconcile_count"] == 1
+    assert shadow["active_allowed_count"] == 0
+    assert shadow["status"] == {"would_reconcile_to_safe_reference": 1}
+    assert shadow["reasons"] == {"fresh_proof_contradicts_missing_facts_frame": 1}
+    assert shadow["proof_status"] == {"exact_fresh_client_safe_fact_found": 1}
+    assert shadow["candidate_examples"][0]["exact_fact_keys"] == ["online_platform.levels.1"]
+    assert shadow["candidate_examples"][0]["active_blockers"] == [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+    ]
+
+
 def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     on_summary = tmp_path / "on_summary.json"

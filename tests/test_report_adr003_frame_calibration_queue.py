@@ -45,6 +45,7 @@ def _turn(
     message_type: str = "context_update",
     missing_facts: list[str] | None = None,
     frame: dict | None = None,
+    proof_reconciliation: dict | None = None,
 ) -> dict:
     semantic_frame = {
         "risk_class": "manager_action",
@@ -76,6 +77,7 @@ def _turn(
                 "bot_safety_flags": ["manager_approval_required", "no_auto_send", f"message_type_{message_type}"],
                 "bot_missing_facts": missing_facts if missing_facts is not None else ["актуальное наличие мест"],
                 "bot_semantic_frame": semantic_frame,
+                "bot_semantic_frame_proof_reconciliation_shadow": proof_reconciliation or {},
                 "bot_semantic_frame_self_answer_shadow": {
                     "status": "blocked",
                     "reason": "route_not_draft_for_manager",
@@ -238,6 +240,48 @@ def test_manual_too_cautious_label_is_separate_from_true_frame_error(tmp_path: P
     item = result["workstreams"]["already_self_no_active_leverage"]["examples"][0]
     assert item["active_allowed"] is False
     assert item["active_block_reason"] == "current_route_already_self_no_route_leverage"
+
+
+def test_proof_reconciliation_shadow_is_reported_but_not_active_go(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "d1",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=["platform.current"],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.92,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "frame_before": {
+                        "risk_class": "missing_facts",
+                        "answerability": "manager_only",
+                        "requested_action": "answer_question",
+                        "must_handoff": True,
+                    },
+                },
+            )
+        ],
+        [_gold("d1", notes="safe reference: platform/format without live seats")],
+    )
+
+    assert result["totals"]["proof_reconciliation_would_reconcile"] == 1
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_would_reconcile"] == 1
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_current_handoff"] == 1
+    assert result["workstreams"]["semanticframe_proof_reconciliation_candidate"]["count"] == 1
+    assert result["proof_reconciliation"]["would_reconcile"] == 1
+    assert result["proof_reconciliation"]["examples"][0]["exact_fact_keys"] == ["online_platform.levels.1"]
+    assert result["acceptance"]["active_readiness"] == "no_go"
 
 
 def test_low_confidence_safe_frame_is_calibration_work(tmp_path: Path) -> None:

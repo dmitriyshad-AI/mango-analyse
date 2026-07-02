@@ -82,6 +82,7 @@ DANGER_ADJACENT_MARKERS = (
 WORKSTREAMS = (
     "semanticframe_existence_vs_availability",
     "semanticframe_safe_reference_missing_facts",
+    "semanticframe_proof_reconciliation_candidate",
     "semanticframe_low_confidence",
     "retrieval_delivery_runtime_missing_exact_proof",
     "conversation_plan_scope_missing",
@@ -142,6 +143,7 @@ def build_report(
         confidence_threshold=confidence_threshold,
         as_of_date=as_of_date or date.today(),
     )
+    proof_reconciliation = _load_proof_reconciliation_by_turn(transcripts)
 
     gold_rows = [row for row in gold_report.get("rows") or [] if isinstance(row, Mapping)]
     work_items = _build_work_items(
@@ -149,6 +151,7 @@ def build_report(
         overhandoff=overhandoff,
         root_cause=root_cause,
         injection=injection,
+        proof_reconciliation=proof_reconciliation,
         confidence_threshold=confidence_threshold,
     )
     report = {
@@ -162,10 +165,17 @@ def build_report(
             "confidence_threshold": confidence_threshold,
             "as_of_date": (as_of_date or date.today()).isoformat(),
         },
-        "totals": _totals(gold_report=gold_report, overhandoff=overhandoff, injection=injection, work_items=work_items),
+        "totals": _totals(
+            gold_report=gold_report,
+            overhandoff=overhandoff,
+            injection=injection,
+            work_items=work_items,
+            proof_reconciliation=proof_reconciliation,
+        ),
         "workstreams": _workstreams(work_items),
         "field_error_breakdowns": _field_error_breakdowns(gold_rows),
-        "real_lever_analysis": _real_lever_analysis(gold_rows),
+        "real_lever_analysis": _real_lever_analysis(gold_rows, proof_reconciliation=proof_reconciliation),
+        "proof_reconciliation": _proof_reconciliation_summary(proof_reconciliation),
         "source_report_summaries": {
             "gold_calibration": gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {},
             "overhandoff": overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {},
@@ -186,6 +196,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     totals = report.get("totals") if isinstance(report.get("totals"), Mapping) else {}
     acceptance = report.get("acceptance") if isinstance(report.get("acceptance"), Mapping) else {}
     workstreams = report.get("workstreams") if isinstance(report.get("workstreams"), Mapping) else {}
+    proof_reconciliation = report.get("proof_reconciliation") if isinstance(report.get("proof_reconciliation"), Mapping) else {}
     lines = [
         "# ADR-003 F2i SemanticFrame Calibration Queue",
         "",
@@ -200,6 +211,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Current safe over-handoff candidates: `{totals.get('current_safe_over_handoff', 0)}`",
         f"- Strict active candidates now: `{totals.get('strict_active_candidates_now', 0)}`",
         f"- Manager-only exact-proof rows: `{totals.get('manager_only_exact_proof_rows', 0)}`",
+        f"- Proof reconciliation would-fix-frame rows: `{totals.get('proof_reconciliation_would_reconcile', 0)}`",
         "",
         "## Real Lever Analysis",
         "",
@@ -214,6 +226,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Factless ack/status: `{real_totals.get('factless_ack_status', 0)}`",
             f"- Danger-adjacent: `{real_totals.get('danger_adjacent', 0)}`",
             f"- Clean route-only discussion rows: `{real_totals.get('clean_route_only_discussion', 0)}`",
+            f"- Proof reconciliation would-fix-frame rows: `{real_totals.get('proof_reconciliation_would_reconcile', 0)}`",
             f"- Stable existence misread as check_availability: `{real_totals.get('stable_existence_as_check_availability', 0)}`",
             f"- Stable existence misread as enroll: `{real_totals.get('stable_existence_as_enroll', 0)}`",
             f"- True live availability negative controls: `{real_totals.get('true_live_availability_negative_controls', 0)}`",
@@ -266,6 +279,14 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 lines.append(f"  - blockers: `{', '.join(item.get('active_blockers') or [])}`")
             if item.get("review_question"):
                 lines.append(f"  - review: {item.get('review_question')}")
+    if proof_reconciliation:
+        lines.extend(["", "## Proof Reconciliation Shadow", ""])
+        lines.append(f"- traced rows: `{proof_reconciliation.get('total', 0)}`")
+        lines.append(f"- would reconcile: `{proof_reconciliation.get('would_reconcile', 0)}`")
+        lines.append(f"- already aligned: `{proof_reconciliation.get('already_aligned', 0)}`")
+        by_reason = proof_reconciliation.get("by_reason") if isinstance(proof_reconciliation.get("by_reason"), Mapping) else {}
+        for reason, count in sorted(by_reason.items(), key=lambda item: (-item[1], item[0]))[:12]:
+            lines.append(f"- `{reason or 'missing'}`: `{count}`")
     lines.extend(
         [
             "",
@@ -312,6 +333,7 @@ def _build_work_items(
     overhandoff: Mapping[str, Any],
     root_cause: Mapping[str, Any],
     injection: Mapping[str, Any],
+    proof_reconciliation: Mapping[str, Mapping[str, Any]],
     confidence_threshold: float,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -344,6 +366,15 @@ def _build_work_items(
             items.append(_item(row, "measurement_review_unclear", ["runtime_handoff_but_frame_fields_are_correct"]))
         if current_route not in HANDOFF_ROUTES:
             items.append(_item(row, "already_self_no_active_leverage", ["current_route_already_self_or_not_handoff"]))
+        reconciliation = proof_reconciliation.get(_turn_key(row.get("dialog_id"), row.get("turn")))
+        if isinstance(reconciliation, Mapping) and reconciliation.get("status") == "would_reconcile_to_safe_reference":
+            items.append(
+                _item(
+                    row,
+                    "semanticframe_proof_reconciliation_candidate",
+                    ["fresh_exact_proof_would_reconcile_missing_facts_frame"],
+                )
+            )
 
     over_groups = overhandoff.get("groups") if isinstance(overhandoff.get("groups"), Mapping) else {}
     danger = over_groups.get("danger_adjacent_blocked") if isinstance(over_groups.get("danger_adjacent_blocked"), Mapping) else {}
@@ -415,6 +446,7 @@ def _active_block_reason(workstream: str) -> str:
     reasons = {
         "semanticframe_existence_vs_availability": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
         "semanticframe_safe_reference_missing_facts": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+        "semanticframe_proof_reconciliation_candidate": "fresh_exact_proof_would_reconcile_missing_facts_frame_but_active_not_authorized",
         "semanticframe_low_confidence": "semantic_frame_confidence_below_shadow_threshold",
         "retrieval_delivery_runtime_missing_exact_proof": "runtime_retrieval_did_not_deliver_exact_client_safe_fact",
         "conversation_plan_scope_missing": "conversation_plan_does_not_carry_product_scope_or_required_fact_keys",
@@ -432,6 +464,8 @@ def _calibration_target(workstream: str, row: Mapping[str, Any]) -> list[str]:
         return ["risk_class", "answerability", "requested_action", "must_handoff"]
     if workstream == "semanticframe_safe_reference_missing_facts":
         return ["risk_class", "answerability", "must_handoff"]
+    if workstream == "semanticframe_proof_reconciliation_candidate":
+        return ["proof_reconciliation_shadow", "frame_contract", "text_readiness_policy"]
     if workstream == "semanticframe_low_confidence":
         return ["confidence"]
     if workstream == "retrieval_delivery_runtime_missing_exact_proof":
@@ -453,6 +487,7 @@ def _review_question(workstream: str) -> str:
     questions = {
         "semanticframe_existence_vs_availability": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
         "semanticframe_safe_reference_missing_facts": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+        "semanticframe_proof_reconciliation_candidate": "Does fresh exact proof justify a future frame correction, and is the existing text safe enough without regeneration?",
         "semanticframe_low_confidence": "Why is a safe/self reference below the confidence threshold on the production stack?",
         "retrieval_delivery_runtime_missing_exact_proof": "Why did runtime retrieval miss the exact KB fact found by the offline verifier?",
         "conversation_plan_scope_missing": "Where should product scope and required fact keys be carried before route policy?",
@@ -471,6 +506,7 @@ def _totals(
     overhandoff: Mapping[str, Any],
     injection: Mapping[str, Any],
     work_items: Sequence[Mapping[str, Any]],
+    proof_reconciliation: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     gold_summary = gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {}
     over_totals = overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {}
@@ -486,6 +522,9 @@ def _totals(
         "current_safe_over_handoff": over_totals.get("safe_handoff_total", gold_summary.get("current_over_handoff_candidates", 0)),
         "strict_active_candidates_now": injection_totals.get("readiness_strict_f3_draft_candidates", 0),
         "manager_only_exact_proof_rows": injection_totals.get("manager_only_exact_proof_rows", 0),
+        "proof_reconciliation_would_reconcile": sum(
+            1 for trace in proof_reconciliation.values() if trace.get("status") == "would_reconcile_to_safe_reference"
+        ),
         "work_items_total": len(work_items),
     }
 
@@ -517,9 +556,69 @@ def _field_error_breakdowns(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]
     }
 
 
-def _real_lever_analysis(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _turn_key(dialog_id: Any, turn: Any) -> str:
+    return f"{str(dialog_id or '')}#{_int_or_zero(turn)}"
+
+
+def _load_proof_reconciliation_by_turn(transcripts: Path) -> dict[str, Mapping[str, Any]]:
+    traces: dict[str, Mapping[str, Any]] = {}
+    if not transcripts.exists():
+        return traces
+    with transcripts.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                dialog = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            dialog_id = str(dialog.get("dialog_id") or "")
+            turns = dialog.get("turns") if isinstance(dialog.get("turns"), list) else []
+            for turn in turns:
+                if not isinstance(turn, Mapping):
+                    continue
+                trace = turn.get("bot_semantic_frame_proof_reconciliation_shadow")
+                if not isinstance(trace, Mapping):
+                    direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+                    trace = direct.get("semantic_frame_proof_reconciliation_shadow") if isinstance(direct, Mapping) else {}
+                if isinstance(trace, Mapping) and trace:
+                    traces[_turn_key(dialog_id, turn.get("turn"))] = trace
+    return traces
+
+
+def _proof_reconciliation_summary(traces: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    statuses = Counter(str(trace.get("status") or "") for trace in traces.values())
+    reasons = Counter(str(trace.get("reason") or "") for trace in traces.values())
+    would = [
+        {
+            "turn_key": key,
+            "route_before": trace.get("route_before"),
+            "reason": trace.get("reason"),
+            "exact_fact_keys": list(trace.get("exact_fact_keys") or [])[:5]
+            if isinstance(trace.get("exact_fact_keys"), list)
+            else [],
+            "frame_before": trace.get("frame_before") if isinstance(trace.get("frame_before"), Mapping) else {},
+        }
+        for key, trace in traces.items()
+        if trace.get("status") == "would_reconcile_to_safe_reference"
+    ]
+    return {
+        "total": len(traces),
+        "would_reconcile": statuses.get("would_reconcile_to_safe_reference", 0),
+        "already_aligned": statuses.get("already_aligned", 0),
+        "by_status": dict(statuses),
+        "by_reason": dict(reasons),
+        "examples": would[:50],
+    }
+
+
+def _real_lever_analysis(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    proof_reconciliation: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
     too_cautious = [row for row in rows if _true_frame_too_cautious(row) and _safe_self(row)]
-    classified = [_real_lever_row(row) for row in too_cautious]
+    classified = [_real_lever_row(row, proof_reconciliation=proof_reconciliation) for row in too_cautious]
     negative_controls = _negative_control_rows(rows)
     return {
         "totals": {
@@ -532,6 +631,10 @@ def _real_lever_analysis(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "factless_ack_status": sum(1 for row in classified if row.get("factless_ack_status")),
             "danger_adjacent": sum(1 for row in classified if row.get("danger_adjacent")),
             "clean_route_only_discussion": sum(1 for row in classified if row.get("clean_route_only_discussion")),
+            "proof_reconciliation_would_reconcile": sum(1 for row in classified if row.get("proof_reconciliation_would_reconcile")),
+            "proof_reconciliation_current_handoff": sum(
+                1 for row in classified if row.get("proof_reconciliation_would_reconcile") and row.get("current_handoff")
+            ),
             "stable_existence_as_check_availability": sum(
                 1
                 for row in classified
@@ -558,6 +661,7 @@ def _real_lever_analysis(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "by_frame_answerability": dict(Counter(str(row.get("frame_answerability") or "") for row in classified)),
         "by_route": dict(Counter(str(row.get("route") or "") for row in classified)),
         "by_lever_class": dict(Counter(str(row.get("lever_class") or "") for row in classified)),
+        "by_proof_reconciliation_status": dict(Counter(str(row.get("proof_reconciliation_status") or "") for row in classified)),
         "scope_confusion": _scope_confusion_summary(classified),
         "negative_controls": negative_controls[:50],
         "examples": classified[:50],
@@ -569,7 +673,11 @@ def _real_lever_analysis(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _real_lever_row(row: Mapping[str, Any]) -> dict[str, Any]:
+def _real_lever_row(
+    row: Mapping[str, Any],
+    *,
+    proof_reconciliation: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
     frame = row.get("frame") if isinstance(row.get("frame"), Mapping) else {}
     route = str(row.get("current_route") or row.get("route") or "")
     notes = str(row.get("notes") or "").casefold()
@@ -578,6 +686,11 @@ def _real_lever_row(row: Mapping[str, Any]) -> dict[str, Any]:
     risk_class = str(frame.get("risk_class") or "")
     answerability = str(frame.get("answerability") or "")
     current_handoff = route in HANDOFF_ROUTES
+    reconciliation = proof_reconciliation.get(_turn_key(dialog_id, row.get("turn")))
+    if not isinstance(reconciliation, Mapping):
+        reconciliation = {}
+    reconciliation_status = str(reconciliation.get("status") or "")
+    reconciliation_would_fix = reconciliation_status == "would_reconcile_to_safe_reference"
     user_scope = _user_scope(row)
     frame_scope = _frame_scope(frame)
     fact_assertion = _contains_any(notes, FACT_ASSERTION_MARKERS)
@@ -631,6 +744,12 @@ def _real_lever_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "current_handoff": current_handoff,
         "already_self_or_no_route_leverage": already_self,
         "clean_route_only_discussion": clean_route_only,
+        "proof_reconciliation_status": reconciliation_status,
+        "proof_reconciliation_reason": str(reconciliation.get("reason") or ""),
+        "proof_reconciliation_would_reconcile": reconciliation_would_fix,
+        "proof_reconciliation_exact_fact_keys": list(reconciliation.get("exact_fact_keys") or [])
+        if isinstance(reconciliation.get("exact_fact_keys"), list)
+        else [],
         "lever_class": lever_class,
         "active_blockers": blockers,
         "review_question": _real_lever_review_question(lever_class),

@@ -14,6 +14,7 @@ from mango_mvp.channels.subscription_llm import (
     SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
     SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV,
     SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
+    SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV,
     SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
     SubscriptionDraftResult,
@@ -58,6 +59,18 @@ def test_semantic_frame_existence_proof_shadow_flag_is_default_off_and_not_profi
     assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({"semantic_frame_existence_proof_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_existence_proof_shadow_enabled({SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV: "0"}) is False
+
+
+def test_semantic_frame_proof_reconciliation_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_proof_reconciliation_shadow_enabled({}) is False
+    assert subscription_llm._semantic_frame_proof_reconciliation_shadow_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_proof_reconciliation_shadow_enabled({SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_proof_reconciliation_shadow_enabled({"semantic_frame_proof_reconciliation_shadow": "1"}) is True
+    assert subscription_llm._semantic_frame_proof_reconciliation_shadow_enabled({SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_manager_action_gate_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -691,6 +704,141 @@ def test_semantic_frame_existence_proof_shadow_default_off_does_not_supply_fresh
     shadow = result.metadata["semantic_frame_self_answer_shadow"]
     assert shadow["status"] == "blocked"
     assert shadow["reason"] == "no_exact_fact_keys"
+
+
+def test_semantic_frame_proof_reconciliation_shadow_reports_missing_facts_contradicted_by_proof() -> None:
+    metadata = _existence_frame_metadata()
+    metadata["semantic_frame"]["risk_class"] = "missing_facts"
+    metadata["semantic_frame"]["answerability"] = "manager_only"
+    metadata["semantic_frame"]["must_handoff"] = True
+    metadata["direct_path"]["semantic_frame_existence_proof_shadow"] = {
+        "status": "exists",
+        "reason": "exact_product_existence_fact",
+        "exact_fact_keys": ["unpk.olympiad.physics.online_11"],
+        "fact_metadata": {
+            "unpk.olympiad.physics.online_11": {
+                "brand": "unpk",
+                "client_safe": "true",
+                "valid_until": "2026-12-31",
+                "source": "semantic_frame_existence_proof_shadow",
+            }
+        },
+    }
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит и подскажет.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_proof_reconciliation_shadow(
+        base_result,
+        context={
+            "active_brand": "unpk",
+            SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV: "1",
+        },
+    )
+
+    assert result.route == base_result.route
+    assert result.draft_text == base_result.draft_text
+    assert result.metadata["semantic_frame"]["risk_class"] == "missing_facts"
+    shadow = result.metadata["semantic_frame_proof_reconciliation_shadow"]
+    assert shadow["status"] == "would_reconcile_to_safe_reference"
+    assert shadow["reason"] == "fresh_proof_contradicts_missing_facts_frame"
+    assert shadow["freshness"]["ok"] is True
+    assert shadow["freshness"]["existence_proof_shadow_count"] == 1
+    assert shadow["reconciled_frame_if_applied"] == {
+        "risk_class": "safe",
+        "answerability": "answer_self",
+        "must_handoff": False,
+        "requested_action": "answer_question",
+    }
+    assert result.metadata["direct_path"]["semantic_frame_proof_reconciliation_shadow"] == shadow
+
+
+def test_semantic_frame_proof_reconciliation_shadow_blocks_manager_action_even_with_proof() -> None:
+    metadata = _existence_frame_metadata()
+    metadata["semantic_frame"]["risk_class"] = "manager_action"
+    metadata["semantic_frame"]["answerability"] = "manager_only"
+    metadata["semantic_frame"]["must_handoff"] = True
+    metadata["semantic_frame"]["requested_action"] = "enroll"
+    metadata["direct_path"]["semantic_frame_existence_proof_shadow"] = {
+        "status": "exists",
+        "exact_fact_keys": ["unpk.olympiad.physics.online_11"],
+        "fact_metadata": {
+            "unpk.olympiad.physics.online_11": {
+                "brand": "unpk",
+                "client_safe": "true",
+                "valid_until": "2026-12-31",
+                "source": "semantic_frame_existence_proof_shadow",
+            }
+        },
+    }
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит возможность записи.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_proof_reconciliation_shadow(
+        base_result,
+        context={
+            "active_brand": "unpk",
+            SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_proof_reconciliation_shadow"]
+    assert shadow["status"] == "blocked"
+    assert shadow["reason"] == "requested_action_not_reconcilable"
+    assert "reconciled_frame_if_applied" not in shadow
+    assert result.route == "draft_for_manager"
+
+
+def test_semantic_frame_proof_reconciliation_shadow_reports_check_availability_confusion() -> None:
+    metadata = _existence_frame_metadata()
+    metadata["semantic_frame"]["risk_class"] = "manager_action"
+    metadata["semantic_frame"]["answerability"] = "manager_only"
+    metadata["semantic_frame"]["must_handoff"] = True
+    metadata["semantic_frame"]["requested_action"] = "check_availability"
+    metadata["direct_path"]["semantic_frame_existence_proof_shadow"] = {
+        "status": "exists",
+        "exact_fact_keys": ["unpk.olympiad.physics.online_11"],
+        "fact_metadata": {
+            "unpk.olympiad.physics.online_11": {
+                "brand": "unpk",
+                "client_safe": "true",
+                "valid_until": "2026-12-31",
+                "source": "semantic_frame_existence_proof_shadow",
+            }
+        },
+    }
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит наличие места.",
+        metadata=metadata,
+    )
+
+    result = subscription_llm.apply_semantic_frame_proof_reconciliation_shadow(
+        base_result,
+        context={
+            "active_brand": "unpk",
+            SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV: "1",
+        },
+    )
+
+    shadow = result.metadata["semantic_frame_proof_reconciliation_shadow"]
+    assert shadow["status"] == "would_reconcile_to_safe_reference"
+    assert shadow["active_behavior_allowed"] is False
+    assert shadow["active_blockers"] == [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "current_frame_requested_action_check_availability",
+        "current_frame_risk_class_manager_action",
+    ]
+    assert shadow["reconciled_frame_if_applied"]["requested_action"] == "answer_question"
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Менеджер проверит наличие места."
 
 
 def test_semantic_frame_self_answer_shadow_blocks_p0_even_when_frame_says_safe() -> None:

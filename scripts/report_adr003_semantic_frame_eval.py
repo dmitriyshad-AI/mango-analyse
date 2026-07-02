@@ -88,6 +88,7 @@ def build_report(
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
+        "semantic_frame_proof_reconciliation_shadow": _semantic_frame_proof_reconciliation_shadow_metrics(on_dialogs),
         "semantic_frame_self_answer_shadow": _semantic_frame_self_answer_shadow_metrics(on_dialogs),
         "hard_gate_failures": {
             "on": len(on_summary_data.get("hard_gate_failure_dialogs") or []),
@@ -105,6 +106,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     shadow = report.get("frame_decision_shadow") if isinstance(report.get("frame_decision_shadow"), Mapping) else {}
+    reconciliation_shadow = (
+        report.get("semantic_frame_proof_reconciliation_shadow")
+        if isinstance(report.get("semantic_frame_proof_reconciliation_shadow"), Mapping)
+        else {}
+    )
     self_shadow = (
         report.get("semantic_frame_self_answer_shadow")
         if isinstance(report.get("semantic_frame_self_answer_shadow"), Mapping)
@@ -127,6 +133,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
         f"- LLM non-frame ON calls: `{llm.get('on_non_frame_total', 'n/a')}`",
         f"- Frame decision shadow turns: `{shadow.get('turn_count', 0)}`",
+        f"- Proof reconciliation shadow turns: `{reconciliation_shadow.get('turn_count', 0)}`",
+        f"- Proof reconciliation would-fix-frame rows: `{reconciliation_shadow.get('would_reconcile_count', 0)}`",
+        f"- Proof reconciliation active allowed rows: `{reconciliation_shadow.get('active_allowed_count', 0)}`",
         f"- Self-answer shadow turns: `{self_shadow.get('turn_count', 0)}`",
         f"- Self-answer candidates: `{self_shadow.get('would_demote_count', 0)}`",
         f"- Self-answer P0-lowered candidates: `{self_shadow.get('p0_lowered_count', 0)}`",
@@ -372,6 +381,61 @@ def _frame_decision_shadow_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict
         "p0_vs_actual": dict(p0_alignment),
         "action_status": dict(action_alignment),
         "mismatch_examples": examples[:50],
+    }
+
+
+def _semantic_frame_proof_reconciliation_shadow_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    status_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    proof_status_counts: Counter[str] = Counter()
+    examples: list[dict[str, Any]] = []
+    turns = 0
+    would_reconcile = 0
+    active_allowed = 0
+    for dialog in dialogs:
+        dialog_id = str(dialog.get("dialog_id") or "")
+        for turn in _turns(dialog):
+            shadow = turn.get("bot_semantic_frame_proof_reconciliation_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+                shadow = direct.get("semantic_frame_proof_reconciliation_shadow") if isinstance(direct, Mapping) else {}
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            turns += 1
+            status = str(shadow.get("status") or "unknown")
+            reason = str(shadow.get("reason") or "unknown")
+            status_counts[status] += 1
+            reason_counts[reason] += 1
+            proof_status_counts[str(shadow.get("proof_status") or "unknown")] += 1
+            if bool(shadow.get("active_behavior_allowed")):
+                active_allowed += 1
+            if status == "would_reconcile_to_safe_reference":
+                would_reconcile += 1
+                if len(examples) < 50:
+                    examples.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "turn": turn.get("turn"),
+                            "bot_route": turn.get("bot_route"),
+                            "reason": reason,
+                            "proof_status": shadow.get("proof_status"),
+                            "exact_fact_keys": list(shadow.get("exact_fact_keys") or [])[:5]
+                            if isinstance(shadow.get("exact_fact_keys"), list)
+                            else [],
+                            "active_blockers": list(shadow.get("active_blockers") or [])[:8]
+                            if isinstance(shadow.get("active_blockers"), list)
+                            else [],
+                        }
+                    )
+    return {
+        "schema_version": "semantic_frame_proof_reconciliation_shadow_metrics_v1_2026_07_02",
+        "turn_count": turns,
+        "status": dict(status_counts),
+        "reasons": dict(reason_counts),
+        "proof_status": dict(proof_status_counts),
+        "would_reconcile_count": would_reconcile,
+        "active_allowed_count": active_allowed,
+        "candidate_examples": examples,
     }
 
 

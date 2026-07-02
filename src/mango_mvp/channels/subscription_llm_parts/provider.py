@@ -282,6 +282,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _semantic_frame_manager_action_gate_enabled,
     _semantic_frame_self_answer_shadow_enabled,
     _semantic_frame_existence_proof_shadow_enabled,
+    _semantic_frame_proof_reconciliation_shadow_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
@@ -987,7 +988,8 @@ class SubscriptionLlmDraftProvider:
                 context=context,
             )
             proof_shadowed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
-            manager_gated = apply_semantic_frame_manager_action_gate(proof_shadowed, context=context)
+            reconciled_shadowed = apply_semantic_frame_proof_reconciliation_shadow(proof_shadowed, context=context)
+            manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
             self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
             return apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
         if dialogue_contract_pipeline_enabled(context):
@@ -2563,6 +2565,7 @@ SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION = "semantic_frame_decision_shadow_
 SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION = "semantic_frame_manager_action_gate_v1_2026_07_01"
 SEMANTIC_FRAME_SELF_ANSWER_SHADOW_SCHEMA_VERSION = "semantic_frame_self_answer_shadow_v1_2026_07_02"
 SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_SCHEMA_VERSION = "semantic_frame_existence_proof_shadow_v1_2026_07_02"
+SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_SCHEMA_VERSION = "semantic_frame_proof_reconciliation_shadow_v1_2026_07_02"
 
 _SEMANTIC_FRAME_P0_FLAGS = {
     "p0",
@@ -3104,6 +3107,131 @@ def apply_semantic_frame_existence_proof_shadow(
     trace = _semantic_frame_existence_proof_shadow_trace(_semantic_frame_from_result(result), context=context)
     metadata["semantic_frame_existence_proof_shadow"] = trace
     direct["semantic_frame_existence_proof_shadow"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def _semantic_frame_proof_reconciliation_shadow_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    frame = _semantic_frame_from_result(result)
+    active_brand = _active_brand(context)
+    proof = direct.get("semantic_frame_existence_proof_shadow")
+    if not isinstance(proof, Mapping):
+        proof = metadata.get("semantic_frame_existence_proof_shadow")
+    if not isinstance(proof, Mapping):
+        proof = {}
+    freshness = _semantic_frame_fresh_client_safe_fact_trace(direct, active_brand=active_brand)
+    base = {
+        "schema_version": SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "route_text_shadow_only": True,
+        "active_behavior_allowed": False,
+        "status": "blocked",
+        "reason": "",
+        "route_before": result.route,
+        "route_after_if_active": result.route,
+        "active_blockers": [],
+        "result_missing_facts": [str(item) for item in result.missing_facts],
+        "proof_status": str(proof.get("status") or ""),
+        "proof_reason": str(proof.get("reason") or ""),
+        "source_fact_key": str(proof.get("source_fact_key") or ""),
+        "valid_until": str(proof.get("valid_until") or ""),
+        "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        "exact_fact_keys": [
+            str(key or "").strip()
+            for key in (proof.get("exact_fact_keys") or ())
+            if str(key or "").strip()
+        ],
+        "freshness": freshness,
+    }
+    if not frame:
+        return {**base, "reason": "no_frame", "active_blockers": ["no_frame"]}
+    frame_schema = str(frame.get("schema_version") or "").strip()
+    frame_trace = {
+        "schema_version": frame_schema,
+        "confidence": _clamp_float(frame.get("confidence", 0.0)),
+        "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+        "risk_class": _semantic_frame_value(frame, "risk_class"),
+        "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+        "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+        "requested_action": _semantic_frame_value(frame, "requested_action"),
+        "answerability": _semantic_frame_value(frame, "answerability"),
+        "must_handoff": _semantic_frame_bool(frame.get("must_handoff")),
+    }
+    trace = {
+        **base,
+        "frame_before": frame_trace,
+    }
+    if frame_schema != SEMANTIC_FRAME_SCHEMA_VERSION:
+        return {**trace, "reason": "unsupported_frame_schema", "active_blockers": ["unsupported_frame_schema"]}
+    if not _semantic_frame_posthoc_ok(result):
+        return {**trace, "reason": "frame_not_posthoc", "active_blockers": ["frame_not_posthoc"]}
+    if _semantic_frame_actual_p0(result):
+        return {**trace, "reason": "protected_p0", "active_blockers": ["protected_p0"]}
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    risk_class = _semantic_frame_value(frame, "risk_class")
+    if requested_action not in {"answer_question", "check_availability"}:
+        return {**trace, "reason": "requested_action_not_reconcilable", "active_blockers": ["requested_action_not_reconcilable"]}
+    if risk_class in {"p0"}:
+        return {**trace, "reason": "protected_handoff_frame", "active_blockers": ["protected_handoff_frame"]}
+    if risk_class not in {"safe", "missing_facts", "manager_action"}:
+        return {**trace, "reason": "risk_class_not_reconcilable", "active_blockers": ["risk_class_not_reconcilable"]}
+    if _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
+        return {**trace, "reason": "payment_readiness_blocked", "active_blockers": ["payment_readiness_blocked"]}
+    if _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:
+        return {**trace, "reason": "deal_stage_blocked", "active_blockers": ["deal_stage_blocked"]}
+    if not bool(freshness.get("ok")):
+        reason = str(freshness.get("reason") or "freshness_unknown")
+        return {**trace, "reason": reason, "active_blockers": [reason]}
+
+    answerability = _semantic_frame_value(frame, "answerability")
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    if risk_class == "safe" and answerability == "answer_self" and must_handoff is False:
+        return {**trace, "status": "already_aligned", "reason": "frame_already_safe_answer_self"}
+    if risk_class == "missing_facts" or answerability == "manager_only" or must_handoff is True:
+        active_blockers = [
+            "shadow_only_reconciliation",
+            "requires_text_readiness_policy",
+            "requires_existence_vs_live_availability_semantic_review",
+        ]
+        if requested_action == "check_availability":
+            active_blockers.append("current_frame_requested_action_check_availability")
+        if risk_class == "manager_action":
+            active_blockers.append("current_frame_risk_class_manager_action")
+        if result.missing_facts:
+            active_blockers.append("result_missing_facts_present")
+        return {
+            **trace,
+            "status": "would_reconcile_to_safe_reference",
+            "reason": "fresh_proof_contradicts_missing_facts_frame",
+            "active_blockers": active_blockers,
+            "reconciled_frame_if_applied": {
+                "risk_class": "safe",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "requested_action": "answer_question",
+            },
+        }
+    return {**trace, "status": "pass", "reason": "frame_not_missing_facts_or_manager_only"}
+
+
+def apply_semantic_frame_proof_reconciliation_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_proof_reconciliation_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace = _semantic_frame_proof_reconciliation_shadow_trace(result, context=context)
+    metadata["semantic_frame_proof_reconciliation_shadow"] = trace
+    direct["semantic_frame_proof_reconciliation_shadow"] = trace
     metadata["direct_path"] = direct
     return replace(result, metadata=metadata)
 

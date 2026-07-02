@@ -123,13 +123,31 @@ def _fact() -> dict:
     }
 
 
-def _build(tmp_path: Path, dialogs: list[dict], gold_rows: list[dict]) -> dict:
+def _online_fact(**overrides: object) -> dict:
+    fact = {
+        "brand": "unpk",
+        "fact_key": "online_platform.levels.1",
+        "fact_type": "course_parameter",
+        "product": "online_platform",
+        "program_kind": "online",
+        "client_safe_text": "УНПК: онлайн-занятия проходят на платформе SohoLMS.",
+        "allowed_for_client_answer": True,
+        "forbidden_for_client": False,
+        "internal_only": False,
+        "valid_until": "2026-08-31",
+        "structured_value": {"raw_value": "SohoLMS", "valid_until": "2026-08-31"},
+    }
+    fact.update(overrides)
+    return fact
+
+
+def _build(tmp_path: Path, dialogs: list[dict], gold_rows: list[dict], *, facts: list[dict] | None = None) -> dict:
     transcripts = tmp_path / "transcripts.jsonl"
     gold = tmp_path / "gold.jsonl"
     kb = tmp_path / "kb.json"
     _write_jsonl(transcripts, dialogs)
     _write_jsonl(gold, gold_rows)
-    _write_json(kb, {"facts": [_fact()]})
+    _write_json(kb, {"facts": facts or [_fact(), _online_fact()]})
     return report.build_report(
         transcripts=transcripts,
         gold=gold,
@@ -299,8 +317,12 @@ def test_proof_reconciliation_shadow_is_reported_but_not_active_go(tmp_path: Pat
     assert text_readiness["send_as_is_review_candidates"] == 0
     assert text_readiness["by_blocker"]["missing_facts_present"] == 1
     assert text_readiness["by_blocker"]["semantic_verifier_unavailable"] == 1
+    assert text_readiness["source_fact_lookup_by_status"] == {"found": 1}
+    assert text_readiness["source_fact_client_safe_text_present"] == 1
+    assert text_readiness["text_candidate_readiness_by_status"] == {"source_text_ready": 1}
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_text_blocked"] == 1
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 0
+    assert result["real_lever_analysis"]["totals"]["proof_text_source_fact_ready"] == 1
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 
@@ -336,8 +358,132 @@ def test_proof_reconciliation_text_readiness_can_mark_manual_review_candidate(tm
     readiness = result["proof_reconciliation_text_readiness"]
     assert readiness["send_as_is_review_candidates"] == 1
     assert readiness["by_status"] == {"send_as_is_review_candidate": 1}
+    assert readiness["source_fact_lookup_by_status"] == {"found": 1}
+    assert readiness["text_candidate_readiness_by_status"] == {"source_text_ready": 1}
+    row = readiness["examples"][0]
+    assert row["source_fact_client_safe_text_present"] is True
+    assert row["source_fact_client_safe_text_hash"]
+    assert row["source_fact_client_safe_text_length"] > 0
+    assert row["raw_text_exported"] is False
+    assert row["text_candidate_blockers"] == [
+        "shadow_only_text_candidate",
+        "requires_template_or_text_policy",
+    ]
     assert readiness["active_behavior_allowed"] is False
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 1
+    assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_proof_text_source_readiness_ignores_fallback_fact_text(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "fallback",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("fallback", notes="safe reference: platform/format without live seats")],
+        facts=[_online_fact(client_safe_text="", fact_text="Fallback text must not count as client-safe source.")],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["source_fact_lookup_by_status"] == {"empty_client_safe_text": 1}
+    assert readiness["text_candidate_readiness_by_status"] == {"blocked_empty_client_safe_text": 1}
+    row = readiness["examples"][0]
+    assert row["source_fact_client_safe_text_present"] is False
+    assert row["source_fact_client_safe_text_hash"] == ""
+    assert "empty_client_safe_text" in row["text_candidate_blockers"]
+    assert row["raw_text_exported"] is False
+    assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_proof_text_source_readiness_blocks_wrong_brand_template_and_pii(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "brand",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            ),
+            _turn(
+                "template",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["template.fact"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            ),
+            _turn(
+                "pii",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["pii.fact"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            ),
+        ],
+        [
+            _gold("brand", notes="safe reference: platform/format without live seats"),
+            _gold("template", notes="safe reference: platform/format without live seats"),
+            _gold("pii", notes="safe reference: platform/format without live seats"),
+        ],
+        facts=[
+            _online_fact(brand="foton"),
+            _online_fact(fact_key="template.fact", bot_template_required=True),
+            _online_fact(fact_key="pii.fact", client_safe_text="Пишите на test@example.com"),
+        ],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["source_fact_lookup_by_status"] == {"wrong_brand": 1, "found": 2}
+    assert readiness["source_fact_client_safe_text_present"] == 3
+    assert readiness["source_fact_client_safe_text_pii_signal"] == 1
+    assert readiness["bot_template_required"] == 1
+    by_turn = readiness["by_turn"]
+    assert by_turn["brand#1"]["text_candidate_readiness_status"] == "blocked_wrong_brand"
+    assert "bot_template_required" in by_turn["template#1"]["text_candidate_blockers"]
+    assert "client_safe_text_pii_signal" in by_turn["pii#1"]["text_candidate_blockers"]
+    assert by_turn["pii#1"]["raw_text_exported"] is False
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 

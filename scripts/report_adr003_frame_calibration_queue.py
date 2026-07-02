@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -145,9 +147,12 @@ def build_report(
     )
     turns_by_key = _load_turns_by_turn(transcripts)
     proof_reconciliation = _load_proof_reconciliation_by_turn(transcripts)
+    fact_index = _load_fact_index(kb_snapshot)
     proof_text_readiness = _proof_text_readiness_summary(
         proof_reconciliation=proof_reconciliation,
         turns_by_key=turns_by_key,
+        fact_index=fact_index,
+        as_of_date=as_of_date or date.today(),
     )
 
     gold_rows = [row for row in gold_report.get("rows") or [] if isinstance(row, Mapping)]
@@ -250,6 +255,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Proof reconciliation would-fix-frame rows: `{real_totals.get('proof_reconciliation_would_reconcile', 0)}`",
             f"- Proof reconciliation send-as-is review candidates: `{real_totals.get('proof_reconciliation_send_as_is_review_candidates', 0)}`",
             f"- Proof reconciliation text blocked: `{real_totals.get('proof_reconciliation_text_blocked', 0)}`",
+            f"- Proof source fact text ready: `{real_totals.get('proof_text_source_fact_ready', 0)}`",
+            f"- Proof source fact text present: `{real_totals.get('proof_text_source_fact_present', 0)}`",
+            f"- Proof source fact PII signal: `{real_totals.get('proof_text_source_fact_pii_signal', 0)}`",
             f"- Stable existence misread as check_availability: `{real_totals.get('stable_existence_as_check_availability', 0)}`",
             f"- Stable existence misread as enroll: `{real_totals.get('stable_existence_as_enroll', 0)}`",
             f"- True live availability negative controls: `{real_totals.get('true_live_availability_negative_controls', 0)}`",
@@ -315,6 +323,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"- traced would-reconcile rows: `{proof_text_readiness.get('total', 0)}`")
         lines.append(f"- send-as-is review candidates: `{proof_text_readiness.get('send_as_is_review_candidates', 0)}`")
         lines.append(f"- active behavior allowed: `{proof_text_readiness.get('active_behavior_allowed', False)}`")
+        lines.append(f"- source fact client_safe_text present: `{proof_text_readiness.get('source_fact_client_safe_text_present', 0)}`")
+        lines.append(f"- source fact client_safe_text PII signal: `{proof_text_readiness.get('source_fact_client_safe_text_pii_signal', 0)}`")
+        lines.append(f"- bot_template_required: `{proof_text_readiness.get('bot_template_required', 0)}`")
         by_status = (
             proof_text_readiness.get("by_status") if isinstance(proof_text_readiness.get("by_status"), Mapping) else {}
         )
@@ -329,6 +340,24 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             lines.extend(["", "### Text readiness blockers", ""])
             for blocker, count in sorted(by_blocker.items(), key=lambda item: (-item[1], item[0]))[:16]:
                 lines.append(f"- `{blocker or 'missing'}`: `{count}`")
+        source_status = (
+            proof_text_readiness.get("source_fact_lookup_by_status")
+            if isinstance(proof_text_readiness.get("source_fact_lookup_by_status"), Mapping)
+            else {}
+        )
+        if source_status:
+            lines.extend(["", "### Source fact lookup", ""])
+            for status, count in sorted(source_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        candidate_status = (
+            proof_text_readiness.get("text_candidate_readiness_by_status")
+            if isinstance(proof_text_readiness.get("text_candidate_readiness_by_status"), Mapping)
+            else {}
+        )
+        if candidate_status:
+            lines.extend(["", "### Source text candidate readiness", ""])
+            for status, count in sorted(candidate_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
     lines.extend(
         [
             "",
@@ -577,6 +606,9 @@ def _totals(
         ),
         "proof_reconciliation_text_readiness_rows": proof_text_readiness.get("total", 0),
         "proof_reconciliation_send_as_is_review_candidates": proof_text_readiness.get("send_as_is_review_candidates", 0),
+        "proof_text_source_fact_client_safe_text_present": proof_text_readiness.get("source_fact_client_safe_text_present", 0),
+        "proof_text_source_fact_pii_signal": proof_text_readiness.get("source_fact_client_safe_text_pii_signal", 0),
+        "proof_text_bot_template_required": proof_text_readiness.get("bot_template_required", 0),
         "work_items_total": len(work_items),
     }
 
@@ -658,6 +690,41 @@ def _load_turns_by_turn(transcripts: Path) -> dict[str, Mapping[str, Any]]:
     return turns_by_key
 
 
+def _load_fact_index(kb_snapshot: Path) -> dict[str, Mapping[str, Any]]:
+    facts: list[Mapping[str, Any]] = []
+    if not kb_snapshot.exists():
+        return {}
+    try:
+        if kb_snapshot.suffix == ".jsonl":
+            with kb_snapshot.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, Mapping):
+                        facts.append(item)
+        else:
+            payload = json.loads(kb_snapshot.read_text(encoding="utf-8"))
+            if isinstance(payload, Mapping):
+                raw_facts = payload.get("facts") or payload.get("facts_registry") or payload.get("client_safe_facts")
+                if isinstance(raw_facts, list):
+                    facts.extend(item for item in raw_facts if isinstance(item, Mapping))
+            elif isinstance(payload, list):
+                facts.extend(item for item in payload if isinstance(item, Mapping))
+    except Exception:
+        return {}
+    index: dict[str, Mapping[str, Any]] = {}
+    for fact in facts:
+        for key_name in ("fact_key", "source_fact_key", "fact_id", "id", "key"):
+            key = str(fact.get(key_name) or "").strip()
+            if key:
+                index.setdefault(key, fact)
+    return index
+
+
 def _proof_reconciliation_summary(traces: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     statuses = Counter(str(trace.get("status") or "") for trace in traces.values())
     reasons = Counter(str(trace.get("reason") or "") for trace in traces.values())
@@ -688,6 +755,8 @@ def _proof_text_readiness_summary(
     *,
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
     turns_by_key: Mapping[str, Mapping[str, Any]],
+    fact_index: Mapping[str, Mapping[str, Any]],
+    as_of_date: date,
 ) -> dict[str, Any]:
     by_turn: dict[str, Mapping[str, Any]] = {}
     for key, trace in proof_reconciliation.items():
@@ -697,6 +766,8 @@ def _proof_text_readiness_summary(
             turn_key=key,
             trace=trace,
             turn=turns_by_key.get(key),
+            fact_index=fact_index,
+            as_of_date=as_of_date,
         )
     statuses = Counter(str(row.get("status") or "") for row in by_turn.values())
     blockers = Counter(
@@ -704,6 +775,8 @@ def _proof_text_readiness_summary(
         for row in by_turn.values()
         for blocker in (row.get("blockers") or [])
     )
+    fact_statuses = Counter(str(row.get("source_fact_lookup_status") or "") for row in by_turn.values())
+    text_statuses = Counter(str(row.get("text_candidate_readiness_status") or "") for row in by_turn.values())
     candidates = [row for row in by_turn.values() if row.get("send_as_is_review_candidate")]
     return {
         "total": len(by_turn),
@@ -712,11 +785,22 @@ def _proof_text_readiness_summary(
         "active_readiness": "no_go",
         "by_status": dict(statuses),
         "by_blocker": dict(blockers),
+        "source_fact_lookup_by_status": dict(fact_statuses),
+        "text_candidate_readiness_by_status": dict(text_statuses),
+        "source_fact_client_safe_text_present": sum(
+            1 for row in by_turn.values() if row.get("source_fact_client_safe_text_present")
+        ),
+        "source_fact_client_safe_text_pii_signal": sum(
+            1 for row in by_turn.values() if row.get("source_fact_client_safe_text_pii_signal")
+        ),
+        "bot_template_required": sum(1 for row in by_turn.values() if row.get("bot_template_required")),
         "by_turn": by_turn,
         "examples": list(by_turn.values())[:50],
         "notes": [
             "Report-only text readiness: no route/text/runtime behavior is changed.",
             "A fresh exact proof is not enough to send text as-is; existing text gates must also be clean.",
+            "Fact-text candidate readiness uses only raw client_safe_text from the KB snapshot; fallback fact_text is not sendable proof.",
+            "Full client_safe_text is not exported; report stores only length/hash and safety status.",
             "semantic_output_verifier unavailable is treated as a blocker, not as permission.",
         ],
     }
@@ -727,6 +811,8 @@ def _proof_text_readiness_for_turn(
     turn_key: str,
     trace: Mapping[str, Any],
     turn: Mapping[str, Any] | None,
+    fact_index: Mapping[str, Mapping[str, Any]],
+    as_of_date: date,
 ) -> dict[str, Any]:
     if not isinstance(turn, Mapping):
         return {
@@ -738,6 +824,7 @@ def _proof_text_readiness_for_turn(
         }
     route = str(turn.get("bot_route") or trace.get("route_before") or "")
     direct_path = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    fact_readiness = _source_fact_text_readiness(trace, turn=turn, fact_index=fact_index, as_of_date=as_of_date)
     blockers: list[str] = []
     if route == "manager_only":
         blockers.append("current_route_manager_only")
@@ -791,11 +878,137 @@ def _proof_text_readiness_for_turn(
         "exact_fact_keys": list(trace.get("exact_fact_keys") or [])[:5]
         if isinstance(trace.get("exact_fact_keys"), list)
         else [],
+        **fact_readiness,
         "missing_facts_count": len(missing_facts),
         "answer_quality_findings_count": len(answer_quality_findings),
         "semantic_verifier_action": verifier.get("action") if isinstance(verifier, Mapping) else "",
         "authoritative_gate_action": auth_gate.get("action") if isinstance(auth_gate, Mapping) else "",
     }
+
+
+def _source_fact_text_readiness(
+    trace: Mapping[str, Any],
+    *,
+    turn: Mapping[str, Any],
+    fact_index: Mapping[str, Mapping[str, Any]],
+    as_of_date: date,
+) -> dict[str, Any]:
+    fact_key = _source_fact_key(trace)
+    active_brand = _turn_active_brand(turn, trace)
+    base = {
+        "source_fact_key": fact_key,
+        "source_fact_lookup_status": "",
+        "source_fact_client_safe_text_present": False,
+        "source_fact_client_safe_text_length": 0,
+        "source_fact_client_safe_text_hash": "",
+        "source_fact_client_safe_text_pii_signal": False,
+        "bot_template_required": False,
+        "text_candidate_readiness_status": "blocked",
+        "text_candidate_blockers": [],
+        "raw_text_exported": False,
+        "active_behavior_allowed": False,
+    }
+    blockers: list[str] = ["shadow_only_text_candidate", "requires_template_or_text_policy"]
+    if not fact_key:
+        return {
+            **base,
+            "source_fact_lookup_status": "missing_source_fact_key",
+            "text_candidate_readiness_status": "blocked_missing_source_fact_key",
+            "text_candidate_blockers": [*blockers, "missing_source_fact_key"],
+        }
+    fact = fact_index.get(fact_key)
+    if not isinstance(fact, Mapping):
+        return {
+            **base,
+            "source_fact_lookup_status": "missing",
+            "text_candidate_readiness_status": "blocked_missing_source_fact",
+            "text_candidate_blockers": [*blockers, "missing_source_fact"],
+        }
+    status, fact_blockers = _source_fact_status(fact, active_brand=active_brand, as_of_date=as_of_date)
+    raw_text = str(fact.get("client_safe_text") or "").strip()
+    pii_signal = _pii_signal(raw_text)
+    if pii_signal:
+        fact_blockers.append("client_safe_text_pii_signal")
+    text_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest() if raw_text else ""
+    text_ready = status == "found" and not fact_blockers and bool(raw_text)
+    return {
+        **base,
+        "source_fact_lookup_status": status,
+        "source_fact_client_safe_text_present": bool(raw_text),
+        "source_fact_client_safe_text_length": len(raw_text),
+        "source_fact_client_safe_text_hash": text_hash,
+        "source_fact_client_safe_text_pii_signal": pii_signal,
+        "bot_template_required": bool(fact.get("bot_template_required")),
+        "text_candidate_readiness_status": "source_text_ready" if text_ready else f"blocked_{fact_blockers[0] if fact_blockers else status}",
+        "text_candidate_blockers": [*blockers, *fact_blockers],
+    }
+
+
+def _source_fact_key(trace: Mapping[str, Any]) -> str:
+    key = str(trace.get("source_fact_key") or "").strip()
+    if key:
+        return key
+    exact = trace.get("exact_fact_keys")
+    if isinstance(exact, list):
+        return next((str(item or "").strip() for item in exact if str(item or "").strip()), "")
+    return ""
+
+
+def _turn_active_brand(turn: Mapping[str, Any], trace: Mapping[str, Any]) -> str:
+    for value in (
+        turn.get("brand"),
+        turn.get("active_brand"),
+        turn.get("bot_active_brand"),
+        trace.get("active_brand"),
+    ):
+        brand = str(value or "").strip().casefold()
+        if brand in {"foton", "unpk"}:
+            return brand
+    frame = turn.get("bot_semantic_frame") if isinstance(turn.get("bot_semantic_frame"), Mapping) else {}
+    product = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
+    brand = str(product.get("brand") or "").strip().casefold()
+    return brand if brand in {"foton", "unpk"} else ""
+
+
+def _source_fact_status(fact: Mapping[str, Any], *, active_brand: str, as_of_date: date) -> tuple[str, list[str]]:
+    blockers: list[str] = []
+    brand = str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
+    if active_brand and brand and brand != active_brand:
+        return "wrong_brand", ["wrong_brand"]
+    if fact.get("internal_only") is True:
+        return "internal_only", ["internal_only"]
+    if fact.get("forbidden_for_client") is True:
+        return "forbidden_for_client", ["forbidden_for_client"]
+    if fact.get("allowed_for_client_answer") is not True:
+        return "not_client_safe", ["not_client_safe"]
+    if not _valid_until_ok(fact.get("valid_until"), as_of_date=as_of_date):
+        return "stale", ["stale"]
+    raw_text = str(fact.get("client_safe_text") or "").strip()
+    if not raw_text:
+        return "empty_client_safe_text", ["empty_client_safe_text"]
+    if fact.get("bot_template_required") is True:
+        blockers.append("bot_template_required")
+    return "found", blockers
+
+
+def _valid_until_ok(value: Any, *, as_of_date: date) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    try:
+        return date.fromisoformat(raw[:10]) >= as_of_date
+    except ValueError:
+        return False
+
+
+def _pii_signal(value: str) -> bool:
+    if re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", value, flags=re.IGNORECASE):
+        return True
+    if re.search(r"(?:\+7|8)[\s()\\-]*\d{3}[\s()\\-]*\d{3}[\s\\-]*\d{2}[\s\\-]*\d{2}", value):
+        return True
+    if re.search(r"\b(?:amo|entity|contact|lead|deal)[_-]?id\b", value, flags=re.IGNORECASE):
+        return True
+    return False
 
 
 def _real_lever_analysis(
@@ -836,6 +1049,15 @@ def _real_lever_analysis(
                 if row.get("proof_reconciliation_would_reconcile")
                 and row.get("text_readiness_status")
                 and not row.get("send_as_is_review_candidate")
+            ),
+            "proof_text_source_fact_ready": sum(
+                1 for row in classified if row.get("text_candidate_readiness_status") == "source_text_ready"
+            ),
+            "proof_text_source_fact_present": sum(
+                1 for row in classified if row.get("source_fact_client_safe_text_present")
+            ),
+            "proof_text_source_fact_pii_signal": sum(
+                1 for row in classified if row.get("source_fact_client_safe_text_pii_signal")
             ),
             "stable_existence_as_check_availability": sum(
                 1
@@ -962,6 +1184,16 @@ def _real_lever_row(
         if isinstance(text_readiness.get("blockers"), list)
         else [],
         "send_as_is_review_candidate": bool(text_readiness.get("send_as_is_review_candidate")),
+        "source_fact_lookup_status": str(text_readiness.get("source_fact_lookup_status") or ""),
+        "source_fact_client_safe_text_present": bool(text_readiness.get("source_fact_client_safe_text_present")),
+        "source_fact_client_safe_text_length": text_readiness.get("source_fact_client_safe_text_length", 0),
+        "source_fact_client_safe_text_hash": str(text_readiness.get("source_fact_client_safe_text_hash") or ""),
+        "source_fact_client_safe_text_pii_signal": bool(text_readiness.get("source_fact_client_safe_text_pii_signal")),
+        "bot_template_required": bool(text_readiness.get("bot_template_required")),
+        "text_candidate_readiness_status": str(text_readiness.get("text_candidate_readiness_status") or ""),
+        "text_candidate_blockers": list(text_readiness.get("text_candidate_blockers") or [])
+        if isinstance(text_readiness.get("text_candidate_blockers"), list)
+        else [],
         "lever_class": lever_class,
         "active_blockers": blockers,
         "review_question": _real_lever_review_question(lever_class),

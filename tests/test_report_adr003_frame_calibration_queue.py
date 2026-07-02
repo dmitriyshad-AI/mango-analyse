@@ -46,6 +46,11 @@ def _turn(
     missing_facts: list[str] | None = None,
     frame: dict | None = None,
     proof_reconciliation: dict | None = None,
+    is_manager_deferral: bool = False,
+    answer_quality_findings: list[str] | None = None,
+    semantic_output_verifier: dict | None = None,
+    authoritative_output_gate: dict | None = None,
+    safety_flags: list[str] | None = None,
 ) -> dict:
     semantic_frame = {
         "risk_class": "manager_action",
@@ -74,7 +79,9 @@ def _turn(
                 "bot_text": "Передам менеджеру.",
                 "bot_route": route,
                 "bot_message_type": message_type,
-                "bot_safety_flags": ["manager_approval_required", "no_auto_send", f"message_type_{message_type}"],
+                "bot_safety_flags": safety_flags
+                if safety_flags is not None
+                else ["manager_approval_required", "no_auto_send", f"message_type_{message_type}"],
                 "bot_missing_facts": missing_facts if missing_facts is not None else ["актуальное наличие мест"],
                 "bot_semantic_frame": semantic_frame,
                 "bot_semantic_frame_proof_reconciliation_shadow": proof_reconciliation or {},
@@ -89,6 +96,12 @@ def _turn(
                         "freshness": {"ok": False, "exact_fact_count": 0, "fresh_client_safe_count": 0},
                     },
                 },
+                "bot_is_manager_deferral": is_manager_deferral,
+                "bot_answer_quality_findings": answer_quality_findings or [],
+                "bot_authoritative_output_gate": authoritative_output_gate
+                if authoritative_output_gate is not None
+                else {"action": "pass", "checked": True, "findings": []},
+                "bot_semantic_output_verifier": semantic_output_verifier or {},
             }
         ],
     }
@@ -281,7 +294,91 @@ def test_proof_reconciliation_shadow_is_reported_but_not_active_go(tmp_path: Pat
     assert result["workstreams"]["semanticframe_proof_reconciliation_candidate"]["count"] == 1
     assert result["proof_reconciliation"]["would_reconcile"] == 1
     assert result["proof_reconciliation"]["examples"][0]["exact_fact_keys"] == ["online_platform.levels.1"]
+    text_readiness = result["proof_reconciliation_text_readiness"]
+    assert text_readiness["total"] == 1
+    assert text_readiness["send_as_is_review_candidates"] == 0
+    assert text_readiness["by_blocker"]["missing_facts_present"] == 1
+    assert text_readiness["by_blocker"]["semantic_verifier_unavailable"] == 1
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_text_blocked"] == 1
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 0
     assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_proof_reconciliation_text_readiness_can_mark_manual_review_candidate(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "ready",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("ready", notes="safe reference: platform/format without live seats")],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["send_as_is_review_candidates"] == 1
+    assert readiness["by_status"] == {"send_as_is_review_candidate": 1}
+    assert readiness["active_behavior_allowed"] is False
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_send_as_is_review_candidates"] == 1
+    assert result["acceptance"]["active_readiness"] == "no_go"
+
+
+def test_proof_reconciliation_text_readiness_blocks_deferral_and_quality_findings(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        [
+            _turn(
+                "blocked",
+                route="draft_for_manager",
+                message_type="question",
+                missing_facts=[],
+                frame={
+                    "risk_class": "missing_facts",
+                    "answerability": "manager_only",
+                    "requested_action": "answer_question",
+                    "must_handoff": True,
+                    "confidence": 0.93,
+                },
+                proof_reconciliation={
+                    "status": "would_reconcile_to_safe_reference",
+                    "reason": "fresh_proof_contradicts_missing_facts_frame",
+                    "route_before": "draft_for_manager",
+                    "exact_fact_keys": ["online_platform.levels.1"],
+                    "result_missing_facts": [],
+                },
+                is_manager_deferral=True,
+                answer_quality_findings=["rewrite_locked_high_risk_or_manager_only"],
+                semantic_output_verifier={"action": "pass", "findings": []},
+            )
+        ],
+        [_gold("blocked", notes="safe reference: platform/format without live seats")],
+    )
+
+    readiness = result["proof_reconciliation_text_readiness"]
+    assert readiness["send_as_is_review_candidates"] == 0
+    assert readiness["by_blocker"]["deferral_or_manager_text_signal"] == 1
+    assert readiness["by_blocker"]["answer_quality_findings_present"] == 1
+    row = readiness["examples"][0]
+    assert row["active_behavior_allowed"] is False
+    assert result["real_lever_analysis"]["totals"]["proof_reconciliation_text_blocked"] == 1
 
 
 def test_low_confidence_safe_frame_is_calibration_work(tmp_path: Path) -> None:

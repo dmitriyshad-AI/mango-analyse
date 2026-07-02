@@ -143,7 +143,12 @@ def build_report(
         confidence_threshold=confidence_threshold,
         as_of_date=as_of_date or date.today(),
     )
+    turns_by_key = _load_turns_by_turn(transcripts)
     proof_reconciliation = _load_proof_reconciliation_by_turn(transcripts)
+    proof_text_readiness = _proof_text_readiness_summary(
+        proof_reconciliation=proof_reconciliation,
+        turns_by_key=turns_by_key,
+    )
 
     gold_rows = [row for row in gold_report.get("rows") or [] if isinstance(row, Mapping)]
     work_items = _build_work_items(
@@ -152,6 +157,9 @@ def build_report(
         root_cause=root_cause,
         injection=injection,
         proof_reconciliation=proof_reconciliation,
+        proof_text_readiness=proof_text_readiness.get("by_turn", {})
+        if isinstance(proof_text_readiness.get("by_turn"), Mapping)
+        else {},
         confidence_threshold=confidence_threshold,
     )
     report = {
@@ -171,11 +179,19 @@ def build_report(
             injection=injection,
             work_items=work_items,
             proof_reconciliation=proof_reconciliation,
+            proof_text_readiness=proof_text_readiness,
         ),
         "workstreams": _workstreams(work_items),
         "field_error_breakdowns": _field_error_breakdowns(gold_rows),
-        "real_lever_analysis": _real_lever_analysis(gold_rows, proof_reconciliation=proof_reconciliation),
+        "real_lever_analysis": _real_lever_analysis(
+            gold_rows,
+            proof_reconciliation=proof_reconciliation,
+            proof_text_readiness=proof_text_readiness.get("by_turn", {})
+            if isinstance(proof_text_readiness.get("by_turn"), Mapping)
+            else {},
+        ),
         "proof_reconciliation": _proof_reconciliation_summary(proof_reconciliation),
+        "proof_reconciliation_text_readiness": proof_text_readiness,
         "source_report_summaries": {
             "gold_calibration": gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {},
             "overhandoff": overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {},
@@ -197,6 +213,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     acceptance = report.get("acceptance") if isinstance(report.get("acceptance"), Mapping) else {}
     workstreams = report.get("workstreams") if isinstance(report.get("workstreams"), Mapping) else {}
     proof_reconciliation = report.get("proof_reconciliation") if isinstance(report.get("proof_reconciliation"), Mapping) else {}
+    proof_text_readiness = (
+        report.get("proof_reconciliation_text_readiness")
+        if isinstance(report.get("proof_reconciliation_text_readiness"), Mapping)
+        else {}
+    )
     lines = [
         "# ADR-003 F2i SemanticFrame Calibration Queue",
         "",
@@ -227,6 +248,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Danger-adjacent: `{real_totals.get('danger_adjacent', 0)}`",
             f"- Clean route-only discussion rows: `{real_totals.get('clean_route_only_discussion', 0)}`",
             f"- Proof reconciliation would-fix-frame rows: `{real_totals.get('proof_reconciliation_would_reconcile', 0)}`",
+            f"- Proof reconciliation send-as-is review candidates: `{real_totals.get('proof_reconciliation_send_as_is_review_candidates', 0)}`",
+            f"- Proof reconciliation text blocked: `{real_totals.get('proof_reconciliation_text_blocked', 0)}`",
             f"- Stable existence misread as check_availability: `{real_totals.get('stable_existence_as_check_availability', 0)}`",
             f"- Stable existence misread as enroll: `{real_totals.get('stable_existence_as_enroll', 0)}`",
             f"- True live availability negative controls: `{real_totals.get('true_live_availability_negative_controls', 0)}`",
@@ -287,6 +310,25 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         by_reason = proof_reconciliation.get("by_reason") if isinstance(proof_reconciliation.get("by_reason"), Mapping) else {}
         for reason, count in sorted(by_reason.items(), key=lambda item: (-item[1], item[0]))[:12]:
             lines.append(f"- `{reason or 'missing'}`: `{count}`")
+    if proof_text_readiness:
+        lines.extend(["", "## Proof Reconciliation Text Readiness", ""])
+        lines.append(f"- traced would-reconcile rows: `{proof_text_readiness.get('total', 0)}`")
+        lines.append(f"- send-as-is review candidates: `{proof_text_readiness.get('send_as_is_review_candidates', 0)}`")
+        lines.append(f"- active behavior allowed: `{proof_text_readiness.get('active_behavior_allowed', False)}`")
+        by_status = (
+            proof_text_readiness.get("by_status") if isinstance(proof_text_readiness.get("by_status"), Mapping) else {}
+        )
+        if by_status:
+            lines.extend(["", "### Text readiness by status", ""])
+            for status, count in sorted(by_status.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"- `{status or 'missing'}`: `{count}`")
+        by_blocker = (
+            proof_text_readiness.get("by_blocker") if isinstance(proof_text_readiness.get("by_blocker"), Mapping) else {}
+        )
+        if by_blocker:
+            lines.extend(["", "### Text readiness blockers", ""])
+            for blocker, count in sorted(by_blocker.items(), key=lambda item: (-item[1], item[0]))[:16]:
+                lines.append(f"- `{blocker or 'missing'}`: `{count}`")
     lines.extend(
         [
             "",
@@ -334,6 +376,7 @@ def _build_work_items(
     root_cause: Mapping[str, Any],
     injection: Mapping[str, Any],
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
+    proof_text_readiness: Mapping[str, Mapping[str, Any]],
     confidence_threshold: float,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -366,13 +409,19 @@ def _build_work_items(
             items.append(_item(row, "measurement_review_unclear", ["runtime_handoff_but_frame_fields_are_correct"]))
         if current_route not in HANDOFF_ROUTES:
             items.append(_item(row, "already_self_no_active_leverage", ["current_route_already_self_or_not_handoff"]))
-        reconciliation = proof_reconciliation.get(_turn_key(row.get("dialog_id"), row.get("turn")))
+        turn_key = _turn_key(row.get("dialog_id"), row.get("turn"))
+        reconciliation = proof_reconciliation.get(turn_key)
         if isinstance(reconciliation, Mapping) and reconciliation.get("status") == "would_reconcile_to_safe_reference":
+            text_readiness = proof_text_readiness.get(turn_key)
+            reasons = ["fresh_exact_proof_would_reconcile_missing_facts_frame"]
+            if isinstance(text_readiness, Mapping):
+                reasons.append(f"text_readiness:{text_readiness.get('status') or 'unknown'}")
+                reasons.extend(f"text_blocker:{blocker}" for blocker in text_readiness.get("blockers") or [])
             items.append(
                 _item(
                     row,
                     "semanticframe_proof_reconciliation_candidate",
-                    ["fresh_exact_proof_would_reconcile_missing_facts_frame"],
+                    reasons,
                 )
             )
 
@@ -507,6 +556,7 @@ def _totals(
     injection: Mapping[str, Any],
     work_items: Sequence[Mapping[str, Any]],
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
+    proof_text_readiness: Mapping[str, Any],
 ) -> dict[str, Any]:
     gold_summary = gold_report.get("summary") if isinstance(gold_report.get("summary"), Mapping) else {}
     over_totals = overhandoff.get("totals") if isinstance(overhandoff.get("totals"), Mapping) else {}
@@ -525,6 +575,8 @@ def _totals(
         "proof_reconciliation_would_reconcile": sum(
             1 for trace in proof_reconciliation.values() if trace.get("status") == "would_reconcile_to_safe_reference"
         ),
+        "proof_reconciliation_text_readiness_rows": proof_text_readiness.get("total", 0),
+        "proof_reconciliation_send_as_is_review_candidates": proof_text_readiness.get("send_as_is_review_candidates", 0),
         "work_items_total": len(work_items),
     }
 
@@ -586,6 +638,26 @@ def _load_proof_reconciliation_by_turn(transcripts: Path) -> dict[str, Mapping[s
     return traces
 
 
+def _load_turns_by_turn(transcripts: Path) -> dict[str, Mapping[str, Any]]:
+    turns_by_key: dict[str, Mapping[str, Any]] = {}
+    if not transcripts.exists():
+        return turns_by_key
+    with transcripts.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                dialog = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            dialog_id = str(dialog.get("dialog_id") or "")
+            turns = dialog.get("turns") if isinstance(dialog.get("turns"), list) else []
+            for turn in turns:
+                if isinstance(turn, Mapping):
+                    turns_by_key[_turn_key(dialog_id, turn.get("turn"))] = turn
+    return turns_by_key
+
+
 def _proof_reconciliation_summary(traces: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     statuses = Counter(str(trace.get("status") or "") for trace in traces.values())
     reasons = Counter(str(trace.get("reason") or "") for trace in traces.values())
@@ -612,13 +684,131 @@ def _proof_reconciliation_summary(traces: Mapping[str, Mapping[str, Any]]) -> di
     }
 
 
+def _proof_text_readiness_summary(
+    *,
+    proof_reconciliation: Mapping[str, Mapping[str, Any]],
+    turns_by_key: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    by_turn: dict[str, Mapping[str, Any]] = {}
+    for key, trace in proof_reconciliation.items():
+        if trace.get("status") != "would_reconcile_to_safe_reference":
+            continue
+        by_turn[key] = _proof_text_readiness_for_turn(
+            turn_key=key,
+            trace=trace,
+            turn=turns_by_key.get(key),
+        )
+    statuses = Counter(str(row.get("status") or "") for row in by_turn.values())
+    blockers = Counter(
+        str(blocker)
+        for row in by_turn.values()
+        for blocker in (row.get("blockers") or [])
+    )
+    candidates = [row for row in by_turn.values() if row.get("send_as_is_review_candidate")]
+    return {
+        "total": len(by_turn),
+        "send_as_is_review_candidates": len(candidates),
+        "active_behavior_allowed": False,
+        "active_readiness": "no_go",
+        "by_status": dict(statuses),
+        "by_blocker": dict(blockers),
+        "by_turn": by_turn,
+        "examples": list(by_turn.values())[:50],
+        "notes": [
+            "Report-only text readiness: no route/text/runtime behavior is changed.",
+            "A fresh exact proof is not enough to send text as-is; existing text gates must also be clean.",
+            "semantic_output_verifier unavailable is treated as a blocker, not as permission.",
+        ],
+    }
+
+
+def _proof_text_readiness_for_turn(
+    *,
+    turn_key: str,
+    trace: Mapping[str, Any],
+    turn: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(turn, Mapping):
+        return {
+            "turn_key": turn_key,
+            "status": "blocked_missing_turn_telemetry",
+            "blockers": ["missing_turn_telemetry"],
+            "send_as_is_review_candidate": False,
+            "active_behavior_allowed": False,
+        }
+    route = str(turn.get("bot_route") or trace.get("route_before") or "")
+    direct_path = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    blockers: list[str] = []
+    if route == "manager_only":
+        blockers.append("current_route_manager_only")
+    elif route != "draft_for_manager":
+        blockers.append("no_route_leverage_currently_self_or_other")
+    if bool(turn.get("bot_is_manager_deferral")) or bool(direct_path.get("is_manager_deferral")) or bool(
+        direct_path.get("deferral_text_in_self")
+    ):
+        blockers.append("deferral_or_manager_text_signal")
+    missing_facts = _listish(turn.get("bot_missing_facts")) or _listish(trace.get("result_missing_facts"))
+    if missing_facts:
+        blockers.append("missing_facts_present")
+    answer_quality_findings = _listish(turn.get("bot_answer_quality_findings"))
+    if answer_quality_findings:
+        blockers.append("answer_quality_findings_present")
+    safety_flags = _listish(turn.get("bot_safety_flags"))
+    p0_or_brand_flags = [
+        flag
+        for flag in safety_flags
+        if str(flag).startswith(("p0_", "brand_")) or str(flag) in {"p0_required", "cross_brand_blocked"}
+    ]
+    if p0_or_brand_flags:
+        blockers.append("brand_or_p0_blocker")
+    sanitizer = turn.get("bot_output_sanitizer")
+    if not isinstance(sanitizer, Mapping):
+        metadata = turn.get("bot_metadata") if isinstance(turn.get("bot_metadata"), Mapping) else {}
+        sanitizer = metadata.get("output_sanitizer") if isinstance(metadata.get("output_sanitizer"), Mapping) else {}
+    if _output_sanitizer_applied(sanitizer, safety_flags=safety_flags):
+        blockers.append("output_sanitizer_applied")
+    if _forbidden_promises_present(turn, direct_path):
+        blockers.append("forbidden_promises_present")
+    auth_gate = turn.get("bot_authoritative_output_gate")
+    if isinstance(auth_gate, Mapping) and str(auth_gate.get("action") or "pass") not in {"", "pass"}:
+        blockers.append("authoritative_gate_not_pass")
+    verifier = turn.get("bot_semantic_output_verifier")
+    if not isinstance(verifier, Mapping) or not verifier:
+        blockers.append("semantic_verifier_unavailable")
+    elif _semantic_verifier_blocks(verifier):
+        blockers.append("semantic_verifier_finding")
+    status = "send_as_is_review_candidate" if not blockers else "blocked_" + blockers[0]
+    return {
+        "turn_key": turn_key,
+        "dialog_id": turn_key.rsplit("#", 1)[0],
+        "turn": _int_or_zero(turn.get("turn")),
+        "route": route,
+        "status": status,
+        "blockers": list(dict.fromkeys(blockers)),
+        "send_as_is_review_candidate": not blockers,
+        "active_behavior_allowed": False,
+        "proof_reason": trace.get("reason"),
+        "exact_fact_keys": list(trace.get("exact_fact_keys") or [])[:5]
+        if isinstance(trace.get("exact_fact_keys"), list)
+        else [],
+        "missing_facts_count": len(missing_facts),
+        "answer_quality_findings_count": len(answer_quality_findings),
+        "semantic_verifier_action": verifier.get("action") if isinstance(verifier, Mapping) else "",
+        "authoritative_gate_action": auth_gate.get("action") if isinstance(auth_gate, Mapping) else "",
+    }
+
+
 def _real_lever_analysis(
     rows: Sequence[Mapping[str, Any]],
     *,
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
+    proof_text_readiness: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     too_cautious = [row for row in rows if _true_frame_too_cautious(row) and _safe_self(row)]
-    classified = [_real_lever_row(row, proof_reconciliation=proof_reconciliation) for row in too_cautious]
+    classified = [
+        _real_lever_row(row, proof_reconciliation=proof_reconciliation, proof_text_readiness=proof_text_readiness)
+        for row in too_cautious
+    ]
     negative_controls = _negative_control_rows(rows)
     return {
         "totals": {
@@ -634,6 +824,18 @@ def _real_lever_analysis(
             "proof_reconciliation_would_reconcile": sum(1 for row in classified if row.get("proof_reconciliation_would_reconcile")),
             "proof_reconciliation_current_handoff": sum(
                 1 for row in classified if row.get("proof_reconciliation_would_reconcile") and row.get("current_handoff")
+            ),
+            "proof_reconciliation_send_as_is_review_candidates": sum(
+                1
+                for row in classified
+                if row.get("proof_reconciliation_would_reconcile") and row.get("send_as_is_review_candidate")
+            ),
+            "proof_reconciliation_text_blocked": sum(
+                1
+                for row in classified
+                if row.get("proof_reconciliation_would_reconcile")
+                and row.get("text_readiness_status")
+                and not row.get("send_as_is_review_candidate")
             ),
             "stable_existence_as_check_availability": sum(
                 1
@@ -662,6 +864,7 @@ def _real_lever_analysis(
         "by_route": dict(Counter(str(row.get("route") or "") for row in classified)),
         "by_lever_class": dict(Counter(str(row.get("lever_class") or "") for row in classified)),
         "by_proof_reconciliation_status": dict(Counter(str(row.get("proof_reconciliation_status") or "") for row in classified)),
+        "by_text_readiness_status": dict(Counter(str(row.get("text_readiness_status") or "") for row in classified)),
         "scope_confusion": _scope_confusion_summary(classified),
         "negative_controls": negative_controls[:50],
         "examples": classified[:50],
@@ -677,6 +880,7 @@ def _real_lever_row(
     row: Mapping[str, Any],
     *,
     proof_reconciliation: Mapping[str, Mapping[str, Any]],
+    proof_text_readiness: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     frame = row.get("frame") if isinstance(row.get("frame"), Mapping) else {}
     route = str(row.get("current_route") or row.get("route") or "")
@@ -689,6 +893,9 @@ def _real_lever_row(
     reconciliation = proof_reconciliation.get(_turn_key(dialog_id, row.get("turn")))
     if not isinstance(reconciliation, Mapping):
         reconciliation = {}
+    text_readiness = proof_text_readiness.get(_turn_key(dialog_id, row.get("turn")))
+    if not isinstance(text_readiness, Mapping):
+        text_readiness = {}
     reconciliation_status = str(reconciliation.get("status") or "")
     reconciliation_would_fix = reconciliation_status == "would_reconcile_to_safe_reference"
     user_scope = _user_scope(row)
@@ -750,6 +957,11 @@ def _real_lever_row(
         "proof_reconciliation_exact_fact_keys": list(reconciliation.get("exact_fact_keys") or [])
         if isinstance(reconciliation.get("exact_fact_keys"), list)
         else [],
+        "text_readiness_status": str(text_readiness.get("status") or ""),
+        "text_readiness_blockers": list(text_readiness.get("blockers") or [])
+        if isinstance(text_readiness.get("blockers"), list)
+        else [],
+        "send_as_is_review_candidate": bool(text_readiness.get("send_as_is_review_candidate")),
         "lever_class": lever_class,
         "active_blockers": blockers,
         "review_question": _real_lever_review_question(lever_class),
@@ -833,6 +1045,53 @@ def _real_lever_review_question(lever_class: str) -> str:
 def _contains_any(value: str, markers: Sequence[str]) -> bool:
     value_cf = value.casefold()
     return any(marker.casefold() in value_cf for marker in markers)
+
+
+def _listish(value: object) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    if value in (None, "", False):
+        return []
+    return [value]
+
+
+def _output_sanitizer_applied(value: Mapping[str, Any], *, safety_flags: Sequence[Any]) -> bool:
+    if any(str(flag).startswith("output_sanitizer") for flag in safety_flags):
+        return True
+    if not isinstance(value, Mapping) or not value:
+        return False
+    if bool(value.get("applied")) or bool(value.get("changed")) or bool(value.get("fallback")):
+        return True
+    reasons = value.get("reasons")
+    return bool(reasons)
+
+
+def _forbidden_promises_present(turn: Mapping[str, Any], direct_path: Mapping[str, Any]) -> bool:
+    for key in ("bot_forbidden_promises_detected", "forbidden_promises_detected"):
+        if _listish(turn.get(key)):
+            return True
+    if _listish(direct_path.get("forbidden_promises_detected")):
+        return True
+    return False
+
+
+def _semantic_verifier_blocks(value: Mapping[str, Any]) -> bool:
+    action = str(value.get("action") or "").casefold()
+    if action and action not in {"pass", "keep", "none", "ok"}:
+        return True
+    if value.get("unavailable_reason"):
+        return True
+    findings = value.get("findings")
+    if isinstance(findings, list) and findings:
+        return True
+    finding_codes = value.get("finding_codes")
+    if isinstance(finding_codes, list) and finding_codes:
+        return True
+    return False
 
 
 def _acceptance(

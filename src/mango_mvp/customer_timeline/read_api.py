@@ -464,8 +464,9 @@ class CustomerTimelineReadApi:
     ) -> list[Mapping[str, Any]]:
         if table not in READ_API_TABLES:
             raise ValueError(f"unsupported read API table: {table}")
+        effective_where = self._read_where(table, where_sql)
         rows = self.store._con.execute(  # noqa: SLF001 - read facade wraps store internals for callers.
-            f"SELECT record_json FROM {table} WHERE {where_sql} ORDER BY {order_by} LIMIT ?",
+            f"SELECT record_json FROM {table} WHERE {effective_where} ORDER BY {order_by} LIMIT ?",
             (*params, bounded_limit(limit, default=50, max_limit=500)),
         ).fetchall()
         return [json.loads(row["record_json"]) for row in rows]
@@ -473,11 +474,17 @@ class CustomerTimelineReadApi:
     def _count(self, table: str, where_sql: str, params: Sequence[Any]) -> int:
         if table not in READ_API_TABLES:
             raise ValueError(f"unsupported read API table: {table}")
+        effective_where = self._read_where(table, where_sql)
         row = self.store._con.execute(  # noqa: SLF001 - read facade wraps store internals for callers.
-            f"SELECT COUNT(*) AS value FROM {table} WHERE {where_sql}",
+            f"SELECT COUNT(*) AS value FROM {table} WHERE {effective_where}",
             tuple(params),
         ).fetchone()
         return int(row["value"] if row else 0)
+
+    def _read_where(self, table: str, where_sql: str) -> str:
+        if table in {"timeline_events", "bot_context_chunks"} and self.store._table_has_column(table, "superseded_by"):  # noqa: SLF001
+            return f"({where_sql}) AND superseded_by IS NULL"
+        return where_sql
 
 
 READ_API_TABLES = {

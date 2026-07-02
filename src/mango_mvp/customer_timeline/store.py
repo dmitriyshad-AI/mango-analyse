@@ -35,7 +35,7 @@ from mango_mvp.customer_timeline.source_policy import assert_bot_context_chunk_s
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
-CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260701_001_email_event_content_key"
+CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260702_002_soft_delete_content_key_backfill"
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -110,6 +110,7 @@ ALLOWED_SEARCH_SCOPES = {"events", "bot_context", "signals"}
 _SEARCH_TOKEN_RE = re.compile(r"[\w@.+-]+", re.UNICODE)
 _EMAIL_CONTENT_DEDUP_EVENT_TYPE = "email_message"
 _WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
+SOFT_DELETE_TABLES = {"timeline_events", "bot_context_chunks"}
 
 
 Clock = Callable[[], datetime]
@@ -196,8 +197,10 @@ def existing_timeline_email_content_signatures(db_path: Path | str) -> set[str]:
         ).fetchone()
         if not exists:
             return set()
+        columns = {str(row[1]) for row in con.execute("PRAGMA table_info(timeline_events)").fetchall()}
+        active_clause = "AND superseded_by IS NULL" if "superseded_by" in columns else ""
         rows = con.execute(
-            """
+            f"""
             SELECT tenant_id, customer_id, event_type, event_at, subject, summary, text_preview
             FROM timeline_events
             WHERE customer_id IS NOT NULL
@@ -205,6 +208,7 @@ def existing_timeline_email_content_signatures(db_path: Path | str) -> set[str]:
               AND event_type = ?
               AND summary IS NOT NULL
               AND summary != ''
+              {active_clause}
             """,
             (_EMAIL_CONTENT_DEDUP_EVENT_TYPE,),
         ).fetchall()
@@ -604,6 +608,7 @@ class CustomerTimelineSQLiteStore:
               direction TEXT NOT NULL,
               match_status TEXT NOT NULL,
               content_key TEXT,
+              superseded_by TEXT,
               confidence REAL,
               importance INTEGER NOT NULL,
               subject TEXT,
@@ -661,6 +666,7 @@ class CustomerTimelineSQLiteStore:
               freshness_score REAL,
               allowed_for_bot INTEGER NOT NULL,
               requires_manager_review INTEGER NOT NULL,
+              superseded_by TEXT,
               ordinal INTEGER NOT NULL,
               created_at TEXT NOT NULL,
               record_hash TEXT NOT NULL,
@@ -756,9 +762,6 @@ class CustomerTimelineSQLiteStore:
               ON timeline_events(tenant_id, opportunity_id, event_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_events_source
               ON timeline_events(tenant_id, source_system, source_id, event_type);
-            CREATE INDEX IF NOT EXISTS ix_timeline_events_content_key
-              ON timeline_events(tenant_id, customer_id, content_key)
-              WHERE content_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS ix_timeline_events_type_time
               ON timeline_events(tenant_id, event_type, event_at);
             CREATE INDEX IF NOT EXISTS ix_artifacts_event
@@ -830,12 +833,83 @@ class CustomerTimelineSQLiteStore:
               WHERE content_key IS NOT NULL
             """
         )
-        self._backfill_timeline_event_content_keys()
-
-    def _backfill_timeline_event_content_keys(self) -> None:
-        rows = self._con.execute(
+        if "superseded_by" not in timeline_event_columns:
+            self._con.execute("ALTER TABLE timeline_events ADD COLUMN superseded_by TEXT")
+        self._con.execute(
             """
-            SELECT event_id, tenant_id, customer_id, event_type, event_at, subject, summary
+            CREATE INDEX IF NOT EXISTS ix_timeline_events_active_customer_time
+              ON timeline_events(tenant_id, customer_id, event_at, event_id)
+              WHERE superseded_by IS NULL
+            """
+        )
+        bot_chunk_columns = self._table_columns("bot_context_chunks")
+        if "superseded_by" not in bot_chunk_columns:
+            self._con.execute("ALTER TABLE bot_context_chunks ADD COLUMN superseded_by TEXT")
+        self._con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_bot_context_chunks_active_customer_time
+              ON bot_context_chunks(tenant_id, customer_id, event_at, chunk_id)
+              WHERE superseded_by IS NULL
+            """
+        )
+
+    def backfill_timeline_event_content_keys(
+        self,
+        *,
+        batch_size: int = 1000,
+        max_batches: Optional[int] = None,
+    ) -> Mapping[str, int]:
+        self._ensure_writable()
+        if self._bulk_write_depth > 0:
+            raise RuntimeError("content_key backfill must run outside bulk_write to commit per batch")
+        size = checked_limit(batch_size, "batch_size", max_limit=1000)
+        if max_batches is not None and max_batches < 1:
+            raise ValueError("max_batches must be positive")
+        batches = 0
+        rows_seen = 0
+        rows_updated = 0
+        while max_batches is None or batches < max_batches:
+            rows = self._con.execute(
+                """
+                SELECT event_id, tenant_id, customer_id, event_type, event_at, subject, summary
+                FROM timeline_events
+                WHERE content_key IS NULL
+                  AND customer_id IS NOT NULL
+                  AND customer_id != ''
+                  AND event_type = ?
+                  AND summary IS NOT NULL
+                  AND summary != ''
+                ORDER BY event_at, event_id
+                LIMIT ?
+                """,
+                (_EMAIL_CONTENT_DEDUP_EVENT_TYPE, size),
+            ).fetchall()
+            if not rows:
+                break
+            batches += 1
+            rows_seen += len(rows)
+            for row in rows:
+                content_key = timeline_email_content_key(
+                    tenant_id=row["tenant_id"],
+                    customer_id=row["customer_id"],
+                    event_type=row["event_type"],
+                    event_at=row["event_at"],
+                    subject=row["subject"],
+                    summary=row["summary"],
+                )
+                if content_key:
+                    self._con.execute(
+                        "UPDATE timeline_events SET content_key = ? WHERE event_id = ?",
+                        (content_key, row["event_id"]),
+                    )
+                    rows_updated += 1
+            self._con.commit()
+        return {"batches": batches, "rows_seen": rows_seen, "rows_updated": rows_updated}
+
+    def count_missing_timeline_email_content_keys(self) -> int:
+        return self._scalar_int(
+            """
+            SELECT COUNT(*)
             FROM timeline_events
             WHERE content_key IS NULL
               AND customer_id IS NOT NULL
@@ -845,21 +919,7 @@ class CustomerTimelineSQLiteStore:
               AND summary != ''
             """,
             (_EMAIL_CONTENT_DEDUP_EVENT_TYPE,),
-        ).fetchall()
-        for row in rows:
-            content_key = timeline_email_content_key(
-                tenant_id=row["tenant_id"],
-                customer_id=row["customer_id"],
-                event_type=row["event_type"],
-                event_at=row["event_at"],
-                subject=row["subject"],
-                summary=row["summary"],
-            )
-            if content_key:
-                self._con.execute(
-                    "UPDATE timeline_events SET content_key = ? WHERE event_id = ?",
-                    (content_key, row["event_id"]),
-                )
+        )
 
     def upsert_customer(
         self,
@@ -1010,6 +1070,7 @@ class CustomerTimelineSQLiteStore:
                   AND customer_id = ?
                   AND content_key = ?
                   AND event_id != ?
+                  AND superseded_by IS NULL
                 ORDER BY created_at ASC, event_id ASC
                 """,
                 (event.tenant_id, event.customer_id, content_key, event.event_id),
@@ -1194,6 +1255,89 @@ class CustomerTimelineSQLiteStore:
             self._sync_chunk_fts(chunk, record_hash)
         self._commit()
         return result
+
+    def mark_timeline_events_superseded(
+        self,
+        tenant_id: str,
+        *,
+        canonical_event_id: str,
+        duplicate_event_ids: Sequence[str],
+        actor: str = "system",
+        reason: str = "content_duplicate",
+    ) -> Mapping[str, Any]:
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        canonical_id = require_text(canonical_event_id, "canonical_event_id")
+        duplicate_ids = tuple(dict.fromkeys(require_text(item, "duplicate_event_id") for item in duplicate_event_ids))
+        if not duplicate_ids:
+            return {"superseded_events": 0, "superseded_chunks": 0, "canonical_event_id": canonical_id}
+        if canonical_id in duplicate_ids:
+            raise ValueError("canonical_event_id must not be in duplicate_event_ids")
+        all_ids = (canonical_id, *duplicate_ids)
+        placeholders = ", ".join("?" for _ in all_ids)
+        rows = self._con.execute(
+            f"""
+            SELECT event_id, customer_id
+            FROM timeline_events
+            WHERE tenant_id = ? AND event_id IN ({placeholders})
+            """,
+            (tenant, *all_ids),
+        ).fetchall()
+        by_id = {str(row["event_id"]): row for row in rows}
+        missing = [event_id for event_id in all_ids if event_id not in by_id]
+        if missing:
+            raise ValueError(f"timeline event does not exist: {missing[0]}")
+        customer_ids = {optional_text(row["customer_id"]) for row in rows}
+        if None in customer_ids or "" in customer_ids:
+            raise ValueError("cannot supersede timeline events with customer_id NULL/empty")
+        if len(customer_ids) != 1:
+            raise ValueError("cannot supersede timeline events across different customers")
+        duplicate_placeholders = ", ".join("?" for _ in duplicate_ids)
+        before_hash = stable_digest({"duplicate_event_ids": duplicate_ids})
+        event_cursor = self._con.execute(
+            f"""
+            UPDATE timeline_events
+            SET superseded_by = ?
+            WHERE tenant_id = ? AND event_id IN ({duplicate_placeholders})
+            """,
+            (canonical_id, tenant, *duplicate_ids),
+        )
+        superseded_events = int(event_cursor.rowcount)
+        chunk_cursor = self._con.execute(
+            f"""
+            UPDATE bot_context_chunks
+            SET superseded_by = ?
+            WHERE tenant_id = ? AND event_id IN ({duplicate_placeholders})
+            """,
+            (canonical_id, tenant, *duplicate_ids),
+        )
+        superseded_chunks = int(chunk_cursor.rowcount)
+        self._delete_superseded_from_fts(duplicate_ids)
+        audit = self._append_audit_log(
+            tenant_id=tenant,
+            action="timeline_events_superseded",
+            entity_type="timeline_event",
+            entity_id=canonical_id,
+            actor=actor,
+            ingestion_run_id=None,
+            before_hash=before_hash,
+            after_hash=stable_digest({"canonical_event_id": canonical_id, "duplicate_event_ids": duplicate_ids}),
+            metadata={
+                "reason": normalize_key(reason, "reason"),
+                "duplicate_event_ids": duplicate_ids,
+                "superseded_events": superseded_events,
+                "superseded_chunks": superseded_chunks,
+            },
+            now=self._now(),
+        )
+        self._commit()
+        return {
+            "canonical_event_id": canonical_id,
+            "duplicate_event_ids": duplicate_ids,
+            "superseded_events": superseded_events,
+            "superseded_chunks": superseded_chunks,
+            "audit_id": audit.audit_id,
+        }
 
     def start_ingestion_run(
         self,
@@ -1681,6 +1825,7 @@ class CustomerTimelineSQLiteStore:
         tenant = normalize_key(tenant_id, "tenant_id")
         clauses = ["tenant_id = ?", "customer_id = ?"]
         params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        self._append_active_filter("timeline_events", clauses)
         if opportunity_id:
             clauses.append("opportunity_id = ?")
             params.append(require_text(opportunity_id, "opportunity_id"))
@@ -1971,6 +2116,8 @@ class CustomerTimelineSQLiteStore:
         counts = {table: self._table_count(table) for table in REQUIRED_TABLES}
         event_status_counts = self._counts_by("timeline_events", "match_status")
         signal_severity_counts = self._counts_by("derived_signals", "severity")
+        events_active_clause = " AND superseded_by IS NULL" if self._table_has_column("timeline_events", "superseded_by") else ""
+        chunks_active_clause = " AND superseded_by IS NULL" if self._table_has_column("bot_context_chunks", "superseded_by") else ""
         return {
             "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
             "backend": "sqlite",
@@ -1982,15 +2129,15 @@ class CustomerTimelineSQLiteStore:
             "signal_severity_counts": signal_severity_counts,
             "soft_integrity": {
                 "events_without_customer": self._scalar_int(
-                    "SELECT COUNT(*) FROM timeline_events WHERE customer_id IS NULL OR customer_id = ''"
+                    f"SELECT COUNT(*) FROM timeline_events WHERE (customer_id IS NULL OR customer_id = ''){events_active_clause}"
                 ),
                 "event_customer_missing": self._scalar_int(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM timeline_events e
                     LEFT JOIN customer_identities c
                       ON c.tenant_id = e.tenant_id AND c.customer_id = e.customer_id
-                    WHERE e.customer_id IS NOT NULL AND e.customer_id != '' AND c.customer_id IS NULL
+                    WHERE e.customer_id IS NOT NULL AND e.customer_id != '' AND c.customer_id IS NULL{events_active_clause.replace("superseded_by", "e.superseded_by")}
                     """
                 ),
                 "artifacts_without_event": self._scalar_int(
@@ -2003,10 +2150,10 @@ class CustomerTimelineSQLiteStore:
                     """
                 ),
                 "bot_chunks_blocked_for_bot": self._scalar_int(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks
-                    WHERE allowed_for_bot = 0 OR requires_manager_review = 1
+                    WHERE (allowed_for_bot = 0 OR requires_manager_review = 1){chunks_active_clause}
                     """
                 ),
             },
@@ -2345,11 +2492,12 @@ class CustomerTimelineSQLiteStore:
         self._con.execute("DELETE FROM timeline_event_fts")
         self._con.execute("DELETE FROM timeline_event_fts_keys")
         for row in self._con.execute(
-            """
+            f"""
             SELECT
               tenant_id, event_id, customer_id, opportunity_id, event_type,
               source_system, event_at, subject, text_preview, summary, record_json, record_hash
             FROM timeline_events
+            {self._active_where("timeline_events")}
             ORDER BY event_at, event_id
             """
         ):
@@ -2380,11 +2528,12 @@ class CustomerTimelineSQLiteStore:
             self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (row["event_id"],))
         self._con.execute("DELETE FROM bot_context_chunk_fts")
         for row in self._con.execute(
-            """
+            f"""
             SELECT
               tenant_id, chunk_id, customer_id, opportunity_id, event_id,
               event_at, record_json, record_hash
             FROM bot_context_chunks
+            {self._active_where("bot_context_chunks")}
             ORDER BY event_at, chunk_id
             """
         ):
@@ -2417,6 +2566,9 @@ class CustomerTimelineSQLiteStore:
         existing_fts = self._fetch_one("SELECT 1 FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,))
         if existing_fts is not None:
             self._con.execute("DELETE FROM timeline_event_fts WHERE event_id = ?", (event.event_id,))
+        if self._is_superseded("timeline_events", "event_id", event.event_id):
+            self._con.execute("DELETE FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,))
+            return
         self._con.execute(
             """
             INSERT INTO timeline_event_fts (
@@ -2446,6 +2598,8 @@ class CustomerTimelineSQLiteStore:
         if not self._fts_enabled and not self._detect_existing_fts():
             return
         self._con.execute("DELETE FROM bot_context_chunk_fts WHERE chunk_id = ?", (chunk.chunk_id,))
+        if self._is_superseded("bot_context_chunks", "chunk_id", chunk.chunk_id):
+            return
         self._con.execute(
             """
             INSERT INTO bot_context_chunk_fts (
@@ -2666,6 +2820,7 @@ class CustomerTimelineSQLiteStore:
         table_alias: Optional[str] = None,
     ) -> None:
         prefix = f"{table_alias}." if table_alias else ""
+        self._append_active_filter("timeline_events", clauses, table_alias=table_alias)
         if customer_id:
             clauses.append(f"{prefix}customer_id = ?")
             params.append(require_text(customer_id, "customer_id"))
@@ -2708,6 +2863,7 @@ class CustomerTimelineSQLiteStore:
         table_alias: Optional[str] = None,
     ) -> None:
         prefix = f"{table_alias}." if table_alias else ""
+        self._append_active_filter("bot_context_chunks", clauses, table_alias=table_alias)
         if customer_id:
             clauses.append(f"{prefix}customer_id = ?")
             params.append(require_text(customer_id, "customer_id"))
@@ -2726,20 +2882,74 @@ class CustomerTimelineSQLiteStore:
             clauses.append(f"{prefix}allowed_for_bot = ?")
             params.append(int(bool(allowed_for_bot)))
 
+    def _delete_superseded_from_fts(self, event_ids: Sequence[str]) -> None:
+        if not event_ids:
+            return
+        placeholders = ", ".join("?" for _ in event_ids)
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts'") is not None:
+            self._con.execute(f"DELETE FROM timeline_event_fts WHERE event_id IN ({placeholders})", tuple(event_ids))
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts_keys'") is not None:
+            self._con.execute(f"DELETE FROM timeline_event_fts_keys WHERE event_id IN ({placeholders})", tuple(event_ids))
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is not None:
+            self._con.execute(
+                f"""
+                DELETE FROM bot_context_chunk_fts
+                WHERE chunk_id IN (
+                  SELECT chunk_id FROM bot_context_chunks WHERE event_id IN ({placeholders})
+                )
+                """,
+                tuple(event_ids),
+            )
+
     def _table_count(self, table_name: str) -> int:
         if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)) is None:
             return 0
-        return self._scalar_int(f"SELECT COUNT(*) FROM {table_name}")
+        where = self._active_where(table_name)
+        return self._scalar_int(f"SELECT COUNT(*) FROM {table_name}{where}")
 
     def _scalar_int(self, query: str, params: Sequence[Any] = ()) -> int:
         row = self._con.execute(query, tuple(params)).fetchone()
         return int(row[0] if row is not None else 0)
 
     def _counts_by(self, table_name: str, column_name: str) -> Mapping[str, int]:
+        where = self._active_where(table_name)
         rows = self._con.execute(
-            f"SELECT {column_name} AS key, COUNT(*) AS total FROM {table_name} GROUP BY {column_name} ORDER BY {column_name}"
+            f"SELECT {column_name} AS key, COUNT(*) AS total FROM {table_name}{where} GROUP BY {column_name} ORDER BY {column_name}"
         ).fetchall()
         return {str(row["key"]): int(row["total"]) for row in rows}
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {str(row["name"]) for row in self._con.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+    def _table_has_column(self, table_name: str, column_name: str) -> bool:
+        return column_name in self._table_columns(table_name)
+
+    def _active_where(self, table_name: str, *, table_alias: Optional[str] = None) -> str:
+        if table_name not in SOFT_DELETE_TABLES or not self._table_has_column(table_name, "superseded_by"):
+            return ""
+        prefix = f"{table_alias}." if table_alias else ""
+        return f" WHERE {prefix}superseded_by IS NULL"
+
+    def _append_active_filter(
+        self,
+        table_name: str,
+        clauses: list[str],
+        *,
+        table_alias: Optional[str] = None,
+    ) -> None:
+        if table_name not in SOFT_DELETE_TABLES or not self._table_has_column(table_name, "superseded_by"):
+            return
+        prefix = f"{table_alias}." if table_alias else ""
+        clauses.append(f"{prefix}superseded_by IS NULL")
+
+    def _is_superseded(self, table_name: str, key_column: str, key_value: str) -> bool:
+        if table_name not in SOFT_DELETE_TABLES or not self._table_has_column(table_name, "superseded_by"):
+            return False
+        row = self._fetch_one(
+            f"SELECT superseded_by FROM {table_name} WHERE {key_column} = ?",
+            (require_text(key_value, key_column),),
+        )
+        return bool(row is not None and optional_text(row["superseded_by"]))
 
 
 REQUIRED_TABLES = (

@@ -16,6 +16,8 @@ from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
     CustomerOpportunity,
+    CustomerTimelineReadApi,
+    CustomerTimelineReadApiConfig,
     CustomerTimelineSQLiteStore,
     DerivedSignal,
     EventArtifact,
@@ -239,7 +241,8 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert "timeline_conflicts" in names
     assert "customer_id_mappings" in names
     assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
-    assert "content_key" in column_names(db_path, "timeline_events")
+    assert {"content_key", "superseded_by"} <= column_names(db_path, "timeline_events")
+    assert "superseded_by" in column_names(db_path, "bot_context_chunks")
     assert "ix_signals_customer_status_expiry" in index_names(db_path)
     assert "ix_timeline_events_content_key" in index_names(db_path)
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
@@ -257,6 +260,91 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert summary["safety"]["brand_blocks_identity_merge"] is False
     assert reopened._con.execute("PRAGMA foreign_key_check").fetchall() == []
     reopened.close()
+
+
+def test_content_key_backfill_is_explicit_batched_and_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    customer = identity()
+    first = email_event(customer, source_id="mail-1")
+    second = email_event(customer, source_id="mail-2", event_at=NOW + timedelta(minutes=3))
+    store.upsert_customer(customer)
+    store.upsert_event(first)
+    store.upsert_event(second)
+    store.close()
+
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE timeline_events SET content_key = NULL")
+        con.commit()
+
+    reopened = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    assert reopened.count_missing_timeline_email_content_keys() == 2
+
+    result = reopened.backfill_timeline_event_content_keys(batch_size=1)
+
+    assert result == {"batches": 2, "rows_seen": 2, "rows_updated": 2}
+    assert reopened.count_missing_timeline_email_content_keys() == 0
+    assert reopened.backfill_timeline_event_content_keys(batch_size=1) == {
+        "batches": 0,
+        "rows_seen": 0,
+        "rows_updated": 0,
+    }
+    reopened.close()
+
+
+def test_bootstrap_adds_content_key_to_legacy_db_before_index_without_backfill(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE timeline_events (
+              event_id TEXT PRIMARY KEY,
+              dedupe_key TEXT NOT NULL UNIQUE,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
+              opportunity_id TEXT,
+              event_type TEXT NOT NULL,
+              event_at TEXT NOT NULL,
+              source_system TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              source_ref TEXT,
+              direction TEXT NOT NULL,
+              match_status TEXT NOT NULL,
+              confidence REAL,
+              importance INTEGER NOT NULL,
+              subject TEXT,
+              text_preview TEXT,
+              summary TEXT,
+              created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO timeline_events (
+              event_id, dedupe_key, tenant_id, customer_id, event_type, event_at,
+              source_system, source_id, direction, match_status, importance,
+              subject, text_preview, summary, created_at, record_hash, record_json
+            )
+            VALUES (
+              'event-legacy', 'dedupe-legacy', 'foton', 'customer-1', 'email_message',
+              ?, 'mail_archive_stage2', 'mail-1', 'inbound', 'strong_unique', 1,
+              'Заявка', 'Текст письма', 'Клиент уточнил расписание.', ?, ?, ?
+            )
+            """,
+            (NOW.isoformat(), NOW.isoformat(), SHA, json.dumps({"event_id": "event-legacy"})),
+        )
+        con.commit()
+
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+
+    assert {"content_key", "superseded_by"} <= column_names(db_path, "timeline_events")
+    assert store.count_missing_timeline_email_content_keys() == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT content_key FROM timeline_events WHERE event_id = 'event-legacy'").fetchone()[0] is None
+    store.close()
 
 
 def test_derived_signal_status_migration_is_idempotent_and_reads_old_rows(tmp_path: Path) -> None:
@@ -825,6 +913,89 @@ def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path:
     store.close()
 
 
+def test_soft_delete_hides_events_and_chunks_from_store_read_api_and_rebuilt_fts(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    customer = identity()
+    first = event(customer, source_id="call-canon", summary="Каноническая строка без скрытого маркера.")
+    duplicate = replace(
+        event(customer, source_id="call-duplicate", summary="секретныйдубль нужно скрыть."),
+        event_at=NOW + timedelta(minutes=2),
+        text_preview="секретныйдубль в событии.",
+        subject="Скрытый дубль",
+    )
+    visible_chunk = replace(chunk(first), source_ref="canon-context", text="Канонический контекст.")
+    hidden_chunk = replace(
+        chunk(duplicate),
+        source_ref="hidden-context",
+        text="секретныйдубль в chunk.",
+        summary="секретныйдубль",
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(first)
+    store.upsert_event(duplicate)
+    store.upsert_bot_context_chunk(visible_chunk)
+    store.upsert_bot_context_chunk(hidden_chunk)
+
+    assert store.search_timeline("foton", "секретныйдубль", mode="fallback", limit=10)["items"]
+    assert store.search_timeline("foton", "секретныйдубль", mode="fts", limit=10)["items"]
+
+    result = store.mark_timeline_events_superseded(
+        "foton",
+        canonical_event_id=first.event_id,
+        duplicate_event_ids=(duplicate.event_id,),
+        actor="test",
+    )
+    store._rebuild_fts_indexes()
+    store._con.commit()
+
+    assert result["superseded_events"] == 1
+    assert result["superseded_chunks"] == 1
+    assert store.summary()["counts"]["timeline_events"] == 1
+    assert [item["event_id"] for item in store.list_events_by_customer("foton", customer.customer_id)["items"]] == [
+        first.event_id
+    ]
+    assert store.search_timeline("foton", "секретныйдубль", mode="fallback", limit=10)["items"] == []
+    assert store.search_timeline("foton", "секретныйдубль", mode="fts", limit=10)["items"] == []
+    store.close()
+
+    with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
+        profile = api.customer_profile("foton", customer.customer_id, event_limit=10, bot_context_limit=10)
+        context = api.bot_context("foton", customer.customer_id, allowed_only=False, limit=10)
+
+        assert [item["event_id"] for item in profile["timeline"]["items"]] == [first.event_id]
+        assert context["summary"]["total_chunks"] == 1
+        assert api._count("timeline_events", "tenant_id = ? AND customer_id = ?", ("foton", customer.customer_id)) == 1
+        assert len(
+            api._records(
+                "bot_context_chunks",
+                "tenant_id = ? AND customer_id = ?",
+                ("foton", customer.customer_id),
+                order_by="chunk_id",
+                limit=10,
+            )
+        ) == 1
+
+
+def test_soft_delete_rejects_none_customer_groups_before_write(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    first = email_event(None, source_id="web-form-1")
+    duplicate = email_event(None, source_id="web-form-2", event_at=NOW + timedelta(minutes=1))
+    store.upsert_event(first)
+    store.upsert_event(duplicate)
+
+    with pytest.raises(ValueError, match="customer_id NULL"):
+        store.mark_timeline_events_superseded(
+            "foton",
+            canonical_event_id=first.event_id,
+            duplicate_event_ids=(duplicate.event_id,),
+            actor="test",
+        )
+
+    assert store.summary()["counts"]["timeline_events"] == 2
+    store.close()
+
+
 def test_search_falls_back_when_fts_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store_module, "sqlite_fts5_available", lambda _con: False)
     store = open_store(tmp_path)
@@ -950,6 +1121,30 @@ def test_email_content_key_requires_identical_text_preview(tmp_path: Path) -> No
 
     assert created.created is True
     assert second_created.created is True
+    assert store.summary()["counts"]["timeline_events"] == 2
+    store.close()
+
+
+def test_email_content_duplicate_ignores_superseded_candidate(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    first = email_event(customer, source_id="mail-1", text_preview="Первый вариант.")
+    hidden = email_event(customer, source_id="mail-2", text_preview="Второй вариант.")
+    incoming = email_event(customer, source_id="mail-3", text_preview="Второй вариант.")
+    store.upsert_customer(customer)
+    assert store.upsert_event(first).created is True
+    assert store.upsert_event(hidden).created is True
+    store.mark_timeline_events_superseded(
+        "foton",
+        canonical_event_id=first.event_id,
+        duplicate_event_ids=(hidden.event_id,),
+        actor="test",
+    )
+
+    created = store.upsert_event(incoming)
+
+    assert created.created is True
+    assert created.record_id == incoming.event_id
     assert store.summary()["counts"]["timeline_events"] == 2
     store.close()
 

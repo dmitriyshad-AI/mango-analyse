@@ -150,6 +150,10 @@ from mango_mvp.customer_timeline.import_cli import (
     run_timeline_import_cli,
     timeline_import_cli_safety_contract,
 )
+from mango_mvp.customer_timeline.maintenance import (
+    FTS_REBUILD_PORT_THRESHOLD_SECONDS,
+    measure_customer_timeline_window,
+)
 from mango_mvp.customer_timeline.next_step_resolver import (
     CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
     MANAGER_REVIEW_ACTION,
@@ -193,6 +197,11 @@ from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     is_stable_runtime_path,
 )
+from mango_mvp.customer_timeline.safe_copy import (
+    file_sha256 as safe_copy_file_sha256,
+    safe_copy_prod_snapshot,
+    sqlite_wal_path,
+)
 from mango_mvp.customer_timeline.store import (
     CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,
     CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
@@ -226,6 +235,7 @@ __all__ = [
     "CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION",
     "CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID",
     "CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION",
+    "FTS_REBUILD_PORT_THRESHOLD_SECONDS",
     "NEXT_STEP_STATUS_ACTIVE",
     "NEXT_STEP_STATUS_CLOSED",
     "NEXT_STEP_STATUS_EMPTY",
@@ -344,6 +354,7 @@ __all__ = [
     "load_records_for_config",
     "load_local_source_records",
     "load_sqlite_source_records",
+    "measure_customer_timeline_window",
     "normalize_email",
     "normalize_identity_value",
     "normalize_key",
@@ -362,6 +373,8 @@ __all__ = [
     "resolve_customer_next_step",
     "run_customer_timeline_approval_decisions",
     "route_customer_timeline_request",
+    "safe_copy_file_sha256",
+    "safe_copy_prod_snapshot",
     "score_employee_reply",
     "score_product_preview",
     "stable_artifact_id",
@@ -376,6 +389,7 @@ __all__ = [
     "signal_expires_at",
     "scrub_timeline_persisted_json",
     "sqlite_fts5_available",
+    "sqlite_wal_path",
     "timeline_ingestion_safety_contract",
     "timeline_import_cli_safety_contract",
     "triage_safety_contract",

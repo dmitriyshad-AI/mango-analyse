@@ -507,3 +507,9 @@ Auto-resolver остаётся выключенным, а непривязанн
 `send_messenger=false`; apply создал только `1966` pending-конфликтов, без
 `timeline_events` и `bot_context_chunks`; повторный apply дал `duplicate=1966`.
 Прод-БД, CRM, Tallanto и live-бот не трогались.
+
+Уборка: после PASS аудиторов, сохранённого full pytest и push порта локальная
+ветка `codex/wappi-history` удалена. Удалённая локальная ветка указывала на
+`555a9647f81d786d4d0e76a5136e55fca5fada29`; тег
+`archive/wappi-history-555a964` указывает на тот же SHA. Remote-ветки и тег не
+трогались.

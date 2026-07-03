@@ -870,3 +870,41 @@ warning и пустой словарь, а не падение сборки па
 full `20`, overlay `18` клиентов / `18` bot-safe chunks, `pii_scan=passed`.
 `memory_shadow_run_commands.sh` не содержит `--execute` и `--streams-ready`.
 Focused pytest `41 passed`. Прод/CRM/Tallanto/live/M1 writes = 0.
+
+### D-050. F6 Wappi import remains a pending-attribution decision package
+
+Решение: Ф6 не выполняет боевой Wappi-долив. На базе блока 4.1 собран локальный
+decision package `.codex_local/review/f6_wappi_prod_import_package_v1/` с
+манифестом, runbook, checklist и masked-очередью чатов для ручной привязки.
+Текущее состояние `1966 pending_attribution` считается правильным fail-closed
+результатом, а не дефектом: пока нет явной связки `chat -> customer/deal`,
+история не должна становиться событием клиента или bot-visible памятью.
+
+Почему так: Wappi не должен угадывать личность по имени, частичному телефону
+или бренду. Перед production apply нужен ручной pair-файл примерно по `145`
+чатам, dry-run на свежей staging-копии, spot-check linked-чатов и отдельное
+разрешение владельца.
+
+Проверка: исходный блок 4.1 дал `records_built=1966`, `wappi_telegram=1000`,
+`wappi_max=966`, `linked_by_pair=0`, `linked_by_amo_auto=0`,
+`pending_attribution=1966`, повторный apply `duplicate=1966`,
+`wappi_events=0`, `bot_context_chunks=0`, `allowed_sum=0`, `quick_check=ok`.
+Ф6-пакет содержит только инструкции и локальный masked backlog; прод/CRM/live
+write = 0.
+
+### D-051. F7 result-image matrix separates achieved mechanics from live enablement
+
+Решение: Ф7 оформлен как матрица `образ результата -> достигнутое`, а не как
+релизный статус. В отчёте отдельно помечены состояния `staging`, `package`,
+`shadow`, `human gate` и `not covered`, чтобы не спутать написанную механику
+с включённым ИИ-сотрудником.
+
+Почему так: к этому моменту большая часть механики данных уже есть, но live
+бот не читает память, CRM-write не выполнялся, Wappi остаётся pending, M1 не
+запускался Codex, а сайт-канал марафоном не закрыт. Завышенный статус опасен:
+он может привести к преждевременному включению памяти или CRM-записи.
+
+Проверка: F7-отчёт ссылается на `2026-06-29_OBRAZ_REZULTATA...` и текущие
+Marathon-2 отчёты. В нём явно написано, что нельзя говорить: память клиента
+уже включена в live, CRM можно писать автоматически, Wappi готов к apply,
+M1-quality доказан или сайты включены. Прод/CRM/live writes = 0.

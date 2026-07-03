@@ -574,3 +574,32 @@ timeline, и в марафоне нельзя расширять identity-гра
 
 Non-conversation звонки не получают summary/chunk/signal. Прод-БД, CRM,
 Tallanto, live-бот, ASR и Analyze не трогались.
+
+### D-037. AMO incremental: API read-only, staging apply from captured source files
+
+Решение: AMO-инкремент в марафоне 2 читается через read-only MCP/AMO API,
+но запись в основной staging выполняется из сохранённых JSONL-источников,
+полученных на проверочной staging-копии. Для нестабильного MCP-транспорта
+добавлен явный `--mcp-transport curl`, а для записи в уже существующую
+staging-БД добавлены `--timeline-db` и явный `--allowed-root`.
+
+Почему так: `urllib` на текущем AMO-коннекторе зависал на SSL-read без
+прогресса, а повторный full fetch перед apply словил DNS timeout. Повторять
+сетевую выкачку ради записи в staging рискованнее, чем применить уже
+зафиксированные и проверенные JSONL, тем более они лежат под `.codex_local` и
+дают детерминированный повтор.
+
+Проверка: read-only fetch на копии прошёл двумя батчами. Первый batch взял
+`5605` leads, `3861` contacts и `6000` events, но events упёрлись в `300`
+страниц; второй batch от cursor взял ещё `3` leads, `1` contact и `2` events,
+уже без page-cap. Apply тех же JSONL в основной staging дал `4229 + 4`
+изменённых customer по карточкам и `1046` по events; repeat каждого batch дал
+`changed_customer_count=0`. Итог staging: `amocrm_event=2962`,
+`amocrm_snapshot/amo_contact_snapshot=14647`,
+`amocrm_snapshot/amo_deal_stage=7208`, все AMO chunks
+`allowed_for_bot=0`, `requires_manager_review=1`, `quick_check=ok`,
+`foreign_key_check` пустой, `duplicate_source_id_groups=0`.
+
+CRM/AMO write не выполнялся: endpoints report содержит только GET
+`/api/v4/leads`, `/api/v4/contacts`, `/api/v4/events`; notes endpoint помечен
+`not_used_whitelist_not_extended`.

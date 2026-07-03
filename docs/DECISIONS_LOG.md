@@ -848,3 +848,25 @@ warning и пустой словарь, а не падение сборки па
 `idempotence.passed=true`, `warnings=[]`. Spot-check 3 ready-карточек:
 служебная строка, raw internal statuses, fallback, маски и речевые залипания
 не найдены. Прод/CRM/Tallanto/live writes = 0.
+
+### D-049. F5 M1 bundles are lightweight inputs, not a runner
+
+Решение: Ф5 готовит два локальных бандла для ручного запуска на M1:
+`email_summary_quality_100.jsonl` для semantic-review 100 LLM-выжимок и
+`memory_shadow_*` для OFF/SHADOW сравнения памяти. Скрипт не запускает M1,
+не создаёт queue-файлы и не содержит флаги фактической постановки в очередь.
+
+Почему так: по ТЗ Codex должен подготовить входы, а M1 запускает человек. Это
+сохраняет контроль над подпиской/очередью и не смешивает staging-подготовку с
+боевыми или прогонными действиями.
+
+Источник для email-quality — только текущие `email_summary_cache_v1` строки
+со `source_kind='llm'` в staging: сейчас их `227`, из них выбрана
+стратифицированная сотня. Исторические числа 845/911 не используются как
+истина для текущего Ф5-бандла, потому что они относились к более широким или
+предыдущим enrichment-счётчикам.
+
+Проверка: `f5_m1_bundles_v2` содержит `sample_count=100`, memory micro `12`,
+full `20`, overlay `18` клиентов / `18` bot-safe chunks, `pii_scan=passed`.
+`memory_shadow_run_commands.sh` не содержит `--execute` и `--streams-ready`.
+Focused pytest `41 passed`. Прод/CRM/Tallanto/live/M1 writes = 0.

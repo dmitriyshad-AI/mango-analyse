@@ -424,7 +424,15 @@ def test_inline_text_health_gate_verifies_new_numbers_against_fact_text(tmp_path
     on_summary = tmp_path / "on_summary.json"
     off = _dialog(text="Стоимость есть в карточке курса.", include_frame=False)
     on = _dialog(text="Стоимость курса — 9 000 ₽.", include_frame=True)
-    on["turns"][0]["bot_confirmed_facts"] = ["client_safe_text: Стоимость курса — 9 000 ₽."]
+    on["turns"][0]["number_audit"] = {
+        "items": [
+            {
+                "claim_text": "9 000 ₽",
+                "normalized": "9000",
+                "level": "retrieved_match",
+            }
+        ]
+    }
     _write_jsonl(off_transcripts, [off])
     _write_jsonl(on_transcripts, [on])
     off_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
@@ -459,6 +467,22 @@ def test_inline_text_health_gate_blocks_unverified_new_numbers(tmp_path: Path) -
     assert gate["status"] == "fail"
     assert gate["new_number_unverified_count"] == 1
     assert gate["new_number_unverified_examples"][0]["new_numbers"] == ["12345 ₽"]
+
+
+def test_inline_text_health_gate_does_not_verify_number_from_raw_fact_blob_without_number_audit(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Стоимость есть в карточке курса.", include_frame=False)
+    on = _dialog(text="Стоимость курса — 9 000 ₽.", include_frame=True)
+    on["turns"][0]["bot_confirmed_facts"] = ["internal_only_text: Стоимость курса — 9 000 ₽."]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "fail"
+    assert gate["new_number_unverified_count"] == 1
 
 
 def test_report_compares_inline_with_posthoc_and_text_health(tmp_path: Path) -> None:

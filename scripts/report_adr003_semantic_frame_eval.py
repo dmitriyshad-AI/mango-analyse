@@ -678,9 +678,9 @@ def _inline_text_health_gate(
 
         baseline_numbers = _numbers(baseline_turn.get("bot_text"))
         inline_numbers = _numbers(inline_turn.get("bot_text"))
-        fact_numbers = _numbers(_fact_verification_blob(inline_turn))
-        unverified = sorted(number for number in (inline_numbers - baseline_numbers) if number not in fact_numbers)
-        verified = sorted(number for number in (inline_numbers - baseline_numbers) if number in fact_numbers)
+        verified_numbers = _verified_number_claims_from_audit(inline_turn)
+        unverified = sorted(number for number in (inline_numbers - baseline_numbers) if number not in verified_numbers)
+        verified = sorted(number for number in (inline_numbers - baseline_numbers) if number in verified_numbers)
         if verified:
             new_number_verified += 1
         if unverified:
@@ -717,29 +717,17 @@ def _inline_text_health_gate(
     }
 
 
-def _fact_verification_blob(turn: Mapping[str, Any]) -> str:
-    fields = (
-        "bot_confirmed_facts",
-        "bot_knowledge_snippets",
-        "bot_safe_context_items",
-        "bot_fact_retrieval_trace",
-        "bot_direct_path",
-    )
-    chunks: list[str] = []
-
-    def visit(value: Any) -> None:
-        if isinstance(value, str):
-            chunks.append(value)
-        elif isinstance(value, Mapping):
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            for item in value:
-                visit(item)
-
-    for field in fields:
-        visit(turn.get(field))
-    return "\n".join(chunks)
+def _verified_number_claims_from_audit(turn: Mapping[str, Any]) -> set[str]:
+    audit = turn.get("number_audit") if isinstance(turn.get("number_audit"), Mapping) else {}
+    verified_levels = {"client_echo", "retrieved_match", "same_brand_global_match"}
+    result: set[str] = set()
+    for item in audit.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("level") or "").strip() not in verified_levels:
+            continue
+        result.update(_numbers(item.get("claim_text")))
+    return result
 
 
 def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any]) -> dict[str, Any]:

@@ -12,8 +12,10 @@ from scripts.run_marathon2_mail_summary_enrich import (
     EnrichConfig,
     PROMPT_VERSION,
     _anti_hallucination_reasons,
+    _ensure_cache_table,
     _ensure_local_staging_out_dir,
     _load_crm_customer_ids,
+    _load_review_customer_ids,
     _load_target_mail_rows,
     _prepare_rows_with_summaries,
     _text_hash,
@@ -41,6 +43,36 @@ def test_marathon2_mail_summary_target_selection_uses_only_crm_customers(tmp_pat
     assert [row["customer_id"] for row in rows] == ["customer:target"]
     assert rows[0]["contact_phone"] == "+79161234567"
     assert rows[0]["message_sha256"] == "sha-target"
+
+
+def test_marathon2_mail_summary_prefers_batch_ready_over_pilot_customers(tmp_path: Path) -> None:
+    export_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+    export_dir.mkdir(parents=True)
+    (export_dir / "pilot_20_crm_card_candidates.jsonl").write_text(
+        json.dumps({"customer_id": "customer:pilot"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (export_dir / "batch_ready_crm_card_candidates.jsonl").write_text(
+        json.dumps({"customer_id": "customer:ready"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    assert _load_crm_customer_ids(export_dir) == {"customer:ready"}
+
+
+def test_marathon2_mail_summary_loads_review_customer_ids_from_workbook(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Обзор клиентов"
+    sheet.append(["name", "customer_id"])
+    sheet.append(["one", "customer:review"])
+    sheet.append(["empty", None])
+    path = tmp_path / "review.xlsx"
+    workbook.save(path)
+
+    assert _load_review_customer_ids(path) == {"customer:review"}
 
 
 def test_marathon2_mail_summary_short_text_is_cached_without_llm(tmp_path: Path) -> None:
@@ -236,6 +268,109 @@ def test_marathon2_mail_summary_cache_does_not_hide_changed_text(tmp_path: Path)
     assert repeat_stats["missing_long_requires_summary"] == 1
 
 
+def test_marathon2_mail_summary_sanitized_payload_is_written_back_to_cache(tmp_path: Path) -> None:
+    db = _seed_staging(tmp_path)
+    config = _config(tmp_path, db)
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        _ensure_cache_table(con)
+        con.execute(
+            """
+            UPDATE timeline_events
+            SET record_json = json_set(record_json, '$.record.full_clean_text', ?)
+            WHERE source_id = 'sha-target'
+            """,
+            ("Стоимость курса 2 000 000 руб.",),
+        )
+        row = _load_target_mail_rows(con, tenant_id="foton", customer_ids=["customer:target"])[0]
+        payload = {
+            "message_sha256": "sha-target",
+            "summary": "Стоимость курса 2 000 000 руб.",
+            "topic": "Стоимость 2 000 000 руб.",
+            "next_step": None,
+            "confidence": 0.9,
+            "extraction_source": "model",
+            "event_type": "other",
+            "money_direction": "none",
+            "student_name": None,
+            "payer_name": None,
+            "contact_name": None,
+            "grade": None,
+            "subject_area": None,
+            "amount_rub": 2_000_000,
+            "amount_kind": "quote",
+            "amount_is_total": True,
+            "amount_items": [{"amount_rub": 2_000_000, "amount_kind": "quote", "description": "2 000 000 руб.", "is_total": True}],
+            "amount_uncertain": False,
+            "deadline_date": None,
+            "contract_no": None,
+            "document_no": None,
+            "requisites": [],
+            "has_attachment": False,
+            "is_plain_acknowledgement": False,
+        }
+        con.execute(
+            """
+            INSERT INTO email_summary_cache_v1 (
+              message_sha256, text_sha256, prompt_version, provider, model, reasoning,
+              source_kind, summary_text, summary_payload_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sha-target",
+                _text_hash(row),
+                PROMPT_VERSION,
+                "stub",
+                "stub",
+                "none",
+                "llm",
+                payload["summary"],
+                json.dumps(payload, ensure_ascii=False),
+                NOW.isoformat(),
+            ),
+        )
+        prepared, stats = _prepare_rows_with_summaries(con, [row], config=config)
+        cached = json.loads(
+            con.execute("SELECT summary_payload_json FROM email_summary_cache_v1 WHERE message_sha256='sha-target'").fetchone()[0]
+        )
+
+    assert stats["cache_hits"] == 1
+    assert stats["sanitized_payloads"] == 1
+    assert prepared[0]["summary_payload"]["amount_rub"] is None
+    assert cached["amount_rub"] is None
+    assert "2 000 000" not in cached["summary"]
+
+
+def test_marathon2_mail_summary_missing_full_text_is_review_not_prefix_summary(tmp_path: Path) -> None:
+    db = _seed_staging(tmp_path)
+    config = _config(tmp_path, db)
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        _ensure_cache_table(con)
+        con.execute(
+            """
+            UPDATE timeline_events
+            SET summary = 'Тема-подобный префикс не является полным текстом',
+                text_preview = 'Превью тоже не является полным текстом',
+                record_json = json_set(record_json, '$.record.full_clean_text', NULL)
+            WHERE source_id = 'sha-target'
+            """
+        )
+        rows = _load_target_mail_rows(con, tenant_id="foton", customer_ids=["customer:target"])
+        prepared, stats = _prepare_rows_with_summaries(con, rows, config=config)
+
+    payload = prepared[0]["summary_payload"]
+    assert rows[0]["body_missing"] is True
+    assert prepared[0]["full_clean_text"] == ""
+    assert payload["summary_review_needed"] is True
+    assert "missing_full_clean_text" in payload["summary_review_reasons"]
+    assert payload["summary"] != "Тема-подобный префикс не является полным текстом"
+    assert stats["missing_full_text_rows"] == 1
+    assert stats["fallback_rows"] == 1
+    assert stats["llm_calls_total"] == 0
+
+
 def test_marathon2_mail_summary_out_dir_must_stay_under_local_staging(tmp_path: Path) -> None:
     _ensure_local_staging_out_dir(tmp_path / ".codex_local" / "staging" / "ok", allowed_root=tmp_path)
 
@@ -262,6 +397,152 @@ def test_marathon2_mail_summary_hallucination_gate_blocks_new_money() -> None:
     reasons = _anti_hallucination_reasons(row, payload)
 
     assert "amount_rub_not_in_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_new_model_facts() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Здравствуйте, подскажите варианты занятий на выходных.",
+    }
+    payload = {
+        "summary": "Ученик Иван интересуется математикой и оплатил курс.",
+        "topic": "Оплата курса",
+        "next_step": "Подготовить договор.",
+        "event_type": "payment",
+        "money_direction": "in",
+        "student_name": "Иван",
+        "grade": "8 класс",
+        "subject_area": "математика",
+        "amount_rub": None,
+        "amount_kind": "actual_payment",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "student_name_not_in_source" in reasons
+    assert "grade_not_in_source" in reasons
+    assert "subject_area_not_in_source" in reasons
+    assert "actual_payment_not_supported_by_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_fallback_and_empty_summary() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Клиент просит расписание.",
+    }
+    payload = {
+        "summary": "",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "fallback",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "extraction_source_not_model" in reasons
+    assert "empty_summary" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_unsupported_next_step() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Клиент просит расписание занятий на выходных.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание занятий на выходных.",
+        "topic": "Расписание",
+        "next_step": "Подготовить договор на обучение.",
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "next_step_not_supported_by_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_allows_supported_next_step() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Клиент просит расписание занятий на выходных.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание занятий на выходных.",
+        "topic": "Расписание",
+        "next_step": "Отправить расписание занятий на выходных.",
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "next_step_not_supported_by_source" not in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_free_text_payment() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Клиент просит расписание занятий на выходных.",
+    }
+    payload = {
+        "summary": "Клиент оплатил курс и просит расписание.",
+        "topic": "Оплата",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "payment_text_not_supported_by_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_new_plain_number() -> None:
+    row = {
+        "subject_full": "Расписание",
+        "full_clean_text": "Клиент просит расписание занятий.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание для 8 класса.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "new_numeric_token:8" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_requisites_and_amount_items() -> None:
+    row = {
+        "subject_full": "Стоимость",
+        "full_clean_text": "Стоимость курса 50 000 руб.",
+    }
+    payload = {
+        "summary": "Стоимость курса 50 000 руб., оплатить по реквизитам банка.",
+        "topic": "Стоимость",
+        "next_step": None,
+        "event_type": "other",
+        "money_direction": "none",
+        "requisites": ["БИК 044525225"],
+        "amount_rub": 50000,
+        "amount_kind": "quote",
+        "amount_items": [{"amount_rub": 126000, "amount_kind": "quote", "description": "полная цена", "is_total": True}],
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "requisites_in_summary_payload" in reasons
+    assert "forbidden_requisite_or_document_term" in reasons
+    assert "amount_item_not_in_source" in reasons
 
 
 def _seed_staging(tmp_path: Path) -> Path:

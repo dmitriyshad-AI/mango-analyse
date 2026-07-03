@@ -41,6 +41,48 @@ PROTECTED_TERM_RE = re.compile(
     r"\b(?:фотон|унпк|мфти|физтех|cdpofoton|kmipt)\b",
     re.I,
 )
+NUMERIC_TOKEN_RE = re.compile(r"(?<!\w)\d[\d\s\u00a0.,:/\\-]{0,32}\d|\b\d\b")
+COURSE_OR_SUBJECT_RE = re.compile(
+    r"\b(?:математик\w*|физик\w*|информатик\w*|программировани\w*|"
+    r"русск\w+\s+язык\w*|английск\w+\s+язык\w*|егэ|огэ|олимпиад\w*|"
+    r"профильн\w*|базов\w*|курс\w*|групп\w*)\b",
+    re.I,
+)
+PAYMENT_FACT_RE = re.compile(r"\b(?:оплат\w*|предоплат\w*|плат[её]ж\w*|внес\w*|поступил\w*|чек\w*|квитанц\w*)\b", re.I)
+REFUND_FACT_RE = re.compile(r"\b(?:возврат\w*|верн\w+\s+деньг\w*|компенсац\w*)\b", re.I)
+FORBIDDEN_SUMMARY_RE = re.compile(
+    r"\b(?:паспорт\w*|снилс|инн|кпп|бик|р/?с|расч[её]тн\w+\s+сч[её]т|"
+    r"корр[её]спондентск\w+\s+сч[её]т|банк\w+\s+реквизит\w*)\b",
+    re.I,
+)
+MODEL_FACT_FIELDS = (
+    "student_name",
+    "payer_name",
+    "contact_name",
+    "grade",
+    "subject_area",
+    "deadline_date",
+    "contract_no",
+    "document_no",
+)
+NEXT_STEP_GENERIC_TOKENS = {
+    "клиент",
+    "клиенту",
+    "менеджер",
+    "менеджеру",
+    "связаться",
+    "позвонить",
+    "ответить",
+    "уточнить",
+    "отправить",
+    "подготовить",
+    "написать",
+    "проверить",
+    "обсудить",
+    "согласовать",
+    "напомнить",
+    "вернуться",
+}
 
 
 @dataclass(frozen=True)
@@ -192,18 +234,23 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def _load_crm_customer_ids(path: Path) -> set[str]:
+    ready = _load_customer_ids_from_jsonl(path / "batch_ready_crm_card_candidates.jsonl")
+    if ready:
+        return ready
+    return _load_customer_ids_from_jsonl(path / "pilot_20_crm_card_candidates.jsonl")
+
+
+def _load_customer_ids_from_jsonl(path: Path) -> set[str]:
     result: set[str] = set()
-    for name in ("pilot_20_crm_card_candidates.jsonl", "batch_ready_crm_card_candidates.jsonl"):
-        file = path / name
-        if not file.exists():
+    if not path.exists():
+        return result
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
             continue
-        for line in file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            customer_id = str(row.get("customer_id") or "").strip()
-            if customer_id:
-                result.add(customer_id)
+        row = json.loads(line)
+        customer_id = str(row.get("customer_id") or "").strip()
+        if customer_id:
+            result.add(customer_id)
     return result
 
 
@@ -219,8 +266,8 @@ def _load_review_customer_ids(path: Path | None) -> set[str]:
         return set()
     sheet = workbook["Обзор клиентов"]
     result: set[str] = set()
-    for row in range(2, sheet.max_row + 1):
-        value = sheet.cell(row=row, column=2).value
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        value = row[1] if len(row) > 1 else None
         customer_id = str(value or "").strip()
         if customer_id:
             result.add(customer_id)
@@ -264,10 +311,9 @@ def _load_target_mail_rows(
         payload = json_loads(str(row["record_json"] or "{}"))
         record = payload.get("record") if isinstance(payload.get("record"), Mapping) else {}
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-        full_text = str(record.get("full_clean_text") or row["summary"] or row["text_preview"] or row["subject"] or "")
+        full_text = str(record.get("full_clean_text") or "")
         clean_text, thread_context = split_thread_context(full_text)
-        if not clean_text:
-            clean_text = full_text.strip()
+        body_missing = not bool(clean_text.strip())
         subject = str(row["subject"] or record.get("subject") or "Email message")
         brand = _brand_for_row(row=row, record=record, metadata=metadata, text=clean_text)
         result.append(
@@ -285,6 +331,7 @@ def _load_target_mail_rows(
                 "subject_full": subject,
                 "subject": subject,
                 "full_clean_text": clean_text,
+                "body_missing": body_missing,
                 "thread_context": thread_context,
                 "thread_context_source": "raw_body_split_thread_context" if thread_context else "none",
                 "full_clean_text_chars": len(clean_text),
@@ -362,9 +409,25 @@ def _prepare_rows_with_summaries(
         "cache_misses_short": 0,
         "cache_misses_long": 0,
         "llm_calls_total": 0,
+        "missing_full_text_rows": 0,
+        "fallback_rows": 0,
+        "llm_ok": 0,
+        "hallucination_suspect": 0,
+        "sanitized_payloads": 0,
+        "review_reason_counts": {},
     }
     for row in prepared:
         text_hash = _text_hash(row)
+        if row.get("body_missing"):
+            row["summary_payload"] = _summary_review_needed_payload(
+                row,
+                reasons=["missing_full_clean_text"],
+                original_payload={},
+            )
+            _cache_put(con, row, text_hash=text_hash, config=config, source_kind="missing_full_text")
+            stats["missing_full_text_rows"] += 1
+            stats["fallback_rows"] += 1
+            continue
         cached = _cache_get(con, row, text_hash=text_hash, config=config)
         if cached is not None:
             row["summary_payload"] = cached
@@ -375,6 +438,7 @@ def _prepare_rows_with_summaries(
             _cache_put(con, row, text_hash=text_hash, config=config, source_kind="short_text")
             stats["short_text_rows"] += 1
             stats["cache_misses_short"] += 1
+            stats["fallback_rows"] += 1
             continue
         stats["long_text_rows"] += 1
         stats["cache_misses_long"] += 1
@@ -422,7 +486,11 @@ def _prepare_rows_with_summaries(
                 review_reasons = _anti_hallucination_reasons(row, payload)
                 if review_reasons:
                     stats["summary_review_needed"] += 1
+                    stats["hallucination_suspect"] += 1
+                    _increment_review_reason_counts(stats, review_reasons)
                     payload = _summary_review_needed_payload(row, reasons=review_reasons, original_payload=payload)
+                else:
+                    stats["llm_ok"] += 1
                 row["summary_payload"] = payload
                 _cache_put(
                     con,
@@ -437,6 +505,8 @@ def _prepare_rows_with_summaries(
         sanitized = sanitize_summary_payload_for_quality(dict(row.get("summary_payload") or {}), quality)
         if sanitized != row.get("summary_payload"):
             row["summary_payload"] = sanitized
+            _cache_put(con, row, text_hash=_text_hash(row), config=config, source_kind="sanitized")
+            stats["sanitized_payloads"] += 1
             quality = evaluate_quality(row)
         if _is_summary_review_needed_payload(row.get("summary_payload")):
             quality_dict = quality_to_dict(quality)
@@ -576,6 +646,8 @@ def _short_summary_payload(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
+    raw_source = "\n".join([str(row.get("subject_full") or ""), str(row.get("full_clean_text") or "")])
+    source_digits = re.sub(r"\D", "", raw_source)
     source = _normalized_guard_text(
         "\n".join(
             [
@@ -585,21 +657,56 @@ def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, An
         )
     )
     summary_text = _normalized_guard_text(
-        "\n".join(
-            str(payload.get(key) or "")
-            for key in ("summary", "topic", "next_step", "student_name", "grade", "subject_area")
-            if payload.get(key) not in (None, "")
-        )
+        "\n".join(_payload_text_values(payload))
     )
     reasons: list[str] = []
+    if str(payload.get("extraction_source") or "").strip() != "model":
+        reasons.append("extraction_source_not_model")
+    if not str(payload.get("summary") or "").strip():
+        reasons.append("empty_summary")
     for term in sorted(set(PROTECTED_TERM_RE.findall(summary_text))):
         cleaned = _normalized_guard_text(term)
         if cleaned and cleaned not in source:
             reasons.append(f"new_protected_term:{cleaned[:40]}")
+    for term in sorted(set(NUMERIC_TOKEN_RE.findall(summary_text))):
+        digits = re.sub(r"\D", "", term)
+        if digits and digits not in source_digits:
+            reasons.append(f"new_numeric_token:{digits[:24]}")
+    for term in sorted(set(COURSE_OR_SUBJECT_RE.findall(summary_text))):
+        cleaned = _normalized_guard_text(term)
+        if cleaned and cleaned not in source:
+            reasons.append(f"new_course_or_subject_term:{cleaned[:40]}")
+    for field in MODEL_FACT_FIELDS:
+        value = str(payload.get(field) or "").strip()
+        if value and _normalized_guard_text(value) not in source:
+            reasons.append(f"{field}_not_in_source")
+    requisites = payload.get("requisites")
+    if isinstance(requisites, list) and requisites:
+        reasons.append("requisites_in_summary_payload")
+    if FORBIDDEN_SUMMARY_RE.search(summary_text):
+        reasons.append("forbidden_requisite_or_document_term")
+    event_type = str(payload.get("event_type") or "").strip()
+    amount_kind = str(payload.get("amount_kind") or "").strip()
+    if PAYMENT_FACT_RE.search(summary_text) and not PAYMENT_FACT_RE.search(raw_source):
+        reasons.append("payment_text_not_supported_by_source")
+    if REFUND_FACT_RE.search(summary_text) and not REFUND_FACT_RE.search(raw_source):
+        reasons.append("refund_text_not_supported_by_source")
+    if (event_type == "payment" or amount_kind == "actual_payment") and not PAYMENT_FACT_RE.search(raw_source):
+        reasons.append("actual_payment_not_supported_by_source")
+    if (event_type == "refund" or amount_kind == "refund") and not REFUND_FACT_RE.search(raw_source):
+        reasons.append("refund_not_supported_by_source")
+    if _next_step_not_supported(row, payload):
+        reasons.append("next_step_not_supported_by_source")
     amount = payload.get("amount_rub")
-    if amount not in (None, "") and str(amount) not in re.sub(r"\D", "", source):
+    if amount not in (None, "") and str(amount) not in source_digits:
         reasons.append("amount_rub_not_in_source")
-    return reasons[:10]
+    for item in payload.get("amount_items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        item_amount = item.get("amount_rub")
+        if item_amount not in (None, "") and str(item_amount) not in source_digits:
+            reasons.append("amount_item_not_in_source")
+    return list(dict.fromkeys(reasons))
 
 
 def _summary_review_needed_payload(
@@ -636,7 +743,51 @@ def _is_summary_review_needed_payload(payload: object) -> bool:
 
 
 def _normalized_guard_text(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "").casefold()).replace("\u00a0", " ").strip()
+    return re.sub(r"\s+", " ", str(value or "").casefold()).replace("\u00a0", " ").replace("ё", "е").strip()
+
+
+def _payload_text_values(payload: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("summary", "topic", "next_step", *MODEL_FACT_FIELDS):
+        value = payload.get(key)
+        if value not in (None, ""):
+            values.append(str(value))
+    for key in ("requisites", "amount_items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, Mapping):
+                    values.extend(str(v) for v in item.values() if v not in (None, ""))
+                elif item not in (None, ""):
+                    values.append(str(item))
+    return values
+
+
+def _next_step_not_supported(row: Mapping[str, Any], payload: Mapping[str, Any]) -> bool:
+    next_step = str(payload.get("next_step") or "").strip()
+    if not next_step:
+        return False
+    source = _normalized_guard_text("\n".join([str(row.get("subject_full") or ""), str(row.get("full_clean_text") or "")]))
+    if not source:
+        return True
+    meaningful = [
+        token
+        for token in re.findall(r"[a-zа-яё0-9]{5,}", _normalized_guard_text(next_step), flags=re.I)
+        if token not in NEXT_STEP_GENERIC_TOKENS
+    ]
+    if not meaningful:
+        return True
+    return not any(token in source for token in meaningful)
+
+
+def _increment_review_reason_counts(stats: dict[str, Any], reasons: Sequence[str]) -> None:
+    raw_counts = stats.setdefault("review_reason_counts", {})
+    if not isinstance(raw_counts, dict):
+        raw_counts = {}
+        stats["review_reason_counts"] = raw_counts
+    for reason in reasons:
+        key = str(reason).split(":", 1)[0]
+        raw_counts[key] = int(raw_counts.get(key, 0)) + 1
 
 
 def _text_hash(row: Mapping[str, Any]) -> str:

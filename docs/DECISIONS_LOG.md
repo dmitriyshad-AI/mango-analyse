@@ -672,3 +672,29 @@ JSONL локально в `.codex_local`, не в Foton/git. Focused pytest:
 `mode=ro&immutable=1`, sha before/after совпадает. Независимый аудитор подтвердил
 PASS: ready rows отсутствуют, все рискованные строки остались в manual review.
 Полный pytest: `3977 passed, 5 skipped, 1 warning`.
+
+### D-041. Mail-summary enrichment is gated before any golden or mass LLM run
+
+Решение: перед продолжением марафона добавлен pre-golden safety-layer для
+Block 1.4. CRM target теперь берётся из `batch_ready_crm_card_candidates.jsonl`;
+`pilot_20` используется только как fallback. Письма без `record.full_clean_text`
+не подменяются темой, preview или старым summary: они уходят в
+`summary_review_needed` с причиной `missing_full_clean_text` без LLM-вызова.
+Anti-hallucination gate расширен на модельные имена, класс, предмет, дедлайн,
+номера документов, реквизиты, курсы/предметы, payment/refund status, свободный
+текст оплаты/возврата, обычные числовые токены, неподтверждённый `next_step` и
+суммы в `amount_items`. Если quality-sanitizer меняет payload, очищенная версия
+перезаписывается в `email_summary_cache_v1`.
+
+Почему так: предыдущий слой имел formal-pass, но аудитор показал, что fallback,
+пустая выжимка, неподтверждённый next step и свободный текст оплаты могли пройти
+мимо review. Массовый LLM-прогон без golden-разметки запрещён, но сам
+предохранитель должен быть надёжным до будущей приёмки.
+
+Проверка: focused summary+A2 ingest `41 passed`; полный pytest:
+`3988 passed, 5 skipped, 1 warning`. Plan/no-LLM на staging:
+`crm_customers=99`, `review_customers=18`, `crm_review_overlap=3`,
+`target_customers=114`, `target_mail_events=914`,
+`missing_long_requires_summary=92`, `missing_full_text_rows=6`,
+`llm_calls_total=0`. Массовый summarize/apply не запускался; semantic-pass по
+качеству выжимок остаётся заблокирован до golden-набора Fable на 30 писем.

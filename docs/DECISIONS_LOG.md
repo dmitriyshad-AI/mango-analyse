@@ -782,3 +782,20 @@ rejected — менеджерский price-offer в теле письма, ко
 жёсткий запрет вывода ПДн-Excel вне `.codex_local`. Smoke на staging для 5
 клиентов: `canonical_calls_loaded=65974`, `interests_total=17`, `pains_total=7`,
 CRM/Tallanto/messages writes = false, Excel и summary только в `.codex_local`.
+
+### D-046. Family gold acceptance reports the remaining mismatch instead of tuning code
+
+Решение: Ф11 добавляет read-only verifier для `family_gold_v1.jsonl`.
+Проверка сравнивает `expected_children_count`, считает false-high и понимает
+`flags` как строки `ключ:значение` с матчем по префиксу ключа. Расхождение без
+flags не маскируется и не чинится эвристикой: оно возвращается архитектору как
+`architect_review_required`.
+
+Почему так: gold v1 — внешний ground-truth, но уже есть один конфликт между
+сырьём profile_fields и ожидаемым разбиением. Подгонять семейный граф под одну
+строку опасно: можно снова открыть класс ложных слияний/разделений детей.
+
+Проверка: на текущем staging `gold_rows=23`, `exact_count_ok=22`,
+`count_mismatches=1`, `unflagged_count_mismatches=1`, `false_high=0`,
+`parent_name_among_children_rows=0`, `quick_check=ok`. Подробный JSON с именами
+остаётся только в `.codex_local/review/f11_family_gold/`.

@@ -45,6 +45,7 @@ from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dial
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
 from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import SemanticReading
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     DEFAULT_BOT_SAFE_TENANT_ID,
     BotSafeLookup,
@@ -80,6 +81,30 @@ class DynamicSimInput:
     simulator_spec: Mapping[str, Any]
     judge_spec: Mapping[str, Any]
     personas: tuple[Mapping[str, Any], ...]
+
+
+def _semantic_reading_memory_from_result(result: Any) -> Mapping[str, Any] | None:
+    reading = SemanticReading.from_result(result)
+    return reading.to_memory_dict() if reading is not None else None
+
+
+def _semantic_reading_memory_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    direct_path = dict(turn.get("bot_direct_path") or {}) if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    model_intent = dict(turn.get("bot_model_intent") or {}) if isinstance(turn.get("bot_model_intent"), Mapping) else {}
+    frame = dict(turn.get("bot_semantic_frame") or {}) if isinstance(turn.get("bot_semantic_frame"), Mapping) else {}
+    metadata = {
+        "direct_path": {**direct_path, "model_intent": model_intent, "semantic_frame": frame},
+        "direct_path_model_intent": model_intent,
+        "semantic_frame": frame,
+    }
+    frozen = SubscriptionDraftResult(
+        route=str(turn.get("bot_route") or "draft_for_manager"),
+        draft_text=str(turn.get("bot_text") or ""),
+        safety_flags=tuple(str(flag) for flag in (turn.get("bot_safety_flags") or ())),
+        manager_checklist=tuple(str(item) for item in (turn.get("bot_manager_checklist") or ())),
+        metadata=metadata,
+    )
+    return _semantic_reading_memory_from_result(frozen)
 
 
 class FakeClientModel:
@@ -1834,6 +1859,7 @@ def attach_context_facts_to_dialog(
             route=str(turn.get("bot_route") or ""),
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+            semantic_reading=_semantic_reading_memory_from_turn(turn),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()
@@ -1969,6 +1995,7 @@ def _enrich_one_transcript_with_semantic_frame(
             route=str(turn.get("bot_route") or ""),
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+            semantic_reading=_semantic_reading_memory_from_result(framed),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()
@@ -2063,6 +2090,7 @@ def run_one_dialog(
             route=result.route,
             fact_refs=result.context_used,
             safety_flags=result.safety_flags,
+            semantic_reading=_semantic_reading_memory_from_result(result),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()

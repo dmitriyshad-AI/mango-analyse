@@ -31,6 +31,7 @@ DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
+SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
@@ -440,6 +441,11 @@ def build_dialogue_memory(
     topic_focus = _topic_focus(slot_map, open_question=open_question, active_brand=brand)
     client_confirmed = _slots_by_source(slot_map, {"dialogue_memory", "memory_provenance"})
     crm_known = _slots_by_source(slot_map, {"provided_context"})
+    do_not_reask = _do_not_reask_slots(slot_map)
+    if _slots_reask_enabled(context):
+        semantic_slot_names = _semantic_reading_slot_names(_prev_semantic_reading_slots(previous_memory))
+        if semantic_slot_names:
+            do_not_reask = tuple(sorted({*do_not_reask, *semantic_slot_names}))
     return DialogueMemory(
         session_id=session_id or _stable_session_id(brand, turns),
         active_brand=brand,
@@ -461,7 +467,7 @@ def build_dialogue_memory(
         client_confirmed_slots=client_confirmed,
         crm_known_slots=crm_known,
         bot_inferred_slots=_bot_inferred_slots(previous_memory),
-        do_not_reask_slots=_do_not_reask_slots(slot_map),
+        do_not_reask_slots=do_not_reask,
         held_state=held_state,
         current_message_roles=current_roles.to_prompt_view(),
         proactive_state=dict(previous.proactive_state) if isinstance(previous, DialogueMemory) else {},
@@ -648,6 +654,11 @@ def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any])
         **dict(memory.bot_inferred_slots),
         **_slots_by_source(slots, {"memory_llm"}),
     }
+    do_not_reask = _do_not_reask_slots(slots)
+    if _slots_reask_enabled(None):
+        semantic_slot_names = _semantic_reading_slot_names(memory.semantic_reading_slots)
+        if semantic_slot_names:
+            do_not_reask = tuple(sorted({*do_not_reask, *semantic_slot_names}))
     return replace(
         memory,
         known_slots=slots,
@@ -657,7 +668,7 @@ def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any])
         topic_focus=topic_focus,
         client_confirmed_slots=client_confirmed,
         bot_inferred_slots=bot_inferred,
-        do_not_reask_slots=_do_not_reask_slots(slots),
+        do_not_reask_slots=do_not_reask,
         pending_manager_actions=_pending_manager_actions(commitments),
         conversation_summary_short=summary[:500],
         open_loop_summary=_open_loop_summary(
@@ -1793,6 +1804,31 @@ def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) 
 
 def _do_not_reask_slots(slots: Mapping[str, DialogueSlot]) -> tuple[str, ...]:
     return tuple(sorted(key for key, slot in slots.items() if slot.value))
+
+
+def _slots_reask_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(SLOTS_REASK_ENV)
+    if value is None:
+        value = os.getenv(SLOTS_REASK_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _prev_semantic_reading_slots(previous_memory: Mapping[str, Any] | DialogueMemory | None) -> Mapping[str, Mapping[str, Any]]:
+    if isinstance(previous_memory, DialogueMemory):
+        return previous_memory.semantic_reading_slots
+    if isinstance(previous_memory, Mapping):
+        return _semantic_reading_slots_mapping(previous_memory.get("semantic_reading_slots"))
+    return {}
+
+
+def _semantic_reading_slot_names(value: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    return {
+        key
+        for key, payload in value.items()
+        if isinstance(payload, Mapping) and str(payload.get("value") or "").strip()
+    }
 
 
 def _topic_focus(

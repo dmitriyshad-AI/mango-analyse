@@ -6,6 +6,7 @@ from pathlib import Path
 from mango_mvp.channels.dialogue_memory import (
     DialogueMemory,
     DialogueTurn,
+    SLOTS_REASK_ENV,
     build_dialogue_memory,
     dialogue_memory_from_mapping,
     safe_next_action,
@@ -274,6 +275,96 @@ def test_semantic_reading_slots_are_not_written_when_mask_off(monkeypatch) -> No
 
     assert updated.semantic_reading_slots == {}
     assert "semantic_reading_slots" not in updated.to_json_dict()
+
+
+def test_slots_reask_does_not_create_hidden_slots_without_slots_gsf(monkeypatch) -> None:
+    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    followup = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory={"session_id": "s1", "active_brand": "foton"},
+    )
+
+    assert followup.do_not_reask_slots == ()
+
+
+def test_slots_reask_reads_previous_hidden_slot_names_without_prompt_value_leak(monkeypatch) -> None:
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    previous = {
+        "session_id": "s1",
+        "active_brand": "foton",
+        "semantic_reading_slots": {
+            "grade": {"value": "9#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+            "subject": {"value": "химия#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+            "format": {"value": "онлайн#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+        },
+    }
+    followup = build_dialogue_memory(
+        current_message="А расписание есть?",
+        active_brand="foton",
+        previous_memory=previous,
+    )
+    prompt_view_text = json.dumps(followup.to_prompt_view(), ensure_ascii=False, sort_keys=True)
+
+    assert set(followup.do_not_reask_slots) >= {"grade", "subject", "format"}
+    assert "semantic_reading_slots" not in followup.to_prompt_view()
+    assert followup.to_prompt_view()["known_slots"] == {}
+    assert followup.to_prompt_view()["client_confirmed_slots"] == {}
+    assert "#SENTINEL#" not in prompt_view_text
+
+
+def test_slots_reask_ignores_empty_hidden_values_and_never_leaks_sentinels(monkeypatch) -> None:
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    previous = {
+        "session_id": "s1",
+        "active_brand": "foton",
+        "semantic_reading_slots": {
+            "grade": {"value": "", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+            "subject": {"value": "химия#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+        },
+    }
+
+    followup = build_dialogue_memory(
+        current_message="А расписание есть?",
+        active_brand="foton",
+        previous_memory=previous,
+    )
+    prompt_view_text = json.dumps(followup.to_prompt_view(), ensure_ascii=False, sort_keys=True)
+
+    assert "subject" in followup.do_not_reask_slots
+    assert "grade" not in followup.do_not_reask_slots
+    assert "химия#SENTINEL#" not in prompt_view_text
+    assert "semantic_reading_slots" not in prompt_view_text
+
+
+def test_slots_reask_survives_memory_llm_update_without_value_leak(monkeypatch) -> None:
+    monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "slots_gsf")
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        turns=(DialogueTurn("client", "Нужна физика онлайн для 9 класса."),),
+    )
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        semantic_reading=SemanticReading(
+            source="inline",
+            product_grade="9 класс",
+            product_subject="физика",
+            product_format="онлайн",
+            frame_confidence=0.91,
+        ).to_memory_dict(),
+        memory_llm_fn=lambda _prompt: {"slots": {}, "topic": {}, "open_question": {}, "commitments": [], "summary": ""},
+    )
+    prompt_view_text = json.dumps(updated.to_prompt_view(), ensure_ascii=False, sort_keys=True)
+
+    assert set(updated.do_not_reask_slots) >= {"grade", "subject", "format"}
+    assert "semantic_reading_slots" not in updated.to_prompt_view()
+    assert "физика" not in updated.to_prompt_view()["known_slots"].values()
+    assert "semantic_reading_slots" not in prompt_view_text
 
 
 def test_slot_candidates_reject_multi_subject_and_format_choice() -> None:

@@ -71,7 +71,7 @@ class ChildGroup:
     def canonical_name(self) -> str:
         if not self.names:
             return ""
-        return sorted(self.names, key=lambda value: (len(value), value.casefold()))[0]
+        return sorted(self.names, key=_canonical_child_name_sort_key)[0]
 
     @property
     def brand(self) -> str:
@@ -495,7 +495,241 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
         group.brands[_normalize_brand(item.brand)] += 1
         group.evidence.append(item)
         group.suspicious_reasons.update(_suspicious_name_reasons(item.name, parent_name_keys=context.parent_name_keys))
-    return groups
+    result = _merge_safe_child_name_variants(groups)
+    _mark_weak_competing_child_candidates(result.values(), identity_risk=bool(_identity_risks(context)))
+    return result
+
+
+def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[str, ChildGroup]:
+    keys = sorted(groups)
+    parents = {key: key for key in keys}
+
+    def find(key: str) -> str:
+        while parents[key] != key:
+            parents[key] = parents[parents[key]]
+            key = parents[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left == root_right:
+            return
+        canonical = min((root_left, root_right))
+        other = root_right if canonical == root_left else root_left
+        parents[other] = canonical
+
+    for left_index, left_key in enumerate(keys):
+        for right_key in keys[left_index + 1 :]:
+            if _child_groups_have_matching_full_names(groups[left_key], groups[right_key]):
+                union(left_key, right_key)
+
+    # One-token aliases ("Дан", "Даня") are merged only if exactly one
+    # already-known multi-token child group can explain the alias.
+    for key in keys:
+        if not _group_has_only_single_token_names(groups[key]):
+            continue
+        candidates = {
+            find(other_key)
+            for other_key in keys
+            if find(other_key) != find(key)
+            and not _group_has_only_single_token_names(groups[other_key])
+            and _single_token_group_matches_multi_name(groups[key], groups[other_key])
+        }
+        if len(candidates) == 1:
+            union(key, next(iter(candidates)))
+
+    merged: dict[str, ChildGroup] = {}
+    for key in keys:
+        root = find(key)
+        target = merged.setdefault(root, ChildGroup(name_key=root))
+        _absorb_child_group(target, groups[key])
+
+    result: dict[str, ChildGroup] = {}
+    for group in merged.values():
+        group.name_key = _name_key(group.canonical_name) or group.name_key
+        while group.name_key in result:
+            group.name_key = f"{group.name_key}_dup"
+        result[group.name_key] = group
+    return result
+
+
+def _absorb_child_group(target: ChildGroup, source: ChildGroup) -> None:
+    target.names.update(source.names)
+    target.grades.update(source.grades)
+    target.subjects.update(source.subjects)
+    target.brands.update(source.brands)
+    target.evidence.extend(source.evidence)
+    target.suspicious_reasons.update(source.suspicious_reasons)
+
+
+def _child_groups_have_matching_full_names(left: ChildGroup, right: ChildGroup) -> bool:
+    if left.suspicious_reasons or right.suspicious_reasons:
+        return False
+    return any(_full_child_names_match(left_name, right_name) for left_name in left.names for right_name in right.names)
+
+
+def _full_child_names_match(left: str, right: str) -> bool:
+    left_tokens = _name_token_options(left)
+    right_tokens = _name_token_options(right)
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return False
+    shorter, longer = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    return _token_options_subset_match(shorter, longer, min_matches=2)
+
+
+def _token_options_subset_match(shorter: Sequence[frozenset[str]], longer: Sequence[frozenset[str]], *, min_matches: int) -> bool:
+    used: set[int] = set()
+    matches = 0
+    for options in shorter:
+        match_index = next(
+            (
+                index
+                for index, candidate in enumerate(longer)
+                if index not in used and _token_option_sets_match(options, candidate)
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        used.add(match_index)
+        matches += 1
+    return matches >= min_matches
+
+
+def _token_option_sets_match(left: frozenset[str], right: frozenset[str]) -> bool:
+    if left & right:
+        return True
+    return any(_token_spelling_variant(left_token, right_token) for left_token in left for right_token in right)
+
+
+def _token_spelling_variant(left: str, right: str) -> bool:
+    if len(left) < 4 or len(right) < 4:
+        return False
+    distance = _levenshtein_distance(left, right)
+    if left[:3] == right[:3]:
+        return distance <= 2
+    if left[:2] == right[:2] and (left.endswith(_RUSSIAN_SURNAME_ENDINGS) or right.endswith(_RUSSIAN_SURNAME_ENDINGS)):
+        return distance <= 3
+    if (
+        left[0] == right[0]
+        and left.endswith(_RUSSIAN_SURNAME_ENDINGS)
+        and right.endswith(_RUSSIAN_SURNAME_ENDINGS)
+    ):
+        return distance <= 2
+    return False
+
+
+def _levenshtein_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if len(left) < len(right):
+        left, right = right, left
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (0 if left_char == right_char else 1),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _group_has_only_single_token_names(group: ChildGroup) -> bool:
+    return bool(group.names) and all(len(normalized_name_tokens(name)) == 1 for name in group.names)
+
+
+def _single_token_group_matches_multi_name(single: ChildGroup, multi: ChildGroup) -> bool:
+    if single.suspicious_reasons or multi.suspicious_reasons:
+        return False
+    single_options = [_name_token_options(name)[0] for name in single.names if len(_name_token_options(name)) == 1]
+    multi_options = [options for name in multi.names for options in _name_token_options(name)]
+    return bool(single_options and multi_options) and any(
+        _token_option_sets_match(left, right) for left in single_options for right in multi_options
+    )
+
+
+_LOCAL_CHILD_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "дан": ("даниил", "данил"),
+    "данил": ("даниил", "данил"),
+    "даниил": ("даниил", "данил"),
+    "даня": ("даниил", "данил"),
+    "дениил": ("даниил", "данил"),
+    "елизавета": ("елизавета",),
+    "лиза": ("елизавета",),
+}
+_RUSSIAN_SURNAME_ENDINGS = ("ов", "ова", "ев", "ева", "ин", "ина", "ын", "ына")
+
+
+def _name_token_options(value: str) -> list[frozenset[str]]:
+    options: list[frozenset[str]] = []
+    for token in normalized_name_tokens(value):
+        token_options = {token}
+        token_options.update(_safe_name_keys(token))
+        token_options.update(_LOCAL_CHILD_NAME_ALIASES.get(token, ()))
+        options.append(frozenset(token_options))
+    return options
+
+
+_NULLISH_CHILD_NAMES = {"null", "none", "nan", "unknown", "не указан", "неизвестно"}
+
+
+def _canonical_child_name_sort_key(value: str) -> tuple[bool, bool, bool, int, str]:
+    text = str(value or "").strip()
+    tokens = normalized_name_tokens(text)
+    return (_is_nullish_child_name(text), len(tokens) < 2, not bool(tokens), len(text), text.casefold())
+
+
+def _mark_weak_competing_child_candidates(groups: Iterable[ChildGroup], *, identity_risk: bool) -> None:
+    candidates = [group for group in groups if not group.suspicious_reasons and group.canonical_name]
+    if len(candidates) < 2:
+        return
+    has_non_mail_group = any(not _group_is_mail_only(group) for group in candidates)
+    stronger_groups = [group for group in candidates if len(group.evidence) >= 2]
+    for group in candidates:
+        if _group_is_mail_only(group) and has_non_mail_group:
+            group.suspicious_reasons.add("weak_mail_only_child_candidate")
+            continue
+        if (
+            identity_risk
+            and stronger_groups
+            and len(group.evidence) == 1
+            and (
+                (_group_has_only_single_token_names(group) and not group.grades)
+                or _group_traits_covered_by_stronger_candidate(group, stronger_groups)
+            )
+        ):
+            group.suspicious_reasons.add("weak_one_off_child_candidate")
+
+
+def _group_is_mail_only(group: ChildGroup) -> bool:
+    return bool(group.evidence) and all(item.source_system == "a2v3_mail_event_facts" for item in group.evidence)
+
+
+def _group_traits_covered_by_stronger_candidate(group: ChildGroup, stronger_groups: Sequence[ChildGroup]) -> bool:
+    if not group.grades and not group.subjects:
+        return False
+    group_grades = {_normalize_trait(value) for value in group.grades}
+    group_subjects = {_normalize_trait(value) for value in group.subjects}
+    for stronger in stronger_groups:
+        if stronger is group:
+            continue
+        stronger_grades = {_normalize_trait(value) for value in stronger.grades}
+        stronger_subjects = {_normalize_trait(value) for value in stronger.subjects}
+        grades_covered = not group_grades or bool(group_grades & stronger_grades)
+        subjects_covered = not group_subjects or bool(group_subjects & stronger_subjects)
+        if grades_covered and subjects_covered:
+            return True
+    return False
+
+
+def _normalize_trait(value: str) -> str:
+    return str(value or "").strip().replace("ё", "е").casefold()
 
 
 def _identity_risks(context: CustomerContext) -> list[str]:
@@ -877,6 +1111,8 @@ def _suspicious_name_reasons(value: str, *, parent_name_keys: frozenset[str]) ->
     reasons: set[str] = set()
     if not text:
         reasons.add("empty_name")
+    if _is_nullish_child_name(text):
+        reasons.add("empty_or_null_name")
     if len(text) > 80:
         reasons.add("too_long_name")
     if EMAIL_OR_PHONE_RE.search(text):
@@ -889,6 +1125,10 @@ def _suspicious_name_reasons(value: str, *, parent_name_keys: frozenset[str]) ->
     if keys and parent_name_keys and keys & set(parent_name_keys):
         reasons.add("same_as_parent_name")
     return reasons
+
+
+def _is_nullish_child_name(value: str) -> bool:
+    return str(value or "").strip().casefold().replace("ё", "е") in _NULLISH_CHILD_NAMES
 
 
 def _split_subjects(value: str) -> list[str]:

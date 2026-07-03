@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from mango_mvp.channels.dialogue_memory import (
     build_dialogue_memory,
     dialogue_memory_from_mapping,
@@ -11,8 +14,11 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     SEMANTIC_READING_SLOT_SOURCE,
     SemanticReading,
     enabled_classes,
+    off_topic_reading_decision,
     reading_class_enabled,
+    sense_seats_reading_decision,
     slot_candidates_from_reading,
+    slots_reading_candidates,
 )
 
 
@@ -118,6 +124,57 @@ def test_slot_candidates_reject_grade_from_dates_multi_children_and_transitions(
             history_texts=("Сын 6-й закончил, что есть по физике на осень?",),
         ).get("grade")
         is None
+    )
+
+
+def test_slot_candidates_accept_grade_near_non_class_price_number() -> None:
+    slots = slot_candidates_from_reading(
+        SemanticReading(source="inline", product_grade="8 класс", frame_confidence=0.91),
+        history_texts=("Клиент: У нас 8 класс, стоимость 9 000 ₽ подходит.",),
+    )
+
+    assert slots["grade"]["value"] == "8"
+    assert (
+        slot_candidates_from_reading(
+            SemanticReading(source="inline", product_grade="9 класс", frame_confidence=0.91),
+            history_texts=("Клиент: У нас 8 класс, стоимость 9 000 ₽ подходит.",),
+        ).get("grade")
+        is None
+    )
+
+
+def test_slot_candidates_accept_current_transition_into_grade_but_not_finished_grade() -> None:
+    assert (
+        slot_candidates_from_reading(
+            SemanticReading(source="inline", product_grade="6 класс", frame_confidence=0.91),
+            history_texts=("Клиент: Ребенок перешел в 6 класс, интересует смена.",),
+        ).get("grade", {}).get("value")
+        == "6"
+    )
+    assert (
+        slot_candidates_from_reading(
+            SemanticReading(source="inline", product_grade="6 класс", frame_confidence=0.91),
+            history_texts=("Клиент: Закончил 6 класс.",),
+        ).get("grade")
+        is None
+    )
+
+
+def test_slot_candidates_reject_tz147_kb_copied_grade_and_format_when_client_only_p0_context() -> None:
+    reading = SemanticReading(
+        source="inline",
+        product_grade="11 класс",
+        product_format="онлайн",
+        product_raw_text="УНПК: ЛВШ для 11 класса онлайн",
+        frame_confidence=0.93,
+    )
+
+    assert (
+        slot_candidates_from_reading(
+            reading,
+            history_texts=("Клиент: Оплатили, а занятие не назначили.", "Клиент: Сегодня уже должно было быть."),
+        )
+        == {}
     )
 
 
@@ -265,3 +322,58 @@ def test_dialogue_memory_persists_semantic_reading_without_client_confirmation()
     assert rebuilt.last_semantic_reading["product_subject"] == "физика"
     assert "grade" not in rebuilt.client_confirmed_slots
     assert "last_semantic_reading" not in rebuilt.to_prompt_view()
+
+
+def test_semantic_reading_pure_decisions_do_not_switch_routes() -> None:
+    seats = SemanticReading(source="inline", primary_intent="live_availability", sense="seats", intent_confidence=0.82)
+    venue = SemanticReading(source="inline", primary_intent="address", sense="venue", intent_confidence=0.83)
+    off_topic = SemanticReading(source="inline", primary_intent="off_topic", intent_confidence=0.91)
+    low_confidence = SemanticReading(source="inline", primary_intent="off_topic", intent_confidence=0.3)
+
+    assert sense_seats_reading_decision(seats, "Есть места?") == "seats"
+    assert sense_seats_reading_decision(venue, "Подскажите место занятий") == "not_seats"
+    assert off_topic_reading_decision(off_topic) == "off_topic"
+    assert off_topic_reading_decision(low_confidence) == ""
+
+
+def test_slots_reading_candidates_wraps_floor_with_same_contract() -> None:
+    reading = SemanticReading(
+        source="inline",
+        product_grade="8 класс",
+        product_subject="физика",
+        frame_confidence=0.88,
+    )
+
+    slots = slots_reading_candidates(reading, ("Клиент: Нужна физика для 8 класса.",))
+
+    assert slots["grade"]["value"] == "8"
+    assert slots["subject"]["source_name"] == SEMANTIC_READING_SLOT_SOURCE
+
+
+def test_slot_gold_19_floor_has_no_false_writes_and_known_fixture_gaps_are_explicit() -> None:
+    fixture = Path(__file__).resolve().parent / "fixtures/adr003_slot_gold_19_machine_readable.json"
+    rows = json.loads(fixture.read_text(encoding="utf-8"))["rows"]
+    known_fixture_or_policy_gaps = {
+        "wappi_pair_missing_72h_004",
+        "wappi_pair_missing_72h_012",
+        "wappi_pair_missing_72h_019",
+        "wappi_pair_missing_72h_020",
+    }
+    mismatches: list[tuple[str, str, str, str]] = []
+    for row in rows:
+        if row.get("unresolved") or row.get("field") != "grade":
+            continue
+        reading = SemanticReading(source="inline", product_grade=str(row.get("frame_value") or ""), frame_confidence=0.91)
+        slots = slot_candidates_from_reading(reading, history_texts=tuple(row.get("client_quotes") or ()))
+        got = "yes" if slots.get("grade") else "none"
+        expected = str(row.get("expected_slot_write") or "")
+        dialog_id = str(row.get("dialog_id") or "")
+        if got != expected:
+            mismatches.append((dialog_id, str(row.get("source_class") or ""), expected, got))
+    assert mismatches == [
+        ("wappi_pair_missing_72h_004", "client_history", "yes", "none"),
+        ("wappi_pair_missing_72h_012", "client_history", "yes", "none"),
+        ("wappi_pair_missing_72h_019", "client_history", "yes", "none"),
+        ("wappi_pair_missing_72h_020", "client_history", "yes", "none"),
+    ]
+    assert {item[0] for item in mismatches} == known_fixture_or_policy_gaps

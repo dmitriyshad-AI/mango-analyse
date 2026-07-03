@@ -110,3 +110,59 @@
 - Обоснование: future caller может передать смешанную историю, а не уже отфильтрованные реплики клиента. Если floor поверит словам бота, он снова сможет записать KB/ответный факт в память клиента.
 - Сырьё: текущая функция принимает `history_texts` как свободную последовательность строк; Wappi history часто сериализуется с префиксами ролей.
 - Аудит: RISK принят; добавлены тесты на bot/client-префиксы, `математика, физика` и `очно/онлайн`.
+
+### D16. Ш1 продолжения исполняется без переключения use-site
+
+- Решение: в заходе по `2026-07-03_TZ_Sh1_Sh4_semantic_reading_prodolzhenie_i_prompt_D1.md` делать только безопасный Ш1 и подготовку Ш2-отчёта: floor-фиксы, frozen-guard tests, чистые reader-функции и offline-agreement в report. Ш3/Ш4 не выполнять.
+- Обоснование: Ш3 включает активные маски `sense_seats/off_topic/slots_gsf`, а Ш4 удаляет legacy-потребителей. Оба шага требуют регрейда тройки B/I/P и отдельных решений Дмитрия.
+- Сырьё: Foton-ТЗ прямо разделяет Ш1/Ш2/Ш3/Ш4 и запрещает use-site переключение в Ш1.
+- Аудит: PASS; субагент-аудитор подтвердил, что pure reader functions безопасны только как offline/report.
+
+### D17. `gold-19` используется как ratchet с явными known gaps, а не как абсолютная истина
+
+- Решение: добавить `tests/fixtures/adr003_slot_gold_19_machine_readable.json`, но тестировать его с явным списком спорных строк: `wappi_pair_missing_72h_004`, `wappi_pair_missing_72h_012`, `wappi_pair_missing_72h_019`, `wappi_pair_missing_72h_020`.
+- Обоснование: эти строки либо не содержат в `client_quotes` явной клиентской фразы с классом, либо требуют принять `закончил N класс` как текущий класс. Подгонять floor под такие строки опасно: это снова позволит записывать KB/пересказ как клиентское подтверждение.
+- Сырьё: `2026-07-03_slot_gold_19_machine_readable.json` хранит данные как объект `.rows`; 2 строки unresolved. Прогон floor показал, что все NEG остаются `none`, а known gaps находятся только среди POS.
+- Аудит: PASS_WITH_NOTES; аудитор заранее предупредил, что в gold-19 есть спорные POS и правило переходных фраз требует уточнения Claude #1.
+
+### D18. `history/persona` не является клиентским доказательством без явного `Клиент:`
+
+- Решение: floor теперь извлекает client-authored segments: `Клиент:/user:/client:/turn_msg:` принимаются, `Ответ:/Бот:/assistant:` игнорируются, `history/persona:` принимается только если внутри есть явный клиентский сегмент `Клиент:/client:`.
+- Обоснование: enriched/gold строки смешивают текущую реплику, историю и KB/ответы. Без role parsing строка с KB-фактом `для 5-10 классов` могла записать `5` как клиентский слот.
+- Сырьё: тест `test_slot_gold_19_floor_has_no_false_writes_and_known_fixture_gaps_are_explicit`; до фикса строка `wappi_pair_missing_72h_003` ошибочно давала `slot_write=yes`.
+- Аудит: принято как усиление D15.
+
+### D19. Multi-number grade guard различает класс и цену
+
+- Решение: `_history_supports_grade` больше не режет сообщение из-за любой второй цифры 1-11 рядом со словом `класс`; неоднозначностью считаются только несколько явных grade-фраз. `8 класс, стоимость 9 000 ₽` даёт grade=8, но не grade=9.
+- Обоснование: прежний guard безопасно терял recall на легитимном классе, если рядом была цена. При этом защита от multi-child сохраняется через несколько явных grade-кандидатов.
+- Сырьё: тесты `test_slot_candidates_accept_grade_near_non_class_price_number`, `test_slot_candidates_reject_grade_from_dates_multi_children_and_transitions`.
+- Аудит: PASS; это был основной дефект Ш1.
+
+### D20. Reader agreement добавлен как отчёт, не как политика
+
+- Решение: `scripts/report_adr003_semantic_frame_eval.py` считает `reader_agreement` между legacy-детекторами и pure readers (`sense_seats_reading_decision`, `off_topic_reading_decision`, `slots_reading_candidates`) на inline-транскриптах.
+- Обоснование: Ш2 должен доказать готовность к переключению читателей без новых M1-прогонов и без включения масок. Отчёт показывает расхождения, но не меняет route/text.
+- Сырьё: `test_report_includes_reader_agreement_for_pure_semantic_readers`.
+- Аудит: PASS; аудитор указал, что текущий report умел inline-vs-posthoc, но не умел offline-agreement чистых читателей.
+
+### D21. `draft_loop` запись `last_semantic_reading` не считать безусловной
+
+- Решение: уточнить формулировку ТЗ/отчёта: `draft_loop.py` пишет `last_semantic_reading` только внутри ветки `_memory_provenance_enabled()`.
+- Обоснование: Foton-ТЗ называл запись безусловной. Это неточно и может привести к неверному выводу о runtime-памяти.
+- Сырьё: `src/mango_mvp/integrations/draft_loop.py` строки вокруг 908-922: semantic reading формируется и передаётся в `update_dialogue_memory_after_answer` только в блоке memory provenance.
+- Аудит: PASS; замечание аудитора принято.
+
+### D22. Э2 получает новый merged-набор, а не правку старого канона
+
+- Решение: добавить отдельный сценарный файл `product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl`: 2 spec-строки из P1C-файла Foton, 131 persona из старого канона и 15 новых P1C-persona.
+- Обоснование: старый `adr003_semantic_frame_m1_scenarios_20260701.jsonl` содержит `shadow_changed_behavior` как hard gate судьи. Новый P1C judge_spec правильно переносит это в soft `shadow_behavior_note`, потому что одна нога не видит paired baseline. Перезаписывать старый канон нельзя: это исторический источник прошлых M1-прогонов.
+- Сырьё: новый набор загружается `load_dynamic_sim_input`, содержит `146` persona, без duplicate `dialog_id`; `shadow_changed_behavior` отсутствует, `shadow_behavior_note` присутствует только в `soft_flags`.
+- Аудит: PASS; это закрывает замечание аудитора, что сценарный файл без spec-строк не запустится.
+
+### D23. Э2 runner фиксирует `PYTHONPATH` и пустые semantic-reading маски
+
+- Решение: добавить `scripts/run_adr003_semantic_reading_e2_triple.sh` для ручного M1/локального запуска B/I/P. Скрипт выставляет `PYTHONPATH=$ROOT/src`, чистит semantic-frame env на baseline/posthoc ногах и оставляет `TELEGRAM_SEMANTIC_READING_CLASSES=` пустым.
+- Обоснование: без явного `PYTHONPATH` Python может импортировать соседний старый checkout из `Mango analyse`, что уже воспроизвелось при вызове `--help`. Ш2 должен проверять telemetry/agreement, а не случайную версию кода или активные маски.
+- Сырьё: `bash -n scripts/run_adr003_semantic_reading_e2_triple.sh`; `run_telegram_dynamic_client_sim.py --help` проходит только с `PYTHONPATH=src`.
+- Аудит: PASS; runner не запускается автоматически и не трогает live/profile/P0.

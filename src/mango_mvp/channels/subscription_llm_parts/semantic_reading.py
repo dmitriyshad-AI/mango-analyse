@@ -11,6 +11,7 @@ SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
 
 ALLOWED_SEMANTIC_READING_CLASSES = frozenset({"sense_seats", "off_topic", "slots_gsf"})
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})
+SEMANTIC_READING_DECISION_CONFIDENCE = 0.70
 
 _SUBJECT_ALIASES = {
     "физика": ("физик", "physics"),
@@ -156,16 +157,42 @@ class SemanticReading:
         }
 
 
+def _client_authored_texts(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    lowered = text.casefold()
+    if lowered.startswith(("ответ:", "бот:", "bot:", "assistant:")):
+        return []
+    for prefix in ("клиент:", "user:", "client:", "turn_msg:"):
+        if lowered.startswith(prefix) and ":" in text:
+            return [text.split(":", 1)[1].strip()]
+    if lowered.startswith("history/persona:") and ":" in text:
+        body = text.split(":", 1)[1].strip()
+        if not any(marker in body for marker in ("Клиент:", "клиент:", "Client:", "client:")):
+            return []
+        pieces: list[str] = []
+        for marker in ("Клиент:", "клиент:", "Client:", "client:"):
+            if marker not in body:
+                continue
+            for part in body.split(marker)[1:]:
+                end = len(part)
+                for stop in ("Ответ:", "ответ:", "Бот:", "бот:", "Assistant:", "assistant:", "Client:", "client:"):
+                    index = part.find(stop)
+                    if index >= 0:
+                        end = min(end, index)
+                cleaned = part[:end].strip(" ;…")
+                if cleaned:
+                    pieces.append(cleaned)
+        return pieces
+    return [text]
+
+
 def _normalize_history_texts(texts: Sequence[str]) -> str:
     client_texts = []
     for item in texts:
-        text = str(item or "").strip()
-        lowered = text.casefold()
-        if lowered.startswith(("ответ:", "бот:", "bot:", "assistant:")):
-            continue
-        if lowered.startswith(("клиент:", "user:", "client:")) and ":" in text:
-            text = text.split(":", 1)[1].strip()
-        client_texts.append(" ".join(text.casefold().replace("ё", "е").split()))
+        for text in _client_authored_texts(str(item or "")):
+            client_texts.append(" ".join(text.casefold().replace("ё", "е").split()))
     return " ".join(client_texts)
 
 
@@ -188,6 +215,25 @@ def _slot_floor_text(value: str) -> str:
     for char in ",.;:!?()[]{}«»\"'":
         text = text.replace(char, " ")
     return " ".join(text.split())
+
+
+def _class_grade_hits(text: str) -> set[str]:
+    compact = _slot_floor_text(text).replace("-", " ")
+    hits: set[str] = set()
+    for grade in range(1, 12):
+        value = str(grade)
+        needles = (
+            f"{value} класс",
+            f"{value} классе",
+            f"{value} класса",
+            f"{value}го класса",
+            f"{value}й класс",
+            f"{value} го класса",
+            f"{value} й класс",
+        )
+        if any(needle in compact for needle in needles):
+            hits.add(value)
+    return hits
 
 
 def _normalize_grade(value: str) -> str:
@@ -232,28 +278,17 @@ def _history_supports_grade(grade: str, history_texts: Sequence[str]) -> bool:
     if not grade:
         return False
     for raw_text in history_texts:
-        if str(raw_text or "").strip().casefold().startswith(("ответ:", "бот:", "bot:", "assistant:")):
-            continue
-        text = _slot_floor_text(raw_text)
-        if not text:
-            continue
-        if any(marker in text for marker in ("закончил", "закончила", "окончил", "окончила", "перешел", "перешла")):
-            continue
-        small_numbers = [int(item) for item in _digit_groups(text) if item.isdigit() and 1 <= int(item) <= 11]
-        if len(set(small_numbers)) > 1 and "класс" in text:
-            continue
-        compact = text.replace("-", " ")
-        needles = (
-            f"{grade} класс",
-            f"{grade} классе",
-            f"{grade} класса",
-            f"{grade}го класса",
-            f"{grade}й класс",
-            f"{grade} го класса",
-            f"{grade} й класс",
-        )
-        if any(needle in compact for needle in needles):
-            return True
+        for client_text in _client_authored_texts(str(raw_text or "")):
+            text = _slot_floor_text(client_text)
+            if not text:
+                continue
+            if any(marker in text for marker in ("закончил", "закончила", "окончил", "окончила")):
+                continue
+            class_grade_hits = _class_grade_hits(text)
+            if len(class_grade_hits) > 1:
+                continue
+            if grade in class_grade_hits:
+                return True
     return False
 
 
@@ -282,19 +317,14 @@ def _alias_hits(text: str, aliases: Mapping[str, Sequence[str]]) -> set[str]:
 
 def _history_has_multi_alias_choice(history_texts: Sequence[str], aliases: Mapping[str, Sequence[str]]) -> bool:
     for raw_text in history_texts:
-        original = str(raw_text or "").strip()
-        lowered = original.casefold()
-        if lowered.startswith(("ответ:", "бот:", "bot:", "assistant:")):
-            continue
-        if lowered.startswith(("клиент:", "user:", "client:")) and ":" in original:
-            original = original.split(":", 1)[1].strip()
-        normalized = _slot_floor_text(original)
-        raw_normalized = " ".join(original.casefold().replace("ё", "е").split())
-        if not normalized:
-            continue
-        hits = _alias_hits(normalized, aliases)
-        if len(hits) >= 2 and any(separator in raw_normalized for separator in (" или ", " либо ", " и ", " / ", "/", ",")):
-            return True
+        for original in _client_authored_texts(str(raw_text or "")):
+            normalized = _slot_floor_text(original)
+            raw_normalized = " ".join(original.casefold().replace("ё", "е").split())
+            if not normalized:
+                continue
+            hits = _alias_hits(normalized, aliases)
+            if len(hits) >= 2 and any(separator in raw_normalized for separator in (" или ", " либо ", " и ", " / ", "/", ",")):
+                return True
     return False
 
 
@@ -350,3 +380,45 @@ def slot_candidates_from_reading(
             "evidence": reading.product_raw_text or raw_value,
         }
     return out
+
+
+def sense_seats_reading_decision(reading: Optional[SemanticReading], client_text: str = "") -> str:
+    if reading is None or reading.source != "inline" or reading.intent_confidence < SEMANTIC_READING_DECISION_CONFIDENCE:
+        return ""
+    primary = str(reading.primary_intent or "").strip().casefold()
+    sense = str(reading.sense or "").strip().casefold()
+    action = str(reading.requested_action or "").strip().casefold()
+    scope = str(reading.scope or "").strip().casefold()
+    if primary in {"live_availability", "availability"} or sense in {
+        "seats",
+        "seat_availability",
+        "availability",
+        "live_status",
+        "booking",
+    }:
+        return "seats"
+    if action in {"check_availability", "enroll"} and "мест" in scope:
+        return "seats"
+    if "мест" in str(client_text or "").casefold().replace("ё", "е"):
+        return "not_seats"
+    return ""
+
+
+def off_topic_reading_decision(reading: Optional[SemanticReading]) -> str:
+    if reading is None or reading.source != "inline" or reading.intent_confidence < SEMANTIC_READING_DECISION_CONFIDENCE:
+        return ""
+    primary = str(reading.primary_intent or "").strip().casefold()
+    return "off_topic" if primary == "off_topic" else "not_off_topic"
+
+
+def slots_reading_candidates(
+    reading: Optional[SemanticReading],
+    history_texts: Sequence[str] = (),
+    *,
+    confidence_threshold: float = 0.70,
+) -> Mapping[str, Mapping[str, Any]]:
+    return slot_candidates_from_reading(
+        reading,
+        history_texts=history_texts,
+        confidence_threshold=confidence_threshold,
+    )

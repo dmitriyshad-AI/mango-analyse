@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from scripts import report_adr003_semantic_frame_eval as report
+from scripts.run_telegram_dynamic_client_sim import load_dynamic_sim_input
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -302,6 +303,40 @@ def test_report_compares_inline_with_posthoc_and_text_health(tmp_path: Path) -> 
     assert result["baseline_vs_inline_text_health"]["dangerous_flip_count"] == 0
 
 
+def test_report_includes_reader_agreement_for_pure_semantic_readers(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    turn = dialog["turns"][0]
+    turn["client_message"] = "Есть ли места для 8 класса по физике онлайн?"
+    turn["bot_direct_path"] = {
+        "model_intent": {
+            "primary_intent": "live_availability",
+            "sense": "seats",
+            "confidence": 0.91,
+        },
+    }
+    turn["bot_semantic_frame"]["requested_product"] = {
+        "grade": "8 класс",
+        "subject": "физика",
+        "format": "онлайн",
+        "raw_text": "8 класс физика онлайн",
+    }
+    turn["bot_semantic_frame"]["confidence"] = 0.91
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    agreement = result["reader_agreement"]
+    assert agreement["status"] == "compared"
+    assert agreement["compared_turns"] == 1
+    assert agreement["per_reader"]["sense_seats"]["match"] == 1
+    assert agreement["per_reader"]["slot_grade"]["match"] == 1
+    assert agreement["per_reader"]["slot_subject"]["match"] == 1
+    assert agreement["per_reader"]["slot_format"]["match"] == 1
+    assert agreement["per_reader"]["off_topic"]["match"] == 1
+    assert agreement["mismatch_count"] == 0
+
+
 def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     safe = _dialog(include_frame=True)
@@ -400,3 +435,17 @@ def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     assert json_report["acceptance"]["flags"]["extra_model_calls_expected"] is False
     assert json_report["semantic_frame"]["present_count"] == 1
     assert "OFF transcripts were not provided" in markdown
+
+
+def test_e2_semantic_reading_scenario_set_is_loadable_and_uses_soft_shadow_note() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    scenarios = repo_root / "product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl"
+
+    sim_input = load_dynamic_sim_input(scenarios)
+    text = scenarios.read_text(encoding="utf-8")
+
+    assert sim_input.simulator_spec
+    assert sim_input.judge_spec
+    assert len(sim_input.personas) == 146
+    assert "shadow_changed_behavior" not in text
+    assert "shadow_behavior_note" in text

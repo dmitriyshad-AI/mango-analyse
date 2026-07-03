@@ -104,6 +104,185 @@ ACTIVE_BEHAVIOR_ALLOWED_FALSE_BUDGET = {
     "src/mango_mvp/channels/subscription_llm_parts/provider.py": 1,
 }
 
+UNDERSTANDING_ENV_DECLARATIONS = (
+    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
+    (
+        "src/mango_mvp/channels/dialogue_contract_pipeline.py",
+        "AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV",
+        "TELEGRAM_AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX",
+    ),
+    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "FAITHFULNESS_SHADOW_ENV", "TELEGRAM_FAITHFULNESS_SHADOW"),
+    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
+    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "QUALITY_CLARIFY_SCOPE_ENV", "TELEGRAM_Q_CLARIFY_SCOPE"),
+    ("src/mango_mvp/channels/dialogue_memory.py", "MEMORY_CHILD_IDENTITY_MODEL_ENV", "TELEGRAM_CHILD_IDENTITY_MODEL"),
+    ("src/mango_mvp/channels/fact_venue_scope.py", "FACT_VENUE_SCOPE_ENV", "TELEGRAM_FACT_VENUE_SCOPE"),
+    ("src/mango_mvp/channels/semantic_roles.py", "INTENT_STATE_REPAIR_ENV", "TELEGRAM_INTENT_STATE_REPAIR"),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "ASSUMED_SCOPE_GUARD_ENV", "TELEGRAM_ASSUMED_SCOPE_GUARD"),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "DIRECT_P0_TEXT_HYGIENE_ENV", "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "DIRECT_SLOT_TOPIC_SHADOW_ENV", "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "P0_MODEL_CLASSES_V2_ENV",
+        "TELEGRAM_P0_MODEL_CLASSES_V2",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "RETRIEVER_MODEL_DRIVEN_ENV", "TELEGRAM_RETRIEVER_MODEL_DRIVEN"),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "RETRIEVER_NEED_SHADOW_ENV", "TELEGRAM_RETRIEVER_NEED_SHADOW"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_DECISION_SHADOW_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_POSTHOC_SHADOW_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV",
+        "TELEGRAM_SEMANTIC_FRAME_SELF_ANSWER_SHADOW",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "SEMANTIC_FRAME_SHADOW_ENV", "TELEGRAM_SEMANTIC_FRAME_SHADOW"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+        "ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV",
+        "TELEGRAM_ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "RULES_ENGINE_PLANNER_INTENT_ENV", "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"),
+    ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "SCOPE_FACT_GUARD_ENV", "TELEGRAM_SCOPE_FACT_GUARD"),
+    ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "STEP4_KEEP_ANSWER_ENV", "TELEGRAM_STEP4_KEEP_ANSWER"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "ANSWER_QUALITY_LLM_REWRITER_ENV",
+        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITER",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "ANSWER_QUALITY_LLM_REWRITE_ENV", "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "ANSWER_QUALITY_LLM_REWRITE_MODE_ENV",
+        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_MODE",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV",
+        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_REASONING",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV",
+        "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV",
+        "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "HUMANITY_X2_REWRITE_MODEL_ENV", "TELEGRAM_DRAFT_X2_REWRITE_MODEL"),
+    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "LLM_RETRIEVE_MODEL_ENV", "TELEGRAM_LLM_RETRIEVE_MODEL"),
+    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "PH2_TONE_ENV", "TELEGRAM_PH2_TONE"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_DIAGNOSIS_GUARD_ENV",
+        "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_DIAGNOSIS_MODEL_ENV",
+        "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_DIAGNOSIS_REASONING_ENV",
+        "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV",
+        "TELEGRAM_SEMANTIC_VERIFIER_MODEL",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV",
+        "TELEGRAM_SEMANTIC_VERIFIER_REASONING",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+        "SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV",
+        "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
+        "RELIABLE_ANSWERER_STEP1_ENV",
+        "TELEGRAM_RELIABLE_ANSWERER_STEP1",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py",
+        "SEMANTIC_READING_CLASSES_ENV",
+        "TELEGRAM_SEMANTIC_READING_CLASSES",
+    ),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "ANSWERABILITY_SHADOW_ENV", "TELEGRAM_ANSWERABILITY_SHADOW"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DEAL_ACTION_DECISION_ENV", "TELEGRAM_DEAL_ACTION_DECISION"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DIRECT_PATH_MODEL_P0_ENV", "TELEGRAM_DIRECT_PATH_MODEL_P0"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DIRECT_P0_TEXT_HYGIENE_ENV", "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "INTENT_MODEL_LED_ENV", "TELEGRAM_INTENT_MODEL_LED"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "P0_MODEL_CLASSES_V2_ENV", "TELEGRAM_P0_MODEL_CLASSES_V2"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "P0_MODEL_LED_ENV", "TELEGRAM_P0_MODEL_LED"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "PROSE_MODEL_LED_ENV", "TELEGRAM_PROSE_MODEL_LED"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "SEMANTIC_OUTPUT_VERIFIER_ENV", "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),
+    ("src/mango_mvp/channels/tone_block.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
+    ("src/mango_mvp/channels/tone_block.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),
+    ("src/mango_mvp/channels/tone_block.py", "TONE_SELL_PROMPT_ENV", "TELEGRAM_TONE_SELL_PROMPT"),
+    ("src/mango_mvp/channels/tone_block.py", "TONE_WARM_FRAME_ENV", "TELEGRAM_TONE_WARM_FRAME"),
+)
+
+SEMANTIC_FRAME_SHADOW_FLAG_REGISTRY = {
+    "SEMANTIC_FRAME_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_SHADOW",
+    "SEMANTIC_FRAME_POSTHOC_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW",
+    "SEMANTIC_FRAME_DECISION_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW",
+    "SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV": "TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE",
+    "SEMANTIC_FRAME_SELF_ANSWER_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_SELF_ANSWER_SHADOW",
+    "SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW",
+    "SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_ENV": "TELEGRAM_SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW",
+}
+
+UNDERSTANDING_ENV_KEYWORDS = (
+    "SEMANTIC",
+    "INTENT",
+    "FRAME",
+    "SHADOW",
+    "RETRIEVER",
+    "ANSWER",
+    "PROOF",
+    "DECISION",
+    "MODEL",
+    "SCOPE",
+    "VENUE",
+    "AUTONOMY",
+    "TONE",
+    "P0",
+    "PROSE",
+    "RELIABLE",
+)
+
 
 def _is_re_compile_call(node: ast.Call) -> bool:
     func = node.func
@@ -388,6 +567,32 @@ def _channel_marker_helper_call_counts(repo: Path) -> dict[str, int]:
     return counts
 
 
+def _env_declaration_snapshot(repo: Path) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    for path in sorted((repo / "src/mango_mvp/channels").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+                value = node.value
+            else:
+                continue
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name) or not target.id.endswith("_ENV"):
+                    continue
+                if target.id.endswith("_PATH_ENV"):
+                    continue
+                joined = f"{target.id} {value.value}"
+                if any(keyword in joined for keyword in UNDERSTANDING_ENV_KEYWORDS):
+                    rows.append((str(path.relative_to(repo)), target.id, value.value))
+    return sorted(rows)
+
+
 def test_adr003_no_new_runtime_channel_regex_without_review() -> None:
     repo = Path(__file__).resolve().parents[1]
     channel_files = sorted((repo / "src/mango_mvp/channels").rglob("*.py"))
@@ -437,6 +642,33 @@ def test_adr003_direct_path_marker_helper_budget_is_frozen() -> None:
             f"{rel_path} added {count - CHANNEL_MARKER_HELPER_BUDGET[rel_path]} marker-helper calls. "
             "New client-meaning detection must go through SemanticFrame/eval, not marker helpers."
         )
+
+
+def test_adr003_understanding_env_declarations_are_frozen() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    actual = _env_declaration_snapshot(repo)
+
+    assert actual == sorted(UNDERSTANDING_ENV_DECLARATIONS), (
+        "ADR-003 freezes channel understanding flags. Adding a new *_ENV client-meaning flag must be paired "
+        "with a same-change reduction in regex/marker budget or an explicit ADR decision; do not add another "
+        "shadow/report-only switch silently."
+    )
+
+
+def test_adr003_semantic_frame_shadow_flag_registry_is_frozen() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    actual = {
+        name: value
+        for path, name, value in _env_declaration_snapshot(repo)
+        if path == "src/mango_mvp/channels/subscription_llm_parts/direct_path.py"
+        and name.startswith("SEMANTIC_FRAME_")
+        and name.endswith("_ENV")
+    }
+
+    assert actual == SEMANTIC_FRAME_SHADOW_FLAG_REGISTRY, (
+        "ADR-003 allows only the reviewed SemanticFrame shadow/gate flags. New SemanticFrame shadow flags "
+        "need an ADR entry and should not create another indefinite report-only loop."
+    )
 
 
 def test_adr003_no_active_behavior_allowed_false_sentinel_in_runtime_code() -> None:

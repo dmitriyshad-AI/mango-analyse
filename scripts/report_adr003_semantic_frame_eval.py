@@ -10,6 +10,18 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.subscription_llm_parts.policy_routing import (
+    OFF_TOPIC_INPUT_RE,
+    _asks_explicit_live_availability_question,
+    _selling_slots_from_text,
+)
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    off_topic_reading_decision,
+    sense_seats_reading_decision,
+    slots_reading_candidates,
+)
+
 
 SCHEMA_VERSION = "adr003_semantic_frame_eval_report_v1_2026_07_01"
 REQUIRED_FRAME_FIELDS = (
@@ -97,6 +109,7 @@ def build_report(
         "inline_vs_posthoc_agreement": _inline_vs_posthoc_agreement(on_dialogs, posthoc_dialogs)
         if posthoc_dialogs
         else {"status": "not_provided"},
+        "reader_agreement": _reader_agreement_metrics(on_dialogs),
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
@@ -151,6 +164,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Baseline vs inline dangerous flips: `{text_health.get('dangerous_flip_count', 'n/a')}`",
         f"- Inline vs posthoc compared turns: `{inline_posthoc.get('compared_turns', 'n/a')}`",
         f"- Inline vs posthoc mismatch count: `{inline_posthoc.get('mismatch_count', 'n/a')}`",
+        f"- Reader agreement compared turns: `{(report.get('reader_agreement') or {}).get('compared_turns', 'n/a')}`",
+        f"- Reader agreement mismatch count: `{(report.get('reader_agreement') or {}).get('mismatch_count', 'n/a')}`",
         f"- LLM call mode: `{llm.get('mode', 'unknown')}`",
         f"- LLM raw total delta: `{llm.get('raw_total_delta', 'n/a')}`",
         f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
@@ -283,6 +298,35 @@ def _requested_product(frame: Mapping[str, Any]) -> Mapping[str, Any]:
     return product if isinstance(product, Mapping) else {}
 
 
+def _float01(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, number))
+
+
+def _semantic_reading_from_turn(turn: Mapping[str, Any]) -> SemanticReading | None:
+    frame = _frame_from_turn(turn)
+    model_intent = _model_intent_from_turn(turn)
+    if not frame and not model_intent:
+        return None
+    product = _requested_product(frame)
+    return SemanticReading(
+        source="inline",
+        primary_intent=str(model_intent.get("primary_intent") or "").strip(),
+        sense=str(model_intent.get("sense") or "").strip(),
+        scope=str(model_intent.get("scope") or "").strip(),
+        intent_confidence=_float01(model_intent.get("confidence")),
+        requested_action=str(frame.get("requested_action") or "").strip(),
+        product_grade=str(product.get("grade") or "").strip(),
+        product_subject=str(product.get("subject") or "").strip(),
+        product_format=str(product.get("format") or "").strip(),
+        product_raw_text=str(product.get("raw_text") or "").strip(),
+        frame_confidence=_float01(frame.get("confidence")),
+    )
+
+
 def _semantic_value(turn: Mapping[str, Any], field: str) -> str:
     frame = _frame_from_turn(turn)
     model_intent = _model_intent_from_turn(turn)
@@ -356,6 +400,93 @@ def _inline_vs_posthoc_agreement(
         "missing_inline_turns": len(set(posthoc_map) - set(inline_map)),
         "missing_posthoc_turns": len(set(inline_map) - set(posthoc_map)),
         "per_field": per_field,
+        "mismatch_count": mismatch_count,
+        "mismatch_examples": examples,
+    }
+
+
+def _reader_agreement_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    compared = 0
+    mismatch_count = 0
+    per_reader = {
+        "sense_seats": {"match": 0, "mismatch": 0, "missing_reading": 0},
+        "off_topic": {"match": 0, "mismatch": 0, "missing_reading": 0},
+        "slot_grade": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
+        "slot_subject": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
+        "slot_format": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
+    }
+    examples: list[dict[str, Any]] = []
+    for dialog in dialogs:
+        dialog_id = str(dialog.get("dialog_id") or "")
+        client_history: list[str] = []
+        for index, turn in enumerate(_turns(dialog), 1):
+            client_message = str(turn.get("client_message") or "")
+            if client_message:
+                client_history.append(f"Клиент: {client_message}")
+            reading = _semantic_reading_from_turn(turn)
+            if reading is None:
+                continue
+            compared += 1
+            changed: dict[str, Any] = {}
+
+            legacy_seats = "seats" if _asks_explicit_live_availability_question(client_message) else "not_seats"
+            reading_seats = sense_seats_reading_decision(reading, client_message)
+            if not reading_seats:
+                per_reader["sense_seats"]["missing_reading"] += 1
+            elif reading_seats == legacy_seats:
+                per_reader["sense_seats"]["match"] += 1
+            else:
+                per_reader["sense_seats"]["mismatch"] += 1
+                changed["sense_seats"] = {"legacy": legacy_seats, "reading": reading_seats}
+
+            legacy_off_topic = "off_topic" if OFF_TOPIC_INPUT_RE.search(client_message) else "not_off_topic"
+            reading_off_topic = off_topic_reading_decision(reading)
+            if not reading_off_topic:
+                per_reader["off_topic"]["missing_reading"] += 1
+            elif reading_off_topic == legacy_off_topic:
+                per_reader["off_topic"]["match"] += 1
+            else:
+                per_reader["off_topic"]["mismatch"] += 1
+                changed["off_topic"] = {"legacy": legacy_off_topic, "reading": reading_off_topic}
+
+            legacy_slots = dict(_selling_slots_from_text(client_message))
+            reading_slots = {
+                key: str(value.get("value") or "")
+                for key, value in slots_reading_candidates(reading, tuple(client_history)).items()
+                if isinstance(value, Mapping)
+            }
+            for slot_name in ("grade", "subject", "format"):
+                key = f"slot_{slot_name}"
+                legacy_value = str(legacy_slots.get(slot_name) or "")
+                reading_value = str(reading_slots.get(slot_name) or "")
+                if legacy_value and reading_value and legacy_value == reading_value:
+                    per_reader[key]["match"] += 1
+                elif legacy_value and reading_value and legacy_value != reading_value:
+                    per_reader[key]["mismatch"] += 1
+                    changed[key] = {"legacy": legacy_value, "reading": reading_value}
+                elif legacy_value and not reading_value:
+                    per_reader[key]["legacy_only"] += 1
+                elif reading_value and not legacy_value:
+                    per_reader[key]["reading_only"] += 1
+                else:
+                    per_reader[key]["match"] += 1
+
+            if changed:
+                mismatch_count += 1
+                if len(examples) < 50:
+                    examples.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "turn": int(turn.get("turn") or index),
+                            "client_message": client_message,
+                            "changed": changed,
+                        }
+                    )
+    return {
+        "schema_version": "semantic_reading_reader_agreement_v1_2026_07_03",
+        "status": "compared" if compared else "no_frames",
+        "compared_turns": compared,
+        "per_reader": per_reader,
         "mismatch_count": mismatch_count,
         "mismatch_examples": examples,
     }

@@ -411,8 +411,27 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
-    bot = FakeBot()
     calls: list[dict] = []
+
+    class SemanticFrameBot(FakeBot):
+        def build_draft(self, client_message: str, *, context=None):
+            self.calls.append({"client_message": client_message, "context": context})
+            return SubscriptionDraftResult(
+                route="bot_answer_self",
+                draft_text=f"Черновик: {client_message}",
+                safety_flags=("client_safe_fact_verified",),
+                metadata={
+                    "direct_path_model_intent": {"primary_intent": "schedule", "sense": "schedule", "confidence": 0.9},
+                    "semantic_frame": {
+                        "source": "inline",
+                        "requested_action": "answer_question",
+                        "requested_product": {"grade": "7 класс", "subject": "физика", "format": "онлайн"},
+                        "confidence": 0.88,
+                    },
+                },
+            )
+
+    bot = SemanticFrameBot()
 
     def context_builder(key, history, client_message, brand, *, dialogue_memory=None, current_message_id=""):
         from mango_mvp.channels.dialogue_memory import build_dialogue_memory
@@ -449,6 +468,9 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
     stored = state["dialogue_memory"][key.value]
     assert stored["known_slots"]["grade"]["value"] == "7"
     assert stored["known_slots"]["grade"]["message_id"] == "m1"
+    assert stored["last_semantic_reading"]["source"] == "inline"
+    assert stored["last_semantic_reading"]["product_subject"] == "физика"
+    assert "last_semantic_reading" not in calls[0]["payload"]["dialogue_memory_view"]
     assert calls[0]["message_id"] == "m1"
 
 

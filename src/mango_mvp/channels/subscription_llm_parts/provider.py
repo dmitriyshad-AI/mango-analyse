@@ -598,8 +598,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
     A_PROACTIVE_ENV,
     A_RICH_FORMAT_ENV,
-    COMPLAINT_APOLOGY_RE,
-    COMPLAINT_DETAIL_COLLECT_RE,
     CONTENT_DELIVERY_ACTION_RE,
     COSMETIC_OPENING_RE,
     DERIVED_PRODUCT_NUMBER_RE,
@@ -609,13 +607,11 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     DRAFT_PLACEHOLDER_RE,
     FOLLOWUP_DEADLINE_RE,
     GATE_BLOCKING_CODES,
-    HIGH_RISK_INPUT_PATTERNS,
     HUMANITY_BLOCK_A_ROUTE_FIX_ENV,
     HUMANITY_X2_REWRITE_ENV,
     HUMANITY_X2_REWRITE_MODEL_ENV,
     HUMANITY_X2_REWRITE_MODE_ENV,
     HUMANITY_X2_REWRITE_REASONING_ENV,
-    LEGAL_CONTEXT_INPUT_RE,
     LLM_RETRIEVE_MODEL_ENV,
     LLM_RETRIEVE_REASONING_ENV,
     LLM_RETRIEVE_TIMEOUT_ENV,
@@ -644,7 +640,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     PRESALE_SOURCE_ID_TOKEN_PATTERN,
     PRESALE_SOURCE_ID_TOKEN_RE,
     PRICE_FIX_PROCESS_SAFE_TEXT,
-    REFUND_FORBIDDEN_DETAIL_RE,
     SCHEDULE_ASSUMPTION_RE,
     SEMANTIC_DIAGNOSIS_GUARD_ENV,
     SEMANTIC_DIAGNOSIS_MODEL_ENV,
@@ -659,7 +654,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     UNSUPPORTED_FOLLOWUP_DEADLINE_SAFE_TEXT,
     UNSUPPORTED_OFFLINE_VISIT_INVITATION_SAFE_TEXT,
     UNSUPPORTED_SCHEDULE_ASSUMPTION_SAFE_TEXT,
-    ZERO_COLLECT_DRAFT_RE,
     _A2_EMOJI_RE,
     _A2_FAKE_DONE_RE,
     _A2_SERIOUS_TAGS,
@@ -1934,7 +1928,7 @@ class SubscriptionLlmDraftProvider:
             payload = extract_json_object(raw)
             if "semantic_frame" not in payload and "semanticFrame" not in payload and "semantic_frame_shadow" not in payload:
                 payload = {"semantic_frame": payload}
-            frame = _direct_path_semantic_frame_from_payload(payload)
+            frame = _direct_path_semantic_frame_from_payload(payload, source="posthoc")
         except Exception as exc:  # noqa: BLE001 - shadow telemetry must be fail-soft.
             frame = {}
             status.update({"status": "provider_error", "error": str(exc)[:240]})
@@ -2213,7 +2207,7 @@ _DIRECT_PATH_MODEL_P0_LEGACY_KIND = {
 }
 
 
-_DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "other"})
+_DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "off_topic", "other"})
 
 
 def _direct_path_model_intent_value(value: Any) -> str:
@@ -2224,6 +2218,8 @@ def _direct_path_model_intent_value(value: Any) -> str:
         intent = "address"
     if intent in {"price_lock", "current_terms", "fix_price"}:
         intent = "price_fix"
+    if intent in {"out_of_scope", "offtopic", "not_related", "irrelevant"}:
+        intent = "off_topic"
     if intent in {"general", "none", "unknown", "not_target"}:
         intent = "other"
     return intent if intent in _DIRECT_PATH_MODEL_INTENTS else ""
@@ -2338,7 +2334,7 @@ def _direct_path_semantic_frame_safe_text(value: Any, *, limit: int) -> str:
     return text[:limit]
 
 
-def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any], *, source: str = "") -> dict[str, Any]:
     raw = payload.get("semantic_frame")
     if not isinstance(raw, Mapping):
         raw = payload.get("semanticFrame")
@@ -2362,10 +2358,14 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
     mode = str(raw.get("mode") or "shadow").strip().casefold()
     if mode not in {"shadow", "active"}:
         mode = "shadow"
+    frame_source = str(source or raw.get("source") or "").strip().casefold()
+    if frame_source not in {"inline", "posthoc"}:
+        frame_source = ""
     frame = {
         "schema_version": SEMANTIC_FRAME_SCHEMA_VERSION,
         "legacy_schema_version": SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION,
         "mode": mode,
+        "source": frame_source,
         "intent": _direct_path_semantic_frame_safe_text(raw.get("intent"), limit=120),
         "risk_class": _direct_path_semantic_frame_safe_text(raw.get("risk_class"), limit=80),
         "deal_stage": _direct_path_semantic_frame_safe_text(raw.get("deal_stage"), limit=80),
@@ -3459,7 +3459,7 @@ def _normalize_direct_path_payload(
         metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
     if include_answerability_self:
         metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
-    semantic_frame = _direct_path_semantic_frame_from_payload(payload) if include_semantic_frame_shadow else {}
+    semantic_frame = _direct_path_semantic_frame_from_payload(payload, source="inline") if include_semantic_frame_shadow else {}
     if semantic_frame:
         metadata["semantic_frame"] = semantic_frame
         # Backward-compatible alias for one release: TZ154/text hygiene and

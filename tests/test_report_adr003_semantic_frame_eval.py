@@ -276,6 +276,32 @@ def test_report_flags_route_text_diff(tmp_path: Path) -> None:
     assert result["off_on_diff"]["diff_examples"][0]["changed"]["bot_text"]["on"] == "Да, место есть."
 
 
+def test_report_compares_inline_with_posthoc_and_text_health(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    inline_transcripts = tmp_path / "inline.jsonl"
+    posthoc_transcripts = tmp_path / "posthoc.jsonl"
+    off = _dialog(text="Менеджер проверит наличие места.", include_frame=False)
+    inline = _dialog(text="Менеджер проверит наличие места.", include_frame=True)
+    inline["turns"][0]["bot_semantic_frame"]["requested_action"] = "answer_question"
+    posthoc = _dialog(text="Менеджер проверит наличие места.", include_frame=True)
+    posthoc["turns"][0]["bot_semantic_frame"]["requested_action"] = "check_availability"
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(inline_transcripts, [inline])
+    _write_jsonl(posthoc_transcripts, [posthoc])
+
+    result = report.build_report(
+        on_transcripts=inline_transcripts,
+        off_transcripts=off_transcripts,
+        posthoc_transcripts=posthoc_transcripts,
+    )
+
+    agreement = result["inline_vs_posthoc_agreement"]
+    assert agreement["compared_turns"] == 1
+    assert agreement["mismatch_count"] == 1
+    assert agreement["per_field"]["frame.requested_action"]["mismatch"] == 1
+    assert result["baseline_vs_inline_text_health"]["dangerous_flip_count"] == 0
+
+
 def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     safe = _dialog(include_frame=True)

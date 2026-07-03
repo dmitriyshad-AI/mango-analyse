@@ -573,8 +573,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
     A_PROACTIVE_ENV,
     A_RICH_FORMAT_ENV,
-    COMPLAINT_APOLOGY_RE,
-    COMPLAINT_DETAIL_COLLECT_RE,
     CONTENT_DELIVERY_ACTION_RE,
     COSMETIC_OPENING_RE,
     DERIVED_PRODUCT_NUMBER_RE,
@@ -584,13 +582,11 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     DRAFT_PLACEHOLDER_RE,
     FOLLOWUP_DEADLINE_RE,
     GATE_BLOCKING_CODES,
-    HIGH_RISK_INPUT_PATTERNS,
     HUMANITY_BLOCK_A_ROUTE_FIX_ENV,
     HUMANITY_X2_REWRITE_ENV,
     HUMANITY_X2_REWRITE_MODEL_ENV,
     HUMANITY_X2_REWRITE_MODE_ENV,
     HUMANITY_X2_REWRITE_REASONING_ENV,
-    LEGAL_CONTEXT_INPUT_RE,
     LLM_RETRIEVE_MODEL_ENV,
     LLM_RETRIEVE_REASONING_ENV,
     LLM_RETRIEVE_TIMEOUT_ENV,
@@ -619,7 +615,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     PRESALE_SOURCE_ID_TOKEN_PATTERN,
     PRESALE_SOURCE_ID_TOKEN_RE,
     PRICE_FIX_PROCESS_SAFE_TEXT,
-    REFUND_FORBIDDEN_DETAIL_RE,
     SCHEDULE_ASSUMPTION_RE,
     SEMANTIC_DIAGNOSIS_GUARD_ENV,
     SEMANTIC_DIAGNOSIS_MODEL_ENV,
@@ -634,7 +629,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     UNSUPPORTED_FOLLOWUP_DEADLINE_SAFE_TEXT,
     UNSUPPORTED_OFFLINE_VISIT_INVITATION_SAFE_TEXT,
     UNSUPPORTED_SCHEDULE_ASSUMPTION_SAFE_TEXT,
-    ZERO_COLLECT_DRAFT_RE,
     _A2_EMOJI_RE,
     _A2_FAKE_DONE_RE,
     _A2_SERIOUS_TAGS,
@@ -875,7 +869,6 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     safe_fallback_draft,
     subscription_llm_safety_contract,
 )
-
 
 
 

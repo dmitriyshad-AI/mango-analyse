@@ -94,7 +94,7 @@ PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
 
 INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
-INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"other"})
+INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"off_topic", "other"})
 INTENT_MODEL_LED_TOPIC_MAP = {
     "live_availability": "theme:026_camp_general",
     "schedule": "theme:013_schedule",
@@ -2997,6 +2997,8 @@ def _direct_path_model_intent_primary(signal: Mapping[str, Any]) -> str:
         primary = "address"
     if primary in {"price_lock", "current_terms", "fix_price"}:
         primary = "price_fix"
+    if primary in {"out_of_scope", "offtopic", "not_related", "irrelevant"}:
+        primary = "off_topic"
     if primary in {"general", "none", "unknown", "not_target"}:
         primary = "other"
     return primary if primary in INTENT_MODEL_LED_ALLOWED else ""
@@ -3012,6 +3014,8 @@ def _intent_model_led_decision(
         return None
     primary = _direct_path_model_intent_primary(_direct_path_model_intent_signal(result))
     if not primary:
+        return None
+    if primary == "off_topic":
         return None
     if primary == target:
         return True
@@ -3068,6 +3072,8 @@ def _conversation_intent_plan_with_model_led(
         "confidence": confidence,
         "reason": str(signal.get("reason") or ""),
     }
+    if model_intent == "off_topic":
+        return plan, {**trace_base, "applied": False, "skip_reason": "off_topic_metadata_only"}
     if original_intent == "live_availability" and model_intent != "live_availability":
         direct_question = str(plan.get("direct_question") or "")
         if _asks_explicit_live_availability_question(" ".join((str(client_message or ""), direct_question))):

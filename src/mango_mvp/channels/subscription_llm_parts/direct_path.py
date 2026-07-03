@@ -2668,18 +2668,19 @@ def _build_direct_path_prompt(
         intent_instruction = (
             "Смысловой intent_model_led: отдельные слова клиента — только сигналы. "
             "Классифицируй реальный смысл текущей реплики в поле model_intent. "
-            "primary_intent выбери из: live_availability, schedule, address, camp, price_fix, other. "
+            "primary_intent выбери из: live_availability, schedule, address, camp, price_fix, off_topic, other. "
             "live_availability ставь только для настоящего вопроса о наличии мест/броней/свободной группе; "
             "«место» как территория/площадка/место занятий, «привезу на место», «в одном месте» — это НЕ live_availability. "
             "schedule ставь только для вопроса о расписании/времени занятий; «когда привезу/подъеду» — other. "
             "address ставь только для вопроса о локации/адресе/площадке; бытовое «где-то/негде/живём рядом» — other. "
             "camp ставь только если вопрос реально про лагерь/ЛВШ/смену как продукт; бытовое «смена настроения/где живём» — other. "
             "price_fix ставь только если клиент хочет зафиксировать цену/условия; «закрепить материал/навык» — other. "
+            "off_topic ставь только если вопрос не про обучение/курсы/лагеря этого центра (крипта, погода, техника и т.п.). "
             "sense кратко укажи смысл: seats, venue, schedule, address, camp_product, price_terms, learning, logistics, other. "
             "confidence — число 0..1.\n\n"
         )
         intent_field = (
-            '  "model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other", "scope": "", "sense": "", "confidence": 0.0, "reason": "кратко"},\n'
+            '  "model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|off_topic|other", "scope": "", "sense": "", "confidence": 0.0, "reason": "кратко"},\n'
         )
     if _semantic_frame_shadow_enabled(context):
         semantic_frame_instruction = (

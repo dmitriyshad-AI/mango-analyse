@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Mapping, Sequence
 
 
@@ -44,6 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--on-summary", type=Path, default=None)
     parser.add_argument("--off-transcripts", type=Path, default=None)
     parser.add_argument("--off-summary", type=Path, default=None)
+    parser.add_argument("--posthoc-transcripts", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -52,6 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         on_summary=args.on_summary,
         off_transcripts=args.off_transcripts,
         off_summary=args.off_summary,
+        posthoc_transcripts=args.posthoc_transcripts,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     json_path = args.out_dir / "adr003_semantic_frame_eval_report.json"
@@ -68,9 +71,11 @@ def build_report(
     on_summary: Path | None = None,
     off_transcripts: Path | None = None,
     off_summary: Path | None = None,
+    posthoc_transcripts: Path | None = None,
 ) -> dict[str, Any]:
     on_dialogs = _load_transcripts(on_transcripts)
     off_dialogs = _load_transcripts(off_transcripts) if off_transcripts else []
+    posthoc_dialogs = _load_transcripts(posthoc_transcripts) if posthoc_transcripts else []
     on_summary_data = _load_json(on_summary)
     off_summary_data = _load_json(off_summary)
 
@@ -82,9 +87,16 @@ def build_report(
             "on_summary": str(on_summary or ""),
             "off_transcripts": str(off_transcripts or ""),
             "off_summary": str(off_summary or ""),
+            "posthoc_transcripts": str(posthoc_transcripts or ""),
         },
         "totals": _dialog_totals(on_dialogs),
         "off_on_diff": _compare_off_on(off_dialogs, on_dialogs) if off_dialogs else {"status": "not_provided"},
+        "baseline_vs_inline_text_health": _baseline_vs_inline_text_health(off_dialogs, on_dialogs)
+        if off_dialogs
+        else {"status": "not_provided"},
+        "inline_vs_posthoc_agreement": _inline_vs_posthoc_agreement(on_dialogs, posthoc_dialogs)
+        if posthoc_dialogs
+        else {"status": "not_provided"},
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
@@ -116,6 +128,14 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if isinstance(report.get("semantic_frame_self_answer_shadow"), Mapping)
         else {}
     )
+    inline_posthoc = (
+        report.get("inline_vs_posthoc_agreement") if isinstance(report.get("inline_vs_posthoc_agreement"), Mapping) else {}
+    )
+    text_health = (
+        report.get("baseline_vs_inline_text_health")
+        if isinstance(report.get("baseline_vs_inline_text_health"), Mapping)
+        else {}
+    )
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -128,6 +148,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Frame schema complete: `{frame.get('complete_required_count', 0)}` / `{frame.get('present_count', 0)}`",
         f"- OFF/ON route-text diffs: `{diff.get('route_text_diff_count', 'n/a')}`",
         f"- OFF/ON input diffs: `{diff.get('input_diff_count', 'n/a')}`",
+        f"- Baseline vs inline dangerous flips: `{text_health.get('dangerous_flip_count', 'n/a')}`",
+        f"- Inline vs posthoc compared turns: `{inline_posthoc.get('compared_turns', 'n/a')}`",
+        f"- Inline vs posthoc mismatch count: `{inline_posthoc.get('mismatch_count', 'n/a')}`",
         f"- LLM call mode: `{llm.get('mode', 'unknown')}`",
         f"- LLM raw total delta: `{llm.get('raw_total_delta', 'n/a')}`",
         f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
@@ -229,6 +252,180 @@ def _compare_off_on(off_dialogs: Sequence[Mapping[str, Any]], on_dialogs: Sequen
         "input_diff_examples": input_diffs[:25],
         "route_text_diff_count": len(diffs),
         "diff_examples": diffs[:25],
+    }
+
+
+def _frame_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    frame = turn.get("bot_semantic_frame")
+    if isinstance(frame, Mapping):
+        return frame
+    direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else {}
+    return frame if isinstance(frame, Mapping) else {}
+
+
+def _model_intent_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    candidates = (
+        turn.get("bot_direct_path_model_intent"),
+        turn.get("bot_model_intent"),
+        direct.get("model_intent"),
+        direct.get("direct_path_model_intent"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            return candidate
+    return {}
+
+
+def _requested_product(frame: Mapping[str, Any]) -> Mapping[str, Any]:
+    product = frame.get("requested_product")
+    return product if isinstance(product, Mapping) else {}
+
+
+def _semantic_value(turn: Mapping[str, Any], field: str) -> str:
+    frame = _frame_from_turn(turn)
+    model_intent = _model_intent_from_turn(turn)
+    product = _requested_product(frame)
+    if field == "model_intent.primary_intent":
+        return str(model_intent.get("primary_intent") or "").strip().casefold()
+    if field == "model_intent.sense":
+        return str(model_intent.get("sense") or "").strip().casefold()
+    if field == "frame.intent":
+        return str(frame.get("intent") or "").strip().casefold()
+    if field == "frame.requested_action":
+        return str(frame.get("requested_action") or "").strip().casefold()
+    if field == "frame.answerability":
+        return str(frame.get("answerability") or "").strip().casefold()
+    if field == "frame.product_grade":
+        return str(product.get("grade") or "").strip().casefold()
+    if field == "frame.product_subject":
+        return str(product.get("subject") or "").strip().casefold()
+    if field == "frame.product_format":
+        return str(product.get("format") or "").strip().casefold()
+    return ""
+
+
+def _inline_vs_posthoc_agreement(
+    inline_dialogs: Sequence[Mapping[str, Any]],
+    posthoc_dialogs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    inline_map = _turn_map(inline_dialogs)
+    posthoc_map = _turn_map(posthoc_dialogs)
+    common = sorted(set(inline_map) & set(posthoc_map))
+    fields = (
+        "model_intent.primary_intent",
+        "model_intent.sense",
+        "frame.intent",
+        "frame.requested_action",
+        "frame.answerability",
+        "frame.product_grade",
+        "frame.product_subject",
+        "frame.product_format",
+    )
+    per_field = {
+        field: {"match": 0, "mismatch": 0, "missing_inline": 0, "missing_posthoc": 0}
+        for field in fields
+    }
+    examples: list[dict[str, Any]] = []
+    mismatch_count = 0
+    for key in common:
+        inline_turn = inline_map[key]
+        posthoc_turn = posthoc_map[key]
+        changed: dict[str, dict[str, str]] = {}
+        for field in fields:
+            inline_value = _semantic_value(inline_turn, field)
+            posthoc_value = _semantic_value(posthoc_turn, field)
+            if not inline_value and posthoc_value:
+                per_field[field]["missing_inline"] += 1
+            elif inline_value and not posthoc_value:
+                per_field[field]["missing_posthoc"] += 1
+            elif inline_value == posthoc_value:
+                per_field[field]["match"] += 1
+            else:
+                per_field[field]["mismatch"] += 1
+                changed[field] = {"inline": inline_value, "posthoc": posthoc_value}
+        if changed:
+            mismatch_count += 1
+            if len(examples) < 50:
+                examples.append({"dialog_id": key[0], "turn": key[1], "changed": changed})
+    return {
+        "schema_version": "inline_vs_posthoc_agreement_v1_2026_07_03",
+        "status": "compared",
+        "compared_turns": len(common),
+        "missing_inline_turns": len(set(posthoc_map) - set(inline_map)),
+        "missing_posthoc_turns": len(set(inline_map) - set(posthoc_map)),
+        "per_field": per_field,
+        "mismatch_count": mismatch_count,
+        "mismatch_examples": examples,
+    }
+
+
+_NUMBER_RE = re.compile(r"(?<!\w)(?:\d[\d\s\u00a0.,]*\d|\d)(?:\s*(?:₽|руб|%|класс|кл\.?))?", re.I)
+
+
+def _numbers(text: Any) -> set[str]:
+    return {" ".join(item.group(0).split()).casefold() for item in _NUMBER_RE.finditer(str(text or ""))}
+
+
+def _baseline_vs_inline_text_health(
+    baseline_dialogs: Sequence[Mapping[str, Any]],
+    inline_dialogs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    baseline_map = _turn_map(baseline_dialogs)
+    inline_map = _turn_map(inline_dialogs)
+    common = sorted(set(baseline_map) & set(inline_map))
+    dangerous_examples: list[dict[str, Any]] = []
+    changed_lengths: list[int] = []
+    baseline_lengths: list[int] = []
+    p0_flip_count = 0
+    route_text_diff_count = 0
+    new_number_count = 0
+    for key in common:
+        baseline_turn = baseline_map[key]
+        inline_turn = inline_map[key]
+        base_text = str(baseline_turn.get("bot_text") or "")
+        inline_text = str(inline_turn.get("bot_text") or "")
+        if baseline_turn.get("bot_route") != inline_turn.get("bot_route") or base_text != inline_text:
+            route_text_diff_count += 1
+            baseline_lengths.append(len(base_text))
+            changed_lengths.append(len(inline_text))
+        reasons: list[str] = []
+        if _actual_p0_signal(baseline_turn) and not _actual_p0_signal(inline_turn):
+            p0_flip_count += 1
+            reasons.append("p0_signal_lost")
+        new_numbers = sorted(_numbers(inline_text) - _numbers(base_text))
+        if new_numbers:
+            new_number_count += 1
+            reasons.append("new_number")
+        if reasons and len(dangerous_examples) < 50:
+            dangerous_examples.append(
+                {
+                    "dialog_id": key[0],
+                    "turn": key[1],
+                    "reasons": reasons,
+                    "baseline_route": baseline_turn.get("bot_route"),
+                    "inline_route": inline_turn.get("bot_route"),
+                    "new_numbers": new_numbers[:8],
+                }
+            )
+    median_delta_pct: float | None = None
+    if baseline_lengths and changed_lengths:
+        base_median = median(baseline_lengths)
+        if base_median:
+            median_delta_pct = round((median(changed_lengths) - base_median) / base_median, 4)
+    return {
+        "schema_version": "baseline_vs_inline_text_health_v1_2026_07_03",
+        "status": "compared",
+        "compared_turns": len(common),
+        "missing_baseline_turns": len(set(inline_map) - set(baseline_map)),
+        "missing_inline_turns": len(set(baseline_map) - set(inline_map)),
+        "route_text_diff_count": route_text_diff_count,
+        "p0_signal_lost_count": p0_flip_count,
+        "new_number_diff_count": new_number_count,
+        "dangerous_flip_count": p0_flip_count + new_number_count,
+        "changed_text_median_delta_pct": median_delta_pct,
+        "dangerous_flip_examples": dangerous_examples,
     }
 
 

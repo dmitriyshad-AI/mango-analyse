@@ -1386,14 +1386,6 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:понимаю|извините|приносим\\s+извинения|(?:нам|мне|очень)\\s+жаль|сожалеем|неприятно)\\b",
-    "pattern_sha256": "f2990daf716e5d5c0b32dd7a0515d2e87696d97a9884fc3dc3c3cb8b08b1504e",
-    "qualname": "<module>",
-    "target": "COMPLAINT_APOLOGY_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\b(?:приезж\\w*|подъезж\\w*|приход\\w*|жд[её]м\\s+вас|можете\\s+прийти|можно\\s+прийти)\\b[^.!?\\n]{0,140}?\\b(?:познаком\\w*|посмотр\\w*|оформ\\w*|запис\\w*|встреч\\w*|на\\s+",
     "pattern_sha256": "9c7cf8fd9b69a1b50d405618605ccb9a94abbb201b6be5185075ab8eaef74f82",
     "qualname": "<module>",
@@ -1406,14 +1398,6 @@
     "pattern_sha256": "ed142582fbcda289269bc4493a63ae8bdd375ee4ca33b9db82c399f0622a2aee",
     "qualname": "<module>",
     "target": "_CLIENT_PII_CONFIRMATION_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:пришлите|напишите|уточните|сообщите|отправьте|предоставьте|нужн[аоы]?|понадоб(?:ит|ят))\\b[^.!?\\n]{0,140}?\\b(?:фио|имя|фамили[яюи]|договор|номер\\s+договора|",
-    "pattern_sha256": "a6d505fc7e1731f145ad65f8b1170e16246a124b2efa72882feee050f7f8676d",
-    "qualname": "<module>",
-    "target": "ZERO_COLLECT_DRAFT_RE"
   },
   {
     "flags": "re.I",
@@ -1466,22 +1450,6 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:уточните|пришлите|напишите|сообщите|предоставьте|подскажите)\\b[^.!?\\n]{0,180}?\\b(?:дат[ауеы]?|предмет|курс|групп[ауеы]?|имя|фио|ученик[а-я]*|преподавател[я",
-    "pattern_sha256": "edf0c7b2d02fceb246495df3525f1dd58ba8a82ab4b8a9ac08e33079dda4e3b2",
-    "qualname": "<module>",
-    "target": "COMPLAINT_DETAIL_COLLECT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:фио|имя|фамили[яюи]|договор\\w*|номер\\s+договора|телефон|email|e-mail|почт[ауеы]|сумм[ауеы]?|причин[ауеы]?|оплат\\w*|подтвержден\\w+\\s+оплат|чек|квитанц)\\b",
-    "pattern_sha256": "a4821ef3cb35278c5edc6e8b5c8e94063f70053f2b6bc5044a3abadd6fa64172",
-    "qualname": "<module>",
-    "target": "REFUND_FORBIDDEN_DETAIL_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\b(?:цена|стоимост|скидк|рассроч|долями|адрес|маткап|материнск|налог|платформ|запис[ьи]\\s+урок|вы\\s+бот|ты\\s+бот|кто\\s+вы)\\b",
     "pattern_sha256": "bb525eea9ad4dc77dc12b4279bc3d1dc0e11727b63d496ff377bd0c3ba5c0581",
     "qualname": "<module>",
@@ -1514,14 +1482,6 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\bвозв?рат(?!\\w*\\s+к\\s+тем)\\w*|\\bвозвращ\\w*\\s+(?:деньги|оплат\\w*|плат[её]ж\\w*|средств\\w*|сумм\\w*)|\\bверн\\w*(?:\\s+мне|\\s+нам|\\s+пожалуйста)?\\s+(?:деньги|оплат\\w*",
-    "pattern_sha256": "e74b4c4465334887c38180e77b5d4e25f8b88c4bfb38f2ac04d3ecfb366fbd1f",
-    "qualname": "<module>",
-    "target": ""
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\bздравствующ\\w*(?:\\s+момент)?[,.!:;—-]*\\s*|\\bникакого\\s+спешки\\b",
     "pattern_sha256": "2ca4fac0deb3b92e88118157ed53654770eb53dc794ebc2b4db274e9dbe04ac4",
     "qualname": "<module>",
@@ -1532,22 +1492,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\bпередам\\b[^.!?\\n]{0,40}\\b(?:вопрос\\s+|вас\\s+)?менеджер\\w*\\b",
     "pattern_sha256": "d69909cfcbcd6986ffb4313a61d023d8ccf914991cd0e14fae5c2c472bf69014",
-    "qualname": "<module>",
-    "target": ""
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\bсуд\\b|\\bиск\\b|претензи|досудеб|роспотребнадзор|прокуратур|адвокат|юрист|прав[ао][^.!?\\n]{0,60}потребител|защит[а-яё]*\\s+прав\\s+потребител|наруш\\w*\\s+прав|раст",
-    "pattern_sha256": "2f77638c02abf774a63d04d7ff9730ba1280fbeadeaf06b670f0034bf53e827f",
-    "qualname": "<module>",
-    "target": "LEGAL_CONTEXT_INPUT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\bсуд\\b|\\bиск\\b|претензи|досудеб|роспотребнадзор|прокуратур|наруш\\w*\\s+прав|расторжен\\w*\\s+договор|по\\s+закону[^.!?\\n]{0,80}обязан\\w*(?:\\s+(?:вернуть|возместить",
-    "pattern_sha256": "7a44212a821e60269c443b90b1e58d7b2f363551d42f458e237becff59358794",
     "qualname": "<module>",
     "target": ""
   },
@@ -1614,22 +1558,6 @@
     "pattern_sha256": "792534ed40a6bb305c033d211371f0ba2932702b5c4546df1b0fd61a18677d1e",
     "qualname": "<module>",
     "target": "PRESALE_SOURCE_ID_PHRASE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "жалоб(?!а\\s+на\\s+сайт)\\w*|жалуюсь|возмущ\\w*|недовол\\w*|претензи|конфликт|обман|ужасн|плохо\\s+учит|плохо\\s+пров[её]л|некомпетентн\\w*",
-    "pattern_sha256": "e65e9472cdf8b54dfa5bbbae18adf04ca76520e3d547a1c38e8383461b42def7",
-    "qualname": "<module>",
-    "target": ""
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "отзыв\\w*\\s+в\\s+интернет|всех\\s+предупреж\\w*|напиш\\w*\\s+отзыв|остав\\w*\\s+отзыв",
-    "pattern_sha256": "68e8b1fa4cfe78ac70337a47dce73f32eb46cab59cff77244d2ad1830d1dbfc8",
-    "qualname": "<module>",
-    "target": ""
   },
   {
     "flags": "re.I",

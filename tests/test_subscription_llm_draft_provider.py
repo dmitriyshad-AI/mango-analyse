@@ -13107,7 +13107,8 @@ def test_intent_model_led_prompt_block_is_flagged_only() -> None:
     assert "Смысловой intent_model_led" not in off_prompt
     assert "model_intent" not in explicit_off_prompt
     assert "Смысловой intent_model_led" in on_prompt
-    assert '"model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other"' in on_prompt
+    assert '"model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|off_topic|other"' in on_prompt
+    assert "off_topic ставь только" in on_prompt
     assert "«место» как территория/площадка/место занятий" in on_prompt
     assert "настоящего вопроса о наличии мест/броней/свободной группе" in on_prompt
     assert "«когда привезу/подъеду» — other" in on_prompt
@@ -13217,6 +13218,47 @@ def test_intent_model_led_true_live_availability_still_hands_off() -> None:
     assert "conversation_intent_plan_live_availability" in guarded.safety_flags
     assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "live_availability"
+
+
+def test_intent_model_led_off_topic_is_metadata_only_until_semantic_reading_class_enabled() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Лучше передам менеджеру, он проверит наличие.",
+        topic_id="theme:026_camp_general",
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "off_topic",
+                "scope": "weather",
+                "sense": "other",
+                "confidence": 0.97,
+                "reason": "тестовый сигнал вне темы",
+            }
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.INTENT_MODEL_LED_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Какое место у группы по математике?",
+        context=context,
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.metadata["intent_model_led"]["applied"] is False
+    assert guarded.metadata["intent_model_led"]["skip_reason"] == "off_topic_metadata_only"
+    assert guarded.metadata["conversation_intent_primary_intent"] == "live_availability"
 
 
 def test_intent_model_led_does_not_demote_explicit_availability_question() -> None:

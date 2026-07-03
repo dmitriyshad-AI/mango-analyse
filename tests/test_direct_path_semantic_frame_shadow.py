@@ -10,6 +10,7 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_ENV,
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
+    INTENT_MODEL_LED_ENV,
     SEMANTIC_FRAME_DECISION_SHADOW_ENV,
     SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
     SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_ENV,
@@ -133,6 +134,35 @@ def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
     assert '"must_handoff": false' in on_prompt
 
 
+def test_model_intent_prompt_includes_off_topic_when_enabled() -> None:
+    prompt = _build_direct_path_prompt(
+        "Какая сегодня погода?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert "live_availability, schedule, address, camp, price_fix, off_topic, other" in prompt
+    assert "off_topic ставь только" in prompt
+
+
+def test_model_intent_payload_preserves_off_topic_block() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру.",
+            "model_intent": {
+                "primary_intent": "off_topic",
+                "scope": "weather",
+                "sense": "other",
+                "confidence": 0.88,
+                "reason": "вопрос не про обучение",
+            },
+        }
+    )
+
+    assert result.metadata["direct_path_model_intent"]["primary_intent"] == "off_topic"
+    assert result.metadata["direct_path_model_intent"]["sense"] == "other"
+
+
 def test_semantic_frame_shadow_prompt_distinguishes_existence_from_availability() -> None:
     prompt = _build_direct_path_prompt(
         "Есть лагерь для 5 класса?",
@@ -246,6 +276,7 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
         "schema_version": "semantic_frame_v1_2026_07_01",
         "legacy_schema_version": "semantic_frame_shadow_v1_2026_06_30",
         "mode": "shadow",
+        "source": "inline",
         "intent": "enrollment_question",
         "risk_class": "safe",
         "deal_stage": "interest",
@@ -266,6 +297,20 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
         "confidence": 0.91,
     }
     assert result.metadata["semantic_frame_shadow"] == frame
+
+
+def test_direct_path_payload_does_not_store_empty_semantic_frame_with_source_only() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Да, можно.",
+            "semantic_frame": {},
+        },
+        include_semantic_frame_shadow=True,
+    )
+
+    assert "semantic_frame" not in result.metadata
+    assert "semantic_frame_shadow" not in result.metadata
 
 
 class _SemanticFrameFakeProvider(SubscriptionLlmDraftProvider):
@@ -375,6 +420,7 @@ def test_semantic_frame_posthoc_shadow_adds_metadata_only_after_final_result() -
     assert result.manager_checklist == off_result.manager_checklist
     frame = result.metadata["semantic_frame"]
     assert frame["intent"] == "live_availability"
+    assert frame["source"] == "posthoc"
     assert frame["evidence"] == ["нужно проверить место, телефон [phone]"]
     assert result.metadata["semantic_frame_shadow"] == frame
     assert result.metadata["direct_path"]["semantic_frame"] == frame

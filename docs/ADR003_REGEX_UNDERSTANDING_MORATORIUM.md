@@ -60,3 +60,34 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обн�
 - закрытые enum-наборы `deal_stage`/`payment_readiness`, которые читают уже готовый `semantic_frame`.
 
 Это не новое regex/keyword-понимание сырого клиентского текста. Гейт не парсит сообщение клиента и не добавляет словари маркеров. Он работает только по posthoc `semantic_frame` со статусом `ok`, за default-OFF флагом, и может только повысить автономный маршрут до `draft_for_manager`; текст ответа не меняет.
+
+## Разрешенное обновление 2026-07-03: Э0 semantic-reading foundation
+
+Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` обновлен из-за удаления 9 мертвых regex-объявлений из `post_layers.py`:
+
+- `HIGH_RISK_INPUT_PATTERNS` (4 паттерна);
+- `LEGAL_CONTEXT_INPUT_RE`;
+- `ZERO_COLLECT_DRAFT_RE`;
+- `REFUND_FORBIDDEN_DETAIL_RE`;
+- `COMPLAINT_APOLOGY_RE`;
+- `COMPLAINT_DETAIL_COLLECT_RE`.
+
+Это сужение legacy-regex бюджета: `CHANNEL_REGEX_BUDGET["src/mango_mvp/channels/subscription_llm_parts/post_layers.py"]` понижен с 73 до 64. По `rg` эти имена были только объявлениями, пассивными импортами/exports и строками fixture-снапшотов; рабочих `.search`/вызовов не было.
+
+Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` также расширен, потому что guard теперь покрывает:
+
+- `src/mango_mvp/channels/text_signals.py`;
+- `src/mango_mvp/channels/actions.py`;
+- `src/mango_mvp/channels/answer_quality_rewriter.py`;
+- `src/mango_mvp/channels/dialogue_memory.py`;
+- `src/mango_mvp/channels/held_state.py`;
+- `src/mango_mvp/channels/new_lead_funnel.py`;
+- `src/mango_mvp/channels/subscription_llm_parts/policy_routing.py`;
+- literal вызовы `has_marker` / `has_any_marker` / `has_word_marker` / `has_exact_word` и их локальные `_...`-алиасы;
+- именованные верхнеуровневые `*_MARKERS` / `*_NEIGHBORS` / keyword-таблицы в перечисленных runtime-файлах.
+
+Это не добавляет нового понимания. Наоборот, фиксирует текущий marker-helper долг как потолок (`CHANNEL_MARKER_HELPER_BUDGET`, сейчас 327 вызовов по runtime channels) и закрывает дыру, где новые marker-таблицы могли появляться без SemanticFrame/eval.
+
+Отдельно: commit-level pre-push/CI guard из Foton-ТЗ в этом заходе не включен как реальный hook/workflow. Причина — это изменение общего процесса пуша, а не runtime-кода; его нужно делать отдельным ops-ТЗ. Локально мораторий обеспечивается pytest-guard'ом и frozen snapshots.
+
+В этом же обновлении snapshot фиксирует добавление `off_topic` в закрытый enum `model_intent`. Это не regex/keyword-понимание: значение приходит из LLM-блока `model_intent`, нужно для сохранения всего блока парсером и пока не является новой маршрутной целью.

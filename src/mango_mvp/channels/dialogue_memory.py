@@ -254,6 +254,7 @@ class DialogueMemory:
     current_message_roles: Mapping[str, Any] = field(default_factory=dict)
     proactive_state: Mapping[str, Any] = field(default_factory=dict)
     slot_history: tuple[Mapping[str, Any], ...] = ()
+    last_semantic_reading: Mapping[str, Any] = field(default_factory=dict)
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -287,6 +288,7 @@ class DialogueMemory:
             "current_message_roles": dict(self.current_message_roles),
             "proactive_state": dict(self.proactive_state),
             "slot_history": [dict(item) for item in self.slot_history],
+            "last_semantic_reading": dict(self.last_semantic_reading),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
@@ -468,6 +470,7 @@ def update_dialogue_memory_after_answer(
     route: str = "",
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
+    semantic_reading: Mapping[str, Any] | None = None,
     memory_llm_fn: Callable[[str], object] | None = None,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
@@ -526,6 +529,11 @@ def update_dialogue_memory_after_answer(
         current_message_roles=dict(current.current_message_roles),
         proactive_state=proactive_state,
         slot_history=tuple(current.slot_history),
+        last_semantic_reading=(
+            _semantic_reading_memory_mapping(semantic_reading)
+            if semantic_reading is not None
+            else dict(current.last_semantic_reading)
+        ),
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
@@ -898,6 +906,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         current_message_roles=dict(data.get("current_message_roles") or {}) if isinstance(data.get("current_message_roles"), Mapping) else {},
         proactive_state=dict(data.get("proactive_state") or {}) if isinstance(data.get("proactive_state"), Mapping) else {},
         slot_history=tuple(dict(item) for item in (data.get("slot_history") or ()) if isinstance(item, Mapping))[-40:],
+        last_semantic_reading=_semantic_reading_memory_mapping(data.get("last_semantic_reading")),
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )
@@ -1461,6 +1470,40 @@ def _plain_str_mapping(value: Any) -> Mapping[str, str]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): str(raw)[:160] for key, raw in value.items() if str(key).strip() and str(raw or "").strip()}
+
+
+def _semantic_reading_memory_mapping(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed_text_keys = (
+        "schema_version",
+        "source",
+        "primary_intent",
+        "sense",
+        "scope",
+        "requested_action",
+        "product_grade",
+        "product_subject",
+        "product_format",
+        "product_raw_text",
+    )
+    allowed_float_keys = ("intent_confidence", "frame_confidence")
+    out: dict[str, Any] = {}
+    for key in allowed_text_keys:
+        raw = value.get(key)
+        if str(raw or "").strip():
+            out[key] = str(raw).strip()[:160]
+    for key in allowed_float_keys:
+        try:
+            number = float(value.get(key, 0.0))
+        except (TypeError, ValueError):
+            number = 0.0
+        out[key] = max(0.0, min(1.0, number))
+    if str(out.get("source") or "") not in {"inline", "posthoc"}:
+        out.pop("source", None)
+    if not out.get("schema_version"):
+        out["schema_version"] = "semantic_reading_v1_2026_07_03"
+    return out
 
 
 def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:

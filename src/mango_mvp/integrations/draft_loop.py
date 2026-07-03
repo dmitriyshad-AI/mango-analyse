@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
-from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, update_dialogue_memory_after_answer
+from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import SemanticReading
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AmoWappiHttpError,
     AmoWappiPhase1Config,
@@ -910,12 +911,14 @@ class AmoWappiDraftLoop:
                 if isinstance(context.get("dialogue_memory_state"), Mapping)
                 else context.get("dialogue_memory_view")
             )
+            semantic_reading = SemanticReading.from_result(result)
             updated_memory = update_dialogue_memory_after_answer(
                 memory_source if isinstance(memory_source, Mapping) else {},
                 answer_text=draft_text,
                 route=route,
                 fact_refs=tuple(getattr(result, "context_used", ()) or ()),
                 safety_flags=safety_flags,
+                semantic_reading=semantic_reading.to_memory_dict() if semantic_reading is not None else None,
                 memory_llm_fn=None,
             )
             self.state.set_dialogue_memory(key, updated_memory.to_json_dict())

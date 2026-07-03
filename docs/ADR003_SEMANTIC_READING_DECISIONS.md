@@ -166,3 +166,10 @@
 - Обоснование: без явного `PYTHONPATH` Python может импортировать соседний старый checkout из `Mango analyse`, что уже воспроизвелось при вызове `--help`. Ш2 должен проверять telemetry/agreement, а не случайную версию кода или активные маски.
 - Сырьё: `bash -n scripts/run_adr003_semantic_reading_e2_triple.sh`; `run_telegram_dynamic_client_sim.py --help` проходит только с `PYTHONPATH=src`.
 - Аудит: PASS; runner не запускается автоматически и не трогает live/profile/P0.
+
+### D24. Э2 runner обязан падать, если замер не на direct path
+
+- Решение: после невалидной M1-тройки runner включает `pilot_gold_v1`/direct-path env явно и проверяет B/I ноги до отчёта: профиль активен, `bot_direct_draft > 0`, `bot_direct_path` есть на всех ходах, а в I-ноге inline `bot_semantic_frame` с `source=inline` есть минимум на 99% ходов. Добавлен `--dry-check` на 2 диалога и `sha_manifest.json` с хэшами сценария/snapshot/runner.
+- Обоснование: M1-прогон `95b968f4` был `measurement_bug`: профиль был выключен, `bot_direct_draft=0`, `bot_direct_path=0`, `bot_semantic_frame=0`, но отчёт всё равно строился. Такой прогон не отвечает на вопрос Э2 и должен падать инфраструктурно.
+- Сырьё: `2026-07-03_REGRADE_troika_NEVALIDNA_fix_i_prompt_D1.md`; поля старого `dynamic_summary.json`/транскриптов: `profile.effective=false`, `bot_direct_draft=0`, `direct=0`, `frames=0`.
+- Аудит: встроены статические тесты runner-а; смысловой регрейд новой тройки остаётся за Claude/Fable по сырым M1-логам.

@@ -651,3 +651,24 @@ builder/scrub/render для `CustomerMemoryForPrompt` и shadow-runner на stag
 `manual_review_flags=0`. Runner читает только staging DB read-only и пишет
 JSONL локально в `.codex_local`, не в Foton/git. Focused pytest:
 `589 passed`; полный pytest: `3969 passed, 5 skipped, 1 warning`.
+
+### D-040. CRM v2 transfer package is operator-only until semantic-ready rows exist
+
+Решение: блок 7 готовит CRM/SWAP-пакет только как локальный operator-only
+артефакт. После смыслового аудита ready-гейты ужесточены: семейные/детские
+данные, сырые email/thread-хвосты, foreign-brand маркеры, закрытый next step
+при зависшей сделке и устаревшая дата next step блокируют live-ready. Итоговая
+сборка CRM export даёт `candidate_rows=66`, `ready_rows=0`, `blocked_rows=66`;
+`batch_ready_crm_card_candidates.jsonl` пустой.
+
+Почему так: предыдущая версия формально проходила механические проверки, но
+содержала manager-facing карточки с семейными данными, сырыми email-фрагментами
+и противоречивыми next step. Для CRM-write безопаснее получить ноль ready-строк,
+чем пропустить сомнительную карточку в live-update.
+
+Проверка: D7 contract прошёл (`contract_passed=true`, `ready_jsonl_empty=true`,
+`prod_db_untouched=true`). Transfer package лежит в
+`.codex_local/transfer_package/marathon2_block7_20260703`, prod DB открыт только
+`mode=ro&immutable=1`, sha before/after совпадает. Независимый аудитор подтвердил
+PASS: ready rows отсутствуют, все рискованные строки остались в manual review.
+Полный pytest: `3977 passed, 5 skipped, 1 warning`.

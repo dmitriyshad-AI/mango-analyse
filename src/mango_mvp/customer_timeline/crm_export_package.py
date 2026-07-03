@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -18,6 +19,7 @@ from mango_mvp.crm_card_amo_writeback import build_crm_card_amo_payloads
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import guard_customer_timeline_sqlite_path
+from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
 
@@ -39,12 +41,17 @@ MANUAL_REVIEW_NEXT_STEP_RE = re.compile(
     r"\b(?:противоречит|ручн\w+\s+провер\w+|manual\s+review)\b",
     re.I,
 )
-RAW_TIMELINE_SOURCE_RE = re.compile(r"\bTallanto:\s*(?:in|out)\b|---\s*part\s*---|&nbsp;|Links:", re.I)
+RAW_TIMELINE_SOURCE_RE = re.compile(r"\bTallanto:\s*(?:in|out)\b|---\s*part\s*---|[-–—_]{5,}|&nbsp;|Links:", re.I)
 SENSITIVE_CRM_TEXT_RE = re.compile(
     r"\b(?:паспорт\w*|серия\s+и\s+номер|снилс|дата\s+рождени\w+|"
     r"инвалидност\w*|инвалид\w*|маткапитал\w*|материнск\w+\s+капитал\w*|"
     r"банковск\w+\s+реквизит\w*|реквизит\w*|расч[её]тн\w+\s+сч[её]т|"
     r"\bр/?с\b|\bбик\b|\bкпп\b|\bинн\b)\b",
+    re.I,
+)
+FAMILY_OR_CHILD_DATA_RE = re.compile(
+    r"(?:^|\n)\s*Семья\s*:|"
+    r"\b(?:реб[её]нок|ученик|ученица|класс|предметы|привязк\w+)\b",
     re.I,
 )
 MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
@@ -53,6 +60,10 @@ MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
     r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|сжато|текст\s+сжат[^\]]*)\]",
     re.I,
 )
+BRAND_MARKERS = {
+    "foton": re.compile(r"\b(?:фотон|foton|црдо\s+фотон|фатон)\b", re.I),
+    "unpk": re.compile(r"\b(?:унпк|у\s*н\s*п\s*к)\b", re.I),
+}
 SIGNAL_LABELS_RU = {
     "callback_due": "Нужно вернуться к клиенту",
     "client_returned": "Клиент вернулся после паузы",
@@ -88,7 +99,8 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
     out_dir = _guard_staging_output(config.out_dir, allowed_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    generated_at = _stable_generated_at(db_path)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    payload_updated_at = _source_snapshot_at(db_path)
     db_sha256 = _sha256_file(db_path)
     with _connect_ro(db_path) as con:
         candidate_meta = _select_candidate_meta(
@@ -110,6 +122,7 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
             db_path=db_path,
             allowed_root=allowed_root,
             candidate_meta=candidate_meta,
+            payload_updated_at=payload_updated_at,
         )
 
     pilot_rows = candidates[: max(0, int(config.pilot_size))]
@@ -121,6 +134,7 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
         "generated_at": generated_at,
         "tenant_id": config.tenant_id,
         "timeline_db_sha256": db_sha256,
+        "source_db_sha256": db_sha256,
         "customers_total": customers_total,
         "open_amo_deals_total": open_deals_total,
         "candidate_rows": len(candidates),
@@ -152,6 +166,7 @@ def _build_candidate_rows(
     db_path: Path,
     allowed_root: Path,
     candidate_meta: Sequence[Mapping[str, Any]],
+    payload_updated_at: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=allowed_root)) as api:
@@ -171,7 +186,13 @@ def _build_candidate_rows(
             )
             _inject_e5_blocks(projection, extras)
             contact_payload, deal_payload = build_crm_card_amo_payloads(projection)
-            blockers = _row_blockers(projection, contact_payload=contact_payload, deal_payload=deal_payload)
+            blockers = _row_blockers(
+                projection,
+                contact_payload=contact_payload,
+                deal_payload=deal_payload,
+                active_brand=str(meta.get("deal_brand") or ""),
+                as_of=payload_updated_at,
+            )
             ready = not blockers
             row = _candidate_row(
                 meta=meta,
@@ -181,6 +202,7 @@ def _build_candidate_rows(
                 blockers=blockers,
                 ready=ready,
                 extras=extras,
+                payload_updated_at=payload_updated_at,
             )
             rows.append(row)
     return rows
@@ -195,6 +217,7 @@ def _candidate_row(
     blockers: Sequence[str],
     ready: bool,
     extras: Mapping[str, Any],
+    payload_updated_at: str,
 ) -> dict[str, Any]:
     contact_fields = _mapping(_mapping(projection.get("contact_card")).get("fields"))
     deal_fields = _mapping(_mapping(projection.get("deal_card")).get("fields"))
@@ -202,7 +225,7 @@ def _candidate_row(
     lead_id = str(meta.get("amo_lead_id") or "")
     contact_id = str(meta.get("amo_contact_id") or "")
     brand = str(meta.get("deal_brand") or "")
-    return {
+    row = {
         "customer_id": str(meta["customer_id"]),
         "tenant_id": str(meta.get("tenant_id") or "foton"),
         "crm_card_ready": "да" if ready else "нет",
@@ -253,6 +276,16 @@ def _candidate_row(
             "deal": dict(deal_payload),
         },
     }
+    row.update(
+        _deal_aware_flat_fields(
+            contact_fields=contact_fields,
+            deal_fields=deal_fields,
+            extras=extras,
+            active_brand=brand,
+            payload_updated_at=payload_updated_at,
+        )
+    )
+    return row
 
 
 def _select_candidate_meta(
@@ -532,6 +565,8 @@ def _row_blockers(
     *,
     contact_payload: Mapping[str, Any],
     deal_payload: Mapping[str, Any],
+    active_brand: str = "",
+    as_of: str = "",
 ) -> list[str]:
     contact_card = _mapping(projection.get("contact_card"))
     deal_card = _mapping(projection.get("deal_card"))
@@ -555,6 +590,8 @@ def _row_blockers(
                 _mapping(contact_card.get("fields")),
                 _mapping(deal_card.get("fields")),
             ),
+            active_brand=active_brand,
+            as_of=as_of,
         )
     )
     # Contact and deal are written as different AMO entities. Cross-entity
@@ -572,6 +609,8 @@ def _semantic_ready_blockers(
     contact_payload: Mapping[str, Any],
     deal_payload: Mapping[str, Any],
     extra_payloads: Sequence[Mapping[str, Any]] = (),
+    active_brand: str = "",
+    as_of: str = "",
 ) -> list[str]:
     blockers: list[str] = []
     summary = _summary_without_label(
@@ -595,8 +634,21 @@ def _semantic_ready_blockers(
         blockers.append("raw_timeline_or_email_artifact")
     if SENSITIVE_CRM_TEXT_RE.search(payload_text):
         blockers.append("sensitive_personal_data_requires_review")
+    if FAMILY_OR_CHILD_DATA_RE.search(payload_text):
+        blockers.append("family_or_child_data_requires_review")
     if MASKED_OR_DEBUG_PLACEHOLDER_RE.search(payload_text):
         blockers.append("masked_or_debug_placeholder")
+    brand_blocker = _foreign_brand_blocker(payload_text, active_brand=active_brand)
+    if brand_blocker:
+        blockers.append(brand_blocker)
+    next_step = normalize_manager_text(
+        _first_payload_text(deal_payload, ("Следующий шаг", "AI-рекомендованный следующий шаг", "recommended_next_step"))
+    )
+    if next_step.casefold().startswith("шаг закрыт:") and re.search(r"\b(?:сделка\s+зависла|перспектив\w*)\b", payload_text, re.I):
+        blockers.append("closed_next_step_with_active_or_stalling_deal")
+    stale_next_step = _stale_next_step_date_blocker(next_step, as_of=as_of)
+    if stale_next_step:
+        blockers.append(stale_next_step)
     return blockers
 
 
@@ -612,6 +664,40 @@ def _summary_without_label(value: str) -> str:
     text = normalize_manager_multiline_text(value).strip()
     text = re.sub(r"^\s*сводка\s*:\s*", "", text, flags=re.I).strip()
     return text.casefold()
+
+
+def _foreign_brand_blocker(text: str, *, active_brand: str) -> str:
+    brand = str(active_brand or "").casefold().strip()
+    if brand not in BRAND_MARKERS:
+        return ""
+    for marker_brand, pattern in BRAND_MARKERS.items():
+        if marker_brand != brand and pattern.search(text):
+            return f"foreign_brand_marker_in_payload:{marker_brand}_inside_{brand}_card"
+    return ""
+
+
+def _stale_next_step_date_blocker(next_step: str, *, as_of: str) -> str:
+    as_of_date = _parse_iso_date(as_of)
+    if as_of_date is None:
+        return ""
+    for day, month, year in re.findall(r"\b(\d{1,2})[.](\d{1,2})[.](20\d{2})\b", next_step):
+        try:
+            candidate = date(int(year), int(month), int(day))
+        except ValueError:
+            continue
+        if (as_of_date - candidate).days > 120:
+            return "stale_next_step_date_requires_review"
+    return ""
+
+
+def _parse_iso_date(value: str) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
 
 
 def _format_purchases(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -703,6 +789,46 @@ def _format_family(rows: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+def _deal_aware_flat_fields(
+    *,
+    contact_fields: Mapping[str, Any],
+    deal_fields: Mapping[str, Any],
+    extras: Mapping[str, Any],
+    active_brand: str,
+    payload_updated_at: str,
+) -> dict[str, str]:
+    latest_summary = str(contact_fields.get("Последняя сводка") or "")
+    history = str(contact_fields.get("История общения") or "")
+    next_step = str(deal_fields.get("Следующий шаг") or "")
+    facts = []
+    if extras.get("purchase_text"):
+        facts.append("деньги")
+    if extras.get("signals_text"):
+        facts.append("сигналы")
+    if extras.get("objections_text"):
+        facts.append("возражения")
+    if extras.get("family_text"):
+        facts.append("семья")
+    basis = "Customer Timeline staging"
+    if facts:
+        basis += ": " + ", ".join(facts)
+    fields = {
+        "AI-сводка по сделке": latest_summary,
+        "AI-история по сделке": history,
+        "AI-рекомендованный следующий шаг": next_step,
+        "AI-дата следующего касания": "",
+        "AI-фактический статус сделки": str(deal_fields.get("Статус сделки") or ""),
+        "AI-приоритет сделки": _priority_from_extras(extras),
+        "AI-актуальные возражения": str(deal_fields.get("Возражения") or ""),
+        "AI-основание рекомендации": basis,
+        "AI-качество привязки к сделке": "strong_single_contact_single_deal; brand=" + str(active_brand or "unknown"),
+        "AI-предупреждение по сделке": str(deal_fields.get("Предупреждения") or ""),
+        "AI-Tallanto статус по сделке": str(deal_fields.get("Tallanto") or ""),
+        "AI-дата обновления сделки": payload_updated_at,
+    }
+    return {field: _fit_textarea(normalize_manager_multiline_text(fields.get(field, "")), MAX_AMO_TEXTAREA_CHARS) for field in DEAL_AI_FIELDS}
+
+
 def _json_string_list(value: Any) -> list[str]:
     parsed = _json_loads(value)
     if not isinstance(parsed, list):
@@ -787,7 +913,7 @@ def _priority_from_extras(extras: Mapping[str, Any]) -> str:
     return "warm"
 
 
-def _stable_generated_at(db_path: Path) -> str:
+def _source_snapshot_at(db_path: Path) -> str:
     with _connect_ro(db_path) as con:
         row = con.execute(
             """
@@ -901,6 +1027,7 @@ def _headers(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         "mail_stage2_events_count",
         "crm_card_contact_payload_json",
         "crm_card_deal_payload_json",
+        *DEAL_AI_FIELDS,
     ]
     seen = set(preferred)
     extra = []

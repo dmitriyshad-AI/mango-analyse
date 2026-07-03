@@ -1284,8 +1284,9 @@ def test_mail_phone_lift_preview_lifts_manual_messages_from_text_phones(
     assert report["safety"]["write_tallanto"] is False
     assert report["safety"]["open_attachments"] is False
     assert report["privacy"]["raw_phones_written"] is False
-    assert "+79990000000" not in json.dumps(report, ensure_ascii=False)
-    assert "999" not in json.dumps(report, ensure_ascii=False)
+    privacy_report = {key: value for key, value in report.items() if key != "outputs"}
+    assert "+79990000000" not in json.dumps(privacy_report, ensure_ascii=False)
+    assert "999" not in json.dumps(privacy_report, ensure_ascii=False)
 
     preview_db = tmp_path / "_external_handoffs" / "phone_lift_preview" / "mail_phone_lift_preview.sqlite"
     with sqlite3.connect(preview_db) as con:

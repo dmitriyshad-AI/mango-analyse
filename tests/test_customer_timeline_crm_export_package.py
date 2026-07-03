@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.crm_export_package import (
     build_crm_export_package,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
 
 
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
@@ -65,6 +66,14 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     assert "hot_streak:" not in row["contact_payload"]["Авто история общения"]
     assert "Письмо: отправлено расписание" in row["contact_payload"]["Авто история общения"]
     assert row["CRM writeback policy"] == "live_update_ready"
+    assert isinstance(row["active_signals_count"], int)
+    for field in DEAL_AI_FIELDS:
+        assert field in row
+        assert field in csv_text
+    assert row["AI-сводка по сделке"]
+    assert row["AI-история по сделке"]
+    assert row["AI-рекомендованный следующий шаг"]
+    assert row["AI-дата обновления сделки"]
     assert "crm_card_contact_payload_json" in csv_text
     assert "AMO write=0" in preview
 
@@ -169,6 +178,99 @@ def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
     )
 
     assert "masked_or_debug_placeholder" in blockers
+
+
+def test_crm_export_package_blocks_foreign_brand_marker_for_active_brand() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {
+                "ready_for_amo": True,
+                "blockers": [],
+                "fields": {
+                    "Последняя сводка": "Клиент обсуждал курсы УНПК.",
+                    "История общения": "В истории есть исходящее письмо [Фотон] про оплату.",
+                },
+            },
+            "deal_card": {
+                "ready_for_amo": True,
+                "blockers": [],
+                "fields": {"Следующий шаг": "Связаться с клиентом по УНПК."},
+            },
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент обсуждал курсы УНПК.",
+            "История общения": "В истории есть исходящее письмо [Фотон] про оплату.",
+        },
+        deal_payload={"Следующий шаг": "Связаться с клиентом по УНПК."},
+        active_brand="unpk",
+    )
+
+    assert "foreign_brand_marker_in_payload:foton_inside_unpk_card" in blockers
+
+
+def test_crm_export_package_blocks_family_and_child_data_in_live_ready_payload() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент обсуждает годовой курс.",
+            "История общения": "Семья:\n- Аня (класс: 8; предметы: математика)",
+        },
+        deal_payload={"Следующий шаг": "Позвонить взрослому клиенту."},
+    )
+
+    assert "family_or_child_data_requires_review" in blockers
+
+
+def test_crm_export_package_blocks_raw_email_separator_in_live_ready_payload() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент попросил варианты курса.",
+            "История общения": "------------------------- Здравствуйте! Подскажите расписание.",
+        },
+        deal_payload={"Следующий шаг": "Отправить варианты курса."},
+    )
+
+    assert "raw_timeline_or_email_artifact" in blockers
+
+
+def test_crm_export_package_blocks_closed_next_step_for_stalling_deal() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nСделка зависла, клиент пока не ответил.",
+            "История общения": "Клиент получил предложение и не вернулся.",
+        },
+        deal_payload={"Следующий шаг": "Шаг закрыт: клиент оплатил."},
+    )
+
+    assert "closed_next_step_with_active_or_stalling_deal" in blockers
+
+
+def test_crm_export_package_blocks_stale_next_step_date() -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент ждёт повторного контакта.",
+            "История общения": "Последний контакт был давно.",
+        },
+        deal_payload={"Следующий шаг": "Позвонить 21.10.2025 и уточнить решение."},
+        as_of="2026-07-03T12:00:00+00:00",
+    )
+
+    assert "stale_next_step_date_requires_review" in blockers
 
 
 def test_crm_export_package_adds_family_block_with_ambiguity_warning(tmp_path: Path) -> None:

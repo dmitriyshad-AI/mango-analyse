@@ -46,6 +46,10 @@ HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
 SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
 EMAIL_STUB_EVENT_TYPES = {"email_message"}
+EMAIL_SUMMARY_REVIEW_NEEDED_RE = re.compile(
+    r"^\s*требуется\s+ручная\s+проверка\s+модельной\s+выжимки\b",
+    re.I,
+)
 MANGO_CALL_HISTORY_FALLBACK_NON_CONVERSATION_RE = re.compile(
     r"\b(?:"
     r"нецелев\w+\s+звон\w+|автоответчик|техническ\w+\s+дозвон|коротк\w+\s+техническ\w+|"
@@ -871,7 +875,16 @@ def _mango_call_history_eligible(event: Mapping[str, Any]) -> bool:
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
     summary = _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+    if _safe_text(event.get("event_type")) in EMAIL_STUB_EVENT_TYPES and EMAIL_SUMMARY_REVIEW_NEEDED_RE.search(summary):
+        return _email_review_needed_manager_summary(event)
     return _absolutize_relative_dates(summary, _safe_text(event.get("event_at")))
+
+
+def _email_review_needed_manager_summary(event: Mapping[str, Any]) -> str:
+    subject = _safe_text(event.get("subject"))
+    if subject:
+        return f"Письмо «{subject}»: полный текст в базе."
+    return "Письмо: полный текст в базе."
 
 
 def _manager_event_label(event: Mapping[str, Any]) -> str:

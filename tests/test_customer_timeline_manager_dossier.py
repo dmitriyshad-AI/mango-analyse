@@ -56,8 +56,8 @@ def test_manager_dossier_extracts_interests_and_pains_from_client_text_only(tmp_
     assert "916" not in interest_text
     assert "123-45-67" not in interest_text
     assert "[contact]" in interest_text
-    assert "переживаем" in pain_text
-    assert "не успеваем" in pain_text
+    assert "переживаем" in pain_text.casefold()
+    assert "не успеваем" in pain_text.casefold()
     assert "сложно оплатить" not in pain_text
 
 
@@ -87,7 +87,7 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
     assert "Клиент 1" in wb.sheetnames
     values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
     assert ("Интересы", "Из данных: Летняя школа по математике", "products_of_interest") in values
-    assert any(row[0] == "Боли" and "сложно по времени" in str(row[1]) for row in values)
+    assert any(row[0] == "Боли" and "сложно по времени" in str(row[1]).casefold() for row in values)
 
     with pytest.raises(ValueError, match=".codex_local"):
         build_manager_dossier_workbook(
@@ -162,7 +162,66 @@ def test_manager_dossier_matches_canonical_call_id_and_prefixed_source_id(tmp_pa
     pain_text = "\n".join(item.text for item in dossier.pains)
     assert "Рассматриваем курс по программированию" in interest_text
     assert "Хотим интенсив" in interest_text
-    assert "сложно с расписанием" in pain_text
+    assert "сложно с расписанием" in pain_text.casefold()
+
+
+def test_manager_dossier_cleans_speech_fillers_and_repeated_words(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    canonical_db = _canonical_calls_db(
+        tmp_path,
+        {
+            "call-client": (
+                "Ну эээ вот нас нас интересует олимпиадная математика онлайн, "
+                "и хотим попробовать, потому что очень переживаем переживаем из-за экзамена"
+            )
+        },
+    )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            canonical_calls=load_canonical_call_client_texts(canonical_db),
+        )
+
+    interest_from_call = next(item.text for item in dossier.interests if item.source == "mango_call:call-client")
+    pain_from_call = next(item.text for item in dossier.pains if item.source == "mango_call:call-client")
+
+    assert "эээ" not in interest_from_call.casefold()
+    assert "вот нас нас" not in interest_from_call.casefold()
+    assert "Нас интересует олимпиадная математика онлайн" in interest_from_call
+    assert interest_from_call.endswith(".")
+    assert "переживаем переживаем" not in pain_from_call.casefold()
+    assert pain_from_call.endswith(".")
+
+
+def test_manager_dossier_interest_quote_is_sentence_not_raw_transcript(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    canonical_db = _canonical_calls_db(
+        tmp_path,
+        {
+            "call-client": (
+                "Да я как раз хотела сама вам звонить Нас интересует математика очная "
+                "Можете там счет скинуть или как там сколько будет полгод"
+            )
+        },
+    )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            canonical_calls=load_canonical_call_client_texts(canonical_db),
+        )
+
+    interest_from_call = next(item.text for item in dossier.interests if item.source == "mango_call:call-client")
+
+    assert interest_from_call == "Интерес из звонка: Нас интересует математика очная."
+    assert "сколько будет полгод" not in interest_from_call
 
 
 def _timeline_db(tmp_path: Path) -> Path:

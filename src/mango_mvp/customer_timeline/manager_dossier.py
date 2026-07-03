@@ -20,6 +20,17 @@ CONTACT_RE = re.compile(
     re.I,
 )
 WHITESPACE_RE = re.compile(r"\s+")
+SPEECH_FILLER_RE = re.compile(
+    r"^(?:(?:ну|ээ+|э+|эм+|мм+|вот|значит|как\s+бы|то\s+есть|скажем|короче)\b[\s,.;:–—-]*)+",
+    re.I,
+)
+SPEECH_CLAUSE_BOUNDARY_RE = re.compile(
+    r"\s+(?:"
+    r"Можете|можете|можно|подскажите|скажите|скиньте|пришлите|"
+    r"сколько\s+будет|сч[её]т\s+скинуть|как\s+там"
+    r")\b",
+    re.I,
+)
 PRODUCT_KEYS = {
     "products_of_interest",
     "product_of_interest",
@@ -276,7 +287,7 @@ def _markers_from_client_text(text: str, pattern: re.Pattern[str], *, kind: str,
     for sentence in _sentences(text):
         if not pattern.search(sentence):
             continue
-        phrase = _safe_phrase(sentence)
+        phrase = _safe_marker_phrase(sentence, pattern)
         if not phrase or phrase.casefold() in seen:
             continue
         seen.add(phrase.casefold())
@@ -299,6 +310,91 @@ def _safe_phrase(value: Any) -> str:
     text = CONTACT_RE.sub("[contact]", text)
     text = text.strip(" .;:,")
     return text[:220]
+
+
+def _safe_marker_phrase(value: Any, pattern: re.Pattern[str]) -> str:
+    text = CONTACT_RE.sub("[contact]", _clean_text(value))
+    if not text:
+        return ""
+    text = _trim_to_marker_window(text, pattern)
+    text = SPEECH_FILLER_RE.sub("", text).strip(" -–—,.;:")
+    text = _collapse_repeated_words(text)
+    text = _trim_to_first_meaningful_clause(text)
+    text = _trim_to_word_boundary(text, 160)
+    if not text:
+        return ""
+    text = text[0].upper() + text[1:]
+    if text[-1] not in ".!?…":
+        text += "."
+    return text
+
+
+def _trim_to_marker_window(text: str, pattern: re.Pattern[str], *, after: int = 110) -> str:
+    match = _select_marker_match(text, pattern)
+    if match is None:
+        return text
+    start = _marker_window_start(text, match.start())
+    end = min(len(text), match.end() + after)
+    window = text[start:end].strip(" -–—,.;:")
+    return window
+
+
+def _select_marker_match(text: str, pattern: re.Pattern[str]) -> re.Match[str] | None:
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    for index, match in enumerate(matches):
+        token = match.group(0).casefold()
+        tail = text[match.end() : match.end() + 80].casefold()
+        if token.startswith("хотел") and "звон" in tail and index + 1 < len(matches):
+            continue
+        return match
+    return matches[0]
+
+
+def _marker_window_start(text: str, marker_start: int) -> int:
+    prefix = text[:marker_start]
+    words = list(re.finditer(r"\b[А-Яа-яA-Za-zЁё]{1,8}\b", prefix))
+    if not words:
+        return marker_start
+    previous = words[-1]
+    gap = prefix[previous.end() :].strip(" ,.;:–—-")
+    if gap:
+        return marker_start
+    if previous.group(0).casefold() in {"нас", "нам", "мы", "мне", "меня"}:
+        return previous.start()
+    return marker_start
+
+
+def _trim_to_first_meaningful_clause(text: str) -> str:
+    boundary = SPEECH_CLAUSE_BOUNDARY_RE.search(text)
+    if boundary and boundary.start() >= 12:
+        text = text[: boundary.start()]
+    text = re.split(r"\s+(?:но|а|и)\s+", text, maxsplit=1, flags=re.I)[0]
+    return text.strip(" -–—,.;:")
+
+
+def _trim_to_word_boundary(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text.strip(" -–—,.;:")
+    chunk = text[:limit].rstrip()
+    cut = max(chunk.rfind(" "), chunk.rfind(","), chunk.rfind(";"), chunk.rfind("."))
+    if cut >= int(limit * 0.55):
+        chunk = chunk[:cut]
+    return chunk.strip(" -–—,.;:")
+
+
+def _collapse_repeated_words(text: str) -> str:
+    parts = text.split()
+    result: list[str] = []
+    previous = ""
+    for part in parts:
+        key = part.strip(" ,.;:!?").casefold()
+        if key and key == previous:
+            continue
+        result.append(part)
+        previous = key
+    return " ".join(result)
 
 
 def _clean_text(value: Any) -> str:

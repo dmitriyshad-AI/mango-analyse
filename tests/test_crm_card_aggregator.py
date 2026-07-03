@@ -65,6 +65,60 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     assert card["bot_safety"]["money_fields_manager_only"] is True
 
 
+def test_crm_card_replaces_email_summary_review_status_with_manager_text() -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:mail-review",
+        "snapshot_as_of": "2026-07-03T12:00:00+00:00",
+        "last_event_at": "2026-07-03T12:00:00+00:00",
+        "customer": {"customer_id": "customer:mail-review", "identity_status": "strong", "summary": {}},
+        "customer_id_mappings": [],
+        "identity_links": [{"link_type": "amo_contact_id", "link_value": "123", "match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [
+                {
+                    "opportunity_id": "opp1",
+                    "opportunity_type": "amo_deal",
+                    "source_system": "amocrm_snapshot",
+                    "source_id": "456",
+                    "status": "open",
+                }
+            ],
+        },
+        "opportunities": [],
+        "timeline": {
+            "items": [
+                {
+                    "event_id": "mail-1",
+                    "event_type": "email_message",
+                    "event_at": "2026-07-03T11:00:00+00:00",
+                    "source_system": "mail_archive_stage2",
+                    "subject": "Re: Оплата за курс",
+                    "summary": "Требуется ручная проверка модельной выжимки; полный текст письма сохранён в timeline.",
+                    "text_preview": "Требуется ручная проверка модельной выжимки; полный текст письма сохранён в timeline.",
+                    "record": {"full_clean_text": "Полный текст письма хранится в базе."},
+                }
+            ]
+        },
+        "signals": [],
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+        "next_step_resolution": {"status": "active", "display_text": "Позвонить клиенту."},
+        "bot_context": {"items": []},
+    }
+
+    card = build_crm_card_projection(profile, selected_amo_lead_id="456")
+    history = card["contact_card"]["fields"]["История общения"]
+    latest = card["contact_card"]["fields"]["Последняя сводка"]
+
+    assert "Требуется ручная проверка модельной выжимки" not in history
+    assert "Требуется ручная проверка модельной выжимки" not in latest
+    assert "Письмо «Re: Оплата за курс»: полный текст в базе." in history
+    assert "Письмо «Re: Оплата за курс»: полный текст в базе." in latest
+
+
 def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None:
     live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и оплату. " * 20)
     older_summary = "Полный разбор предыдущего звонка: семья выбирала формат и предмет."

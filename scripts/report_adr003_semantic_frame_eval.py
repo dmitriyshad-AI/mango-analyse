@@ -23,7 +23,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
 )
 
 
-SCHEMA_VERSION = "adr003_semantic_frame_eval_report_v1_2026_07_01"
+SCHEMA_VERSION = "adr003_semantic_frame_eval_report_v1_1_2026_07_04"
 FRAME_EMISSION_THRESHOLD = 0.97
 DIRECT_PATH_P0_PREBLOCK_REASONS = {"p0_pre_gate", "direct_path_preblocked_p0"}
 REQUIRED_FRAME_FIELDS = (
@@ -92,6 +92,7 @@ def build_report(
     posthoc_dialogs = _load_transcripts(posthoc_transcripts) if posthoc_transcripts else []
     on_summary_data = _load_json(on_summary)
     off_summary_data = _load_json(off_summary)
+    paired_dialogs = _paired_dialog_metrics(off_dialogs, on_dialogs) if off_dialogs else {"status": "not_provided"}
 
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -103,6 +104,7 @@ def build_report(
             "off_summary": str(off_summary or ""),
             "posthoc_transcripts": str(posthoc_transcripts or ""),
         },
+        "paired_dialogs": paired_dialogs,
         "totals": _dialog_totals(on_dialogs),
         "off_on_diff": _compare_off_on(off_dialogs, on_dialogs) if off_dialogs else {"status": "not_provided"},
         "baseline_vs_inline_text_health": _baseline_vs_inline_text_health(off_dialogs, on_dialogs)
@@ -159,6 +161,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if isinstance(report.get("inline_text_health_gate"), Mapping)
         else {}
     )
+    paired = report.get("paired_dialogs") if isinstance(report.get("paired_dialogs"), Mapping) else {}
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -167,7 +170,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Semantic decision status: `{(report.get('decision_readiness') or {}).get('semantic_decision_status', 'unknown')}`",
         f"- Active behavior allowed: `{(report.get('decision_readiness') or {}).get('active_behavior_allowed', False)}`",
         f"- ON turns: `{frame.get('turns_total', 0)}`",
+        f"- Paired dialogs common/baseline-only/inline-only: `{paired.get('common_count', 'n/a')}` / `{paired.get('baseline_only_count', 'n/a')}` / `{paired.get('inline_only_count', 'n/a')}`",
         f"- Frame present: `{frame.get('present_count', 0)}` / `{frame.get('turns_total', 0)}`",
+        f"- Direct-path model-not-called turns: `{frame.get('model_not_called_count', 0)}`",
         f"- Frame eligible model-called turns: `{frame.get('eligible_model_called_turns', 0)}`",
         f"- Frame eligible emission: `{frame.get('eligible_frame_count', 0)}` / `{frame.get('eligible_model_called_turns', 0)}`",
         f"- Frame eligible emission rate: `{frame.get('eligible_frame_rate', 'n/a')}`",
@@ -241,6 +246,27 @@ def _load_json(path: Path | None) -> Mapping[str, Any]:
 def _dialog_totals(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     turns = sum(len(_turns(dialog)) for dialog in dialogs)
     return {"dialogs": len(dialogs), "turns": turns}
+
+
+def _paired_dialog_metrics(
+    baseline_dialogs: Sequence[Mapping[str, Any]],
+    inline_dialogs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    baseline_ids = _dialog_id_set(baseline_dialogs)
+    inline_ids = _dialog_id_set(inline_dialogs)
+    common = sorted(baseline_ids & inline_ids)
+    baseline_only = sorted(baseline_ids - inline_ids)
+    inline_only = sorted(inline_ids - baseline_ids)
+    status = "matched" if not baseline_only and not inline_only else "mismatch"
+    return {
+        "schema_version": "paired_dialogs_v1_2026_07_04",
+        "status": status,
+        "common_count": len(common),
+        "baseline_only_count": len(baseline_only),
+        "inline_only_count": len(inline_only),
+        "baseline_only_dialog_ids": baseline_only[:50],
+        "inline_only_dialog_ids": inline_only[:50],
+    }
 
 
 def _turns(dialog: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -350,8 +376,16 @@ def _is_direct_path_preblocked_p0_turn(turn: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_model_called_turn(turn: Mapping[str, Any]) -> bool:
+    return _direct_path_from_turn(turn).get("model_called") is True
+
+
 def _is_frame_emission_eligible_turn(turn: Mapping[str, Any]) -> bool:
-    return not _is_direct_path_preblocked_p0_turn(turn) and not _is_provider_timeout_turn(turn)
+    return _is_model_called_turn(turn) and not _is_provider_timeout_turn(turn)
+
+
+def _dialog_id_set(dialogs: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {str(dialog.get("dialog_id") or "") for dialog in dialogs if str(dialog.get("dialog_id") or "")}
 
 
 def _model_intent_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -966,6 +1000,7 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
     eligible_present = 0
     preblocked_p0 = 0
     timeouts = 0
+    model_not_called = 0
     complete_required = 0
     missing_required: Counter[str] = Counter()
     must_handoff = Counter()
@@ -980,8 +1015,10 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
             eligible = _is_frame_emission_eligible_turn(turn)
             if _is_direct_path_preblocked_p0_turn(turn):
                 preblocked_p0 += 1
-            elif _is_provider_timeout_turn(turn):
+            if _is_provider_timeout_turn(turn):
                 timeouts += 1
+            if not _is_model_called_turn(turn):
+                model_not_called += 1
             if eligible:
                 eligible_turns += 1
             frame = turn.get("bot_semantic_frame")
@@ -1033,6 +1070,7 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
         "preblocked_p0_count": preblocked_p0,
         "provider_timeout_count": timeouts,
         "infra_timeout_present": timeouts > 0,
+        "model_not_called_count": model_not_called,
         "eligible_model_called_turns": eligible_turns,
         "eligible_frame_count": eligible_present,
         "eligible_missing_count": eligible_turns - eligible_present,
@@ -1292,6 +1330,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     frame = report.get("semantic_frame") if isinstance(report.get("semantic_frame"), Mapping) else {}
+    paired = report.get("paired_dialogs") if isinstance(report.get("paired_dialogs"), Mapping) else {}
     inline_gate = (
         report.get("inline_text_health_gate")
         if isinstance(report.get("inline_text_health_gate"), Mapping)
@@ -1318,6 +1357,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     else:
         expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
     flags = {
+        "paired_dialogs_match": paired.get("status") in (None, "matched", "not_provided"),
         "inline_text_health_gate_ok": inline_gate.get("status") == "pass",
         "extra_model_calls_expected": expected_call_delta,
         "semantic_frame_eligible_rate_ok": (
@@ -1329,6 +1369,12 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
     }
     notes: list[str] = []
+    if paired.get("status") == "mismatch":
+        notes.append(
+            "Baseline and inline dialog sets differ; route/text comparisons are limited to common dialog IDs "
+            f"(common={paired.get('common_count', 0)}, baseline_only={paired.get('baseline_only_count', 0)}, "
+            f"inline_only={paired.get('inline_only_count', 0)})."
+        )
     if diff.get("status") != "compared":
         notes.append("OFF transcripts were not provided; route/text no-op cannot be proven by this report.")
     elif inline_gate.get("status") == "fail":

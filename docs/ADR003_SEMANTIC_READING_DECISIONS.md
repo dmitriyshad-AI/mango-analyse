@@ -201,3 +201,10 @@
 - Обоснование: M1 остановился до старта ON с `expect_arg[@]: unbound variable`. Это особенность старого bash 3.2 под `set -u` при разворачивании пустого массива. Такой runner-баг не относится к runtime-логике бота и должен ловиться локальным тестом.
 - Сырьё: M1 resume v3 прошёл SHA/bundle/checkout/bash/pytest и B-репетицию, затем упал на строке runner-а `expect_arg[@]`; добавлен тест `test_adr003_e3_runner_avoids_empty_expect_arg_array_for_bash32`.
 - Аудит: measurement_bug; B не перегонялась, `--force` не использовался, внешние системы не трогались.
+
+### D29. E3 report синхронизирован с валидатором по frame-emission и парности наборов
+
+- Решение: `report_adr003_semantic_frame_eval.py` считает `eligible_frame_rate` только по ходам с `bot_direct_path.model_called=true` и без `provider_error=timeout`, как `validate_adr003_e3_leg.py`. Отчёт также явно печатает `paired_dialogs` (`common/baseline_only/inline_only`) и не даёт `acceptance=pass`, если B/ON сняты на разных `dialog_id`.
+- Обоснование: M1 resume v4 был технически успешен (`VALID_E3_ON ... model_called_eligible=202 frames=202 eligible_frame_rate=1.0000`), но REPORT показывал `0.9309`, потому что всё ещё считал no-frame `model_called=false` bypass-ходы в знаменателе. Дополнительно старая B-ветка имела 146 диалогов, а ON после добавления Fix1b-негативов — 156; такие ON-only строки нельзя молча трактовать как route/text-регрессию на парном сравнении.
+- Сырьё: `.../adr003_semantic_reading_e3_ec3e4527_20260703_221448`: B=146, ON=156, common=146, ON-only=10 (`fix1b_neg_*`). После фикса локальный REPORT должен показывать frame-emission по eligible model-called ходам, а mismatch набора — отдельным `needs_review`.
+- Аудит: measurement_bug; runtime-код бота не менялся, B/ON не перегонялись.

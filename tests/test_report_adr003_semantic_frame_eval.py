@@ -35,6 +35,7 @@ def _dialog(*, text: str = "Менеджер проверит наличие м�
         "bot_text": text,
         "bot_safety_flags": ["manager_approval_required"],
         "bot_manager_checklist": ["Проверить наличие места."],
+        "bot_direct_path": {"model_called": True},
     }
     if include_frame:
         turn["bot_semantic_frame"] = _frame()
@@ -86,6 +87,22 @@ def _timeout_turn() -> dict:
     }
 
 
+def _model_not_called_bypass_turn() -> dict:
+    return {
+        "turn": 4,
+        "client_message": "Спасибо.",
+        "bot_route": "bot_answer_self_for_pilot",
+        "bot_text": "Пожалуйста.",
+        "bot_safety_flags": ["no_auto_send"],
+        "bot_direct_path": {
+            "model_called": False,
+            "preblocked": False,
+            "preblock_reason": "",
+            "text_composition_source": "deterministic_close",
+        },
+    }
+
+
 def _summary(total_calls: int = 3, *, frame_calls: int = 0, **extra_calls: int) -> dict:
     calls = {"total": total_calls, "bot_semantic_frame_shadow": frame_calls}
     calls.update(extra_calls)
@@ -118,21 +135,23 @@ def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
     assert result["frame_decision_shadow"]["turn_count"] == 1
 
 
-def test_report_frame_emission_excludes_p0_preblock_and_timeout_from_denominator(tmp_path: Path) -> None:
+def test_report_frame_emission_excludes_p0_preblock_timeout_and_model_not_called_from_denominator(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     dialog = _dialog(include_frame=True)
     dialog["turns"].append(_preblocked_p0_turn())
     dialog["turns"].append(_timeout_turn())
+    dialog["turns"].append(_model_not_called_bypass_turn())
     _write_jsonl(on_transcripts, [dialog])
 
     result = report.build_report(on_transcripts=on_transcripts)
 
     frame = result["semantic_frame"]
-    assert frame["turns_total"] == 3
+    assert frame["turns_total"] == 4
     assert frame["present_count"] == 1
-    assert frame["missing_count"] == 2
+    assert frame["missing_count"] == 3
     assert frame["preblocked_p0_count"] == 1
     assert frame["provider_timeout_count"] == 1
+    assert frame["model_not_called_count"] == 2
     assert frame["infra_timeout_present"] is True
     assert frame["eligible_model_called_turns"] == 1
     assert frame["eligible_frame_count"] == 1
@@ -322,6 +341,28 @@ def test_report_flags_input_diff_even_when_bot_output_matches(tmp_path: Path) ->
     assert result["off_on_diff"]["input_diff_count"] == 1
     assert "input_turns_match" not in result["acceptance"]["flags"]
     assert result["inline_text_health_gate"]["status"] == "pass"
+
+
+def test_report_marks_paired_dialog_id_mismatch_needs_review(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    on_common = _dialog(include_frame=True)
+    on_extra = _dialog(include_frame=True)
+    on_extra["dialog_id"] = "extra_dialog"
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on_common, on_extra])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    paired = result["paired_dialogs"]
+    assert paired["status"] == "mismatch"
+    assert paired["common_count"] == 1
+    assert paired["baseline_only_count"] == 0
+    assert paired["inline_only_count"] == 1
+    assert paired["inline_only_dialog_ids"] == ["extra_dialog"]
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["acceptance"]["flags"]["paired_dialogs_match"] is False
 
 
 def test_report_flags_route_text_diff(tmp_path: Path) -> None:

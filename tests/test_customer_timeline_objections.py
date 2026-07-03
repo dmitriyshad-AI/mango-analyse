@@ -269,6 +269,77 @@ def test_backfill_customer_objections_strips_quoted_price_tail(tmp_path: Path) -
     assert row[1] is None
 
 
+def test_backfill_customer_objections_catches_declined_price_confirmation(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-price-confirm",
+                direction=TimelineDirection.INBOUND,
+                subject="Re: стоимость",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Правильно я понимаю цену: 75 000 рублей минус скидка 5%? "
+                        "Итого 71 250 рублей?"
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objection_type_counts"] == {"price": 1}
+    with sqlite3.connect(db) as con:
+        row = con.execute("SELECT quote_preview, budget_hint_rub FROM customer_objections_v1").fetchone()
+    assert "понимаю цену" in row[0].casefold()
+    assert row[1] == 75_000
+
+
+def test_backfill_customer_objections_skips_bare_est_li_u_vas_question(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-vacation-question",
+                direction=TimelineDirection.INBOUND,
+                subject="Re: курс",
+                summary="",
+                match_status="strong_unique",
+                record={"full_clean_text": "Здравствуйте, есть ли у вас каникулы в августе?"},
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
 def test_backfill_customer_objections_skips_non_client_price_template_even_if_inbound(tmp_path: Path) -> None:
     db = tmp_path / "timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)

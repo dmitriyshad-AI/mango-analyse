@@ -194,3 +194,10 @@
 - Обоснование: на реальной B-ноге M1 `221448` были 2 timeout-диалога без ходов и 3 timeout-хода при общем валидном direct-path прогоне. Это фоновый CLI-шум, а не дефект SemanticFrame. Одновременно обнаружилось 13 дополнительных no-frame ходов с `model_called=false` (`reliable_answerer_*_bypass`, cross-brand/P0 guard): frame там невозможен по конструкции, поэтому включать их в знаменатель было ошибкой измерителя.
 - Сырьё: локальная репетиция валидатора на `.../adr003_semantic_reading_e3_ec3e4527_20260703_221448/B/` после фикса: `VALID_E3_B ... turns=267 preblocked_p0=65 timeouts=5(tolerated) timeout_turns=3 timeout_dialogs=2 model_not_called=78 model_called_eligible=186 frames=186 eligible_frame_rate=1.0000 ... gate_blocked_turns=43`.
 - Аудит: measurement_bug; runtime-код бота не менялся. Resume старой B допустим только как продолжение уже начатого E3-прогона; финальный semantic-регрейд всё равно должен учитывать, что scenario-файл после D26 калиброван, а старая B была снята до этой калибровки.
+
+### D28. E3 runner не использует пустой optional-array под bash 3.2
+
+- Решение: убрать `expect_arg=()` из `validate_leg()` в `run_adr003_semantic_reading_e3_paired.sh`; вместо этого делать два явных вызова `validate_adr003_e3_leg.py`: с `--expect-trace` для ON и без него для B.
+- Обоснование: M1 остановился до старта ON с `expect_arg[@]: unbound variable`. Это особенность старого bash 3.2 под `set -u` при разворачивании пустого массива. Такой runner-баг не относится к runtime-логике бота и должен ловиться локальным тестом.
+- Сырьё: M1 resume v3 прошёл SHA/bundle/checkout/bash/pytest и B-репетицию, затем упал на строке runner-а `expect_arg[@]`; добавлен тест `test_adr003_e3_runner_avoids_empty_expect_arg_array_for_bash32`.
+- Аудит: measurement_bug; B не перегонялась, `--force` не использовался, внешние системы не трогались.

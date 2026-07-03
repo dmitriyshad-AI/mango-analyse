@@ -27,6 +27,14 @@ def test_adr003_e3_runner_shell_syntax() -> None:
     subprocess.run(["bash", "-n", str(RUNNER)], check=True)
 
 
+def test_adr003_e3_runner_avoids_empty_expect_arg_array_for_bash32() -> None:
+    text = _runner_text()
+
+    assert "expect_arg=()" not in text
+    assert "${expect_arg[@]}" not in text
+    assert "--expect-trace" in text
+
+
 def test_adr003_e3_runner_validates_eligible_frame_rate_not_all_turns() -> None:
     text = _runner_text()
     validator_text = _validator_text()

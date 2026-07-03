@@ -81,16 +81,20 @@ base_env=(
 validate_leg() {
   local leg="$1"
   local expect_trace="$2"
-  local expect_arg=()
   if [[ "$expect_trace" == "1" ]]; then
-    expect_arg=(--expect-trace)
+    PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
+      --summary "$OUT/$leg/dynamic_summary.json" \
+      --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
+      --leg "$leg" \
+      --expect-trace \
+      --out-json "$OUT/$leg/e3_validation.json"
+  else
+    PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
+      --summary "$OUT/$leg/dynamic_summary.json" \
+      --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
+      --leg "$leg" \
+      --out-json "$OUT/$leg/e3_validation.json"
   fi
-  PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
-    --summary "$OUT/$leg/dynamic_summary.json" \
-    --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
-    --leg "$leg" \
-    "${expect_arg[@]}" \
-    --out-json "$OUT/$leg/e3_validation.json"
 }
 
 write_sha_manifest() {

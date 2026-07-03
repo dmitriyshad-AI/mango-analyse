@@ -108,6 +108,17 @@ def _write_e3_fixture(tmp_path: Path, turn: dict) -> tuple[Path, Path]:
     return summary, transcripts
 
 
+def _write_e3_dialogs(tmp_path: Path, dialogs: list[dict]) -> tuple[Path, Path]:
+    summary = tmp_path / "dynamic_summary.json"
+    transcripts = tmp_path / "dynamic_dialog_transcripts.jsonl"
+    summary.write_text(json.dumps(_e3_summary(), ensure_ascii=False), encoding="utf-8")
+    transcripts.write_text(
+        "".join(json.dumps(dialog, ensure_ascii=False) + "\n" for dialog in dialogs),
+        encoding="utf-8",
+    )
+    return summary, transcripts
+
+
 def test_e3_leg_validator_counts_gate_blocked_as_valid_product_event(tmp_path: Path) -> None:
     summary, transcripts = _write_e3_fixture(
         tmp_path,
@@ -121,6 +132,84 @@ def test_e3_leg_validator_counts_gate_blocked_as_valid_product_event(tmp_path: P
 
     assert result["status"] == "valid"
     assert result["gate_blocked_turns"] == 1
+
+
+def test_e3_leg_validator_tolerates_sparse_timeouts(tmp_path: Path) -> None:
+    dialogs = [
+        {"dialog_id": "timeout_dialog", "brand": "foton", "run_status": "timeout", "turns": []},
+        {
+            "dialog_id": "mixed_dialog",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [
+                _e3_turn(turn=1, bot_provider_error="timeout", bot_semantic_frame={}),
+                _e3_turn(turn=2, bot_provider_error="timeout", bot_semantic_frame={}),
+                *[_e3_turn(turn=index) for index in range(3, 10)],
+            ],
+        },
+    ]
+    summary, transcripts = _write_e3_dialogs(tmp_path, dialogs)
+
+    result = validate_leg(summary_path=summary, transcripts_path=transcripts, leg="B", expect_trace=False)
+
+    assert result["status"] == "valid"
+    assert result["timeouts"] == 3
+    assert result["timeout_turns"] == 2
+    assert result["timeout_dialogs"] == 1
+    assert result["timeout_tolerated"] is True
+
+
+def test_e3_leg_validator_excludes_model_not_called_from_frame_denominator(tmp_path: Path) -> None:
+    summary, transcripts = _write_e3_dialogs(
+        tmp_path,
+        [
+            {
+                "dialog_id": "guarded",
+                "brand": "foton",
+                "run_status": "completed",
+                "turns": [
+                    _e3_turn(
+                        turn=1,
+                        bot_direct_path={
+                            "model_called": False,
+                            "preblocked": True,
+                            "preblock_reason": "reliable_answerer_p0_bypass",
+                        },
+                        bot_semantic_frame={},
+                    ),
+                    _e3_turn(turn=2),
+                ],
+            },
+        ],
+    )
+
+    result = validate_leg(summary_path=summary, transcripts_path=transcripts, leg="B", expect_trace=False)
+
+    assert result["status"] == "valid"
+    assert result["model_not_called"] == 1
+    assert result["model_called_eligible"] == 1
+    assert result["frames"] == 1
+
+
+def test_e3_leg_validator_fails_when_timeouts_exceed_budget(tmp_path: Path) -> None:
+    dialogs = [
+        {"dialog_id": "timeout_dialog", "brand": "foton", "run_status": "timeout", "turns": []},
+        {
+            "dialog_id": "mixed_dialog",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [
+                _e3_turn(turn=1, bot_provider_error="timeout", bot_semantic_frame={}),
+                _e3_turn(turn=2, bot_provider_error="timeout", bot_semantic_frame={}),
+                _e3_turn(turn=3, bot_provider_error="timeout", bot_semantic_frame={}),
+                *[_e3_turn(turn=index) for index in range(4, 10)],
+            ],
+        },
+    ]
+    summary, transcripts = _write_e3_dialogs(tmp_path, dialogs)
+
+    with pytest.raises(SystemExit):
+        validate_leg(summary_path=summary, transcripts_path=transcripts, leg="B", expect_trace=False)
 
 
 def test_e3_leg_validator_fails_on_infra_provider_error(tmp_path: Path) -> None:

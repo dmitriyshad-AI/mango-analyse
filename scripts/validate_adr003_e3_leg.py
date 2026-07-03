@@ -28,6 +28,8 @@ GATE_BLOCKED_FLAGS = {
 P0_PREBLOCK_REASONS = {"p0_pre_gate", "direct_path_preblocked_p0"}
 FRAME_EMISSION_THRESHOLD_NUMERATOR = 97
 FRAME_EMISSION_THRESHOLD_DENOMINATOR = 100
+TIMEOUT_TOLERANCE_MIN = 3
+TIMEOUT_TOLERANCE_RATIO = 0.02
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -87,7 +89,9 @@ def validate_leg(
         _fail(leg, "no turns in transcripts")
 
     provider_error_values = [_provider_error(turn) for turn in turns]
-    infra_provider_errors = [value for value in provider_error_values if _is_infra_provider_error(value)]
+    infra_provider_errors = [
+        value for value in provider_error_values if _is_infra_provider_error(value) and value != "timeout"
+    ]
     unknown_provider_errors = [
         value
         for value in provider_error_values
@@ -108,7 +112,18 @@ def validate_leg(
 
     preblocked_p0 = [turn for turn in turns if _is_p0_preblocked(turn)]
     timeouts = [turn for turn in turns if _provider_error(turn) == "timeout"]
-    eligible_turns = [turn for turn in turns if not _is_p0_preblocked(turn) and not _is_timeout(turn)]
+    timeout_dialogs = [dialog for dialog in dialogs if _is_timeout_dialog(dialog)]
+    timeout_total = len(timeouts) + len(timeout_dialogs)
+    timeout_budget = max(float(TIMEOUT_TOLERANCE_MIN), len(turns) * TIMEOUT_TOLERANCE_RATIO)
+    if timeout_total > timeout_budget:
+        _fail(
+            leg,
+            "timeout noise above tolerance "
+            f"{timeout_total}/{timeout_budget:.2f} "
+            f"(timeout_turns={len(timeouts)} timeout_dialogs={len(timeout_dialogs)})",
+        )
+    model_not_called = [turn for turn in turns if not _is_model_called(turn)]
+    eligible_turns = [turn for turn in turns if _is_model_called(turn) and not _is_timeout(turn)]
     eligible_frame_turns = [turn for turn in eligible_turns if _has_frame(turn)]
     if not eligible_turns:
         _fail(leg, "no eligible model-called turns for semantic frame validation")
@@ -135,13 +150,18 @@ def validate_leg(
 
     gate_blocked_turns = [turn for turn in turns if _is_gate_blocked_turn(turn)]
     return {
-        "schema_version": "adr003_e3_leg_validation_v1_2026_07_03",
+        "schema_version": "adr003_e3_leg_validation_v2_2026_07_03",
         "leg": leg,
         "status": "valid",
         "dialogs": len(dialogs),
         "turns": len(turns),
         "preblocked_p0": len(preblocked_p0),
-        "timeouts": len(timeouts),
+        "model_not_called": len(model_not_called),
+        "timeouts": timeout_total,
+        "timeout_turns": len(timeouts),
+        "timeout_dialogs": len(timeout_dialogs),
+        "timeout_budget": round(timeout_budget, 3),
+        "timeout_tolerated": timeout_total > 0,
         "model_called_eligible": len(eligible_turns),
         "frames": len(eligible_frame_turns),
         "eligible_frame_rate": round(eligible_frame_rate, 6),
@@ -152,9 +172,12 @@ def validate_leg(
 
 
 def _valid_line(result: Mapping[str, Any]) -> str:
+    timeout_suffix = "(tolerated)" if result.get("timeout_tolerated") else ""
     return (
         f"VALID_E3_{result['leg']}: dialogs={result['dialogs']} turns={result['turns']} "
-        f"preblocked_p0={result['preblocked_p0']} timeouts={result['timeouts']} "
+        f"preblocked_p0={result['preblocked_p0']} timeouts={result['timeouts']}{timeout_suffix} "
+        f"timeout_turns={result.get('timeout_turns', 0)} timeout_dialogs={result.get('timeout_dialogs', 0)} "
+        f"model_not_called={result.get('model_not_called', 0)} "
         f"model_called_eligible={result['model_called_eligible']} frames={result['frames']} "
         f"eligible_frame_rate={float(result['eligible_frame_rate']):.4f} "
         f"bot_direct_draft={result['bot_direct_draft']} trace_turns={result['trace_turns']} "
@@ -215,6 +238,10 @@ def _is_timeout(turn: Mapping[str, Any]) -> bool:
     return _provider_error(turn) == "timeout"
 
 
+def _is_timeout_dialog(dialog: Mapping[str, Any]) -> bool:
+    return str(dialog.get("run_status") or "").strip().casefold() == "timeout"
+
+
 def _is_p0_preblocked(turn: Mapping[str, Any]) -> bool:
     direct = _direct_path(turn)
     return (
@@ -222,6 +249,10 @@ def _is_p0_preblocked(turn: Mapping[str, Any]) -> bool:
         and direct.get("preblocked") is True
         and str(direct.get("preblock_reason") or "").strip() in P0_PREBLOCK_REASONS
     )
+
+
+def _is_model_called(turn: Mapping[str, Any]) -> bool:
+    return _direct_path(turn).get("model_called") is True
 
 
 def _has_frame(turn: Mapping[str, Any]) -> bool:

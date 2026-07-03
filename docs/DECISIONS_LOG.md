@@ -488,3 +488,22 @@ Codex 2 с обязательным аудитом пакетов решений
 
 Статус: принято после аудита subagent `Mendel` (`PASS_WITH_NOTES`, правки
 включены в журнал). Реализация начинается только после repo-preflight.
+
+### D-034. Wappi Telegram/Max history: порт только как manager-only staging-сырьё
+
+Решение: импортёр истории Wappi Telegram/Max портируется из тега
+`archive/wappi-history-555a964` копированием файлов, без merge старой ветки.
+Источники фиксируются только как `wappi_telegram` и `wappi_max`; оба источника
+запрещены для bot-visible памяти через `BOT_FORBIDDEN_SOURCE_SYSTEMS`.
+Auto-resolver остаётся выключенным, а непривязанные сообщения уходят в
+`pending_attribution`.
+
+Почему так: старая ветка `codex/wappi-history` основана на устаревшей базе, но
+содержит полезный импортёр. История Wappi может содержать ПДн и неоднозначные
+привязки, поэтому до отдельной привязки и открытия она остаётся только
+менеджерским/staging-слоем.
+
+Проверка: staging dry-run собрал `1966` сообщений по 4 профилям, `amo_auto=0`,
+`send_messenger=false`; apply создал только `1966` pending-конфликтов, без
+`timeline_events` и `bot_context_chunks`; повторный apply дал `duplicate=1966`.
+Прод-БД, CRM, Tallanto и live-бот не трогались.

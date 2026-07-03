@@ -635,6 +635,34 @@ def test_inline_text_health_gate_explains_missing_turns_by_timeout_dialog(tmp_pa
     assert gate["missing_baseline_unexplained_count"] == 0
 
 
+def test_inline_text_health_gate_explains_missing_turns_by_dialog_run_status_timeout(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    off["run_status"] = "timeout"
+    on = _dialog(include_frame=True)
+    on["turns"].append(
+        {
+            "turn": 2,
+            "client_message": "Ещё вопрос.",
+            "bot_route": "draft_for_manager",
+            "bot_text": "Менеджер проверит.",
+            "bot_safety_flags": ["manager_approval_required"],
+            "bot_semantic_frame": _frame(),
+        }
+    )
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["missing_baseline_turns"] == 1
+    assert gate["missing_baseline_explained_count"] == 1
+    assert gate["missing_baseline_unexplained_count"] == 0
+
+
 def test_inline_text_health_gate_marks_unexplained_missing_turns_needs_review(tmp_path: Path) -> None:
     off_transcripts = tmp_path / "off.jsonl"
     on_transcripts = tmp_path / "on.jsonl"

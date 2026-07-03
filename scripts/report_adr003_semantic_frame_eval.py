@@ -900,7 +900,9 @@ def _client_history_number_map(dialogs: Sequence[Mapping[str, Any]]) -> dict[tup
 def _timeout_dialog_ids(dialogs: Sequence[Mapping[str, Any]]) -> set[str]:
     result: set[str] = set()
     for dialog in dialogs:
-        if any(_is_provider_timeout_turn(turn) for turn in _turns(dialog)):
+        if str(dialog.get("run_status") or "").strip().casefold() == "timeout" or any(
+            _is_provider_timeout_turn(turn) for turn in _turns(dialog)
+        ):
             result.add(str(dialog.get("dialog_id") or ""))
     return result
 

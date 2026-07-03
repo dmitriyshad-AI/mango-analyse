@@ -60,6 +60,31 @@ def test_marathon2_mail_summary_prefers_batch_ready_over_pilot_customers(tmp_pat
     assert _load_crm_customer_ids(export_dir) == {"customer:ready"}
 
 
+def test_marathon2_mail_summary_prefers_all_candidates_over_ready_and_pilot(tmp_path: Path) -> None:
+    export_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+    export_dir.mkdir(parents=True)
+    (export_dir / "pilot_20_crm_card_candidates.jsonl").write_text(
+        json.dumps({"customer_id": "customer:pilot"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (export_dir / "batch_ready_crm_card_candidates.jsonl").write_text(
+        json.dumps({"customer_id": "customer:ready"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (export_dir / "all_candidates_crm_card_candidates.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"customer_id": "customer:one"}, ensure_ascii=False),
+                json.dumps({"customer_id": "customer:two"}, ensure_ascii=False),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _load_crm_customer_ids(export_dir) == {"customer:one", "customer:two"}
+
+
 def test_marathon2_mail_summary_loads_review_customer_ids_from_workbook(tmp_path: Path) -> None:
     from openpyxl import Workbook
 

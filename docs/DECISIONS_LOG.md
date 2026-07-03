@@ -799,3 +799,28 @@ flags не маскируется и не чинится эвристикой: �
 `count_mismatches=1`, `unflagged_count_mismatches=1`, `false_high=0`,
 `parent_name_among_children_rows=0`, `quick_check=ok`. Подробный JSON с именами
 остаётся только в `.codex_local/review/f11_family_gold/`.
+
+### D-047. F4 CRM export uses quality-based family gate and all-candidate mail enrich
+
+Решение: CRM export больше не блокирует карточку только за наличие нормализованного
+блока `Семья`. Hard-block остаётся для сомнительной family graph-строки и сырых
+email/thread-фрагментов с детскими данными вне графа. Чистые упоминания ребёнка
+в CRM-сводке получают мягкую пометку в `AI-предупреждение по сделке`, но не
+делают карточку автоматически неготовой.
+
+Почему так: старый гейт был написан до появления family graph и создал
+структурный тупик: 66/66 кандидатов блокировались самим обязательным блоком
+`Семья`. Полное снятие гейта было бы опасным, поэтому критерий заменён с
+присутствия текста на качество источника.
+
+Также CRM export пишет `all_candidates_crm_card_candidates.*`, а
+`run_marathon2_mail_summary_enrich.py` использует этот список первым, чтобы
+mail-enrich покрывал все 66 кандидатов, а не только `pilot_20` при пустом
+`batch_ready`. Путь к canonical calls сделан fail-soft: неверный путь даёт
+warning и пустой словарь, а не падение сборки пакета.
+
+Проверка: focused pytest `52 passed`; staging mail-enrich по 66 кандидатам
+создал `llm_calls_total=14`, `summary_review_needed=124`, `quick_check=ok`,
+`mail_stage2_visibility_assertion=passed`. Пересборка CRM-пакета дала
+`ready_rows=7` вместо `0`, `family_or_child_data_requires_review=20` вместо
+`66`, idempotence passed. Прод/CRM/Tallanto/live writes = 0.

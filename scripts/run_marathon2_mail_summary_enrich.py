@@ -234,6 +234,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def _load_crm_customer_ids(path: Path) -> set[str]:
+    all_candidates = _load_customer_ids_from_jsonl(path / "all_candidates_crm_card_candidates.jsonl")
+    if all_candidates:
+        return all_candidates
     ready = _load_customer_ids_from_jsonl(path / "batch_ready_crm_card_candidates.jsonl")
     if ready:
         return ready

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from mango_mvp.crm_card_aggregator import (
 )
 from mango_mvp.crm_card_amo_writeback import build_crm_card_amo_payloads
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.manager_dossier import build_customer_dossier, load_canonical_call_client_texts
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import guard_customer_timeline_sqlite_path
 from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
@@ -49,15 +51,14 @@ SENSITIVE_CRM_TEXT_RE = re.compile(
     r"\bр/?с\b|\bбик\b|\bкпп\b|\bинн\b)\b",
     re.I,
 )
-FAMILY_OR_CHILD_DATA_RE = re.compile(
-    r"(?:^|\n)\s*Семья\s*:|"
+RAW_CHILD_DATA_RE = re.compile(
     r"\b(?:реб[её]нок|ученик|ученица|класс|предметы|привязк\w+)\b",
     re.I,
 )
 MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
-    r"<[^>\n]{1,80}>|"
+    r"<[^>\n]{0,80}masked[^>\n]{0,80}>|"
     r"\b[a-zа-я0-9_]*masked\b|"
-    r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|сжато|текст\s+сжат[^\]]*)\]",
+    r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|скрыт[^\]]*|redacted|masked)\]",
     re.I,
 )
 BRAND_MARKERS = {
@@ -91,6 +92,7 @@ class CrmExportPackageConfig:
     pilot_size: int = 20
     customer_ids: tuple[str, ...] = ()
     batch_limit: int = 0
+    canonical_calls_db_path: Path | None = None
 
 
 def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any]:
@@ -102,6 +104,7 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
     generated_at = datetime.now(timezone.utc).isoformat()
     payload_updated_at = _source_snapshot_at(db_path)
     db_sha256 = _sha256_file(db_path)
+    canonical_calls, package_warnings = _load_canonical_calls_fail_soft(config.canonical_calls_db_path)
     with _connect_ro(db_path) as con:
         candidate_meta = _select_candidate_meta(
             con,
@@ -123,11 +126,12 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
             allowed_root=allowed_root,
             candidate_meta=candidate_meta,
             payload_updated_at=payload_updated_at,
+            canonical_calls=canonical_calls,
         )
 
     pilot_rows = candidates[: max(0, int(config.pilot_size))]
     ready_rows = [row for row in candidates if row["crm_card_ready"] == "да"]
-    package_files = _write_package_files(out_dir, pilot_rows=pilot_rows, batch_rows=ready_rows)
+    package_files = _write_package_files(out_dir, all_rows=candidates, pilot_rows=pilot_rows, batch_rows=ready_rows)
     output_sha256 = {name: _sha256_file(path) for name, path in package_files.items()}
     summary = {
         "schema_version": CRM_EXPORT_PACKAGE_SCHEMA_VERSION,
@@ -143,6 +147,7 @@ def build_crm_export_package(config: CrmExportPackageConfig) -> Mapping[str, Any
         "blocked_rows": len(candidates) - len(ready_rows),
         "status_counts": _counts(row["crm_card_ready"] for row in candidates),
         "blocker_counts": _blocker_counts(candidates),
+        "warnings": package_warnings,
         "outputs": {name: path.name for name, path in package_files.items()},
         "output_sha256": output_sha256,
         "safety": {
@@ -167,13 +172,19 @@ def _build_candidate_rows(
     allowed_root: Path,
     candidate_meta: Sequence[Mapping[str, Any]],
     payload_updated_at: str,
+    canonical_calls: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=allowed_root)) as api:
         for meta in candidate_meta:
             customer_id = str(meta["customer_id"])
             profile = api.customer_profile(config.tenant_id, customer_id, event_limit=100, bot_context_limit=25)
-            extras = _load_customer_extras(con, tenant_id=config.tenant_id, customer_id=customer_id)
+            extras = _load_customer_extras(
+                con,
+                tenant_id=config.tenant_id,
+                customer_id=customer_id,
+                canonical_calls=canonical_calls,
+            )
             manager_facts = {
                 "AMO contact IDs": meta["amo_contact_id"],
                 "selected_deal_id": meta["amo_lead_id"],
@@ -185,6 +196,7 @@ def _build_candidate_rows(
                 selected_amo_lead_id=str(meta["amo_lead_id"]),
             )
             _inject_e5_blocks(projection, extras)
+            _inject_child_data_soft_warning(projection, family_text=str(extras.get("family_text") or ""))
             contact_payload, deal_payload = build_crm_card_amo_payloads(projection)
             blockers = _row_blockers(
                 projection,
@@ -192,6 +204,8 @@ def _build_candidate_rows(
                 deal_payload=deal_payload,
                 active_brand=str(meta.get("deal_brand") or ""),
                 as_of=payload_updated_at,
+                family_review_required=bool(extras.get("family_review_required")),
+                family_text=str(extras.get("family_text") or ""),
             )
             ready = not blockers
             row = _candidate_row(
@@ -241,6 +255,8 @@ def _candidate_row(
         "Краткая история общения": str(contact_fields.get("История общения") or ""),
         "Хронология общения (последние 5 касаний)": str(contact_fields.get("История общения") or ""),
         "Возражения": str(deal_fields.get("Возражения") or ""),
+        "Интересы": str(extras.get("interests_text") or ""),
+        "Боли": str(extras.get("pains_text") or ""),
         "Рекомендуемая дата следующего контакта": "",
         "Приоритет лида": _priority_from_extras(extras),
         "Вероятность продажи, %": "",
@@ -419,7 +435,13 @@ def _select_candidate_meta(
     return [dict(row) for row in rows]
 
 
-def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> Mapping[str, Any]:
+def _load_customer_extras(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    canonical_calls: Mapping[str, str] | None = None,
+) -> Mapping[str, Any]:
     purchase_kind_select = "money_kind" if "money_kind" in _table_columns(con, "customer_purchases_v1") else "'fact' AS money_kind"
     purchases = [
         dict(row)
@@ -451,15 +473,21 @@ def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_i
             item.update({key: record.get(key) for key in ("evidence_text", "recommended_action") if record.get(key)})
         signals.append(item)
     family = _load_family_links(con, tenant_id=tenant_id, customer_id=customer_id)
+    dossier = build_customer_dossier(con, tenant_id=tenant_id, customer_id=customer_id, canonical_calls=canonical_calls or {})
+    interests_text = _format_dossier_markers([item.text for item in dossier.interests[:3]])
+    pains_text = _format_dossier_markers([item.text for item in dossier.pains[:3]])
     return {
         "purchases": purchases,
         "objections": objections,
         "signals": signals,
         "family": family,
+        "interests_text": interests_text,
+        "pains_text": pains_text,
         "purchase_text": _format_purchases(purchases),
         "objections_text": _format_objections(objections),
         "signals_text": _format_signals(signals),
         "family_text": _format_family(family),
+        "family_review_required": _family_review_required(family),
         "purchase_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
         "purchase_fact_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
         "purchase_plan_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "plan"),
@@ -534,6 +562,10 @@ def _inject_e5_blocks(projection: Mapping[str, Any], extras: Mapping[str, Any]) 
         blocks.append("Возражения и бюджет:\n" + str(extras["objections_text"]))
     if extras.get("signals_text"):
         blocks.append("Сигналы:\n" + str(extras["signals_text"]))
+    if extras.get("interests_text"):
+        blocks.append("Интересы:\n" + str(extras["interests_text"]))
+    if extras.get("pains_text"):
+        blocks.append("Боли:\n" + str(extras["pains_text"]))
     if extras.get("family_text"):
         blocks.append("Семья:\n" + str(extras["family_text"]))
     if not blocks:
@@ -560,6 +592,22 @@ def _inject_e5_blocks(projection: Mapping[str, Any], extras: Mapping[str, Any]) 
         )
 
 
+def _inject_child_data_soft_warning(projection: Mapping[str, Any], *, family_text: str) -> None:
+    contact_card = _mapping(projection.get("contact_card"))
+    deal_card = _mapping(projection.get("deal_card"))
+    contact_fields = contact_card.get("fields") if isinstance(contact_card.get("fields"), dict) else {}
+    deal_fields = deal_card.get("fields") if isinstance(deal_card.get("fields"), dict) else {}
+    payload_text = _payload_text(contact_fields) + "\n" + _payload_text(deal_fields)
+    text_without_family = _remove_family_block(payload_text, family_text)
+    if not RAW_CHILD_DATA_RE.search(text_without_family):
+        return
+    warning = "Семейные данные: есть упоминание вне проверенного блока «Семья»; использовать как подсказку, не как факт."
+    current = str(deal_fields.get("Предупреждения") or "")
+    if warning in current:
+        return
+    deal_fields["Предупреждения"] = normalize_manager_multiline_text("\n".join(part for part in (current, warning) if part))
+
+
 def _row_blockers(
     projection: Mapping[str, Any],
     *,
@@ -567,6 +615,8 @@ def _row_blockers(
     deal_payload: Mapping[str, Any],
     active_brand: str = "",
     as_of: str = "",
+    family_review_required: bool = False,
+    family_text: str = "",
 ) -> list[str]:
     contact_card = _mapping(projection.get("contact_card"))
     deal_card = _mapping(projection.get("deal_card"))
@@ -592,6 +642,8 @@ def _row_blockers(
             ),
             active_brand=active_brand,
             as_of=as_of,
+            family_review_required=family_review_required,
+            family_text=family_text,
         )
     )
     # Contact and deal are written as different AMO entities. Cross-entity
@@ -611,6 +663,8 @@ def _semantic_ready_blockers(
     extra_payloads: Sequence[Mapping[str, Any]] = (),
     active_brand: str = "",
     as_of: str = "",
+    family_review_required: bool = False,
+    family_text: str = "",
 ) -> list[str]:
     blockers: list[str] = []
     summary = _summary_without_label(
@@ -634,7 +688,8 @@ def _semantic_ready_blockers(
         blockers.append("raw_timeline_or_email_artifact")
     if SENSITIVE_CRM_TEXT_RE.search(payload_text):
         blockers.append("sensitive_personal_data_requires_review")
-    if FAMILY_OR_CHILD_DATA_RE.search(payload_text):
+    payload_text_without_family = _remove_family_block(payload_text, family_text)
+    if family_review_required or _raw_child_email_chain_requires_review(payload_text_without_family):
         blockers.append("family_or_child_data_requires_review")
     if MASKED_OR_DEBUG_PLACEHOLDER_RE.search(payload_text):
         blockers.append("masked_or_debug_placeholder")
@@ -650,6 +705,29 @@ def _semantic_ready_blockers(
     if stale_next_step:
         blockers.append(stale_next_step)
     return blockers
+
+
+def _remove_family_block(text: str, family_text: str) -> str:
+    family = normalize_manager_multiline_text(family_text)
+    if not family:
+        return text
+    result = text
+    for block in (
+        "Семья:\n" + family,
+        "Семья:\r\n" + family.replace("\n", "\r\n"),
+    ):
+        result = result.replace(block, "")
+    return result
+
+
+def _raw_child_email_chain_requires_review(text: str) -> bool:
+    if not RAW_CHILD_DATA_RE.search(text):
+        return False
+    # Ordinary CRM summaries and Tallanto snippets may legitimately mention a
+    # child/class after family graph attribution. Keep this blocker for the
+    # original risk: raw email/thread fragments that mention children outside
+    # the curated family graph.
+    return bool(RAW_TIMELINE_SOURCE_RE.search(text))
 
 
 def _first_payload_text(payload: Mapping[str, Any], keys: Sequence[str]) -> str:
@@ -740,6 +818,15 @@ def _format_signals(rows: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(f"- {part}" for part in parts if part)
 
 
+def _format_dossier_markers(rows: Sequence[str]) -> str:
+    parts = []
+    for row in rows[:3]:
+        text = normalize_manager_text(row)
+        if text:
+            parts.append(text)
+    return "\n".join(f"- {part}" for part in _dedupe(parts))
+
+
 def _load_family_links(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
     if not _table_exists(con, "family_links_v1"):
         return []
@@ -747,7 +834,7 @@ def _load_family_links(con: sqlite3.Connection, *, tenant_id: str, customer_id: 
         dict(row)
         for row in con.execute(
             """
-            SELECT canonical_name, name_variants_json, grades_json, subjects_json, status, confidence, reason
+            SELECT canonical_name, name_variants_json, grades_json, subjects_json, status, confidence, reason, record_json
             FROM family_links_v1
             WHERE tenant_id = ?
               AND customer_id = ?
@@ -789,6 +876,21 @@ def _format_family(rows: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+def _family_review_required(rows: Sequence[Mapping[str, Any]]) -> bool:
+    for row in rows:
+        status = str(row.get("status") or "").strip()
+        confidence = str(row.get("confidence") or "").strip()
+        record = _json_loads(row.get("record_json"))
+        suspicious = record.get("suspicious_reasons") if isinstance(record, Mapping) else []
+        if status and status != "confident":
+            return True
+        if confidence == "low":
+            return True
+        if isinstance(suspicious, list) and suspicious:
+            return True
+    return False
+
+
 def _deal_aware_flat_fields(
     *,
     contact_fields: Mapping[str, Any],
@@ -807,6 +909,10 @@ def _deal_aware_flat_fields(
         facts.append("сигналы")
     if extras.get("objections_text"):
         facts.append("возражения")
+    if extras.get("interests_text"):
+        facts.append("интересы")
+    if extras.get("pains_text"):
+        facts.append("боли")
     if extras.get("family_text"):
         facts.append("семья")
     basis = "Customer Timeline staging"
@@ -836,13 +942,27 @@ def _json_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
+def _load_canonical_calls_fail_soft(path: Path | None) -> tuple[Mapping[str, str], list[str]]:
+    if path is None:
+        return {}, []
+    try:
+        return load_canonical_call_client_texts(path), []
+    except FileNotFoundError:
+        message = f"canonical_calls_db_missing:{path}"
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return {}, [message]
+
+
 def _write_package_files(
     out_dir: Path,
     *,
+    all_rows: Sequence[Mapping[str, Any]],
     pilot_rows: Sequence[Mapping[str, Any]],
     batch_rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, Path]:
     files = {
+        "all_candidates_csv": out_dir / "all_candidates_crm_card_candidates.csv",
+        "all_candidates_jsonl": out_dir / "all_candidates_crm_card_candidates.jsonl",
         "pilot_csv": out_dir / "pilot_20_crm_card_candidates.csv",
         "pilot_jsonl": out_dir / "pilot_20_crm_card_candidates.jsonl",
         "pilot_preview_md": out_dir / "pilot_20_preview.md",
@@ -850,6 +970,8 @@ def _write_package_files(
         "batch_jsonl": out_dir / "batch_ready_crm_card_candidates.jsonl",
         "readback_plan_md": out_dir / "readback_plan.md",
     }
+    _write_csv(files["all_candidates_csv"], all_rows)
+    _write_jsonl(files["all_candidates_jsonl"], all_rows)
     _write_csv(files["pilot_csv"], pilot_rows)
     _write_jsonl(files["pilot_jsonl"], pilot_rows)
     files["pilot_preview_md"].write_text(_render_preview_markdown(pilot_rows), encoding="utf-8")
@@ -999,6 +1121,8 @@ def _headers(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         "Краткая история общения",
         "Хронология общения (последние 5 касаний)",
         "Возражения",
+        "Интересы",
+        "Боли",
         "Рекомендуемая дата следующего контакта",
         "Приоритет лида",
         "Вероятность продажи, %",

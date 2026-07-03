@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pilot-size", type=int, default=20)
     parser.add_argument("--batch-limit", type=int, default=0)
     parser.add_argument("--customer-id", action="append", default=[])
+    parser.add_argument("--canonical-calls-db", type=Path)
     parser.add_argument("--verify-idempotent", action="store_true")
     args = parser.parse_args(argv)
 
@@ -37,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         pilot_size=args.pilot_size,
         batch_limit=args.batch_limit,
         customer_ids=tuple(args.customer_id or ()),
+        canonical_calls_db_path=args.canonical_calls_db,
     )
     summary = dict(build_crm_export_package(config))
     if args.verify_idempotent:
@@ -51,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
                     pilot_size=args.pilot_size,
                     batch_limit=args.batch_limit,
                     customer_ids=tuple(args.customer_id or ()),
+                    canonical_calls_db_path=args.canonical_calls_db,
                 )
             )
         )

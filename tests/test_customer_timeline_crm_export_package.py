@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.crm_export_package import (
     CrmExportPackageConfig,
+    _inject_child_data_soft_warning,
     _row_blockers,
     build_crm_export_package,
 )
@@ -65,6 +66,8 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     assert "Клиент активно отвечает" in row["contact_payload"]["Авто история общения"]
     assert "hot_streak:" not in row["contact_payload"]["Авто история общения"]
     assert "Письмо: отправлено расписание" in row["contact_payload"]["Авто история общения"]
+    assert "all_candidates_jsonl" in first["output_sha256"]
+    assert (out_dir / "all_candidates_crm_card_candidates.jsonl").exists()
     assert row["CRM writeback policy"] == "live_update_ready"
     assert isinstance(row["active_signals_count"], int)
     for field in DEAL_AI_FIELDS:
@@ -76,6 +79,85 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     assert row["AI-дата обновления сделки"]
     assert "crm_card_contact_payload_json" in csv_text
     assert "AMO write=0" in preview
+
+
+def test_crm_export_package_adds_interests_and_pains_from_client_call_text(tmp_path: Path) -> None:
+    db_path = _seed_db(tmp_path)
+    canonical_db = tmp_path / ".codex_local" / "staging" / "canonical_calls.sqlite"
+    with sqlite3.connect(canonical_db) as con:
+        con.execute("CREATE TABLE canonical_calls (canonical_call_id TEXT PRIMARY KEY, transcript_client TEXT)")
+        con.execute(
+            "INSERT INTO canonical_calls VALUES (?, ?)",
+            (
+                "call-1",
+                "Хотим интенсив по математике. Сложно по времени, переживаем, что не успеваем к экзамену.",
+            ),
+        )
+    out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+
+    build_crm_export_package(
+        CrmExportPackageConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=out_dir,
+            pilot_size=1,
+            canonical_calls_db_path=canonical_db,
+        )
+    )
+    row = json.loads((out_dir / "pilot_20_crm_card_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    history = row["contact_payload"]["Авто история общения"]
+
+    assert "Интересы:" in history
+    assert "Интерес из звонка: Хотим интенсив по математике" in history
+    assert "Боли:" in history
+    assert "Боль из звонка: Сложно по времени" in history
+    assert row["Интересы"]
+    assert row["Боли"]
+    assert "mango_call:" not in history
+
+
+def test_crm_export_package_canonical_calls_path_is_fail_soft(tmp_path: Path) -> None:
+    db_path = _seed_db(tmp_path)
+    out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+
+    manifest = build_crm_export_package(
+        CrmExportPackageConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=out_dir,
+            pilot_size=1,
+            canonical_calls_db_path=tmp_path / ".codex_local" / "staging" / "missing_canonical.sqlite",
+        )
+    )
+
+    assert manifest["candidate_rows"] == 1
+    assert any(str(item).startswith("canonical_calls_db_missing:") for item in manifest["warnings"])
+
+
+def test_crm_export_package_soft_warns_child_mentions_without_hard_family_block() -> None:
+    projection = {
+        "contact_card": {
+            "fields": {
+                "Последняя сводка": "Сводка:\nКлиент рассказал, что ребёнок хочет заниматься математикой.",
+                "История общения": "Клиент ждёт расписание.",
+            }
+        },
+        "deal_card": {"fields": {"Следующий шаг": "Позвонить клиенту."}},
+    }
+
+    _inject_child_data_soft_warning(projection, family_text="")
+    deal_fields = projection["deal_card"]["fields"]
+
+    assert "Семейные данные: есть упоминание вне проверенного блока" in deal_fields["Предупреждения"]
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload=projection["contact_card"]["fields"],
+        deal_payload=deal_fields,
+    )
+    assert "family_or_child_data_requires_review" not in blockers
 
 
 def test_crm_export_package_refuses_non_staging_paths(tmp_path: Path) -> None:
@@ -179,6 +261,26 @@ def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
 
     assert "masked_or_debug_placeholder" in blockers
 
+    non_mask_blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {
+                "ready_for_amo": True,
+                "blockers": [],
+                "fields": {"Возражения": "Клиент обсуждал скидку [сжато]"},
+            },
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент выбрал курс и ждёт ссылку.",
+            "История общения": "Клиент попросил оформить запись.",
+        },
+        deal_payload={
+            "Следующий шаг": "Позвонить клиенту и уточнить решение.",
+        },
+    )
+
+    assert "masked_or_debug_placeholder" not in non_mask_blockers
+
 
 def test_crm_export_package_blocks_foreign_brand_marker_for_active_brand() -> None:
     blockers = _row_blockers(
@@ -208,7 +310,8 @@ def test_crm_export_package_blocks_foreign_brand_marker_for_active_brand() -> No
     assert "foreign_brand_marker_in_payload:foton_inside_unpk_card" in blockers
 
 
-def test_crm_export_package_blocks_family_and_child_data_in_live_ready_payload() -> None:
+def test_crm_export_package_allows_clean_family_block_in_live_ready_payload() -> None:
+    family_text = "- Аня (класс: 8; предметы: математика)"
     blockers = _row_blockers(
         {
             "contact_card": {"ready_for_amo": True, "blockers": []},
@@ -216,12 +319,44 @@ def test_crm_export_package_blocks_family_and_child_data_in_live_ready_payload()
         },
         contact_payload={
             "Последняя сводка": "Сводка:\nКлиент обсуждает годовой курс.",
-            "История общения": "Семья:\n- Аня (класс: 8; предметы: математика)",
+            "История общения": "Семья:\n" + family_text,
+        },
+        deal_payload={"Следующий шаг": "Позвонить взрослому клиенту."},
+        family_text=family_text,
+    )
+
+    assert "family_or_child_data_requires_review" not in blockers
+
+
+def test_crm_export_package_blocks_ambiguous_family_or_raw_child_mentions() -> None:
+    clean_family_text = "- Аня (класс: 8; предметы: математика)"
+    family_review_blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент обсуждает годовой курс.",
+            "История общения": "Семья:\n" + clean_family_text,
+        },
+        deal_payload={"Следующий шаг": "Позвонить взрослому клиенту."},
+        family_text=clean_family_text,
+        family_review_required=True,
+    )
+    raw_child_blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент обсуждает годовой курс.",
+            "История общения": "--- part ---\nВ письме клиент упомянул ребёнка и 8 класс, но в family graph этого нет.",
         },
         deal_payload={"Следующий шаг": "Позвонить взрослому клиенту."},
     )
 
-    assert "family_or_child_data_requires_review" in blockers
+    assert "family_or_child_data_requires_review" in family_review_blockers
+    assert "family_or_child_data_requires_review" in raw_child_blockers
 
 
 def test_crm_export_package_blocks_raw_email_separator_in_live_ready_payload() -> None:

@@ -957,3 +957,23 @@ rows, `65` signals, `60` next-step rows, `210` objections, `69` interests,
 `94` pains и `2099` chronology rows. Focused pytest `41 passed`. Семантический
 аудит: `PASS_WITH_NOTES`; ПДн остаются только в `.codex_local`; прод/CRM/Tallanto/live
 writes = 0.
+
+### D-054. Marathon-2 final gates separate automated pass from human gates
+
+Решение: финальный статус марафона-2 фиксируется как staging/package готовность,
+а не как разрешение на прод-применение. Автоматическая часть Ф1-Ф11 доведена до
+зелёных локальных гейтов, но перенос staging в prod, CRM-write, Wappi-долив,
+включение памяти в live и M1-прогоны остаются отдельными решениями владельца.
+
+Почему так: марафон сознательно не писал в prod/CRM/live. Его результат —
+пакеты, staging-БД, отчёты, Excel для менеджерской вычитки и скрипты
+применения/сверки. Называть это production-ready было бы опасно: часть
+смысловых проверок остаётся human-gate, а Ф11 содержит одну спорную строку
+family gold без false-high, которую должен решить архитектор.
+
+Проверка: после фикса fail-soft warning для отсутствующей canonical calls DB
+полный `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest tests/ -q`
+дал `4026 passed, 5 skipped` за `96.52s`. Warnings ожидаемые: системный
+LibreSSL и тестовый `canonical_calls_db_missing:*`. Ф11:
+`gold_rows=23`, `exact_count_ok=22`, `false_high=0`,
+`architect_review_required=true`. Прод/CRM/Tallanto/live writes = 0.

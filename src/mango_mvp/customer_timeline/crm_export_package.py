@@ -945,6 +945,10 @@ def _json_string_list(value: Any) -> list[str]:
 def _load_canonical_calls_fail_soft(path: Path | None) -> tuple[Mapping[str, str], list[str]]:
     if path is None:
         return {}, []
+    if not Path(path).expanduser().exists():
+        message = f"canonical_calls_db_missing:{path}"
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return {}, [message]
     try:
         return load_canonical_call_client_texts(path), []
     except FileNotFoundError:

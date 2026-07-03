@@ -108,6 +108,9 @@ def build_report(
         "baseline_vs_inline_text_health": _baseline_vs_inline_text_health(off_dialogs, on_dialogs)
         if off_dialogs
         else {"status": "not_provided"},
+        "inline_text_health_gate": _inline_text_health_gate(off_dialogs, on_dialogs)
+        if off_dialogs
+        else {"status": "not_provided"},
         "inline_vs_posthoc_agreement": _inline_vs_posthoc_agreement(on_dialogs, posthoc_dialogs)
         if posthoc_dialogs
         else {"status": "not_provided"},
@@ -151,6 +154,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         if isinstance(report.get("baseline_vs_inline_text_health"), Mapping)
         else {}
     )
+    inline_gate = (
+        report.get("inline_text_health_gate")
+        if isinstance(report.get("inline_text_health_gate"), Mapping)
+        else {}
+    )
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -170,6 +178,11 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- OFF/ON route-text diffs: `{diff.get('route_text_diff_count', 'n/a')}`",
         f"- OFF/ON input diffs: `{diff.get('input_diff_count', 'n/a')}`",
         f"- Baseline vs inline dangerous flips: `{text_health.get('dangerous_flip_count', 'n/a')}`",
+        f"- Inline text health gate: `{inline_gate.get('status', 'n/a')}`",
+        f"- P0 route lost: `{inline_gate.get('p0_route_lost_count', 'n/a')}`",
+        f"- P0 hygiene flag diffs: `{inline_gate.get('p0_hygiene_flag_diff_count', 'n/a')}`",
+        f"- Unverified new-number turns: `{inline_gate.get('new_number_unverified_count', 'n/a')}`",
+        f"- Dangerous manager-to-self flips: `{inline_gate.get('route_flip_dangerous_count', 'n/a')}`",
         f"- Inline vs posthoc compared turns: `{inline_posthoc.get('compared_turns', 'n/a')}`",
         f"- Inline vs posthoc mismatch count: `{inline_posthoc.get('mismatch_count', 'n/a')}`",
         f"- Reader agreement compared turns: `{(report.get('reader_agreement') or {}).get('compared_turns', 'n/a')}`",
@@ -620,6 +633,115 @@ def _baseline_vs_inline_text_health(
     }
 
 
+def _inline_text_health_gate(
+    baseline_dialogs: Sequence[Mapping[str, Any]],
+    inline_dialogs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    baseline_map = _turn_map(baseline_dialogs)
+    inline_map = _turn_map(inline_dialogs)
+    common = sorted(set(baseline_map) & set(inline_map))
+    missing_baseline = sorted(set(inline_map) - set(baseline_map))
+    missing_inline = sorted(set(baseline_map) - set(inline_map))
+    p0_route_lost: list[dict[str, Any]] = []
+    p0_hygiene_flag_diff: list[dict[str, Any]] = []
+    new_number_unverified: list[dict[str, Any]] = []
+    route_flip_dangerous: list[dict[str, Any]] = []
+    new_number_verified = 0
+
+    for key in common:
+        baseline_turn = baseline_map[key]
+        inline_turn = inline_map[key]
+        baseline_route = str(baseline_turn.get("bot_route") or "")
+        inline_route = str(inline_turn.get("bot_route") or "")
+        baseline_handoff = _actual_route_handoff(baseline_turn)
+        inline_handoff = _actual_route_handoff(inline_turn)
+        baseline_p0 = _actual_p0_signal(baseline_turn)
+        inline_p0 = _actual_p0_signal(inline_turn)
+        example_base = {
+            "dialog_id": key[0],
+            "turn": key[1],
+            "baseline_route": baseline_route,
+            "inline_route": inline_route,
+        }
+        if baseline_handoff and not inline_handoff:
+            route_flip_dangerous.append(dict(example_base))
+            if baseline_p0:
+                p0_route_lost.append(dict(example_base))
+        elif baseline_p0 != inline_p0:
+            p0_hygiene_flag_diff.append(
+                {
+                    **example_base,
+                    "baseline_p0_signal": baseline_p0,
+                    "inline_p0_signal": inline_p0,
+                }
+            )
+
+        baseline_numbers = _numbers(baseline_turn.get("bot_text"))
+        inline_numbers = _numbers(inline_turn.get("bot_text"))
+        fact_numbers = _numbers(_fact_verification_blob(inline_turn))
+        unverified = sorted(number for number in (inline_numbers - baseline_numbers) if number not in fact_numbers)
+        verified = sorted(number for number in (inline_numbers - baseline_numbers) if number in fact_numbers)
+        if verified:
+            new_number_verified += 1
+        if unverified:
+            new_number_unverified.append(
+                {
+                    **example_base,
+                    "new_numbers": unverified[:8],
+                    "verified_new_numbers": verified[:8],
+                }
+            )
+
+    passed = (
+        not missing_baseline
+        and not missing_inline
+        and not p0_route_lost
+        and not new_number_unverified
+        and not route_flip_dangerous
+    )
+    return {
+        "schema_version": "inline_text_health_gate_v1_2026_07_03",
+        "status": "pass" if passed else "fail",
+        "compared_turns": len(common),
+        "missing_baseline_turns": len(missing_baseline),
+        "missing_inline_turns": len(missing_inline),
+        "p0_route_lost_count": len(p0_route_lost),
+        "p0_route_lost_examples": p0_route_lost[:25],
+        "p0_hygiene_flag_diff_count": len(p0_hygiene_flag_diff),
+        "p0_hygiene_flag_diff_examples": p0_hygiene_flag_diff[:25],
+        "new_number_verified_turn_count": new_number_verified,
+        "new_number_unverified_count": len(new_number_unverified),
+        "new_number_unverified_examples": new_number_unverified[:25],
+        "route_flip_dangerous_count": len(route_flip_dangerous),
+        "route_flip_dangerous_examples": route_flip_dangerous[:25],
+    }
+
+
+def _fact_verification_blob(turn: Mapping[str, Any]) -> str:
+    fields = (
+        "bot_confirmed_facts",
+        "bot_knowledge_snippets",
+        "bot_safe_context_items",
+        "bot_fact_retrieval_trace",
+        "bot_direct_path",
+    )
+    chunks: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            chunks.append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for item in value:
+                visit(item)
+
+    for field in fields:
+        visit(turn.get(field))
+    return "\n".join(chunks)
+
+
 def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any]) -> dict[str, Any]:
     off_calls = off_summary.get("llm_calls") if isinstance(off_summary.get("llm_calls"), Mapping) else {}
     on_calls = on_summary.get("llm_calls") if isinstance(on_summary.get("llm_calls"), Mapping) else {}
@@ -990,6 +1112,11 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     frame = report.get("semantic_frame") if isinstance(report.get("semantic_frame"), Mapping) else {}
+    inline_gate = (
+        report.get("inline_text_health_gate")
+        if isinstance(report.get("inline_text_health_gate"), Mapping)
+        else {}
+    )
     self_shadow = (
         report.get("semantic_frame_self_answer_shadow")
         if isinstance(report.get("semantic_frame_self_answer_shadow"), Mapping)
@@ -1011,18 +1138,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     else:
         expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
     flags = {
-        "route_text_diff_zero": (
-            diff.get("status") == "compared"
-            and diff.get("route_text_diff_count") == 0
-            and diff.get("missing_off_turns") == 0
-            and diff.get("missing_on_turns") == 0
-        ),
-        "input_turns_match": (
-            diff.get("status") == "compared"
-            and diff.get("input_diff_count") == 0
-            and diff.get("missing_off_turns") == 0
-            and diff.get("missing_on_turns") == 0
-        ),
+        "inline_text_health_gate_ok": inline_gate.get("status") == "pass",
         "extra_model_calls_expected": expected_call_delta,
         "semantic_frame_eligible_rate_ok": (
             bool(frame.get("eligible_model_called_turns"))
@@ -1035,6 +1151,8 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     notes: list[str] = []
     if diff.get("status") != "compared":
         notes.append("OFF transcripts were not provided; route/text no-op cannot be proven by this report.")
+    elif inline_gate.get("status") != "pass":
+        notes.append("Inline text health gate failed; inspect p0_route_lost/new_number/route_flip examples.")
     if llm.get("extra_total") is None:
         notes.append("OFF/ON summary pair was not provided; extra model call delta cannot be proven by this report.")
     elif llm.get("mode") == "semantic_frame_enrichment":

@@ -320,7 +320,8 @@ def test_report_flags_input_diff_even_when_bot_output_matches(tmp_path: Path) ->
     assert result["acceptance"]["status"] == "needs_review"
     assert result["off_on_diff"]["route_text_diff_count"] == 0
     assert result["off_on_diff"]["input_diff_count"] == 1
-    assert result["acceptance"]["flags"]["input_turns_match"] is False
+    assert "input_turns_match" not in result["acceptance"]["flags"]
+    assert result["inline_text_health_gate"]["status"] == "pass"
 
 
 def test_report_flags_route_text_diff(tmp_path: Path) -> None:
@@ -333,8 +334,131 @@ def test_report_flags_route_text_diff(tmp_path: Path) -> None:
 
     assert result["acceptance"]["status"] == "needs_review"
     assert result["off_on_diff"]["route_text_diff_count"] == 1
+    assert result["inline_text_health_gate"]["status"] == "pass"
     assert result["off_on_diff"]["diff_examples"][0]["changed"]["bot_text"]["off"] == "Менеджер проверит наличие места."
     assert result["off_on_diff"]["diff_examples"][0]["changed"]["bot_text"]["on"] == "Да, место есть."
+
+
+def test_inline_text_health_gate_blocks_manager_to_self_route_flip(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    off = _dialog(include_frame=False)
+    on = _dialog(text="Да, место есть.", include_frame=True)
+    on["turns"][0]["bot_route"] = "bot_answer_self_for_pilot"
+    on["turns"][0]["bot_safety_flags"] = ["no_auto_send"]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+    off_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "fail"
+    assert gate["route_flip_dangerous_count"] == 1
+    assert gate["p0_route_lost_count"] == 0
+    assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is False
+
+
+def test_inline_text_health_gate_blocks_p0_route_loss(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    off["turns"][0]["bot_route"] = "manager_only"
+    off["turns"][0]["bot_safety_flags"] = ["payment_dispute", "manager_approval_required"]
+    on = _dialog(text="Ответим сами.", include_frame=True)
+    on["turns"][0]["bot_route"] = "bot_answer_self_for_pilot"
+    on["turns"][0]["bot_safety_flags"] = ["no_auto_send"]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "fail"
+    assert gate["p0_route_lost_count"] == 1
+    assert gate["route_flip_dangerous_count"] == 1
+
+
+def test_inline_text_health_gate_treats_p0_hygiene_flag_diff_as_warning(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    off = _dialog(include_frame=False)
+    off["turns"][0]["bot_route"] = "draft_for_manager"
+    off["turns"][0]["bot_safety_flags"] = ["payment_dispute", "manager_approval_required"]
+    on = _dialog(include_frame=True)
+    on["turns"][0]["bot_route"] = "draft_for_manager"
+    on["turns"][0]["bot_safety_flags"] = ["manager_approval_required"]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+    off_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["p0_route_lost_count"] == 0
+    assert gate["p0_hygiene_flag_diff_count"] == 1
+    assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is True
+
+
+def test_inline_text_health_gate_verifies_new_numbers_against_fact_text(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    off = _dialog(text="Стоимость есть в карточке курса.", include_frame=False)
+    on = _dialog(text="Стоимость курса — 9 000 ₽.", include_frame=True)
+    on["turns"][0]["bot_confirmed_facts"] = ["client_safe_text: Стоимость курса — 9 000 ₽."]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+    off_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(3)), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_verified_turn_count"] == 1
+    assert gate["new_number_unverified_count"] == 0
+    assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is True
+
+
+def test_inline_text_health_gate_blocks_unverified_new_numbers(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Стоимость есть в карточке курса.", include_frame=False)
+    on = _dialog(text="Стоимость курса — 12345 ₽.", include_frame=True)
+    on["turns"][0]["bot_confirmed_facts"] = ["client_safe_text: Стоимость курса — 9 000 ₽."]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "fail"
+    assert gate["new_number_unverified_count"] == 1
+    assert gate["new_number_unverified_examples"][0]["new_numbers"] == ["12345 ₽"]
 
 
 def test_report_compares_inline_with_posthoc_and_text_health(tmp_path: Path) -> None:
@@ -491,7 +615,7 @@ def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     json_report = json.loads((out_dir / "adr003_semantic_frame_eval_report.json").read_text(encoding="utf-8"))
     markdown = (out_dir / "adr003_semantic_frame_eval_report.md").read_text(encoding="utf-8")
     assert json_report["acceptance"]["status"] == "needs_review"
-    assert json_report["acceptance"]["flags"]["route_text_diff_zero"] is False
+    assert json_report["acceptance"]["flags"]["inline_text_health_gate_ok"] is False
     assert json_report["acceptance"]["flags"]["extra_model_calls_expected"] is False
     assert json_report["semantic_frame"]["present_count"] == 1
     assert "OFF transcripts were not provided" in markdown

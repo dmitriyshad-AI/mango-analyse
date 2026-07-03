@@ -761,3 +761,24 @@ email price-intent в голове письма `21`, accepted `20`, rejected `1
 rejected — менеджерский price-offer в теле письма, который правильно не попал
 в клиентские возражения. Общая пересборка `customer_objections_v1`: `7155`
 строк, email price `20`, call coverage `0.807133`, coverage gate passed.
+
+### D-045. Manager dossier interests/pains use only explicit customer-side evidence
+
+Решение: Ф10-досье добавляет секции `Интересы` и `Боли`, но извлекает их
+только из безопасных источников: явные поля `products_of_interest`/родственные
+поля в данных клиента и клиентская часть звонка `canonical_calls.transcript_client`.
+`customer_opportunities.title` не считается интересом: в staging туда попадают
+темы писем, акции и служебные заголовки, что создаёт шум и может выглядеть как
+ложная потребность клиента. Пересказ звонка/summary тоже не используется для
+болей, чтобы не принять слова менеджера за слова клиента.
+
+Почему так: Ф10 нужен менеджеру как понятное досье, а не как максимально
+широкий keyword-сборщик. Ложная боль или ложный интерес вреднее пропуска:
+менеджер начнёт давить на несуществующую проблему или продавать не тот продукт.
+
+Проверка: добавлены тесты, что интересы/боли берутся из `products_of_interest`
+и `transcript_client`, но не из manager-only summary/opportunity title.
+Дополнительно покрыты `record.canonical_call_id`, `call:<id>` source_id и
+жёсткий запрет вывода ПДн-Excel вне `.codex_local`. Smoke на staging для 5
+клиентов: `canonical_calls_loaded=65974`, `interests_total=17`, `pains_total=7`,
+CRM/Tallanto/messages writes = false, Excel и summary только в `.codex_local`.

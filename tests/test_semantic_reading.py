@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 
 from mango_mvp.channels.dialogue_memory import (
+    DialogueMemory,
+    DialogueTurn,
     build_dialogue_memory,
     dialogue_memory_from_mapping,
+    safe_next_action,
     update_dialogue_memory_after_answer,
 )
+from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_prompt_known_slots
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     SEMANTIC_READING_CLASSES_ENV,
@@ -213,6 +217,63 @@ def test_slot_candidates_accept_it_alias_without_broad_substring_match() -> None
         ).get("subject")
         is None
     )
+
+
+def test_semantic_reading_slots_hidden_storage_does_not_leak_to_behavior(monkeypatch) -> None:
+    monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "slots_gsf")
+    memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        turns=(DialogueTurn("client", "Нужна физика онлайн для 9 класса."),),
+    )
+    semantic_reading = SemanticReading(
+        source="inline",
+        product_grade="9 класс",
+        product_subject="физика",
+        product_format="онлайн",
+        product_raw_text="9 класс, физика онлайн",
+        frame_confidence=0.91,
+    ).to_memory_dict()
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        semantic_reading=semantic_reading,
+    )
+    payload = updated.to_json_dict()
+    roundtrip = dialogue_memory_from_mapping(payload)
+
+    assert payload["semantic_reading_slots"]["grade"]["value"] == "9"
+    assert roundtrip.semantic_reading_slots["subject"]["value"] == "физика"
+    assert "semantic_reading_slots" not in updated.to_prompt_view()
+    assert updated.known_slots == {}
+    assert updated.client_confirmed_slots == {}
+    assert updated.do_not_reask_slots == ()
+    assert updated.topic_focus == {}
+    assert safe_next_action(updated) == {}
+    assert "grade" not in _direct_path_prompt_known_slots({"dialogue_memory_view": updated.to_prompt_view()})
+
+
+def test_semantic_reading_slots_are_not_written_when_mask_off(monkeypatch) -> None:
+    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    updated = update_dialogue_memory_after_answer(
+        DialogueMemory(
+            session_id="s1",
+            active_brand="foton",
+            turns=(DialogueTurn("client", "Нужна физика онлайн для 9 класса."),),
+        ),
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        semantic_reading=SemanticReading(
+            source="inline",
+            product_grade="9 класс",
+            frame_confidence=0.91,
+        ).to_memory_dict(),
+    )
+
+    assert updated.semantic_reading_slots == {}
+    assert "semantic_reading_slots" not in updated.to_json_dict()
 
 
 def test_slot_candidates_reject_multi_subject_and_format_choice() -> None:

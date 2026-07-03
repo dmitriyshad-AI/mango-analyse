@@ -6,6 +6,13 @@ from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.channels.fact_venue_scope import VENUE_SCOPE_ANY, normalize_fact_venue, normalize_requested_scope
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult, _normalize_output_sanitizer_text
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    append_reading_trace_record,
+    reading_class_enabled,
+    semantic_reading_trace_record,
+    sense_seats_reading_decision,
+)
 from mango_mvp.channels.subscription_llm_parts.support import _explicit_truthy_setting, _normalize_fact_match_text
 
 RELIABLE_ANSWERER_STEP1_ENV = "TELEGRAM_RELIABLE_ANSWERER_STEP1"
@@ -302,8 +309,35 @@ def apply_reliable_answerer_output_guard(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
+    sense_trace_enabled = reading_class_enabled(context, "sense_seats")
+
+    def with_sense_trace(
+        current: SubscriptionDraftResult,
+        *,
+        status: str,
+        reason: str,
+        decision: str = "",
+        changed_fields: Sequence[str] = (),
+        conflicts: Sequence[str] = (),
+    ) -> SubscriptionDraftResult:
+        if not sense_trace_enabled:
+            return current
+        reading = SemanticReading.from_result(current, context=context)
+        record = semantic_reading_trace_record(
+            reading_class="sense_seats",
+            enabled=True,
+            status=status,
+            decision=decision,
+            reason=reason,
+            source=reading.source if reading is not None else "",
+            confidence=max(reading.intent_confidence, reading.frame_confidence) if reading is not None else 0.0,
+            changed_fields=changed_fields,
+            conflicts=conflicts,
+        )
+        return replace(current, metadata=append_reading_trace_record(current.metadata, record))
+
     if not reliable_answerer_step1_enabled(context):
-        return result
+        return with_sense_trace(result, status="suppressed", reason="reliable_step1_off")
     bypass_reason = reliable_answerer_step1_bypass_reason(
         client_message,
         context=context,
@@ -311,10 +345,17 @@ def apply_reliable_answerer_output_guard(
         metadata=result.metadata,
     )
     if bypass_reason:
-        return _strip_reliable_answerer_metadata(result, bypass_reason)
+        return with_sense_trace(
+            _strip_reliable_answerer_metadata(result, bypass_reason),
+            status="suppressed",
+            reason=f"reliable_bypass:{bypass_reason}",
+        )
     plan = _coverage_plan_from_metadata(result.metadata)
     trace = reliable_answerer_trace(result.draft_text, plan)
     metadata = _metadata_with_reliable_trace(result.metadata, trace)
+    current = replace(result, metadata=metadata)
+    reading = SemanticReading.from_result(current, context=context)
+    sense_decision = sense_seats_reading_decision(reading, client_message)
     if trace["availability_promise_detected"] and "availability" not in covered_facets_in_text(result.draft_text, plan):
         flags = tuple(dict.fromkeys([*result.safety_flags, "reliable_answerer_availability_promise_blocked"]))
         checklist = tuple(
@@ -326,7 +367,7 @@ def apply_reliable_answerer_output_guard(
             )
         )
         metadata["reliable_answerer_availability_promise_blocked"] = True
-        return replace(
+        blocked = replace(
             result,
             route="draft_for_manager",
             draft_text=(
@@ -337,7 +378,19 @@ def apply_reliable_answerer_output_guard(
             forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, "availability_promise"])),
             metadata=metadata,
         )
-    return replace(result, metadata=metadata)
+        return with_sense_trace(
+            blocked,
+            status="applied",
+            decision=sense_decision,
+            reason="availability_promise_floor_kept" if sense_decision == "not_seats" else "availability_promise_blocked",
+            changed_fields=("route", "draft_text", "safety_flags", "manager_checklist", "forbidden_promises_detected"),
+        )
+    return with_sense_trace(
+        current,
+        status="no_op",
+        decision=sense_decision,
+        reason="availability_guard_not_triggered",
+    )
 
 
 def preserve_partial_answer_for_live_status(

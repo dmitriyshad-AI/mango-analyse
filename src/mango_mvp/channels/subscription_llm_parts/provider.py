@@ -197,6 +197,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 )
 
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import finalize_reading_trace_metadata
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_GOLD_REAL_PACK_ENV,
@@ -985,7 +986,8 @@ class SubscriptionLlmDraftProvider:
             reconciled_shadowed = apply_semantic_frame_proof_reconciliation_shadow(proof_shadowed, context=context)
             manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
             self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
-            return apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
+            decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
+            return apply_semantic_reading_trace_finalize(decision_shadowed, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -3421,6 +3423,18 @@ def apply_semantic_frame_decision_shadow(
     metadata["frame_decision_shadow"] = shadow
     direct["frame_decision_shadow"] = shadow
     metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def apply_semantic_reading_trace_finalize(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    del context
+    metadata = finalize_reading_trace_metadata(result.metadata)
+    if metadata == result.metadata:
+        return result
     return replace(result, metadata=metadata)
 
 

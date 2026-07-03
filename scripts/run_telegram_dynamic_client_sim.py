@@ -1671,6 +1671,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_semantic_reading_trace": json.dumps(
+                        turn.get("bot_semantic_reading_trace") or [],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_frame_decision_shadow": json.dumps(
                         turn.get("bot_frame_decision_shadow") or {},
                         ensure_ascii=False,
@@ -1980,6 +1985,14 @@ def run_one_dialog(
             direct_path_metadata=direct_path_metadata,
             authoritative_gate_metadata=authoritative_gate_metadata,
         )
+        semantic_reading_trace_metadata = []
+        raw_semantic_reading_trace = result.metadata.get("semantic_reading_trace") if isinstance(result.metadata, Mapping) else None
+        if not raw_semantic_reading_trace and isinstance(direct_path_metadata, Mapping):
+            raw_semantic_reading_trace = direct_path_metadata.get("semantic_reading_trace")
+        if isinstance(raw_semantic_reading_trace, Sequence) and not isinstance(raw_semantic_reading_trace, (str, bytes, bytearray)):
+            semantic_reading_trace_metadata = [
+                dict(item) for item in raw_semantic_reading_trace if isinstance(item, Mapping)
+            ]
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
@@ -2093,6 +2106,7 @@ def run_one_dialog(
             "bot_close_detect": close_detect_metadata,
             "bot_frame_decision_shadow": frame_decision_shadow_metadata,
             "bot_semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow_metadata,
+            "bot_semantic_reading_trace": semantic_reading_trace_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
@@ -5678,6 +5692,7 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_model_intent_sense",
         "bot_model_intent_confidence",
         "bot_semantic_frame",
+        "bot_semantic_reading_trace",
         "bot_frame_decision_shadow",
         "bot_semantic_frame_self_answer_shadow",
         "bot_safety_flags",

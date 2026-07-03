@@ -7,6 +7,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 SEMANTIC_READING_CLASSES_ENV = "TELEGRAM_SEMANTIC_READING_CLASSES"
 SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
+SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
 SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
 
 ALLOWED_SEMANTIC_READING_CLASSES = frozenset({"sense_seats", "off_topic", "slots_gsf"})
@@ -73,6 +74,102 @@ def _clean_text(value: Any, *, limit: int = 160) -> str:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _clean_trace_text(value: Any, *, limit: int = 160) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _clean_trace_fields(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = []
+    out: list[str] = []
+    for raw in raw_items:
+        item = _clean_trace_text(raw, limit=80)
+        if item and item not in out:
+            out.append(item)
+    return out[:12]
+
+
+def semantic_reading_trace_record(
+    *,
+    reading_class: str,
+    enabled: bool,
+    status: str,
+    decision: str = "",
+    reason: str = "",
+    source: str = "",
+    confidence: Any = 0.0,
+    changed_fields: Sequence[str] = (),
+    conflicts: Sequence[str] = (),
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    payload = dict(metadata or {}) if isinstance(metadata, Mapping) else {}
+    return {
+        "schema_version": SEMANTIC_READING_TRACE_SCHEMA_VERSION,
+        "class": _clean_trace_text(reading_class, limit=80),
+        "enabled": bool(enabled),
+        "status": _clean_trace_text(status, limit=80),
+        "decision": _clean_trace_text(decision, limit=120),
+        "reason": _clean_trace_text(reason, limit=160),
+        "source": _clean_trace_text(source, limit=40),
+        "confidence": _clamp01(confidence),
+        "changed_fields": _clean_trace_fields(changed_fields),
+        "conflict_with": _clean_trace_fields(conflicts),
+        "metadata": payload,
+    }
+
+
+def append_reading_trace_record(
+    metadata: Mapping[str, Any],
+    record: Mapping[str, Any],
+    *,
+    max_records: int = 12,
+) -> dict[str, Any]:
+    result = dict(metadata or {})
+    raw_records = result.get("semantic_reading_trace")
+    records = [dict(item) for item in raw_records if isinstance(item, Mapping)] if isinstance(raw_records, Sequence) and not isinstance(raw_records, (str, bytes, bytearray)) else []
+    records.append(dict(record))
+    if len(records) > max_records:
+        records = [
+            *records[: max_records - 1],
+            semantic_reading_trace_record(
+                reading_class="trace",
+                enabled=True,
+                status="truncated",
+                reason=f"{len(records) - (max_records - 1)} records omitted",
+            ),
+        ]
+    result["semantic_reading_trace"] = records
+    direct = dict(result.get("direct_path") or {}) if isinstance(result.get("direct_path"), Mapping) else {}
+    if direct:
+        direct["semantic_reading_trace"] = records
+        result["direct_path"] = direct
+    return result
+
+
+def finalize_reading_trace_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(metadata or {})
+    direct = dict(result.get("direct_path") or {}) if isinstance(result.get("direct_path"), Mapping) else {}
+    raw_records = result.get("semantic_reading_trace") or direct.get("semantic_reading_trace")
+    if not isinstance(raw_records, Sequence) or isinstance(raw_records, (str, bytes, bytearray)):
+        return result
+    records = [dict(item) for item in raw_records if isinstance(item, Mapping)]
+    if not records:
+        result.pop("semantic_reading_trace", None)
+        if direct:
+            direct.pop("semantic_reading_trace", None)
+            result["direct_path"] = direct
+        return result
+    result["semantic_reading_trace"] = records
+    if direct:
+        direct["semantic_reading_trace"] = records
+        result["direct_path"] = direct
+    return result
 
 
 def semantic_frame_from_metadata(metadata: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -47,6 +47,13 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     preserve_partial_answer_for_live_status,
     reliable_answerer_step1_active_for_turn,
 )
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    append_reading_trace_record,
+    off_topic_reading_decision,
+    reading_class_enabled,
+    semantic_reading_trace_record,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     MEMORY_PROVENANCE_ENV,
     PRESALE_PII_MEMORY_ENV,
@@ -798,6 +805,54 @@ def _is_terminal_direct_info_template(text: str) -> bool:
         SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
     }
 
+
+def _is_off_topic_safe_text(text: str) -> bool:
+    return str(text or "").strip() in {
+        OFF_TOPIC_FOTON_SAFE_TEXT,
+        OFF_TOPIC_UNPK_SAFE_TEXT,
+        OFF_TOPIC_GENERIC_SAFE_TEXT,
+    }
+
+
+def _with_off_topic_reading_trace(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    applied_text: str,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "off_topic"):
+        return result
+    reading = SemanticReading.from_result(result, context=context)
+    decision = off_topic_reading_decision(reading)
+    regex_or_topic = bool(result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")))
+    final_off_topic_text = _is_off_topic_safe_text(applied_text)
+    reason = ""
+    conflicts: tuple[str, ...] = ()
+    if final_off_topic_text and decision == "off_topic":
+        status = "applied"
+        reason = "semantic_off_topic"
+    elif final_off_topic_text and regex_or_topic:
+        status = "observed"
+        reason = "regex_or_topic_off_topic"
+        if decision == "not_off_topic":
+            conflicts = ("semantic_not_off_topic", "regex_or_topic_off_topic")
+    else:
+        status = "no_op"
+        reason = "terminal_template_not_off_topic"
+    record = semantic_reading_trace_record(
+        reading_class="off_topic",
+        enabled=True,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=reading.source if reading is not None else "",
+        confidence=max(reading.intent_confidence, reading.frame_confidence) if reading is not None else 0.0,
+        changed_fields=("route", "draft_text", "safety_flags", "manager_checklist") if final_off_topic_text else (),
+        conflicts=conflicts,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
 def _apply_safe_template_spec(
     result: SubscriptionDraftResult,
     spec: SafeTemplateSpec,
@@ -1542,6 +1597,13 @@ def apply_dialogue_contract_v2_template_dispatcher(
                 )
                 return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
+            if spec.name == "terminal":
+                guarded = _with_off_topic_reading_trace(
+                    guarded,
+                    client_message=client_message,
+                    context=context,
+                    applied_text=text,
+                )
             if identity_policy_text:
                 trace_event(
                     context,
@@ -4239,7 +4301,9 @@ def _terminal_safe_template(
         for marker in ("не отвечаете", "одно и то же", "не можете подсказать", "не можете ответить", "не буду оставлять заявку", "буду искать другой вариант")
     ):
         return SOFT_NEGATIVE_HANDOFF_SAFE_TEXT
-    if result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")):
+    reading = SemanticReading.from_result(result, context=context) if reading_class_enabled(context, "off_topic") else None
+    reading_off_topic = off_topic_reading_decision(reading) == "off_topic"
+    if result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")) or reading_off_topic:
         if active_brand == "foton":
             return OFF_TOPIC_FOTON_SAFE_TEXT
         if active_brand == "unpk":

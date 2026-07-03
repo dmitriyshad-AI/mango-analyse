@@ -255,13 +255,14 @@ class DialogueMemory:
     proactive_state: Mapping[str, Any] = field(default_factory=dict)
     slot_history: tuple[Mapping[str, Any], ...] = ()
     last_semantic_reading: Mapping[str, Any] = field(default_factory=dict)
+    semantic_reading_slots: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     schema_version: str = DIALOGUE_MEMORY_SCHEMA_VERSION
 
     def to_json_dict(self) -> Mapping[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
             "active_brand": self.active_brand,
@@ -293,6 +294,13 @@ class DialogueMemory:
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
         }
+        if self.semantic_reading_slots:
+            payload["semantic_reading_slots"] = {
+                str(key): dict(value)
+                for key, value in self.semantic_reading_slots.items()
+                if str(key).strip() and isinstance(value, Mapping)
+            }
+        return payload
 
     def to_prompt_view(self) -> Mapping[str, Any]:
         provenance_enabled = _memory_provenance_enabled()
@@ -492,6 +500,9 @@ def update_dialogue_memory_after_answer(
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = tuple(dict.fromkeys([*current.last_bot_commitments, *_detect_commitments(turns)]))[-8:]
+    semantic_reading_slots = dict(current.semantic_reading_slots)
+    if semantic_reading is not None:
+        semantic_reading_slots.update(_semantic_reading_slots_from_payload(semantic_reading, turns))
     answered = current.answered_questions
     open_question = current.open_question
     unanswered = tuple(current.unanswered_questions)
@@ -534,6 +545,7 @@ def update_dialogue_memory_after_answer(
             if semantic_reading is not None
             else dict(current.last_semantic_reading)
         ),
+        semantic_reading_slots=semantic_reading_slots,
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
@@ -907,6 +919,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         proactive_state=dict(data.get("proactive_state") or {}) if isinstance(data.get("proactive_state"), Mapping) else {},
         slot_history=tuple(dict(item) for item in (data.get("slot_history") or ()) if isinstance(item, Mapping))[-40:],
         last_semantic_reading=_semantic_reading_memory_mapping(data.get("last_semantic_reading")),
+        semantic_reading_slots=_semantic_reading_slots_mapping(data.get("semantic_reading_slots")),
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )
@@ -1504,6 +1517,68 @@ def _semantic_reading_memory_mapping(value: Any) -> Mapping[str, Any]:
     if not out.get("schema_version"):
         out["schema_version"] = "semantic_reading_v1_2026_07_03"
     return out
+
+
+def _semantic_reading_slots_mapping(value: Any) -> Mapping[str, Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}
+    out: dict[str, Mapping[str, Any]] = {}
+    for key in ("grade", "subject", "format"):
+        raw = value.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        slot_value = str(raw.get("value") or "").strip()[:80]
+        if not slot_value:
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        out[key] = {
+            "value": slot_value,
+            "source_name": str(raw.get("source_name") or "semantic_reading_llm").strip()[:80],
+            "confidence": max(0.0, min(1.0, confidence)),
+            "evidence": str(raw.get("evidence") or "").strip()[:160],
+        }
+    return out
+
+
+def _semantic_reading_slots_from_payload(
+    value: Mapping[str, Any],
+    turns: Sequence[DialogueTurn],
+) -> Mapping[str, Mapping[str, Any]]:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+            SemanticReading,
+            reading_class_enabled,
+            slots_reading_candidates,
+        )
+    except Exception:
+        return {}
+    if not reading_class_enabled(None, "slots_gsf"):
+        return {}
+    reading_payload = _semantic_reading_memory_mapping(value)
+    if not reading_payload:
+        return {}
+    reading = SemanticReading(
+        source=str(reading_payload.get("source") or ""),
+        primary_intent=str(reading_payload.get("primary_intent") or ""),
+        sense=str(reading_payload.get("sense") or ""),
+        scope=str(reading_payload.get("scope") or ""),
+        intent_confidence=float(reading_payload.get("intent_confidence") or 0.0),
+        requested_action=str(reading_payload.get("requested_action") or ""),
+        product_grade=str(reading_payload.get("product_grade") or ""),
+        product_subject=str(reading_payload.get("product_subject") or ""),
+        product_format=str(reading_payload.get("product_format") or ""),
+        product_raw_text=str(reading_payload.get("product_raw_text") or ""),
+        frame_confidence=float(reading_payload.get("frame_confidence") or 0.0),
+    )
+    history_texts = tuple(
+        f"{turn.role}: {turn.text}"
+        for turn in turns
+        if isinstance(turn, DialogueTurn) and str(turn.text or "").strip()
+    )
+    return _semantic_reading_slots_mapping(slots_reading_candidates(reading, history_texts=history_texts))
 
 
 def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:

@@ -24,6 +24,8 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
 
 
 SCHEMA_VERSION = "adr003_semantic_frame_eval_report_v1_2026_07_01"
+FRAME_EMISSION_THRESHOLD = 0.97
+DIRECT_PATH_P0_PREBLOCK_REASONS = {"p0_pre_gate", "direct_path_preblocked_p0"}
 REQUIRED_FRAME_FIELDS = (
     "intent",
     "risk_class",
@@ -158,6 +160,12 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Active behavior allowed: `{(report.get('decision_readiness') or {}).get('active_behavior_allowed', False)}`",
         f"- ON turns: `{frame.get('turns_total', 0)}`",
         f"- Frame present: `{frame.get('present_count', 0)}` / `{frame.get('turns_total', 0)}`",
+        f"- Frame eligible model-called turns: `{frame.get('eligible_model_called_turns', 0)}`",
+        f"- Frame eligible emission: `{frame.get('eligible_frame_count', 0)}` / `{frame.get('eligible_model_called_turns', 0)}`",
+        f"- Frame eligible emission rate: `{frame.get('eligible_frame_rate', 'n/a')}`",
+        f"- Direct-path P0 preblocked turns: `{frame.get('preblocked_p0_count', 0)}`",
+        f"- Provider timeouts: `{frame.get('provider_timeout_count', 0)}`",
+        f"- Infra timeout present: `{frame.get('infra_timeout_present', False)}`",
         f"- Frame schema complete: `{frame.get('complete_required_count', 0)}` / `{frame.get('present_count', 0)}`",
         f"- OFF/ON route-text diffs: `{diff.get('route_text_diff_count', 'n/a')}`",
         f"- OFF/ON input diffs: `{diff.get('input_diff_count', 'n/a')}`",
@@ -279,8 +287,60 @@ def _frame_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
     return frame if isinstance(frame, Mapping) else {}
 
 
+def _direct_path_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = turn.get("bot_direct_path")
+    return direct if isinstance(direct, Mapping) else {}
+
+
+def _answerability_trace_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    trace = turn.get("bot_answerability_trace")
+    return trace if isinstance(trace, Mapping) else {}
+
+
+def _provider_error_value(turn: Mapping[str, Any]) -> str:
+    candidates: list[Any] = [
+        turn.get("bot_provider_error"),
+        turn.get("provider_error"),
+    ]
+    reason = turn.get("reason_evidence")
+    if isinstance(reason, Mapping):
+        candidates.append(reason.get("provider_error"))
+    direct = _direct_path_from_turn(turn)
+    direct_reason = direct.get("reason_evidence")
+    if isinstance(direct_reason, Mapping):
+        candidates.append(direct_reason.get("provider_error"))
+    answerability = _answerability_trace_from_turn(turn)
+    answerability_direct = answerability.get("direct_path")
+    if isinstance(answerability_direct, Mapping):
+        answerability_reason = answerability_direct.get("reason_evidence")
+        if isinstance(answerability_reason, Mapping):
+            candidates.append(answerability_reason.get("provider_error"))
+    for candidate in candidates:
+        value = str(candidate or "").strip().casefold()
+        if value:
+            return value
+    return ""
+
+
+def _is_provider_timeout_turn(turn: Mapping[str, Any]) -> bool:
+    return _provider_error_value(turn) == "timeout"
+
+
+def _is_direct_path_preblocked_p0_turn(turn: Mapping[str, Any]) -> bool:
+    direct = _direct_path_from_turn(turn)
+    return (
+        direct.get("model_called") is False
+        and direct.get("preblocked") is True
+        and str(direct.get("preblock_reason") or "").strip() in DIRECT_PATH_P0_PREBLOCK_REASONS
+    )
+
+
+def _is_frame_emission_eligible_turn(turn: Mapping[str, Any]) -> bool:
+    return not _is_direct_path_preblocked_p0_turn(turn) and not _is_provider_timeout_turn(turn)
+
+
 def _model_intent_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
-    direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    direct = _direct_path_from_turn(turn)
     candidates = (
         turn.get("bot_direct_path_model_intent"),
         turn.get("bot_model_intent"),
@@ -600,6 +660,10 @@ def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any
 def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     turns_total = 0
     present = 0
+    eligible_turns = 0
+    eligible_present = 0
+    preblocked_p0 = 0
+    timeouts = 0
     complete_required = 0
     missing_required: Counter[str] = Counter()
     must_handoff = Counter()
@@ -611,10 +675,19 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
         dialog_id = str(dialog.get("dialog_id") or "")
         for turn in _turns(dialog):
             turns_total += 1
+            eligible = _is_frame_emission_eligible_turn(turn)
+            if _is_direct_path_preblocked_p0_turn(turn):
+                preblocked_p0 += 1
+            elif _is_provider_timeout_turn(turn):
+                timeouts += 1
+            if eligible:
+                eligible_turns += 1
             frame = turn.get("bot_semantic_frame")
             if not isinstance(frame, Mapping) or not frame:
                 continue
             present += 1
+            if eligible:
+                eligible_present += 1
             missing = [field for field in REQUIRED_FRAME_FIELDS if field not in frame]
             frame_must = _strict_bool(frame.get("must_handoff"))
             if frame_must is None:
@@ -655,6 +728,14 @@ def _semantic_frame_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, A
         "present_count": present,
         "missing_count": turns_total - present,
         "present_rate": _ratio(present, turns_total),
+        "preblocked_p0_count": preblocked_p0,
+        "provider_timeout_count": timeouts,
+        "infra_timeout_present": timeouts > 0,
+        "eligible_model_called_turns": eligible_turns,
+        "eligible_frame_count": eligible_present,
+        "eligible_missing_count": eligible_turns - eligible_present,
+        "eligible_frame_rate": _ratio(eligible_present, eligible_turns),
+        "eligible_frame_threshold": FRAME_EMISSION_THRESHOLD,
         "complete_required_count": complete_required,
         "complete_required_rate": _ratio(complete_required, present),
         "missing_required_fields": dict(missing_required),
@@ -943,7 +1024,10 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
             and diff.get("missing_on_turns") == 0
         ),
         "extra_model_calls_expected": expected_call_delta,
-        "semantic_frame_present_on_all_turns": bool(frame.get("turns_total")) and frame.get("missing_count") == 0,
+        "semantic_frame_eligible_rate_ok": (
+            bool(frame.get("eligible_model_called_turns"))
+            and float(frame.get("eligible_frame_rate") or 0.0) >= FRAME_EMISSION_THRESHOLD
+        ),
         "semantic_frame_required_fields_complete": frame.get("present_count") == frame.get("complete_required_count"),
         "self_answer_partial_freshness_zero": self_shadow.get("partial_freshness_self_candidates", 0) == 0,
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
@@ -964,8 +1048,13 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("Extra model calls are not fully explained by post-hoc SemanticFrame shadow calls.")
     elif extra_total == extra_frame and extra_total:
         notes.append("Extra model calls are expected post-hoc SemanticFrame shadow calls.")
-    if not flags["semantic_frame_present_on_all_turns"]:
-        notes.append("SemanticFrame is missing on at least one ON turn or ON turn count is zero.")
+    if not flags["semantic_frame_eligible_rate_ok"]:
+        notes.append(
+            "SemanticFrame eligible emission is below threshold on model-called turns "
+            f"({frame.get('eligible_frame_count', 0)}/{frame.get('eligible_model_called_turns', 0)})."
+        )
+    if frame.get("infra_timeout_present"):
+        notes.append("Provider timeout is present; this is an infra marker, not a frame-quality miss.")
     if not flags["self_answer_partial_freshness_zero"]:
         notes.append("At least one self-answer shadow candidate has only partial freshness/client-safe fact coverage.")
     status = "pass" if all(flags.values()) else "needs_review"

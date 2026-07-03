@@ -49,6 +49,43 @@ def _dialog(*, text: str = "Менеджер проверит наличие м�
     return {"dialog_id": "d1", "brand": "foton", "turns": [turn]}
 
 
+def _preblocked_p0_turn() -> dict:
+    return {
+        "turn": 2,
+        "client_message": "Если места нет, возвращайте деньги.",
+        "bot_route": "manager_only",
+        "bot_text": "Позову менеджера.",
+        "bot_safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "direct_path_preblocked_p0",
+        ],
+        "bot_direct_path": {
+            "model_called": False,
+            "preblocked": True,
+            "preblock_reason": "p0_pre_gate",
+            "text_composition_source": "deterministic_preblock",
+        },
+    }
+
+
+def _timeout_turn() -> dict:
+    return {
+        "turn": 3,
+        "client_message": "Есть выездная школа для 9 класса?",
+        "bot_route": "manager_only",
+        "bot_text": "Позову менеджера.",
+        "bot_safety_flags": ["manager_approval_required", "no_auto_send"],
+        "bot_direct_path": {
+            "model_called": True,
+            "preblocked": False,
+            "preblock_reason": "",
+            "reason_evidence": {"provider_error": "timeout"},
+            "text_composition_source": "provider_runtime_fallback",
+        },
+    }
+
+
 def _summary(total_calls: int = 3, *, frame_calls: int = 0, **extra_calls: int) -> dict:
     calls = {"total": total_calls, "bot_semantic_frame_shadow": frame_calls}
     calls.update(extra_calls)
@@ -79,6 +116,29 @@ def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
     assert result["semantic_frame"]["present_count"] == 1
     assert result["semantic_frame"]["complete_required_count"] == 1
     assert result["frame_decision_shadow"]["turn_count"] == 1
+
+
+def test_report_frame_emission_excludes_p0_preblock_and_timeout_from_denominator(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    dialog["turns"].append(_preblocked_p0_turn())
+    dialog["turns"].append(_timeout_turn())
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    frame = result["semantic_frame"]
+    assert frame["turns_total"] == 3
+    assert frame["present_count"] == 1
+    assert frame["missing_count"] == 2
+    assert frame["preblocked_p0_count"] == 1
+    assert frame["provider_timeout_count"] == 1
+    assert frame["infra_timeout_present"] is True
+    assert frame["eligible_model_called_turns"] == 1
+    assert frame["eligible_frame_count"] == 1
+    assert frame["eligible_frame_rate"] == 1.0
+    assert result["acceptance"]["flags"]["semantic_frame_eligible_rate_ok"] is True
+    assert any("Provider timeout is present" in note for note in result["acceptance"]["notes"])
 
 
 def test_report_does_not_treat_manager_approval_flag_as_route_handoff(tmp_path: Path) -> None:

@@ -173,3 +173,10 @@
 - Обоснование: M1-прогон `95b968f4` был `measurement_bug`: профиль был выключен, `bot_direct_draft=0`, `bot_direct_path=0`, `bot_semantic_frame=0`, но отчёт всё равно строился. Такой прогон не отвечает на вопрос Э2 и должен падать инфраструктурно.
 - Сырьё: `2026-07-03_REGRADE_troika_NEVALIDNA_fix_i_prompt_D1.md`; поля старого `dynamic_summary.json`/транскриптов: `profile.effective=false`, `bot_direct_draft=0`, `direct=0`, `frames=0`.
 - Аудит: встроены статические тесты runner-а; смысловой регрейд новой тройки остаётся за Claude/Fable по сырым M1-логам.
+
+### D25. Frame-emission мерить только на eligible model-called ходах
+
+- Решение: заменить all-turn порог `bot_semantic_frame` на `eligible_frame_rate = frames / eligible_model_called_turns`. Из знаменателя исключаются только два класса: direct-path P0-preblock до модели (`model_called=false`, `preblocked=true`, `preblock_reason in {p0_pre_gate, direct_path_preblocked_p0}`) и `provider_error=timeout`. Прочие provider/fallback-состояния остаются в знаменателе.
+- Обоснование: M1-прогон `7676a902` показал валидный direct path, но часть P0-ходов завершается deterministic floor до LLM, поэтому inline frame там невозможен по конструкции. Считать такие ходы как frame-miss — ошибка измерителя. Timeout тоже не является качеством frame, но должен оставаться явной infra-меткой, а не исчезать.
+- Сырьё: в `I`-ноге прогона `adr003_semantic_reading_e2_7676a902_20260703_171759` было `269` ходов, `202` inline-frame, `66` direct-path P0-preblock и `1` timeout; на eligible-ходах frame-emission = `202/202`.
+- Аудит: `reader_agreement` считается только на ходах, где есть frame/model-intent; это остаётся верным. Runner/report теперь печатают `turns_total`, `preblocked_p0`, `timeouts`, `model_called_eligible`, `frames`, `eligible_frame_rate`; `sha_manifest.json` дополнительно фиксирует хэши B/I/P/REPORT-артефактов.

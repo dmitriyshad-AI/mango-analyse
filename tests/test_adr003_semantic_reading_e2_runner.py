@@ -34,6 +34,10 @@ def test_adr003_e2_runner_has_fail_fast_direct_path_and_frame_checks() -> None:
     assert "validate_direct_leg B" in text
     assert "validate_direct_leg I" in text
     assert "validate_inline_frame_leg I" in text
+    assert "eligible_frame_rate" in text
+    assert "preblocked_p0=" in text
+    assert "timeouts=" in text
+    assert "model_called_eligible=" in text
     assert "bot_direct_draft" in text
     assert "bot_direct_path" in text
     assert "bot_semantic_frame_shadow" in text
@@ -48,4 +52,24 @@ def test_adr003_e2_runner_exposes_dry_check_and_manifest() -> None:
     assert "--limit 2" in text
     assert "sha_manifest.json" in text
     assert "schema_version" in text
-    assert "adr003_semantic_reading_e2_triple_v2" in text
+    assert "adr003_semantic_reading_e2_triple_v3" in text
+    assert "B_transcripts" in text
+    assert "I_transcripts" in text
+    assert "P_transcripts" in text
+    assert "REPORT_json" in text
+
+
+def test_adr003_e2_runner_can_resume_only_p_and_report() -> None:
+    text = _runner_text()
+    resume_index = text.index("mode=resume-p-report")
+    full_run_index = text.index("== B: baseline")
+
+    assert "--resume-p-report" in text
+    assert "validate_direct_leg B" in text[resume_index:full_run_index]
+    assert "validate_direct_leg I" in text[resume_index:full_run_index]
+    assert "validate_inline_frame_leg I" in text[resume_index:full_run_index]
+    assert "run_p_and_report" in text[resume_index:full_run_index]
+    assert "Done resume-p-report" in text[resume_index:full_run_index]
+    assert "exit 0" in text[resume_index:full_run_index]
+    assert "Refusing to overwrite existing P/REPORT" in text
+    assert "--force" in text

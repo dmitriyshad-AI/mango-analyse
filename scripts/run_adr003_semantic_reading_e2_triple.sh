@@ -23,19 +23,16 @@ else
   OUT="${OUT:-runs/adr003_semantic_reading_e2_triple_${REV_LABEL}}"
 fi
 
-LIMIT_ARGS=()
-if [[ "$DRY_CHECK" == "1" ]]; then
-  LIMIT_ARGS=(--limit 2)
-fi
-
 COMMON=(
   --scenarios "$SCEN"
   --snapshot "$SNAPSHOT"
   --client-mode scripted
   --parallel 4
   --judge-prompt-version v9.1
-  "${LIMIT_ARGS[@]}"
 )
+if [[ "$DRY_CHECK" == "1" ]]; then
+  COMMON+=(--limit 2)
+fi
 
 clean_semantic_env=(
   env

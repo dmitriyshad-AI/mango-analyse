@@ -417,13 +417,16 @@ def _load_customer_extras(con: sqlite3.Connection, *, tenant_id: str, customer_i
         if isinstance(record, Mapping):
             item.update({key: record.get(key) for key in ("evidence_text", "recommended_action") if record.get(key)})
         signals.append(item)
+    family = _load_family_links(con, tenant_id=tenant_id, customer_id=customer_id)
     return {
         "purchases": purchases,
         "objections": objections,
         "signals": signals,
+        "family": family,
         "purchase_text": _format_purchases(purchases),
         "objections_text": _format_objections(objections),
         "signals_text": _format_signals(signals),
+        "family_text": _format_family(family),
         "purchase_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
         "purchase_fact_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "fact"),
         "purchase_plan_total_in": sum(float(row.get("total_in") or 0) for row in purchases if row.get("money_kind") == "plan"),
@@ -498,6 +501,8 @@ def _inject_e5_blocks(projection: Mapping[str, Any], extras: Mapping[str, Any]) 
         blocks.append("Возражения и бюджет:\n" + str(extras["objections_text"]))
     if extras.get("signals_text"):
         blocks.append("Сигналы:\n" + str(extras["signals_text"]))
+    if extras.get("family_text"):
+        blocks.append("Семья:\n" + str(extras["family_text"]))
     if not blocks:
         return
     current_history = str(contact_fields.get("История общения") or "")
@@ -514,6 +519,11 @@ def _inject_e5_blocks(projection: Mapping[str, Any], extras: Mapping[str, Any]) 
         current_warnings = str(deal_fields.get("Предупреждения") or "")
         deal_fields["Предупреждения"] = normalize_manager_multiline_text(
             "\n".join(part for part in (current_warnings, "Сигналы: " + str(extras["signals_text"])) if part)
+        )
+    if extras.get("family_text") and any(str(row.get("status") or "") != "confident" for row in extras.get("family", [])):
+        current_warnings = str(deal_fields.get("Предупреждения") or "")
+        deal_fields["Предупреждения"] = normalize_manager_multiline_text(
+            "\n".join(part for part in (current_warnings, "Семья: есть неоднозначность, уточнить ребёнка/сделку.") if part)
         )
 
 
@@ -642,6 +652,62 @@ def _format_signals(rows: Sequence[Mapping[str, Any]]) -> str:
         detail = "; ".join(part for part in (severity, evidence, action) if part)
         parts.append(f"{label}: {detail}" if detail else label)
     return "\n".join(f"- {part}" for part in parts if part)
+
+
+def _load_family_links(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[dict[str, Any]]:
+    if not _table_exists(con, "family_links_v1"):
+        return []
+    return [
+        dict(row)
+        for row in con.execute(
+            """
+            SELECT canonical_name, name_variants_json, grades_json, subjects_json, status, confidence, reason
+            FROM family_links_v1
+            WHERE tenant_id = ?
+              AND customer_id = ?
+              AND status != 'excluded'
+            ORDER BY
+              CASE status WHEN 'confident' THEN 0 WHEN 'needs_review' THEN 1 ELSE 2 END,
+              canonical_name
+            LIMIT 8
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+    ]
+
+
+def _format_family(rows: Sequence[Mapping[str, Any]]) -> str:
+    if not rows:
+        return ""
+    parts = []
+    for row in rows[:6]:
+        name = str(row.get("canonical_name") or "ребёнок").strip()
+        grades = _json_string_list(row.get("grades_json"))
+        subjects = _json_string_list(row.get("subjects_json"))
+        status = str(row.get("status") or "")
+        confidence = str(row.get("confidence") or "")
+        details = []
+        if grades:
+            details.append("класс: " + ", ".join(grades[:3]))
+        if subjects:
+            details.append("предметы: " + ", ".join(subjects[:4]))
+        if status == "confident" and confidence == "high":
+            label = f"{name}"
+        else:
+            label = f"{name} — уточнить привязку"
+            details.append(f"уверенность: {confidence or 'unknown'}")
+        suffix = "; ".join(details)
+        parts.append(f"- {label}" + (f" ({suffix})" if suffix else ""))
+    if any(str(row.get("status") or "") != "confident" for row in rows):
+        parts.append("- Есть неоднозначность по ребёнку: не использовать как факт без проверки менеджера.")
+    return "\n".join(parts)
+
+
+def _json_string_list(value: Any) -> list[str]:
+    parsed = _json_loads(value)
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
 
 
 def _write_package_files(

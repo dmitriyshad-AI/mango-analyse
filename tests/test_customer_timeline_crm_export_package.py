@@ -171,6 +171,98 @@ def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
     assert "masked_or_debug_placeholder" in blockers
 
 
+def test_crm_export_package_adds_family_block_with_ambiguity_warning(tmp_path: Path) -> None:
+    db_path = _seed_db(tmp_path)
+    out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"
+    with sqlite3.connect(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE family_links_v1 (
+              tenant_id TEXT NOT NULL,
+              family_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              child_key TEXT NOT NULL,
+              canonical_name TEXT NOT NULL,
+              name_variants_json TEXT NOT NULL,
+              grades_json TEXT NOT NULL,
+              subjects_json TEXT NOT NULL,
+              brand TEXT NOT NULL,
+              status TEXT NOT NULL,
+              confidence TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              source_refs_json TEXT NOT NULL,
+              evidence_count INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, child_key)
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO family_links_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "foton",
+                "family:1",
+                "customer:e5",
+                "child:1",
+                "Аня",
+                json.dumps(["Аня"], ensure_ascii=False),
+                json.dumps(["8"], ensure_ascii=False),
+                json.dumps(["математика"], ensure_ascii=False),
+                "foton",
+                "confident",
+                "high",
+                "single_child_family",
+                "[]",
+                2,
+                NOW.isoformat(),
+                "hash1",
+                "{}",
+            ),
+        )
+        con.execute(
+            "INSERT INTO family_links_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "foton",
+                "family:1",
+                "customer:e5",
+                "child:2",
+                "Миша",
+                json.dumps(["Миша"], ensure_ascii=False),
+                json.dumps([], ensure_ascii=False),
+                json.dumps([], ensure_ascii=False),
+                "unknown",
+                "needs_review",
+                "medium",
+                "multiple_child_candidates",
+                "[]",
+                1,
+                NOW.isoformat(),
+                "hash2",
+                "{}",
+            ),
+        )
+        con.commit()
+
+    build_crm_export_package(
+        CrmExportPackageConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=out_dir,
+            pilot_size=1,
+        )
+    )
+    row = json.loads((out_dir / "pilot_20_crm_card_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    history = row["contact_payload"]["Авто история общения"]
+    warnings = row["Предупреждения"]
+    assert "Семья:" in history
+    assert "Аня (класс: 8; предметы: математика)" in history
+    assert "Миша — уточнить привязку" in history
+    assert "Семья: есть неоднозначность" in warnings
+
+
 def test_crm_export_package_filters_non_client_objections(tmp_path: Path) -> None:
     db_path = _seed_db(tmp_path)
     out_dir = tmp_path / ".codex_local" / "staging" / "e5_crm_export"

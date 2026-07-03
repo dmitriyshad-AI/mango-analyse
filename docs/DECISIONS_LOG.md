@@ -513,3 +513,31 @@ Auto-resolver остаётся выключенным, а непривязанн
 `555a9647f81d786d4d0e76a5136e55fca5fada29`; тег
 `archive/wappi-history-555a964` указывает на тот же SHA. Remote-ветки и тег не
 трогались.
+
+### D-035. Marathon 2 Block 3: семейная карта только как cautious manager-only слой
+
+Решение: семейная карта строится на staging детерминированно, без LLM и без
+записи в prod/CRM. `confidence=high` выдаётся только при clean identity и одном
+валидном ребёнке; shared-phone, ambiguous identity, несколько кандидатов,
+инициалы, parent-like и служебные имена уходят в `needs_review`/`ambiguous` или
+`excluded`.
+
+Почему так: текущий `tallanto_student_snapshot` не содержит надёжных имён
+учеников, а историческая `customer_profiles.sqlite` полезна только как слабый
+источник. Ошибка “не того ребёнка” опаснее, чем отсутствие автоматической
+привязки, поэтому блок fail-closed.
+
+Проверка на staging:
+
+- `family_links_total=8408`, `confident/high=3786`, `needs_review=3339`,
+  `ambiguous=1210`, `excluded=73`;
+- `event_child_attribution_v1=74236`, `opportunity_child_attribution_v1=16843`;
+- `false_high_to_shared_phone=0`;
+- `false_high_to_ambiguous_identity=0`;
+- `false_high_to_multiple_high_children=0`;
+- `false_high_to_obvious_suspicious_name=0`;
+- repeat-apply идемпотентен, `quick_check=ok`, `llm_calls_total=0`.
+
+CRM: в manager-only export package добавлен блок `Семья:`. Неуверенные связи
+формулируются как “уточнить привязку”, а в сделку добавляется предупреждение о
+семейной неоднозначности. Bot-visible память не открывалась.

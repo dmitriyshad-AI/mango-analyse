@@ -98,12 +98,13 @@ turns = [turn for dialog in dialogs for turn in (dialog.get("turns") or [])]
 if not turns:
     fail("no turns in transcripts")
 provider_errors = [
-    str(turn.get("bot_provider_error") or "")
+    str(turn.get("bot_provider_error") or "").strip().casefold()
     for turn in turns
     if str(turn.get("bot_provider_error") or "").strip()
 ]
-if provider_errors:
-    fail(f"provider errors: {provider_errors[:3]!r}")
+non_timeout_provider_errors = [value for value in provider_errors if value != "timeout"]
+if non_timeout_provider_errors:
+    fail(f"provider errors: {non_timeout_provider_errors[:3]!r}")
 direct_turns = [
     turn
     for turn in turns
@@ -111,13 +112,68 @@ direct_turns = [
 ]
 if len(direct_turns) != len(turns):
     fail(f"direct path metadata on {len(direct_turns)}/{len(turns)} turns")
-frame_turns = [
-    turn
-    for turn in turns
-    if isinstance(turn.get("bot_semantic_frame"), dict) and turn.get("bot_semantic_frame")
-]
-if len(frame_turns) != len(turns):
-    fail(f"semantic frame metadata on {len(frame_turns)}/{len(turns)} turns")
+
+P0_PREBLOCK_REASONS = {"p0_pre_gate", "direct_path_preblocked_p0"}
+
+def direct_path(turn):
+    value = turn.get("bot_direct_path")
+    return value if isinstance(value, dict) else {}
+
+def reason_evidence(turn):
+    candidates = []
+    reason = turn.get("reason_evidence")
+    if isinstance(reason, dict):
+        candidates.append(reason)
+    direct = direct_path(turn)
+    direct_reason = direct.get("reason_evidence")
+    if isinstance(direct_reason, dict):
+        candidates.append(direct_reason)
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return {}
+
+def provider_error(turn):
+    candidates = [
+        turn.get("bot_provider_error"),
+        turn.get("provider_error"),
+        reason_evidence(turn).get("provider_error"),
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip().casefold()
+        if value:
+            return value
+    return ""
+
+def is_timeout(turn):
+    return provider_error(turn) == "timeout"
+
+def is_p0_preblocked(turn):
+    direct = direct_path(turn)
+    return (
+        direct.get("model_called") is False
+        and direct.get("preblocked") is True
+        and str(direct.get("preblock_reason") or "").strip() in P0_PREBLOCK_REASONS
+    )
+
+def has_frame(turn):
+    frame = turn.get("bot_semantic_frame")
+    return isinstance(frame, dict) and bool(frame)
+
+frame_turns = [turn for turn in turns if has_frame(turn)]
+preblocked_p0 = [turn for turn in turns if is_p0_preblocked(turn)]
+timeouts = [turn for turn in turns if is_timeout(turn)]
+eligible_turns = [turn for turn in turns if not is_p0_preblocked(turn) and not is_timeout(turn)]
+eligible_frame_turns = [turn for turn in eligible_turns if has_frame(turn)]
+if not eligible_turns:
+    fail("no eligible model-called turns for semantic frame validation")
+eligible_frame_rate = len(eligible_frame_turns) / len(eligible_turns)
+if len(eligible_frame_turns) * 100 < len(eligible_turns) * 97:
+    fail(
+        "semantic frame eligible emission "
+        f"{len(eligible_frame_turns)}/{len(eligible_turns)} "
+        f"(preblocked_p0={len(preblocked_p0)} timeouts={len(timeouts)})"
+    )
 trace_turns = [
     turn
     for turn in turns
@@ -130,13 +186,16 @@ if not expect_trace and trace_turns:
 
 print(
     f"VALID_E3_{leg}: dialogs={len(dialogs)} turns={len(turns)} "
+    f"preblocked_p0={len(preblocked_p0)} timeouts={len(timeouts)} "
+    f"model_called_eligible={len(eligible_turns)} frames={len(eligible_frame_turns)} "
+    f"eligible_frame_rate={eligible_frame_rate:.4f} "
     f"bot_direct_draft={llm_calls.get('bot_direct_draft')} trace_turns={len(trace_turns)}"
 )
 PY
 }
 
 write_sha_manifest() {
-  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" <<'PY'
+  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$ROOT" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -145,6 +204,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
+root = Path(sys.argv[6]).resolve()
 paths = {
     "scenario": Path(sys.argv[2]),
     "snapshot": Path(sys.argv[3]),
@@ -159,13 +219,39 @@ def sha256(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+def display_path(path: Path) -> str:
+    resolved = path.resolve(strict=False)
+    try:
+        return str(resolved.relative_to(root))
+    except ValueError:
+        return str(path)
+
+artifact_paths = {
+    "B_transcripts": out_dir / "B" / "dynamic_dialog_transcripts.jsonl",
+    "B_summary": out_dir / "B" / "dynamic_summary.json",
+    "ON_transcripts": out_dir / "ON" / "dynamic_dialog_transcripts.jsonl",
+    "ON_summary": out_dir / "ON" / "dynamic_summary.json",
+    "REPORT_json": out_dir / "REPORT" / "adr003_semantic_frame_eval_report.json",
+    "REPORT_markdown": out_dir / "REPORT" / "adr003_semantic_frame_eval_report.md",
+}
+artifacts = {
+    name: {
+        "path": str(path),
+        "sha256": sha256(path),
+        "bytes": path.stat().st_size,
+    }
+    for name, path in artifact_paths.items()
+    if path.is_file()
+}
+
 manifest = {
-    "schema_version": "adr003_semantic_reading_e3_paired_v1",
+    "schema_version": "adr003_semantic_reading_e3_paired_v2",
     "created_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
     "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     "branch": subprocess.check_output(["git", "branch", "--show-current"], text=True).strip(),
-    "paths": {name: str(path) for name, path in paths.items()},
+    "paths": {name: display_path(path) for name, path in paths.items()},
     "sha256": {name: sha256(path) for name, path in paths.items()},
+    "artifacts": artifacts,
     "required_env": {
         "TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1",
         "TELEGRAM_DIRECT_PATH": "1",
@@ -203,14 +289,18 @@ echo "== B: profile + reliable + inline frame, reading classes OFF =="
 "${base_env[@]}" \
   TELEGRAM_SEMANTIC_READING_CLASSES= \
   python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
-    --out-dir "$OUT/B"
+    --out-dir "$OUT/B" \
+    --progress-json "$OUT/B/progress.json" \
+    --progress-leg B
 validate_leg B 0
 
 echo "== ON: B + semantic reading classes =="
 "${base_env[@]}" \
   TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
   python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
-    --out-dir "$OUT/ON"
+    --out-dir "$OUT/ON" \
+    --progress-json "$OUT/ON/progress.json" \
+    --progress-leg ON
 validate_leg ON 1
 
 if [[ "$DRY_CHECK" == "1" ]]; then

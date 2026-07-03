@@ -699,6 +699,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Enable optional answer-quality LLM rewrite layer for bot answers in this run only.",
     )
+    parser.add_argument(
+        "--progress-json",
+        type=Path,
+        default=None,
+        help="Write atomic progress JSON after completed dialogs; intended for long M1 runs.",
+    )
+    parser.add_argument(
+        "--progress-leg",
+        default="",
+        help="Human-readable leg label stored in --progress-json.",
+    )
     args = parser.parse_args(argv)
     llm_call_counter = LlmCallCounter()
     setattr(args, "llm_call_counter", llm_call_counter)
@@ -911,6 +922,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     llm_calls=llm_call_counter.snapshot(),
                     judge_prompt_version=args.judge_prompt_version,
                     replay_source_run=replay_source_run,
+                    progress_path=args.progress_json,
+                    progress_leg=args.progress_leg,
+                    progress_total=len(personas),
+                    progress_last_dialog_id=dialog_id,
                 )
                 print(
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
@@ -979,6 +994,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         llm_calls=llm_call_counter.snapshot(),
                         judge_prompt_version=args.judge_prompt_version,
                         replay_source_run=replay_source_run,
+                        progress_path=args.progress_json,
+                        progress_leg=args.progress_leg,
+                        progress_total=len(personas),
+                        progress_last_dialog_id=dialog_id,
                     )
                     print(
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
@@ -1008,6 +1027,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         llm_calls=llm_call_counter.snapshot(),
         judge_prompt_version=args.judge_prompt_version,
         replay_source_run=str(args.replay_from or ""),
+        progress_path=args.progress_json,
+        progress_leg=args.progress_leg,
+        progress_total=len(personas),
+        progress_last_dialog_id="",
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -1032,6 +1055,10 @@ def write_dynamic_outputs(
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
     replay_source_run: str = "",
+    progress_path: Path | None = None,
+    progress_leg: str = "",
+    progress_total: int = 0,
+    progress_last_dialog_id: str = "",
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -1055,7 +1082,44 @@ def write_dynamic_outputs(
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
+    if progress_path is not None:
+        write_progress_json(
+            progress_path,
+            leg=progress_leg,
+            summary=summary,
+            total=progress_total,
+            last_dialog_id=progress_last_dialog_id,
+        )
     return summary
+
+
+def write_progress_json(
+    path: Path,
+    *,
+    leg: str,
+    summary: Mapping[str, Any],
+    total: int,
+    last_dialog_id: str = "",
+) -> None:
+    totals = summary.get("totals") if isinstance(summary.get("totals"), Mapping) else {}
+    hard_gate_ids = summary.get("hard_gate_failure_dialogs")
+    if not isinstance(hard_gate_ids, list):
+        hard_gate_ids = []
+    payload = {
+        "leg": str(leg or path.parent.name),
+        "done_dialogs": int(totals.get("dialogs") or 0),
+        "total": int(total or 0),
+        "pass": int(totals.get("pass") or 0),
+        "pass_with_notes": int(totals.get("pass_with_notes") or 0),
+        "fail": int(totals.get("fail") or 0),
+        "hard_gate_dialog_ids": [str(item) for item in hard_gate_ids if str(item or "").strip()],
+        "last_dialog_id": str(last_dialog_id or ""),
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def load_dynamic_sim_input(path: Path) -> DynamicSimInput:

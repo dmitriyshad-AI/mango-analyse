@@ -503,6 +503,7 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
 def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[str, ChildGroup]:
     keys = sorted(groups)
     parents = {key: key for key in keys}
+    ambiguous_bridges = _ambiguous_patronymic_bridge_keys(groups)
 
     def find(key: str) -> str:
         while parents[key] != key:
@@ -521,6 +522,8 @@ def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[st
 
     for left_index, left_key in enumerate(keys):
         for right_key in keys[left_index + 1 :]:
+            if left_key in ambiguous_bridges or right_key in ambiguous_bridges:
+                continue
             if _child_groups_have_matching_full_names(groups[left_key], groups[right_key]):
                 union(left_key, right_key)
 
@@ -547,11 +550,59 @@ def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[st
 
     result: dict[str, ChildGroup] = {}
     for group in merged.values():
+        if group.name_key in ambiguous_bridges:
+            group.suspicious_reasons.add("ambiguous_patronymic_bridge")
         group.name_key = _name_key(group.canonical_name) or group.name_key
         while group.name_key in result:
             group.name_key = f"{group.name_key}_dup"
         result[group.name_key] = group
     return result
+
+
+def _ambiguous_patronymic_bridge_keys(groups: Mapping[str, ChildGroup]) -> set[str]:
+    result: set[str] = set()
+    for key, group in groups.items():
+        bridge_options = _group_patronymic_bridge_options(group)
+        if not bridge_options:
+            continue
+        leftover_candidates: list[frozenset[str]] = []
+        for other_key, other in groups.items():
+            if other_key == key:
+                continue
+            for name in other.names:
+                options = _name_token_options(name)
+                if len(options) < 3 or not _token_options_subset_match(bridge_options, options, min_matches=2):
+                    continue
+                leftovers = [
+                    token_options
+                    for token_options in options
+                    if not any(_token_option_sets_match(token_options, bridge_token) for bridge_token in bridge_options)
+                ]
+                leftover_candidates.extend(leftovers[:1])
+        if len(leftover_candidates) < 2:
+            continue
+        if any(
+            not _token_option_sets_match(left, right)
+            for index, left in enumerate(leftover_candidates)
+            for right in leftover_candidates[index + 1 :]
+        ):
+            result.add(key)
+    return result
+
+
+def _group_patronymic_bridge_options(group: ChildGroup) -> list[frozenset[str]]:
+    candidates: list[list[frozenset[str]]] = []
+    for name in group.names:
+        options = _name_token_options(name)
+        if len(options) == 2 and _token_option_looks_like_patronymic(options[-1]):
+            candidates.append(options)
+    if len(candidates) != 1:
+        return []
+    return candidates[0]
+
+
+def _token_option_looks_like_patronymic(options: frozenset[str]) -> bool:
+    return any(token.endswith(("ич", "вич", "ович", "евич", "ична", "вна", "овна", "евна")) for token in options)
 
 
 def _absorb_child_group(target: ChildGroup, source: ChildGroup) -> None:
@@ -1090,10 +1141,13 @@ def _name_mentioned(normalized_text: str, name: Any) -> bool:
 
 
 def _name_key(value: str) -> str:
+    normalized_tokens = normalized_name_tokens(value)
+    if len(normalized_tokens) >= 2:
+        return "_".join(normalized_tokens)[:80]
     keys = _safe_name_keys(value)
     if len(keys) == 1:
         return next(iter(keys))
-    normalized = "_".join(normalized_name_tokens(value))
+    normalized = "_".join(normalized_tokens)
     if normalized:
         return normalized[:80]
     return ""

@@ -109,6 +109,48 @@ def test_family_graph_does_not_merge_different_children_with_similar_surname(tmp
     assert names == ["Кулаков Никита", "Кулакова Дарья"]
 
 
+def test_family_graph_does_not_merge_conflicting_full_names_through_patronymic_bridge(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:bridge", phone="+79000000009")
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:bridge", phone="+79000000009")
+    _insert_field(
+        profiles_db,
+        profile_id="customer:bridge",
+        field="child_name",
+        value="Иванов Даниил Сергеевич",
+        child_key="child_1",
+    )
+    _insert_field(
+        profiles_db,
+        profile_id="customer:bridge",
+        field="child_name",
+        value="Даниил Сергеевич",
+        child_key="child_2",
+    )
+    _insert_field(
+        profiles_db,
+        profile_id="customer:bridge",
+        field="child_name",
+        value="Петров Даниил Сергеевич",
+        child_key="child_3",
+    )
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, profiles_db=profiles_db, apply=True))
+
+    assert report["family_links_total"] == 3
+    assert report["family_confidence_counts"] == {"low": 1, "medium": 2}
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT canonical_name, status, confidence, record_json FROM family_links_v1 ORDER BY canonical_name"
+        ).fetchall()
+    by_name = {row[0]: row for row in rows}
+    assert by_name["Иванов Даниил Сергеевич"][1:3] == ("needs_review", "medium")
+    assert by_name["Петров Даниил Сергеевич"][1:3] == ("needs_review", "medium")
+    assert by_name["Даниил Сергеевич"][1:3] == ("excluded", "low")
+    assert "ambiguous_patronymic_bridge" in json.loads(by_name["Даниил Сергеевич"][3])["suspicious_reasons"]
+
+
 def test_family_graph_excludes_weak_one_off_child_candidate_on_identity_risk(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:partial", phone="+79000000007", identity_status="partial")

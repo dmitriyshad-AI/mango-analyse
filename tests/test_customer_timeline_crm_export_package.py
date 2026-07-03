@@ -61,6 +61,8 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     assert "план сделки 50 000" in row["contact_payload"]["Авто история общения"]
     assert "Возражения и бюджет" in row["contact_payload"]["Авто история общения"]
     assert "Сигналы" in row["contact_payload"]["Авто история общения"]
+    assert "Клиент активно отвечает" in row["contact_payload"]["Авто история общения"]
+    assert "hot_streak:" not in row["contact_payload"]["Авто история общения"]
     assert "Письмо: отправлено расписание" in row["contact_payload"]["Авто история общения"]
     assert row["CRM writeback policy"] == "live_update_ready"
     assert "crm_card_contact_payload_json" in csv_text

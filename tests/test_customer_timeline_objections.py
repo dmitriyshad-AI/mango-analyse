@@ -190,13 +190,283 @@ def test_backfill_customer_objections_removes_stale_rows_on_rebuild(tmp_path: Pa
         assert con.execute("SELECT count(*) FROM customer_objection_summary_v1").fetchone()[0] == 0
 
 
+def test_backfill_customer_objections_uses_only_email_head_not_summary_or_thread(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-1",
+                direction=TimelineDirection.INBOUND,
+                subject="Re: стоимость",
+                text_preview="Спасибо, получили.",
+                summary="Цепочка раньше содержала стоимость и скидку.",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": "Спасибо, получили.",
+                    "thread_context": "Менеджер написал: стоимость 120 000 руб., можно рассрочку.",
+                    "summary": "Прайс и скидка из старого письма.",
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
+def test_backfill_customer_objections_strips_quoted_price_tail(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-1",
+                direction=TimelineDirection.INBOUND,
+                subject="Re: курс",
+                text_preview="",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Здравствуйте, нам дорого, не потянем сейчас.\n\n"
+                        "В пн, 1 июн. 2026 г. в 12:00, менеджер написал(а):\n"
+                        "Стоимость обучения:\n120 000 руб.\nРассрочка доступна."
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 1
+    with sqlite3.connect(db) as con:
+        row = con.execute("SELECT quote_preview, budget_hint_rub FROM customer_objections_v1").fetchone()
+    assert "нам дорого" in row[0].casefold()
+    assert "120 000" not in row[0]
+    assert row[1] is None
+
+
+def test_backfill_customer_objections_skips_non_client_price_template_even_if_inbound(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-template",
+                direction=TimelineDirection.INBOUND,
+                subject="Вы записаны на курс",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Подготовительные курсы в 2026-2027 учебном году\n"
+                        "Здравствуйте! Вы записаны на Подготовительные курсы УНПК МФТИ.\n"
+                        "Стоимость обучения: 120 000 руб. Возможна оплата Долями."
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
+def test_backfill_customer_objections_skips_summer_school_offer_even_if_inbound(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-offer",
+                direction=TimelineDirection.INBOUND,
+                subject="Летняя Выездная школа 2026",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "*Добрый день!*\n"
+                        "Отправляем Вам информацию по Летним выездным школам.\n"
+                        "Стоимость смены 98 000 руб. При оплате до 1 апреля предоставляется скидка 10%.\n"
+                        "Акции «Приведи друга»."
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
+def test_backfill_customer_objections_skips_manager_reply_before_quote(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-manager-reply",
+                direction=TimelineDirection.INBOUND,
+                subject="Летняя школа",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Доброе утро! Лицевой счет не указываете, он только у бюджетных организаций.\n"
+                        "Оплата за летнюю выездную школу ФИО ученика.\n\n"
+                        "Родитель писал(а) 02.06.2026 19:46:\n"
+                        "> Как оплатить курс?"
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
+def test_backfill_customer_objections_skips_manager_followup_discount_deadline(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-followup",
+                direction=TimelineDirection.INBOUND,
+                subject="Re: Летняя Выездная школа",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Добрый день, не смогли до Вас дозвониться. "
+                        "Подскажите, пожалуйста, актуальна ли Ваша запись на смену? "
+                        "Скидка действует до 11 октября, далее будет дороже."
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
+def test_backfill_customer_objections_skips_external_service_spam(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW,
+                source_system="mail_archive_stage2",
+                source_id="mail-spam",
+                direction=TimelineDirection.INBOUND,
+                subject="По поводу пожарной безопасности",
+                summary="",
+                match_status="strong_unique",
+                record={
+                    "full_clean_text": (
+                        "Здравствуйте! Пишу чтобы предложить услуги по пожарной безопасности. "
+                        "Мои услуги стоят не дорого."
+                    )
+                },
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(db, allowed_root=tmp_path, apply=True, as_of=NOW)
+
+    assert result["objections"] == 0
+
+
 def test_backfill_customer_objections_uses_client_transcript_not_call_summary(tmp_path: Path) -> None:
     db = tmp_path / "timeline.sqlite"
     canonical_db = tmp_path / "canonical_calls_master.db"
     _seed_canonical_calls(
         canonical_db,
         [
-            (101, "Клиент: нам дорого, можем ли получить скидку?", "outbound"),
+            (
+                101,
+                "Клиент: нам дорого, можем ли получить скидку? Бюджет ограничен, но курс интересен. "
+                "Родитель подробно объяснил, что без посильной цены не сможет продолжить оформление.",
+                "outbound",
+            ),
             (202, "", "outbound"),
         ],
     )
@@ -221,6 +491,7 @@ def test_backfill_customer_objections_uses_client_transcript_not_call_summary(tm
                     direction="outbound",
                     summary=summary,
                     match_status="strong_unique",
+                    confidence=0.95,
                     record={},
                     created_at=NOW,
                 )
@@ -249,6 +520,57 @@ def test_backfill_customer_objections_uses_client_transcript_not_call_summary(tm
     assert row[2] == "high"
     assert "нам дорого" in row[3].casefold()
     assert "Слитая сводка" not in row[3]
+
+
+def test_backfill_customer_objections_differentiates_call_confidence(tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    canonical_db = tmp_path / "canonical_calls_master.db"
+    _seed_canonical_calls(
+        canonical_db,
+        [
+            (
+                101,
+                "Клиент: нам дорого, просим скидку. Готовы обсуждать курс, если цена будет посильной. "
+                "Родитель отдельно отметил ограничение бюджета и попросил не предлагать самый дорогой вариант.",
+                "outbound",
+            ),
+            (202, "Дорого.", "outbound"),
+        ],
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:1", identity_status=IdentityStatus.STRONG)
+        )
+        for source_id, confidence in (("101", 0.95), ("202", 0.55)):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:1",
+                    event_type="mango_call",
+                    event_at=NOW,
+                    source_system="mango_processed_summary",
+                    source_id=source_id,
+                    direction="outbound",
+                    summary="summary не используется",
+                    match_status="strong_unique",
+                    confidence=confidence,
+                    record={},
+                    created_at=NOW,
+                )
+            )
+    finally:
+        store.close()
+
+    result = backfill_customer_objections_v1(
+        db,
+        allowed_root=tmp_path,
+        canonical_calls_db_path=canonical_db,
+        apply=True,
+        as_of=NOW,
+    )
+
+    assert result["confidence_counts"] == {"high": 1, "low": 1}
 
 
 def test_backfill_customer_objections_skips_outbound_email(tmp_path: Path) -> None:

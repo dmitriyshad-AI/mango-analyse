@@ -36,12 +36,106 @@ ADDRESS_RE = re.compile(
 )
 QUOTE_HEADER_RE = re.compile(
     r"^\s*(-{2,}\s*original message|-{2,}\s*пересылаемое|исходное сообщение|>+|on .+ wrote:|"
-    r".+ (написал|написала|wrote)\s*:|\d{1,2}\.\d{1,2}\.\d{2,4}.*(пишет|написал)|"
+    r"(?:в\s+)?(?:пн|вт|ср|чт|пт|сб|вс|понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)"
+    r".{0,120}(?:написал|написала|написал\(а\)|пишет|wrote)\s*:|"
+    r".{0,140}(?:написал|написала|написал\(а\)|wrote)\s*:|"
+    r"\d{1,2}[./]\d{1,2}[./]\d{2,4}.*(пишет|написал|написала|написал\(а\))|"
+    r"\d{1,2}\s+[а-яё]{3,}\.?\s+\d{2,4}.{0,120}(?:пишет|написал|написала|написал\(а\))|"
     r"от кого:|кому:|отправлено:|sent:|from:\s)",
     re.I,
 )
+INLINE_QUOTE_HEADER_RE = re.compile(
+    r"(?is)\b(?:пн|вт|ср|чт|пт|сб|вс|понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)"
+    r"\s*,?\s*\d{1,2}\s+[а-яё]{3,}\.?\s+\d{2,4}.{0,180}(?:учебный\s+центр|<[^>]+>|написал|написала|wrote)\s*:?.*$|"
+    r"\b\d{1,2}\s+[а-яё]{3,}\.?\s+\d{2,4}.{0,180}(?:учебный\s+центр|<[^>]+>|написал|написала|wrote)\s*:?.*$"
+)
 SIGNATURE_DIVIDER_RE = re.compile(r"^\s*--\s*$")
 FOOTER_HINT_RE = re.compile(r"(с уважением|best regards|данное сообщение.*конфиденц|отписаться|unsubscribe|©)", re.I)
+PRICE_BLOCK_HEADER_RE = re.compile(
+    r"^\s*(?:стоимость(?:\s+(?:обучения|курса|занятий))?|условия\s+оплаты|порядок\s+оплаты|"
+    r"варианты\s+оплаты|оплата\s+обучения|предоплата|полная\s+стоимость|рассрочка|долями)\s*[:：]?\s*$",
+    re.I,
+)
+NON_CLIENT_EMAIL_TEMPLATE_RE = re.compile(
+    r"(?is)^\s*(?:```|\[\d+\])?\s*[*_]*\s*(?:"
+    r"-{5,}.{0,500}(?:вы\s+записаны|ниже\s+вы\s+можете|стоимость\s+обучения)|"
+    r"(?:летн(?:яя|ие)\s+выездн(?:ая|ые)\s+школ(?:а|ы)|зимн(?:яя|ие)\s+выездн(?:ая|ые)\s+школ(?:а|ы))"
+    r".{0,900}(?:вы\s+записаны|отправляем\s+вам\s+информацию|стоимость|при\s+оплате|акции)|"
+    r"подготовительные\s+(?:(?:очные|онлайн)\s+)?(?:онлайн-)?курсы.{0,500}(?:вы\s+(?:записаны|интересовались)|предлагаем\s+вам\s+записаться|"
+    r"ниже\s+вы\s+можете\s+ознакомиться|стоимость\s+обучения|условия\s+оплаты)|"
+    r"\*?подготовительные\s+(?:(?:очные|онлайн)\s+)?(?:онлайн-)?курсы.{0,500}(?:квитанция|оферт|стоимость|ждем\s+вас)|"
+    r"добрый\s+день!.{0,500}(?:вы\s+записаны|ниже\s+направляем\s+основную\s+информацию|условия\s+оплаты)|"
+    r"добрый\s+день!.{0,500}(?:отправляем\s+вам\s+информацию|информация\s+об\s+индивидуальных\s+занятиях|"
+    r"ниже\s+вы\s+можете\s+ознакомиться|вы\s+записаны\s+в\s+список\s+желающих)|"
+    r"здравствуйте!.{0,500}(?:вы\s+записаны|ниже\s+вы\s+можете\s+ознакомиться|стоимость\s+обучения|условия\s+оплаты)|"
+    r"здравствуйте,?\s+у\s+нас\s+открыта\s+предзапись.{0,900}(?:дополнительная\s+скидка|при\s+оплате|стоимости)|"
+    r"учебный\s+центр.{0,500}(?:отправляем\s+вам\s+информацию|стоимость|скидк)|"
+    r"отправляем\s+вам\s+информацию\s+по\s+(?:летним|зимним)\s+выездным\s+школам|"
+    r"вы\s+записаны\s+в\s+список\s+желающих\s+обучаться|"
+    r"информация\s+об\s+индивидуальных\s+занятиях\s+с\s+нашими\s+преподавателями|"
+    r"доброе\s+утро!.{0,300}лицевой\s+счет\s+не\s+указываете|"
+    r"физмат\s+направление.{0,900}(?:ai-репетитор|егэ|олимпиад)|"
+    r"для\s+вас\s+открыт\s+пробный\s+доступ|"
+    r"онлайн-летн(?:яя|ей)\s+школ(?:а|ы).{0,500}(?:ваша\s+запись|условия\s+оплаты|формат\s*:\s*онлайн)"
+    r")"
+)
+EMBEDDED_OUTBOUND_TEMPLATE_RE = re.compile(
+    r"(?im)^\s*(?:```|\[\d+\])?\s*(?:"
+    r"подготовительные\s+(?:(?:очные|онлайн)\s+)?(?:онлайн-)?курсы\b|"
+    r"\*?подготовительные\s+(?:(?:очные|онлайн)\s+)?(?:онлайн-)?курсы\b|"
+    r"добрый\s+день!\s+спасибо\.?\s+получено\.?\s+стоимость\b|"
+    r"учебный\s+центр\b|"
+    r"стоимость\s+смены\b|"
+    r"онлайн-летн(?:яя|ей)\s+школ(?:а|ы)\b"
+    r")"
+)
+NON_CLIENT_PHRASE_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("отправляем вам информацию",),
+    ("вы записаны в список желающих",),
+    ("вы записаны", "стоимость"),
+    ("не смогли до вас дозвониться",),
+    ("актуальна ли ваша запись",),
+    ("скидка действует до", "далее будет дороже"),
+    ("действует акция", "стоимость составляет"),
+    ("лицевой счет не указываете",),
+    ("лицевой счет только для бюджетных организаций",),
+    ("дорогой родитель", "телеграмм-канал"),
+    ("физмат направление",),
+    ("не заполнили анкету", "потребуется ли трансфер"),
+    ("будете оплачивать из личных средств", "рассрочку"),
+    ("прислали вам информацию", "напоминаем"),
+    ("предлагаем услуги",),
+    ("рекламных интеграций",),
+    ("сотрудничество в сфере недвижимости",),
+    ("цифровой рубль",),
+    ("мои услуги стоят",),
+    ("информация об индивидуальных занятиях",),
+)
+OUTBOUND_PRICE_OFFER_RE = re.compile(
+    r"(?is)\b(?:"
+    r"стоимость\s+(?:за|обучения|курса|составляет|смены)|"
+    r"общая\s+стоимость|полная\s+стоимость|"
+    r"квитанц(?:ия|ию)|оферт\w*|производя\s+оплату|"
+    r"при\s+оплате.{0,80}скидк|"
+    r"скидк\w+\s+(?:действует|составляет|предоставляется)|"
+    r"можем\s+предложить\s+оформить\s+рассроч|"
+    r"отправляем\s+вам\s+информацию|ниже\s+направляем|ниже\s+вы\s+можете|"
+    r"вы\s+записаны|ждем\s+вас\s+на\s+наших\s+курсах|"
+    r"пришлите\s+подтверждение\s+оплаты\s+ответным\s+письмом"
+    r")"
+)
+CLIENT_PRICE_INTENT_RE = re.compile(
+    r"(?is)\b(?:"
+    r"дорого|не\s+потян|за\s+такие\s+деньги|бюджет|"
+    r"сколько\s+стоит|какая\s+(?:цена|стоимость)|какая\s+стоимость\s+будет|"
+    r"(?:подскажите|скажите|уточните|интересует|можно\s+ли|можем\s+ли|получить|предусматривается)"
+    r".{0,120}(?:скидк|рассроч|долями|снижени\w+\s+цен|стоимост|цен[ауые])|"
+    r"есть\s+ли.{0,80}(?:у\s+вас|для\s+нас|для\s+многодетн|скидк)|"
+    r"как\s+(?:мне|нам|преподавателю|сотруднику|получить).{0,120}скидк|"
+    r"скиньте\s+пожалуйста.{0,80}стоимост|"
+    r"если\s+(?:цена|стоимость).{0,80}(?:посильн|ниже|уменьш)"
+    r")"
+)
 PERSON_LABEL_RE = re.compile(
     r"\b(?P<label>меня зовут|это|мама|папа|родитель|ученик|ученица|реб[её]нок)\s+"
     r"(?P<name>[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})",
@@ -165,6 +259,11 @@ def backfill_customer_objections_v1(
         rows = []
         for source in source_texts:
             for extraction in extract_objections_from_text(source.text):
+                if source.source_kind == "email_inbound" and not _email_objection_allowed(source.text, extraction):
+                    metrics["email_objections_skipped_non_client_price"] = (
+                        int(metrics.get("email_objections_skipped_non_client_price") or 0) + 1
+                    )
+                    continue
                 rows.append(
                     {
                         "tenant_id": str(source.event["tenant_id"]),
@@ -288,6 +387,7 @@ def _load_objection_candidate_events(con: sqlite3.Connection, *, tenant_id: str)
             f"""
             SELECT tenant_id, customer_id, event_id, event_type, source_system, event_at,
                    source_id, direction, subject, text_preview, summary, record_json
+                   , confidence
             FROM timeline_events
             WHERE tenant_id = ?
               AND customer_id IS NOT NULL
@@ -314,6 +414,17 @@ def _event_text(row: sqlite3.Row) -> str:
     return "\n".join(str(value) for value in values if value)
 
 
+def _email_head_text(row: sqlite3.Row) -> str:
+    record = _safe_json_object(row["record_json"]).get("record") or {}
+    source = str(record.get("full_clean_text") or "").strip()
+    if not source:
+        source = str(row["text_preview"] or "").strip()
+    head = _strip_embedded_outbound_template(_strip_quoted_email_tail(source))
+    if _looks_like_non_client_email_head(head):
+        return ""
+    return head
+
+
 def _objection_source_texts(
     events: Sequence[sqlite3.Row],
     *,
@@ -329,7 +440,7 @@ def _objection_source_texts(
             if direction != "inbound":
                 metrics["email_events_skipped_non_client"] += 1
                 continue
-            text = _strip_quoted_email_tail(_event_text(event))
+            text = _email_head_text(event)
             if text.strip():
                 metrics["email_events_client_source"] += 1
                 sources.append(
@@ -360,7 +471,7 @@ def _objection_source_texts(
                     text=canonical.transcript_client,
                     speaker="client",
                     direction=direction or canonical.direction or "unknown",
-                    confidence="high",
+                    confidence=_call_source_confidence(event, canonical),
                     source_kind="call_transcript_client",
                 )
             )
@@ -407,11 +518,65 @@ def _strip_quoted_email_tail(text: str) -> str:
             continue
         if stripped.startswith(">"):
             continue
+        if PRICE_BLOCK_HEADER_RE.match(stripped) and len("\n".join(lines)) > 80:
+            in_context = True
+            continue
         if FOOTER_HINT_RE.search(stripped) and len("\n".join(lines)) > 120:
             in_context = True
             continue
         lines.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return INLINE_QUOTE_HEADER_RE.sub("", cleaned).strip()
+
+
+def _looks_like_non_client_email_head(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return False
+    head = normalized[:2000].casefold()
+    if NON_CLIENT_EMAIL_TEMPLATE_RE.search(head[:1200]):
+        return True
+    return any(all(phrase in head for phrase in group) for group in NON_CLIENT_PHRASE_GROUPS)
+
+
+def _strip_embedded_outbound_template(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    match = EMBEDDED_OUTBOUND_TEMPLATE_RE.search(value)
+    if match and match.start() == 0:
+        return ""
+    if match and match.start() > 0:
+        return value[:match.start()].strip()
+    return value
+
+
+def _email_objection_allowed(text: str, extraction: ObjectionExtraction) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if _looks_like_non_client_email_head(normalized):
+        return False
+    if extraction.objection_type != "price":
+        return True
+    client_intent = CLIENT_PRICE_INTENT_RE.search(normalized)
+    outbound_offer = OUTBOUND_PRICE_OFFER_RE.search(normalized)
+    if outbound_offer and (client_intent is None or outbound_offer.start() < client_intent.start()):
+        return False
+    if client_intent:
+        return True
+    return False
+
+
+def _call_source_confidence(event: sqlite3.Row, canonical: CanonicalCallText) -> str:
+    try:
+        event_confidence = float(event["confidence"] or 0)
+    except (KeyError, TypeError, ValueError):
+        event_confidence = 0.0
+    transcript_len = len(str(canonical.transcript_client or "").strip())
+    if event_confidence >= 0.9 and transcript_len >= 120:
+        return "high"
+    if event_confidence >= 0.75 and transcript_len >= 60:
+        return "medium"
+    return "low"
 
 
 def _source_channel(row: sqlite3.Row) -> str:
@@ -563,10 +728,24 @@ def _quote_preview(text: str, marker: str) -> str:
     cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
     index = cleaned.casefold().find(marker)
     if index < 0:
-        return cleaned[:120]
+        return _trim_preview_to_word_boundary(cleaned[:120])
     start = max(0, index - 45)
-    end = min(len(cleaned), index + 75)
-    return cleaned[start:end].strip()
+    if start > 0 and not cleaned[start - 1].isspace():
+        next_space = cleaned.find(" ", start)
+        if next_space != -1 and next_space < index:
+            start = next_space + 1
+    return _trim_preview_to_word_boundary(cleaned[start : start + 120])
+
+
+def _trim_preview_to_word_boundary(text: str) -> str:
+    preview = str(text or "").strip()
+    if len(preview) <= 1:
+        return preview
+    if len(preview) >= 120 and not preview[-1].isspace():
+        last_space = preview.rfind(" ")
+        if last_space >= 80:
+            preview = preview[:last_space]
+    return preview.strip()
 
 
 def _budget_hint_rub(text: str) -> int | None:

@@ -53,6 +53,22 @@ MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
     r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|сжато|текст\s+сжат[^\]]*)\]",
     re.I,
 )
+SIGNAL_LABELS_RU = {
+    "callback_due": "Нужно вернуться к клиенту",
+    "client_returned": "Клиент вернулся после паузы",
+    "deal_stalling": "Сделка зависла",
+    "hot_streak": "Клиент активно отвечает",
+    "season_return_candidate": "Похож на сезонное возвращение",
+    "paid_no_access": "Оплата есть, доступ надо проверить",
+    "hot_lead_silent_7d": "Горячий лид без касания",
+    "duplicate_contact": "Возможный дубль контакта",
+}
+SEVERITY_LABELS_RU = {
+    "critical": "критично",
+    "high": "важно",
+    "medium": "средне",
+    "low": "низко",
+}
 
 
 @dataclass(frozen=True)
@@ -619,11 +635,12 @@ def _format_signals(rows: Sequence[Mapping[str, Any]]) -> str:
     parts = []
     for row in rows[:6]:
         signal = str(row.get("signal_type") or "")
-        severity = str(row.get("severity") or "")
+        label = SIGNAL_LABELS_RU.get(signal, signal)
+        severity = SEVERITY_LABELS_RU.get(str(row.get("severity") or ""), str(row.get("severity") or ""))
         action = str(row.get("recommended_action") or "")
         evidence = str(row.get("evidence_text") or "")
         detail = "; ".join(part for part in (severity, evidence, action) if part)
-        parts.append(f"{signal}: {detail}" if detail else signal)
+        parts.append(f"{label}: {detail}" if detail else label)
     return "\n".join(f"- {part}" for part in parts if part)
 
 

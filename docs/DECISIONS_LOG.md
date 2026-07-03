@@ -541,3 +541,36 @@ Auto-resolver остаётся выключенным, а непривязанн
 CRM: в manager-only export package добавлен блок `Семья:`. Неуверенные связи
 формулируются как “уточнить привязку”, а в сделку добавляется предупреждение о
 семейной неоднозначности. Bot-visible память не открывалась.
+
+### D-036. Mango fresh calls increment: только существующие identity и manager-only chunks
+
+Решение: свежие Mango-звонки для марафона 2 портируются из тега
+`archive/mango-call-increment-35fc5dd` копированием сборщика, без ASR/Analyze и
+без merge старой ветки. Payload помечается как `existing_timeline_increment`;
+нормализатор в этом режиме не создаёт новых клиентов и identity links.
+`strong_unique` кладётся на существующий `customer_id`, `ambiguous/unmatched`
+остаётся без `customer_id` и получает `pending_attribution`.
+
+Почему так: звонок сам по себе не является авторитетной привязкой клиента.
+Старый инкремент уже был построен как безопасный append к существующему
+timeline, и в марафоне нельзя расширять identity-граф по одному телефону без
+отдельной семейной/брендовой проверки.
+
+Проверка на staging:
+
+- исходный staging уже содержал `72998` `mango_processed_summary/mango_call`
+  событий до `2026-06-25T13:35:43+00:00`;
+- read-only сборщик взял `1031` готовый RA-звонок из локальных пакетов
+  `2026-06-25T13:46:45+00:00` – `2026-07-01T15:03:25+00:00`;
+- identity: `strong_unique=345`, `ambiguous=52`, `unmatched=634`;
+- apply в staging создал `1031` events, `237` manager-only chunks,
+  `738` conflicts, `0` customers и `0` identity links;
+- bot-visible по звонкам остался закрыт: `allowed_for_bot=0`,
+  `requires_manager_review=1`;
+- `mango_processed_summary` добавлен в общий source-policy denylist для
+  защиты от случайного `allowed_for_bot=True` в будущих импортёрах;
+- повторный apply дал `duplicate=2006`, бизнес-counts не выросли,
+  `quick_check=ok`.
+
+Non-conversation звонки не получают summary/chunk/signal. Прод-БД, CRM,
+Tallanto, live-бот, ASR и Analyze не трогались.

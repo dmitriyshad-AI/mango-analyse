@@ -21,6 +21,7 @@ MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV = "CUSTOMER_TIMELINE_E4B_MAIL_STAGE
 MAIL_STAGE2_SOURCE_SYSTEM = "mail_archive_stage2"
 WAPPI_TELEGRAM_SOURCE_SYSTEM = "wappi_telegram"
 WAPPI_MAX_SOURCE_SYSTEM = "wappi_max"
+MANGO_PROCESSED_SOURCE_SYSTEM = "mango_processed_summary"
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
 
 BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
@@ -31,6 +32,7 @@ BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
         "telegram_history",
         WAPPI_TELEGRAM_SOURCE_SYSTEM,
         WAPPI_MAX_SOURCE_SYSTEM,
+        MANGO_PROCESSED_SOURCE_SYSTEM,
         "amo_events_created_at",
         "amo_leads_updated_at",
         "amo_contacts_updated_at",

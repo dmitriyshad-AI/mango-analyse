@@ -116,7 +116,7 @@ def _raw_chunk(customer: CustomerIdentity, event: TimelineEvent) -> BotContextCh
         summary="RAW_SECRET_SUMMARY",
         event_at=NOW,
         allowed_for_bot=False,
-        requires_manager_review=False,
+        requires_manager_review=True,
         created_at=NOW,
     )
 

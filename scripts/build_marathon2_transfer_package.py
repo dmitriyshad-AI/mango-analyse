@@ -450,7 +450,11 @@ def _sidecar_size(db_path: Path, suffix: str) -> int:
 def _read_git(args: list[str]) -> str:
     import subprocess
 
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+    try:
+        value = subprocess.check_output(["git", *args], cwd=ROOT, stderr=subprocess.DEVNULL, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return value or "unknown"
 
 
 def _json_dumps(value: Any) -> str:

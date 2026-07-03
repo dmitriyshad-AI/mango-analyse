@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,15 @@ def test_transfer_package_builds_local_swap_manifest(tmp_path: Path) -> None:
     assert manifest["crm_export"]["ready_rows"] == 1
     assert (out / "swap_apply_scenario.md").exists()
     assert (out / "rollback_plan.md").exists()
+
+
+def test_transfer_package_git_reader_falls_back_to_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_git(*args: object, **kwargs: object) -> str:
+        raise subprocess.CalledProcessError(128, ["git"])
+
+    monkeypatch.setattr(subprocess, "check_output", fail_git)
+
+    assert transfer._read_git(["branch", "--show-current"]) == "unknown"
 
 
 def test_transfer_package_rejects_crm_manifest_for_other_db(tmp_path: Path) -> None:

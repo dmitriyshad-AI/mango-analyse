@@ -654,6 +654,7 @@ def test_e2_semantic_reading_scenario_set_is_loadable_and_uses_soft_shadow_note(
 
     assert sim_input.simulator_spec
     assert sim_input.judge_spec
-    assert len(sim_input.personas) == 146
+    assert len(sim_input.personas) == 156
+    assert sum(1 for persona in sim_input.personas if persona.get("source_set") == "fix1b_negative_personas_20260703") == 10
     assert "shadow_changed_behavior" not in text
     assert "shadow_behavior_note" in text

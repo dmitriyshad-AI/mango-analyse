@@ -7145,16 +7145,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:iphone|айфон|андроид|android|биткоин|крипт\\w*|курс\\s+доллар|погод\\w*|рецепт\\w*|политик\\w*|новост\\w*)\\b",
-    "pattern_sha256": "e2fc09673408722c7182ad2bfc85a6b1f02ffe093794ae61d1d4b904a59f6994",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "OFF_TOPIC_INPUT_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "\\b(?:до|по)\\s+\\d{1,2}(?:[./-]\\d{1,2}(?:[./-]\\d{2,4})?|\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))",
     "pattern_sha256": "5facc89f168f01e1bd7815ea7c147cc792e61f0250bc5cdcbd5398fbed489ee1",
     "qualname": "<module>",
@@ -10411,14 +10401,6 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "<module>",
-    "symbol": "OFF_TOPIC_INPUT_RE",
-    "value_preview": "re.compile('\\\\b(?:iphone|айфон|андроид|android|биткоин|крипт\\\\w*|курс\\\\s+доллар|погод\\\\w*|рецепт\\\\w*|политик\\\\w*|новост\\\\w*)\\\\b', re.I)",
-    "value_sha256": "cc0f0e16ad9342ec996f750f628af86863db246e780e5489cc8f9f033581c8b2"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
     "symbol": "OFF_TOPIC_UNPK_SAFE_TEXT",
     "value_preview": "'Я помогаю с вопросами об обучении в УНПК МФТИ. По другим темам не сориентирую, но могу помочь подобрать курс, формат, расписание или следующий шаг.'",
     "value_sha256": "e0f645c278d181e8b99c8cb497e0f3398a02f0d7d8a84282e61af59cc3c8856d"
@@ -10756,8 +10738,8 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
     "qualname": "<module>",
     "symbol": "_FACETS",
-    "value_preview": "('price', 'schedule', 'address', 'dates', 'format', 'documents', 'platform', 'trial', 'enrollment', 'availability', 'other')",
-    "value_sha256": "4d98bf66270ca6f92e009f9874e712d6248b07f50789c707c50945bcd1f4df23"
+    "value_preview": "('price', 'schedule', 'address', 'dates', 'format', 'documents', 'platform', 'trial', 'enrollment', 'other')",
+    "value_sha256": "2c215c4be20f678e05e2b8be414d5df5c57b6f374ef770ccb01a05284ca0e6a6"
   },
   {
     "node_kind": "text_table",
@@ -10765,7 +10747,7 @@
     "qualname": "<module>",
     "symbol": "_FACET_PATTERNS",
     "value_preview": "{'price': ('\\\\b(?:стоим|сколько\\\\s+стоит|цен[аы]|оплат|руб|₽|семестр|год)\\\\w*',), 'schedule': ('\\\\b(?:расписан|когда\\\\s+занят|дни\\\\s+занят|по\\\\s+каким\\\\s+дням|время\\\\s+занят|график)\\\\w*',), 'address': ('\\\\b(?:адрес|где\\\\s+(?:проход|занят|ку",
-    "value_sha256": "798029ef8789aabd8bb90ef2537cd618ee262f9521324f27f34636d5e117c6a4"
+    "value_sha256": "c9a0d0a61967af022ece112404f1ea9d43bb1c441e0491d488112e7e39e0ee4d"
   },
   {
     "node_kind": "text_table",
@@ -10773,7 +10755,7 @@
     "qualname": "<module>",
     "symbol": "_FACT_FACET_PATTERNS",
     "value_preview": "{'price': ('\\\\b(?:стоим|цен[аы]|руб|₽|семестр|абонемент|оплат)\\\\w*',), 'schedule': ('\\\\b(?:расписан|занятия\\\\s+проходят|дни\\\\s+занят|время\\\\s+занят|график)\\\\w*',), 'address': ('\\\\b(?:адрес|филиал|москва|долгопрудн|менделеево|сретенка|красно",
-    "value_sha256": "0f7334a40b397c484c5439820de8f9e49ecd8d98542c29718e25022d6b9646a0"
+    "value_sha256": "e0985386f6adda71d523ebbee70a370729c7ec67fac1d705127fc684582532dd"
   },
   {
     "node_kind": "text_table",

@@ -994,14 +994,6 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:iphone|айфон|андроид|android|биткоин|крипт\\w*|курс\\s+доллар|погод\\w*|рецепт\\w*|политик\\w*|новост\\w*)\\b",
-    "pattern_sha256": "e2fc09673408722c7182ad2bfc85a6b1f02ffe093794ae61d1d4b904a59f6994",
-    "qualname": "<module>",
-    "target": "OFF_TOPIC_INPUT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "\\b(?:до|по)\\s+\\d{1,2}(?:[./-]\\d{1,2}(?:[./-]\\d{2,4})?|\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))",
     "pattern_sha256": "5facc89f168f01e1bd7815ea7c147cc792e61f0250bc5cdcbd5398fbed489ee1",
     "qualname": "<module>",

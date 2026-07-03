@@ -327,7 +327,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     MULTICHILD_DISCOUNT_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_GENERIC_SAFE_TEXT,
-    OFF_TOPIC_INPUT_RE,
     OFF_TOPIC_UNPK_SAFE_TEXT,
     OLD_TERM_SAFE_TEXT,
     PAYMENT_CONFIRMATION_RE,
@@ -869,7 +868,6 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     safe_fallback_draft,
     subscription_llm_safety_contract,
 )
-
 
 
 

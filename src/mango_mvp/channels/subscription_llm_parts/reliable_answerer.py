@@ -29,7 +29,6 @@ _FACETS = (
     "platform",
     "trial",
     "enrollment",
-    "availability",
     "other",
 )
 
@@ -45,7 +44,6 @@ _FACET_PATTERNS: Mapping[str, tuple[str, ...]] = {
     "platform": (r"\b(?:платформ|мтс\s+линк|zoom|ссылка|доступ|личн\w+\s+кабинет)\w*",),
     "trial": (r"\b(?:пробн|тестов\w+\s+занят|диагностик)\w*",),
     "enrollment": (r"\b(?:запис|оформ|заявк|поступить|попасть|анкета)\w*",),
-    "availability": (r"\b(?:мест[ао]|наличи[ея]|свободн\w+\s+мест|группа\s+есть|набирается|брон)\w*",),
 }
 
 _FACT_FACET_PATTERNS: Mapping[str, tuple[str, ...]] = {
@@ -58,7 +56,6 @@ _FACT_FACET_PATTERNS: Mapping[str, tuple[str, ...]] = {
     "platform": (r"\b(?:платформ|мтс\s+линк|zoom|ссылка|доступ|личн\w+\s+кабинет)\w*",),
     "trial": (r"\b(?:пробн|тестов\w+\s+занят|диагностик)\w*",),
     "enrollment": (r"\b(?:запис|оформ|заявк|анкета|поступ)\w*",),
-    "availability": (r"\b(?:мест[ао]|наличи[ея]|свободн\w+\s+мест|группа\s+есть|набирается|брон)\w*",),
 }
 
 _AVAILABILITY_PROMISE_RE = re.compile(

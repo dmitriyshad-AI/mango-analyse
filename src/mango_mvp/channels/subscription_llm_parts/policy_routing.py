@@ -550,11 +550,6 @@ ADMISSION_GUARANTEE_INPUT_RE = re.compile(
     re.I,
 )
 
-OFF_TOPIC_INPUT_RE = re.compile(
-    r"\b(?:iphone|айфон|андроид|android|биткоин|крипт\w*|курс\s+доллар|погод\w*|рецепт\w*|политик\w*|новост\w*)\b",
-    re.I,
-)
-
 PAYMENT_CONFIRMATION_RE = re.compile(
     r"оплат[ауы]\s+(?:отмечен|прошл|поступил|зачислен|получен)"
     r"|плат[её]ж\s+(?:прош[её]л|получен|зачислен)"
@@ -825,18 +820,18 @@ def _with_off_topic_reading_trace(
         return result
     reading = SemanticReading.from_result(result, context=context)
     decision = off_topic_reading_decision(reading)
-    regex_or_topic = bool(result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")))
+    topic_off_topic = bool(result.topic_id == "service:S3_out_of_scope")
     final_off_topic_text = _is_off_topic_safe_text(applied_text)
     reason = ""
     conflicts: tuple[str, ...] = ()
     if final_off_topic_text and decision == "off_topic":
         status = "applied"
         reason = "semantic_off_topic"
-    elif final_off_topic_text and regex_or_topic:
+    elif final_off_topic_text and topic_off_topic:
         status = "observed"
-        reason = "regex_or_topic_off_topic"
+        reason = "topic_id_off_topic"
         if decision == "not_off_topic":
-            conflicts = ("semantic_not_off_topic", "regex_or_topic_off_topic")
+            conflicts = ("semantic_not_off_topic", "topic_id_off_topic")
     else:
         status = "no_op"
         reason = "terminal_template_not_off_topic"
@@ -4303,7 +4298,7 @@ def _terminal_safe_template(
         return SOFT_NEGATIVE_HANDOFF_SAFE_TEXT
     reading = SemanticReading.from_result(result, context=context) if reading_class_enabled(context, "off_topic") else None
     reading_off_topic = off_topic_reading_decision(reading) == "off_topic"
-    if result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")) or reading_off_topic:
+    if result.topic_id == "service:S3_out_of_scope" or reading_off_topic:
         if active_brand == "foton":
             return OFF_TOPIC_FOTON_SAFE_TEXT
         if active_brand == "unpk":

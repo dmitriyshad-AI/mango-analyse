@@ -91,3 +91,17 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` так�
 Отдельно: commit-level pre-push/CI guard из Foton-ТЗ в этом заходе не включен как реальный hook/workflow. Причина — это изменение общего процесса пуша, а не runtime-кода; его нужно делать отдельным ops-ТЗ. Локально мораторий обеспечивается pytest-guard'ом и frozen snapshots.
 
 В этом же обновлении snapshot фиксирует добавление `off_topic` в закрытый enum `model_intent`. Это не regex/keyword-понимание: значение приходит из LLM-блока `model_intent`, нужно для сохранения всего блока парсером и пока не является новой маршрутной целью.
+
+## Разрешенное обновление 2026-07-04: Ш4 первый срез legacy-понимания
+
+После E3-регрейда и явного “да №2” удалены:
+
+- `OFF_TOPIC_INPUT_RE` из `policy_routing.py`; off-topic terminal template теперь опирается на taxonomy `service:S3_out_of_scope` и `off_topic` semantic-reading decision;
+- входной `availability` facet из `reliable_answerer.py`; понимание клиентского вопроса про места теперь относится к `sense_seats`/SemanticFrame, а не к facet regex.
+
+Бюджет `CHANNEL_REGEX_BUDGET["src/mango_mvp/channels/subscription_llm_parts/policy_routing.py"]` понижен с 16 до 15. Frozen snapshots обновлены намеренно.
+
+Что оставлено осознанно:
+
+- `_AVAILABILITY_PROMISE_RE` и `availability_promise_detected()` в `reliable_answerer.py` остаются. Это проверка уже сгенерированного ответа на опасное обещание мест/группы/брони без live-факта, а не понимание сырого клиентского текста.
+- `dialogue_memory.py` grade/subject/format extraction пока остаётся. На текущем HEAD `semantic_reading_slots` являются hidden storage и не заменяют `known_slots`; удалять старое извлечение можно только после отдельного `slots_gsf -> known_slots` merge с `source=semantic_reading_llm` и запретом попадания в `client_confirmed_slots`.

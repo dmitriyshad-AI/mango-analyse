@@ -227,6 +227,56 @@ def test_report_accepts_expected_posthoc_frame_call_delta(tmp_path: Path) -> Non
     assert result["acceptance"]["flags"]["extra_model_calls_expected"] is True
 
 
+def test_report_accepts_paired_frame_delta_when_baseline_already_has_frames(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    _write_jsonl(off_transcripts, [_dialog(include_frame=False)])
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+    off_summary.write_text(json.dumps(_summary(764, frame_calls=202)), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(825, frame_calls=263)), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    assert result["llm_calls"]["mode"] == "paired_full_run"
+    assert result["llm_calls"]["raw_total_delta"] == 61
+    assert result["llm_calls"]["extra_semantic_frame_shadow"] == 61
+    assert result["acceptance"]["flags"]["extra_model_calls_expected"] is True
+
+
+def test_report_accepts_extra_calls_from_inline_only_dialogs(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    off = _dialog(include_frame=False)
+    on = _dialog(include_frame=True)
+    extra = _dialog(include_frame=True)
+    extra["dialog_id"] = "inline_only"
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on, extra])
+    off_summary.write_text(json.dumps(_summary(764, frame_calls=0)), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(825, frame_calls=0)), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+    )
+
+    assert result["paired_dialogs"]["inline_only_count"] == 1
+    assert result["llm_calls"]["raw_total_delta"] == 61
+    assert result["llm_calls"]["extra_semantic_frame_shadow"] == 0
+    assert result["acceptance"]["flags"]["extra_model_calls_expected"] is True
+
+
 def test_report_accepts_paired_semantic_frame_enrichment_calls(tmp_path: Path) -> None:
     off_transcripts = tmp_path / "off.jsonl"
     on_transcripts = tmp_path / "on.jsonl"
@@ -702,6 +752,27 @@ def test_inline_text_health_gate_explains_missing_turns_by_dialog_run_status_tim
     assert gate["missing_baseline_turns"] == 1
     assert gate["missing_baseline_explained_count"] == 1
     assert gate["missing_baseline_unexplained_count"] == 0
+
+
+def test_inline_text_health_gate_explains_on_only_dialog_absent_in_baseline_set(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    on = _dialog(include_frame=True)
+    extra = _dialog(include_frame=True)
+    extra["dialog_id"] = "inline_only"
+    extra["turns"][0]["client_message"] = "Ещё вопрос."
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on, extra])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["missing_baseline_turns"] == 1
+    assert gate["missing_baseline_explained_count"] == 1
+    assert gate["missing_baseline_unexplained_count"] == 0
+    assert gate["missing_baseline_explained_examples"][0]["reason"] == "absent_in_baseline_set"
 
 
 def test_inline_text_health_gate_marks_unexplained_missing_turns_needs_review(tmp_path: Path) -> None:

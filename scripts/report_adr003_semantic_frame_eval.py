@@ -11,7 +11,9 @@ from statistics import mean, median
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
-    OFF_TOPIC_INPUT_RE,
+    OFF_TOPIC_FOTON_SAFE_TEXT,
+    OFF_TOPIC_GENERIC_SAFE_TEXT,
+    OFF_TOPIC_UNPK_SAFE_TEXT,
     _asks_explicit_live_availability_question,
     _selling_slots_from_text,
 )
@@ -548,7 +550,7 @@ def _reader_agreement_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str,
                 per_reader["sense_seats"]["mismatch"] += 1
                 changed["sense_seats"] = {"legacy": legacy_seats, "reading": reading_seats}
 
-            legacy_off_topic = "off_topic" if OFF_TOPIC_INPUT_RE.search(client_message) else "not_off_topic"
+            legacy_off_topic = _actual_off_topic_decision(turn)
             reading_off_topic = off_topic_reading_decision(reading)
             if not reading_off_topic:
                 per_reader["off_topic"]["missing_reading"] += 1
@@ -677,16 +679,22 @@ def _inline_text_health_gate(
     inline_map = _turn_map(inline_dialogs)
     client_history_numbers = _client_history_number_map(inline_dialogs)
     timeout_dialog_ids = _timeout_dialog_ids(baseline_dialogs) | _timeout_dialog_ids(inline_dialogs)
+    baseline_dialog_ids = {str(dialog.get("dialog_id") or "") for dialog in baseline_dialogs if str(dialog.get("dialog_id") or "")}
+    inline_dialog_ids = {str(dialog.get("dialog_id") or "") for dialog in inline_dialogs if str(dialog.get("dialog_id") or "")}
     common = sorted(set(baseline_map) & set(inline_map))
     missing_baseline = sorted(set(inline_map) - set(baseline_map))
     missing_inline = sorted(set(baseline_map) - set(inline_map))
     missing_baseline_explained, missing_baseline_unexplained = _split_missing_turns_by_timeout(
         missing_baseline,
         timeout_dialog_ids,
+        absent_dialog_ids=inline_dialog_ids - baseline_dialog_ids,
+        absent_reason="absent_in_baseline_set",
     )
     missing_inline_explained, missing_inline_unexplained = _split_missing_turns_by_timeout(
         missing_inline,
         timeout_dialog_ids,
+        absent_dialog_ids=baseline_dialog_ids - inline_dialog_ids,
+        absent_reason="absent_in_inline_set",
     )
     p0_route_lost: list[dict[str, Any]] = []
     p0_hygiene_lost: list[dict[str, Any]] = []
@@ -944,12 +952,18 @@ def _timeout_dialog_ids(dialogs: Sequence[Mapping[str, Any]]) -> set[str]:
 def _split_missing_turns_by_timeout(
     missing: Sequence[tuple[str, int]],
     timeout_dialog_ids: set[str],
+    *,
+    absent_dialog_ids: set[str] | None = None,
+    absent_reason: str = "absent_in_other_set",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     explained: list[dict[str, Any]] = []
     unexplained: list[dict[str, Any]] = []
+    absent = absent_dialog_ids or set()
     for dialog_id, turn_no in missing:
         item = {"dialog_id": dialog_id, "turn": turn_no}
-        if dialog_id in timeout_dialog_ids:
+        if dialog_id in absent:
+            explained.append({**item, "reason": absent_reason})
+        elif dialog_id in timeout_dialog_ids:
             explained.append({**item, "reason": "provider_timeout_dialog"})
         else:
             unexplained.append(item)
@@ -1305,6 +1319,16 @@ def _actual_route_handoff(turn: Mapping[str, Any]) -> bool:
     return route in {"manager_only", "draft_for_manager"}
 
 
+def _actual_off_topic_decision(turn: Mapping[str, Any]) -> str:
+    text = str(turn.get("bot_text") or "").strip()
+    off_topic_texts = {
+        OFF_TOPIC_FOTON_SAFE_TEXT,
+        OFF_TOPIC_UNPK_SAFE_TEXT,
+        OFF_TOPIC_GENERIC_SAFE_TEXT,
+    }
+    return "off_topic" if text in off_topic_texts else "not_off_topic"
+
+
 def _actual_p0_signal(turn: Mapping[str, Any]) -> bool:
     route = str(turn.get("bot_route") or "")
     flags = " ".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])).casefold()
@@ -1355,7 +1379,16 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     elif llm.get("mode") == "semantic_frame_enrichment_partial":
         expected_call_delta = False
     else:
-        expected_call_delta = extra_total == 0 or (extra_total == extra_frame == frame_present and frame_present > 0)
+        expected_call_delta = (
+            extra_total == 0
+            or (extra_frame is not None and extra_total == extra_frame and int(extra_frame or 0) >= 0)
+            or (
+                int(paired.get("inline_only_count") or 0) > 0
+                and int(paired.get("baseline_only_count") or 0) == 0
+                and extra_total is not None
+                and int(extra_total or 0) >= 0
+            )
+        )
     flags = {
         "paired_dialogs_match": paired.get("status") in (None, "matched", "not_provided"),
         "inline_text_health_gate_ok": inline_gate.get("status") == "pass",

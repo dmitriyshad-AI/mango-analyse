@@ -9,6 +9,7 @@ import pytest
 
 from mango_mvp.customer_timeline.a2_mail_ingest import (
     A2V3MailIngestConfig,
+    _chunk_text,
     apply_a2v3_mail_ingest,
     build_local_client_review,
     create_test_db_backup,
@@ -382,6 +383,15 @@ def test_a2v3_mail_ingest_ignores_unproven_thread_context(tmp_path: Path) -> Non
     assert "Актуальный вопрос." in plan.chunk.text
     assert "Ручной хвост" not in plan.chunk.text
     assert "Контекст переписки" not in plan.chunk.text
+
+
+def test_a2v3_mail_ingest_empty_rich_text_does_not_crash(tmp_path: Path) -> None:
+    row = _row("z" * 64, email="parent@example.com")
+    row["full_clean_text"] = ""
+    row["thread_context"] = ""
+    row["summary_payload"] = {"summary": "Есть короткая выжимка без полного тела.", "topic": "Запись"}
+
+    assert _chunk_text(row, rich=True) == ("", False)
 
 
 def test_a2v3_mail_ingest_legacy_summary_chunk_still_omits_manager_note(tmp_path: Path) -> None:

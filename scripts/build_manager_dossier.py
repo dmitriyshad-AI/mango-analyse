@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--customer-id", action="append", default=[])
     parser.add_argument("--customer-ids-file", type=Path)
     parser.add_argument("--canonical-calls-db", type=Path)
+    parser.add_argument("--reconcile-json", type=Path)
     parser.add_argument("--limit", type=int, default=50)
     args = parser.parse_args(argv)
 
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         tenant_id=args.tenant_id,
         customer_ids=tuple(dict.fromkeys(customer_ids)),
         canonical_calls_db=args.canonical_calls_db,
+        reconcile_json=args.reconcile_json,
         limit=args.limit,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

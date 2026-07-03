@@ -908,3 +908,52 @@ write = 0.
 Marathon-2 отчёты. В нём явно написано, что нельзя говорить: память клиента
 уже включена в live, CRM можно писать автоматически, Wappi готов к apply,
 M1-quality доказан или сайты включены. Прод/CRM/live writes = 0.
+
+### D-052. F9 AMO актуальность проверяется по клиенту, а не по сигналу
+
+Решение: для топ-50 `deal_stalling` Ф9 сверяет живой AMO через открытые сделки
+клиента из `customer_opportunities`, а не через сам сигнал. Причина: сигнал
+`deal_stalling` хранит `customer_id`, но не является авторитетным носителем
+`lead_id`.
+
+Сверка использует только `AmoMcpClient.amo_api_get` и `read_mcp_env`, без
+`crm_call.sh` и без токенов в логах. Если read-only env недоступен, результат
+становится `unavailable`, а не фальшиво зелёным. Менеджерский Excel волны-0
+с ПДн пишется только в `.codex_local/review/f9_amo_actuality/`.
+
+Проверка: read-only run дал `customers_selected=50`,
+`open_opportunities_checked=49`, `customers_checked=42`,
+`customers_changed=0`, `snapshot_stale=false`, `errors=[]`. Excel содержит
+`500` строк на листе `Зависшие факт LTV`, `90` сезонных и `109`
+`Вернулись и перезвон`. Focused pytest `41 passed`, включая guard, что
+Wave-0/refresh manager views нельзя писать вне `.codex_local`. Прод/CRM/Tallanto/live
+writes = 0.
+
+### D-053. F10 manager dossier is local-only and includes the full 84-client review set
+
+Решение: Ф10-досье строится как локальная Excel-книга для менеджерской
+вычитки, а не как боевой CRM-write. В список включены `66` CRM-кандидатов
+из финального Ф4-пакета и `18` полных review-клиентов из
+`.codex_local/review/gold/review18_full_ids.json`, всего `84/84` клиентов.
+
+Email-выжимки для этих клиентов прогоняются только существующим
+`scripts/run_marathon2_mail_summary_enrich.py`: `679` email-событий, `6`
+LLM batch calls, `47` строк оставлены как review-needed и показываются в
+досье как «полный текст в базе», без внутренних статусов пайплайна. Apply
+пишет только staging: `enrich_existing_events=679`, `created_events=0`,
+`created_chunks=141`, `mail_stage2_unsafe_chunks=0`, `quick_check=ok`.
+
+В менеджерской книге источники показаны человеко-читаемо (`AMO снимок`,
+`сводки звонков`, `письма`, и т.п.), а технические ключи, `Codex/Claude/GPT`,
+`llm_fallback`, `Требуется ручная проверка модельной выжимки` и generic
+`Посмотреть историю...` не попадают в листы. Разделы `Интересы`, `Боли` и
+`Возражения` остаются advisory и требуют human-gate, потому что часть текста
+приходит из ASR/автоматических маркеров.
+
+Проверка: финальная книга
+`.codex_local/review/dossier/2026-07-04_VOLNA1_manager_dossier_full84.xlsx`
+содержит `4380` клиентов в полном сегменте, `103` family rows, `31` money
+rows, `65` signals, `60` next-step rows, `210` objections, `69` interests,
+`94` pains и `2099` chronology rows. Focused pytest `41 passed`. Семантический
+аудит: `PASS_WITH_NOTES`; ПДн остаются только в `.codex_local`; прод/CRM/Tallanto/live
+writes = 0.

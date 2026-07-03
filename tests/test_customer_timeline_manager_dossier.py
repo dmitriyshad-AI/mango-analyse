@@ -86,7 +86,7 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
     assert "Оглавление" in wb.sheetnames
     assert "Клиент 1" in wb.sheetnames
     values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
-    assert ("Интересы", "Из данных: Летняя школа по математике", "products_of_interest") in values
+    assert ("Интересы", "Из данных: Летняя школа по математике", "Данные клиента/сделки") in values
     assert any(row[0] == "Боли" and "сложно по времени" in str(row[1]).casefold() for row in values)
 
     with pytest.raises(ValueError, match=".codex_local"):
@@ -104,6 +104,101 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
             out_xlsx=tmp_path / "outside.xlsx",
             customer_ids=("customer:1",),
         )
+
+
+def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    reconcile = tmp_path / ".codex_local" / "reconcile.json"
+    reconcile.parent.mkdir(parents=True)
+    reconcile.write_text(
+        json.dumps(
+            {
+                "status": "checked",
+                "generated_at": "2026-07-03T12:00:00+00:00",
+                "customers_checked": 42,
+                "customers_changed": 0,
+                "snapshot_stale": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / ".codex_local" / "review" / "dossier_full.xlsx"
+
+    summary = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=("customer:1",),
+        canonical_calls_db=tmp_path / "missing.sqlite",
+        reconcile_json=reconcile,
+    )
+
+    assert summary["canonical_calls_loaded"] == 0
+    assert "not found" in summary["canonical_calls_warning"]
+    assert summary["family_rows_total"] == 1
+    assert summary["money_rows_total"] == 2
+    assert summary["signals_total"] == 1
+    assert summary["objections_total"] == 1
+    assert summary["next_step_rows_total"] == 1
+    wb = load_workbook(out, read_only=True)
+    values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
+    joined = "\n".join(str(cell) for row in values for cell in row if cell)
+    assert "0 расхождений из 42" in joined
+    assert "Иван" in joined and "класс: 8" in joined and "предметы: математика" in joined
+    assert "факт оплат" in joined and "120 000 руб." in joined
+    assert "план сделок" in joined and "80 000 руб." in joined
+    assert "сделка зависла" in joined
+    assert ("Следующий шаг", "Позвонить в понедельник по оплате", "Сигнал Customer Timeline") in values
+    assert values[0] == ("Раздел", "Значение", "Откуда")
+    assert "family_links_v1" not in joined
+    assert "derived_signals" not in joined
+    assert "price: Дорого, просит рассрочку." in joined
+    assert "Письмо «Расписание»: полный текст в базе." in joined
+    assert "Требуется ручная проверка модельной выжимки" not in joined
+
+
+def test_manager_dossier_skips_missing_customer_ids(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    out = tmp_path / ".codex_local" / "review" / "dossier_missing.xlsx"
+
+    summary = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=("customer:1", "customer:missing"),
+    )
+
+    assert summary["requested_customers"] == 2
+    assert summary["customers"] == 1
+    assert summary["missing_customer_ids_count"] == 1
+    assert summary["missing_customer_ids_sample"] == ["customer:missing"]
+    assert out.exists()
+
+
+def test_manager_dossier_omits_generic_history_next_step(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db, signal_action="Посмотреть историю и ответить с учётом прошлого запроса клиента.")
+    out = tmp_path / ".codex_local" / "review" / "dossier_no_generic_next.xlsx"
+
+    summary = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        customer_ids=("customer:1",),
+    )
+
+    assert summary["signals_total"] == 1
+    assert summary["next_step_rows_total"] == 0
+    wb = load_workbook(out, read_only=True)
+    values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
+    assert not any(row[0] == "Следующий шаг" for row in values)
+    joined = "\n".join(str(cell) for row in values for cell in row if cell is not None)
+    assert "Посмотреть историю" not in joined
 
 
 def test_manager_dossier_matches_canonical_call_id_and_prefixed_source_id(tmp_path: Path) -> None:
@@ -224,6 +319,57 @@ def test_manager_dossier_interest_quote_is_sentence_not_raw_transcript(tmp_path:
     assert "сколько будет полгод" not in interest_from_call
 
 
+def test_manager_dossier_ignores_generic_wanted_phrases_without_product_context(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    canonical_db = _canonical_calls_db(
+        tmp_path,
+        {
+            "call-client": (
+                "Хотела спросить, как дела. "
+                "Мы хотим уже бы хотим, чтобы он начал учиться. "
+                "Нас интересует математика онлайн."
+            )
+        },
+    )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            canonical_calls=load_canonical_call_client_texts(canonical_db),
+        )
+
+    interest_text = "\n".join(item.text for item in dossier.interests if item.source == "mango_call:call-client")
+
+    assert "Хотела спросить" not in interest_text
+    assert "Мы хотим уже бы хотим" not in interest_text
+    assert "Нас интересует математика онлайн" in interest_text
+
+
+def test_manager_dossier_pain_quote_trims_adjacent_asr_tail(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    canonical_db = _canonical_calls_db(
+        tmp_path,
+        {"call-client": "Переживаю, у вас же мест мало Сейчас Катя у вас рисунок карандаши."},
+    )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            canonical_calls=load_canonical_call_client_texts(canonical_db),
+        )
+
+    pain_text = "\n".join(item.text for item in dossier.pains if item.source == "mango_call:call-client")
+
+    assert "Переживаю, у вас же мест мало." in pain_text
+    assert "рисунок" not in pain_text.casefold()
+
+
 def _timeline_db(tmp_path: Path) -> Path:
     db = tmp_path / "timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
@@ -325,3 +471,158 @@ def _canonical_calls_db(tmp_path: Path, transcripts: dict[str, str]) -> Path:
         )
         con.commit()
     return db
+
+
+def _seed_full_dossier_tables(db: Path, *, signal_action: str = "Позвонить в понедельник по оплате") -> None:
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS family_links_v1 (
+              tenant_id TEXT NOT NULL,
+              family_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              child_key TEXT NOT NULL,
+              canonical_name TEXT NOT NULL,
+              name_variants_json TEXT NOT NULL,
+              grades_json TEXT NOT NULL,
+              subjects_json TEXT NOT NULL,
+              brand TEXT NOT NULL,
+              status TEXT NOT NULL,
+              confidence TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              source_refs_json TEXT NOT NULL,
+              evidence_count INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, family_id, customer_id, child_key)
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO family_links_v1
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "foton",
+                "family:1",
+                "customer:1",
+                "child:1",
+                "Иван",
+                json.dumps(["Иван"], ensure_ascii=False),
+                json.dumps(["8"], ensure_ascii=False),
+                json.dumps(["математика"], ensure_ascii=False),
+                "foton",
+                "confident",
+                "high",
+                "single_child_family",
+                json.dumps(["test"], ensure_ascii=False),
+                1,
+                NOW.isoformat(),
+                "hash-family",
+                "{}",
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              period TEXT NOT NULL,
+              money_kind TEXT NOT NULL,
+              total_in REAL,
+              total_out REAL,
+              deals_cnt INTEGER NOT NULL DEFAULT 0,
+              last_purchase_at TEXT,
+              sources_json TEXT NOT NULL,
+              computability TEXT NOT NULL,
+              code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period, money_kind)
+            )
+            """
+        )
+        con.executemany(
+            """
+            INSERT OR REPLACE INTO customer_purchases_v1
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("foton", "customer:1", "all_time", "fact", 120000, 0, 1, "2026-06-01", "[]", "ok", "test"),
+                ("foton", "customer:1", "all_time", "plan", 80000, 0, 1, None, "[]", "ok", "test"),
+            ],
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO derived_signals
+            (signal_id, tenant_id, customer_id, opportunity_id, event_id, signal_type, severity, status, expires_at,
+             confidence, requires_manager_review, created_at, record_hash, record_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "signal:1",
+                "foton",
+                "customer:1",
+                None,
+                None,
+                "deal_stalling",
+                "high",
+                "active",
+                "2026-07-10T00:00:00+00:00",
+                0.9,
+                1,
+                NOW.isoformat(),
+                "hash-signal",
+                json.dumps({"recommended_action": signal_action, "evidence_text": "нет движения 7 дней"}, ensure_ascii=False),
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_objections_v1 (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              source_event_id TEXT NOT NULL,
+              source_channel TEXT NOT NULL,
+              objection_type TEXT NOT NULL,
+              quote_preview TEXT NOT NULL,
+              budget_hint_rub INTEGER,
+              price_sensitivity TEXT NOT NULL,
+              extracted_at TEXT NOT NULL,
+              extractor_version TEXT NOT NULL,
+              speaker TEXT NOT NULL DEFAULT 'unknown',
+              direction TEXT NOT NULL DEFAULT 'unknown',
+              confidence TEXT NOT NULL DEFAULT 'low',
+              PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO customer_objections_v1
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "foton",
+                "customer:1",
+                "event:email",
+                "email",
+                "price",
+                "дорого, просит рассрочку",
+                60000,
+                "high",
+                NOW.isoformat(),
+                "test",
+                "client",
+                "inbound",
+                "high",
+            ),
+        )
+        con.execute(
+            """
+            UPDATE timeline_events
+            SET subject = 'Расписание',
+                summary = 'Требуется ручная проверка модельной выжимки: текст короткий'
+            WHERE tenant_id = 'foton' AND customer_id = 'customer:1' AND event_type = 'email_message'
+            """
+        )
+        con.commit()

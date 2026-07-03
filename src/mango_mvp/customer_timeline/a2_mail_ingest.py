@@ -2360,14 +2360,14 @@ def _chunk_text(row: Mapping[str, Any], *, rich: bool) -> tuple[str, bool]:
         if thread_context:
             parts.append(f"Контекст переписки:\n{thread_context}")
         raw_text = "\n\n".join(part for part in parts if part)
-        text = compact_text(raw_text, limit=CHUNK_RICH_TEXT_LIMIT)
+        text = compact_text(raw_text, limit=CHUNK_RICH_TEXT_LIMIT) or ""
         return text, len(raw_text) > len(text)
     parts = [
         str(payload.get("summary") or "").strip(),
         f"Тема: {payload.get('topic')}" if payload.get("topic") else "",
     ]
     raw_text = "\n".join(part for part in parts if part)
-    return compact_text(raw_text, limit=1200), False
+    return compact_text(raw_text, limit=1200) or "", False
 
 
 def _thread_id(row: Mapping[str, Any]) -> str:

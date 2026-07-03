@@ -12,13 +12,22 @@ from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_pa
 
 
 MANAGER_DOSSIER_SCHEMA_VERSION = "customer_timeline_manager_dossier_v1"
-INTEREST_MARKER_RE = re.compile(r"\b(?:интересу\w*|рассматрива\w*|хот(?:им|ел[аи]?|им\s+бы|им\s+посмотреть))\b", re.I)
+INTEREST_MARKER_RE = re.compile(r"\b(?:интересу\w*|рассматрива\w*|хот(?:им|им\s+бы|им\s+посмотреть))\b", re.I)
 PAIN_MARKER_RE = re.compile(r"\b(?:не\s+успева\w*|сложн\w*|провалил\w*|провал\w*|пережива\w*)\b", re.I)
+INTEREST_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"математик\w*|физик\w*|информатик\w*|программировани\w*|русск\w+\s+язык\w*|английск\w+\s+язык\w*|"
+    r"егэ|огэ|олимпиад\w*|курс\w*|заняти\w*|групп\w*|лагер\w*|школ\w*|смен\w*|интенсив\w*|"
+    r"подготовк\w*|очно\w*|онлайн\w*|выездн\w*|летн\w*|годов\w*"
+    r")\b",
+    re.I,
+)
 CONTACT_RE = re.compile(
     r"[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}|"
     r"(?<!\d)(?:(?:\+7|8|7)\s*)?\(?\d{3,4}\)?[\s.-]*\d{2,3}[\s.-]*\d{2}[\s.-]*\d{2}(?!\d)",
     re.I,
 )
+EMAIL_SUMMARY_REVIEW_NEEDED_RE = re.compile(r"^\s*Требуется\s+ручная\s+проверка\s+модельной\s+выжимки\b", re.I)
 WHITESPACE_RE = re.compile(r"\s+")
 SPEECH_FILLER_RE = re.compile(
     r"^(?:(?:ну|ээ+|э+|эм+|мм+|вот|значит|как\s+бы|то\s+есть|скажем|короче)\b[\s,.;:–—-]*)+",
@@ -27,7 +36,7 @@ SPEECH_FILLER_RE = re.compile(
 SPEECH_CLAUSE_BOUNDARY_RE = re.compile(
     r"\s+(?:"
     r"Можете|можете|можно|подскажите|скажите|скиньте|пришлите|"
-    r"сколько\s+будет|сч[её]т\s+скинуть|как\s+там"
+    r"сколько\s+будет|сч[её]т\s+скинуть|как\s+там|сейчас"
     r")\b",
     re.I,
 )
@@ -49,12 +58,26 @@ class DossierMarker:
 
 
 @dataclass(frozen=True)
+class DossierRow:
+    section: str
+    text: str
+    source: str
+
+
+@dataclass(frozen=True)
 class CustomerDossier:
     tenant_id: str
     customer_id: str
     display_name: str
     phone: str
     email: str
+    actuality_header: str = ""
+    family: tuple[DossierRow, ...] = field(default_factory=tuple)
+    money: tuple[DossierRow, ...] = field(default_factory=tuple)
+    signals: tuple[DossierRow, ...] = field(default_factory=tuple)
+    next_step: str = ""
+    objections: tuple[DossierRow, ...] = field(default_factory=tuple)
+    chronology: tuple[DossierRow, ...] = field(default_factory=tuple)
     interests: tuple[DossierMarker, ...] = field(default_factory=tuple)
     pains: tuple[DossierMarker, ...] = field(default_factory=tuple)
 
@@ -65,6 +88,7 @@ def build_customer_dossier(
     tenant_id: str,
     customer_id: str,
     canonical_calls: Mapping[str, str] | None = None,
+    actuality_header: str = "",
 ) -> CustomerDossier:
     con.row_factory = sqlite3.Row
     customer = con.execute(
@@ -111,12 +135,20 @@ def build_customer_dossier(
         source = f"mango_call:{event['source_id']}"
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
+    signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
     return CustomerDossier(
         tenant_id=str(customer["tenant_id"]),
         customer_id=str(customer["customer_id"]),
         display_name=_clean_text(customer["display_name"]),
         phone=_clean_text(customer["primary_phone"]),
         email=_clean_text(customer["primary_email"]),
+        actuality_header=actuality_header,
+        family=tuple(_family_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        money=tuple(_money_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        signals=tuple(signals),
+        next_step=_next_step_from_signals(signals),
+        objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=40)),
         interests=tuple(_dedupe_markers(interests, limit=8)),
         pains=tuple(_dedupe_markers(pains, limit=8)),
     )
@@ -130,24 +162,57 @@ def build_manager_dossier_workbook(
     tenant_id: str = "foton",
     customer_ids: Sequence[str] = (),
     canonical_calls_db: Path | str | None = None,
+    reconcile_json: Path | str | None = None,
     limit: int = 50,
 ) -> Mapping[str, Any]:
     db = Path(timeline_db).expanduser().resolve(strict=False)
     out = _guard_local_dossier_output_path(out_xlsx, allowed_root)
     out.parent.mkdir(parents=True, exist_ok=True)
-    canonical_calls = load_canonical_call_client_texts(canonical_calls_db) if canonical_calls_db else {}
+    canonical_calls, canonical_warning = _load_canonical_calls_fail_soft(canonical_calls_db)
+    reconcile = _read_json(Path(reconcile_json).expanduser()) if reconcile_json else {}
     with _connect_ro(db) as con:
         ids = tuple(customer_ids) or tuple(_full_dossier_segment_customer_ids(con, tenant_id=tenant_id, limit=limit))
-        dossiers = [build_customer_dossier(con, tenant_id=tenant_id, customer_id=customer_id, canonical_calls=canonical_calls) for customer_id in ids]
+        freshness = _source_freshness(con)
+        segment_total = _full_dossier_segment_count(con, tenant_id=tenant_id)
+        actuality_header = _actuality_header(freshness, reconcile)
+        dossiers: list[CustomerDossier] = []
+        missing_customer_ids: list[str] = []
+        for customer_id in ids:
+            try:
+                dossiers.append(
+                    build_customer_dossier(
+                        con,
+                        tenant_id=tenant_id,
+                        customer_id=customer_id,
+                        canonical_calls=canonical_calls,
+                        actuality_header=actuality_header,
+                    )
+                )
+            except ValueError:
+                missing_customer_ids.append(customer_id)
     _write_workbook(out, dossiers)
     summary = {
         "schema_version": MANAGER_DOSSIER_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tenant_id": tenant_id,
+        "requested_customers": len(ids),
         "customers": len(dossiers),
+        "missing_customer_ids_count": len(missing_customer_ids),
+        "missing_customer_ids_sample": missing_customer_ids[:10],
+        "full_dossier_segment_total": segment_total,
         "interests_total": sum(len(item.interests) for item in dossiers),
         "pains_total": sum(len(item.pains) for item in dossiers),
+        "family_rows_total": sum(len(item.family) for item in dossiers),
+        "money_rows_total": sum(len(item.money) for item in dossiers),
+        "signals_total": sum(len(item.signals) for item in dossiers),
+        "objections_total": sum(len(item.objections) for item in dossiers),
+        "chronology_rows_total": sum(len(item.chronology) for item in dossiers),
+        "next_step_rows_total": sum(1 for item in dossiers if item.next_step),
         "canonical_calls_loaded": len(canonical_calls),
+        "canonical_calls_warning": canonical_warning,
+        "actuality_header": actuality_header,
+        "source_freshness_top": freshness[:12],
+        "reconcile_status": reconcile.get("status") if reconcile else "missing",
         "out_xlsx": str(out),
         "safety": {
             "source_open_mode": "sqlite_mode_ro_immutable",
@@ -166,10 +231,22 @@ def load_canonical_call_client_texts(path: Path | str | None) -> Mapping[str, st
         return {}
     db = Path(path).expanduser().resolve(strict=False)
     if not db.exists():
-        raise FileNotFoundError(f"canonical calls DB does not exist: {db}")
+        return {}
     with _connect_ro(db) as con:
         rows = con.execute("SELECT canonical_call_id, transcript_client FROM canonical_calls").fetchall()
     return {str(row[0]): str(row[1] or "") for row in rows}
+
+
+def _load_canonical_calls_fail_soft(path: Path | str | None) -> tuple[Mapping[str, str], str]:
+    if path is None:
+        return {}, ""
+    db = Path(path).expanduser().resolve(strict=False)
+    if not db.exists():
+        return {}, f"canonical calls DB not found, continuing without call quotes: {db}"
+    try:
+        return load_canonical_call_client_texts(db), ""
+    except (sqlite3.Error, OSError) as exc:
+        return {}, f"canonical calls DB unavailable, continuing without call quotes: {type(exc).__name__}"
 
 
 def _guard_local_dossier_output_path(path: Path | str, allowed_root: Path | str) -> Path:
@@ -214,6 +291,7 @@ def _connect_ro(path: Path) -> sqlite3.Connection:
     uri = f"{path.as_uri()}?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA query_only = ON")
     return con
 
 
@@ -236,6 +314,307 @@ def _full_dossier_segment_customer_ids(con: sqlite3.Connection, *, tenant_id: st
     else:
         params = (tenant_id,)
     return [str(row[0]) for row in con.execute(sql, params).fetchall()]
+
+
+def _full_dossier_segment_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    row = con.execute(
+        """
+        SELECT COUNT(*) FROM (
+          SELECT customer_id
+          FROM timeline_events
+          WHERE tenant_id = ?
+            AND customer_id IS NOT NULL
+            AND customer_id != ''
+          GROUP BY customer_id
+          HAVING SUM(event_type = 'mango_call') > 0
+             AND SUM(event_type = 'email_message') > 0
+        )
+        """,
+        (tenant_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _table_exists(con: sqlite3.Connection, table: str) -> bool:
+    row = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return row is not None
+
+
+def _read_json(path: Path | None) -> Mapping[str, Any]:
+    if path is None:
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def _source_freshness(con: sqlite3.Connection) -> list[Mapping[str, Any]]:
+    if not _table_exists(con, "timeline_events"):
+        return []
+    return [
+        dict(row)
+        for row in con.execute(
+            """
+            SELECT source_system, MAX(event_at) AS max_event_at, COUNT(*) AS events
+            FROM timeline_events
+            GROUP BY source_system
+            ORDER BY max_event_at DESC, source_system
+            """
+        ).fetchall()
+    ]
+
+
+def _actuality_header(freshness: Sequence[Mapping[str, Any]], reconcile: Mapping[str, Any]) -> str:
+    freshness_text = "; ".join(f"{_display_freshness_source(row.get('source_system'))}={row.get('max_event_at')}" for row in freshness[:8])
+    if not freshness_text:
+        freshness_text = "нет данных"
+    status = str(reconcile.get("status") or "")
+    if status == "checked":
+        reconcile_text = (
+            f"{reconcile.get('generated_at')}; "
+            f"{reconcile.get('customers_changed')} расхождений из {reconcile.get('customers_checked')}; "
+            f"snapshot_stale={reconcile.get('snapshot_stale')}"
+        )
+    elif reconcile:
+        reconcile_text = f"не проводилась ({reconcile.get('reason') or status or 'unknown'})"
+    else:
+        reconcile_text = "не проводилась"
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return f"Данные: staging max event_at по источникам: {freshness_text}; собрано {generated_at}; сверка с живым AMO: {reconcile_text}"
+
+
+def _display_freshness_source(source: Any) -> str:
+    mapping = {
+        "amocrm_snapshot": "AMO снимок",
+        "amocrm_event": "AMO события",
+        "amocrm_price_readonly": "AMO цены",
+        "mango_processed_summary": "сводки звонков",
+        "mail_archive": "архив почты",
+        "mail_archive_stage2": "письма",
+        "tallanto_crm_call": "Tallanto платежи",
+        "master_contacts_snapshot": "сводка контактов",
+        "tallanto_snapshot": "Tallanto снимок",
+        "telegram_history": "Telegram история",
+    }
+    return mapping.get(str(source or ""), _clean_text(source) or "неизвестный источник")
+
+
+def _family_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+    if not _table_exists(con, "family_links_v1"):
+        return []
+    rows = con.execute(
+        """
+        SELECT canonical_name, name_variants_json, grades_json, subjects_json, brand, status, confidence, reason
+        FROM family_links_v1
+        WHERE tenant_id = ? AND customer_id = ?
+        ORDER BY status, confidence DESC, canonical_name
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        variants = _join_list_json(row["name_variants_json"])
+        grades = _join_list_json(row["grades_json"])
+        subjects = _join_list_json(row["subjects_json"])
+        quality = f"{row['status']}/{row['confidence']}"
+        text = f"{_clean_text(row['canonical_name'])}"
+        details = []
+        if variants and variants != text:
+            details.append(f"варианты: {variants}")
+        if grades:
+            details.append(f"класс: {grades}")
+        if subjects:
+            details.append(f"предметы: {subjects}")
+        if row["brand"]:
+            details.append(f"бренд: {row['brand']}")
+        if str(row["status"]) != "confident" or str(row["confidence"]) not in {"high", "medium"}:
+            details.append("уточнить семейную связь")
+        if details:
+            text += " (" + "; ".join(details) + ")"
+        result.append(DossierRow("Семья", text, f"family_links_v1:{quality}:{row['reason']}"))
+    return result
+
+
+def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+    if not _table_exists(con, "customer_purchases_v1"):
+        return []
+    rows = con.execute(
+        """
+        SELECT period, money_kind, total_in, total_out, deals_cnt, last_purchase_at, computability
+        FROM customer_purchases_v1
+        WHERE tenant_id = ? AND customer_id = ?
+        ORDER BY period, money_kind
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    result: list[DossierRow] = []
+    labels = {"fact": "факт оплат", "plan": "план сделок"}
+    for row in rows:
+        kind = str(row["money_kind"] or "plan")
+        label = labels.get(kind, kind)
+        text = (
+            f"{label}, период {row['period']}: вход {_format_money(row['total_in'])}; "
+            f"возвраты/исход {_format_money(row['total_out'])}; сделок {int(row['deals_cnt'] or 0)}"
+        )
+        if row["last_purchase_at"]:
+            text += f"; последнее событие {row['last_purchase_at']}"
+        if row["computability"]:
+            text += f"; вычислимость {row['computability']}"
+        result.append(DossierRow("Деньги", text, "customer_purchases_v1"))
+    return result
+
+
+def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+    if not _table_exists(con, "derived_signals"):
+        return []
+    rows = con.execute(
+        """
+        SELECT signal_type, severity, expires_at, confidence, requires_manager_review, record_json
+        FROM derived_signals
+        WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
+        ORDER BY severity DESC, expires_at, signal_type
+        LIMIT 12
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        record = _safe_json(row["record_json"])
+        action = _clean_text(record.get("recommended_action") or record.get("action") or "")
+        evidence = _clean_text(record.get("evidence_text") or record.get("reason") or "")
+        label = _signal_label(str(row["signal_type"] or ""))
+        parts = [label]
+        if row["severity"]:
+            parts.append(f"важность: {row['severity']}")
+        if row["expires_at"]:
+            parts.append(f"до: {row['expires_at']}")
+        if action and _meaningful_next_step(action):
+            parts.append(f"рекомендация: {action}")
+        if evidence:
+            parts.append(f"основание: {evidence}")
+        result.append(DossierRow("Сигналы", "; ".join(parts), f"derived_signals:{row['signal_type']}"))
+    return result
+
+
+def _next_step_from_signals(signals: Sequence[DossierRow]) -> str:
+    for signal in signals:
+        match = re.search(r"рекомендация:\s*([^;]+)", signal.text)
+        if not match:
+            continue
+        value = _clean_text(match.group(1))
+        if _meaningful_next_step(value):
+            return value
+    return ""
+
+
+def _meaningful_next_step(value: str) -> bool:
+    text = value.casefold()
+    if not text or text in {"уточнить у менеджера", "связаться с клиентом", "позвонить клиенту"}:
+        return False
+    if "посмотреть историю" in text:
+        return False
+    return len(text.split()) >= 3
+
+
+def _objection_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+    if not _table_exists(con, "customer_objections_v1"):
+        return []
+    rows = con.execute(
+        """
+        SELECT source_channel, objection_type, quote_preview, budget_hint_rub, price_sensitivity, confidence, speaker
+        FROM customer_objections_v1
+        WHERE tenant_id = ?
+          AND customer_id = ?
+          AND speaker = 'client'
+        ORDER BY confidence DESC, extracted_at DESC
+        LIMIT 12
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        quote = _safe_marker_phrase(row["quote_preview"], re.compile(r".+"))
+        text = f"{row['objection_type']}: {quote}"
+        if row["budget_hint_rub"]:
+            text += f"; бюджет: {_format_money(row['budget_hint_rub'])}"
+        if row["price_sensitivity"]:
+            text += f"; чувствительность к цене: {row['price_sensitivity']}"
+        result.append(DossierRow("Возражения", text, f"customer_objections_v1:{row['source_channel']}:{row['confidence']}"))
+    return result
+
+
+def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str, limit: int) -> list[DossierRow]:
+    rows = con.execute(
+        """
+        SELECT event_at, event_type, source_system, subject, summary, text_preview, record_json
+        FROM timeline_events
+        WHERE tenant_id = ?
+          AND customer_id = ?
+          AND (superseded_by IS NULL OR superseded_by = '')
+        ORDER BY event_at DESC, event_id DESC
+        LIMIT ?
+        """,
+        (tenant_id, customer_id, int(limit)),
+    ).fetchall()
+    result: list[DossierRow] = []
+    for row in rows:
+        summary = _event_summary_for_manager(row)
+        if not summary:
+            continue
+        text = f"{row['event_at']} [{row['event_type']}] {summary}"
+        result.append(DossierRow("Хронология", text, str(row["source_system"] or "")))
+    return result
+
+
+def _event_summary_for_manager(row: sqlite3.Row) -> str:
+    event_type = str(row["event_type"] or "")
+    subject = _clean_text(row["subject"])
+    summary = _clean_text(row["summary"]) or _clean_text(row["text_preview"])
+    if event_type == "email_message":
+        if EMAIL_SUMMARY_REVIEW_NEEDED_RE.search(summary):
+            summary = f"Письмо «{subject or 'без темы'}»: полный текст в базе."
+        elif summary:
+            summary = f"{summary} Полный текст в базе."
+        elif subject:
+            summary = f"Письмо «{subject}»: полный текст в базе."
+    return summary
+
+
+def _signal_label(signal_type: str) -> str:
+    labels = {
+        "client_returned": "клиент вернулся",
+        "callback_due": "нужно перезвонить",
+        "deal_stalling": "сделка зависла",
+        "hot_streak": "горячая серия касаний",
+        "season_return_candidate": "сезонный возврат",
+    }
+    return labels.get(signal_type, signal_type)
+
+
+def _format_money(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return f"{amount:,.0f} руб.".replace(",", " ")
+
+
+def _join_list_json(raw: Any) -> str:
+    value = _json_any(raw) if isinstance(raw, str) else raw
+    if isinstance(value, list):
+        return ", ".join(_clean_text(item) for item in value if _clean_text(item))
+    return _clean_text(value)
+
+
+def _json_any(value: str | None) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
 
 
 def _product_interest_values(customer_record_json: str | None, opportunities: Sequence[sqlite3.Row]) -> tuple[str, ...]:
@@ -288,6 +667,8 @@ def _markers_from_client_text(text: str, pattern: re.Pattern[str], *, kind: str,
         if not pattern.search(sentence):
             continue
         phrase = _safe_marker_phrase(sentence, pattern)
+        if kind == "interest" and not INTEREST_CONTEXT_RE.search(phrase):
+            continue
         if not phrase or phrase.casefold() in seen:
             continue
         seen.add(phrase.casefold())
@@ -444,24 +825,81 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     wb = Workbook()
     overview = wb.active
     overview.title = "Оглавление"
-    overview.append(("customer_id", "Имя", "Интересов", "Болей"))
+    overview.append(("customer_id", "Имя", "Семья", "Сигналы", "Следующий шаг", "Интересов", "Болей", "Возражений", "Хронология"))
     overview.freeze_panes = "A2"
     for cell in overview[1]:
         cell.font = Font(bold=True)
     for index, dossier in enumerate(dossiers, start=1):
         sheet_name = f"Клиент {index}"
-        overview.append((dossier.customer_id, dossier.display_name, len(dossier.interests), len(dossier.pains)))
+        overview.append(
+            (
+                dossier.customer_id,
+                dossier.display_name,
+                len(dossier.family),
+                len(dossier.signals),
+                "да" if dossier.next_step else "",
+                len(dossier.interests),
+                len(dossier.pains),
+                len(dossier.objections),
+                len(dossier.chronology),
+            )
+        )
         ws = wb.create_sheet(sheet_name)
-        ws.append(("Раздел", "Значение", "Источник"))
+        ws.append(("Раздел", "Значение", "Откуда"))
         ws.freeze_panes = "A2"
         for cell in ws[1]:
             cell.font = Font(bold=True)
-        ws.append(("Кто", dossier.display_name, "customer_identities"))
-        ws.append(("Контакт", f"{dossier.phone} {dossier.email}".strip(), "customer_identities"))
+        if dossier.actuality_header:
+            ws.append(("Актуальность", dossier.actuality_header, _display_source("timeline_events/reconcile")))
+        ws.append(("Кто", dossier.display_name, _display_source("customer_identities")))
+        ws.append(("Контакт", f"{dossier.phone} {dossier.email}".strip(), _display_source("customer_identities")))
+        for row in dossier.family:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.money:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        for row in dossier.signals:
+            ws.append((row.section, row.text, _display_source(row.source)))
+        if dossier.next_step:
+            ws.append(("Следующий шаг", dossier.next_step, _display_source("derived_signals")))
+        for row in dossier.objections:
+            ws.append((row.section, row.text, _display_source(row.source)))
         for item in dossier.interests:
-            ws.append(("Интересы", item.text, item.source))
+            ws.append(("Интересы", item.text, _display_source(item.source)))
         for item in dossier.pains:
-            ws.append(("Боли", item.text, item.source))
+            ws.append(("Боли", item.text, _display_source(item.source)))
+        for row in dossier.chronology:
+            ws.append((row.section, row.text, _display_source(row.source)))
         for column, width in {"A": 18, "B": 90, "C": 28}.items():
             ws.column_dimensions[column].width = width
     wb.save(path)
+
+
+def _display_source(source: str) -> str:
+    text = str(source or "")
+    if text.startswith("family_links_v1"):
+        return "Семейная карта"
+    if text.startswith("customer_purchases_v1"):
+        return "Деньги из staging"
+    if text.startswith("derived_signals"):
+        return "Сигнал Customer Timeline"
+    if text.startswith("customer_objections_v1"):
+        return "Клиентское возражение"
+    if text.startswith("mango_call"):
+        return "Клиентская реплика из звонка"
+    if text == "products_of_interest":
+        return "Данные клиента/сделки"
+    mapping = {
+        "timeline_events/reconcile": "Шапка актуальности",
+        "customer_identities": "Карточка клиента",
+        "mango_processed_summary": "Сводка звонка",
+        "mail_archive_stage2": "Письмо",
+        "mail_archive": "Письмо",
+        "amocrm_snapshot": "AMO read-only",
+        "amocrm_price_readonly": "AMO read-only",
+        "amocrm_event": "AMO read-only",
+        "master_contacts_snapshot": "Сводка контакта",
+        "tallanto_snapshot": "Tallanto staging",
+        "tallanto_crm_call": "Tallanto staging",
+        "telegram_history": "Telegram история",
+    }
+    return mapping.get(text, text or "Источник не указан")

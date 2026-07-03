@@ -603,3 +603,30 @@ staging-БД добавлены `--timeline-db` и явный `--allowed-root`.
 CRM/AMO write не выполнялся: endpoints report содержит только GET
 `/api/v4/leads`, `/api/v4/contacts`, `/api/v4/events`; notes endpoint помечен
 `not_used_whitelist_not_extended`.
+
+### D-038. Nightly service v1 is a staging orchestrator, not a shell scheduler for every source
+
+Решение: блок 5 добавляет `customer_timeline` nightly service как
+staging-only обвязку над безопасными локальными incremental sources:
+`mango_processed_summary` и сохранённые AMO JSONL из блока 4.3. Сервис
+публикует snapshot manifest (`sqlite/-wal/-shm` sha256, `quick_check`, counts,
+source counts, cursors), держит service-level lock и использует существующий
+incremental lock. Launchd-пакет подготовлен как template + dry-run
+install/uninstall; фактическая установка не выполняется.
+
+Почему так: в марафоне нельзя запускать произвольные shell-команды, live API
+или внешние записи из ночной службы. Tallanto, Wappi и mail уже имеют отдельные
+стадийные раннеры с собственными safety-гейтами, поэтому в service v1 они
+зафиксированы как disabled steps с явной причиной, а не вызываются через
+универсальный shell wrapper.
+
+Проверка: после аудиторских фиксов два финальных последовательных запуска на staging дали
+`changed_customer_count=0/0` (`20260703T092146Z`, `20260703T092201Z`),
+`quick_check=ok`, stable counts:
+`customer_identities=20579`, `timeline_events=171733`,
+`bot_context_chunks=131174`, `derived_signals=1118`; `mail_archive_stage2`,
+`wappi_telegram`, `wappi_max` unsafe `allowed_for_bot=1` count = `0`.
+`plutil -lint` для plist OK, install/uninstall без `--apply` только dry-run.
+Prod DB, CRM, AMO write, Tallanto, live bot не трогались. Аудиторские notes
+закрыты: service-lock держится до публикации manifest/latest, а service paths
+и source paths валидируются относительно `allowed_root`.

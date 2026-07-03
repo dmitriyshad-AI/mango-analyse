@@ -22,6 +22,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, stable_digest
 from mango_mvp.customer_timeline.ingestion import (
     AmoSnapshotNormalizer,
+    MangoCallSummaryNormalizer,
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineNormalizer,
@@ -270,6 +271,8 @@ def normalizer_for_source(source: IncrementalSourceConfig) -> TimelineNormalizer
         return AmoSnapshotNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "amo_event":
         return AmoEventNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "mango_processed_summary":
+        return MangoCallSummaryNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "jsonl":
         return JsonlTimelineNormalizer(source.source_system)
     raise ValueError(f"unsupported incremental normalizer: {source.normalizer}")

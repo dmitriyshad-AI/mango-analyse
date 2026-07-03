@@ -261,7 +261,7 @@ def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
 
     assert "masked_or_debug_placeholder" in blockers
 
-    non_mask_blockers = _row_blockers(
+    compressed_marker_blockers = _row_blockers(
         {
             "contact_card": {"ready_for_amo": True, "blockers": []},
             "deal_card": {
@@ -279,7 +279,27 @@ def test_crm_export_package_blocks_masked_or_debug_placeholders() -> None:
         },
     )
 
-    assert "masked_or_debug_placeholder" not in non_mask_blockers
+    assert "masked_or_debug_placeholder" in compressed_marker_blockers
+
+    clean_blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {
+                "ready_for_amo": True,
+                "blockers": [],
+                "fields": {"Возражения": "Клиент обсуждал скидку и сроки оплаты."},
+            },
+        },
+        contact_payload={
+            "Последняя сводка": "Сводка:\nКлиент выбрал курс и ждёт ссылку.",
+            "История общения": "Клиент попросил оформить запись.",
+        },
+        deal_payload={
+            "Следующий шаг": "Позвонить клиенту и уточнить решение.",
+        },
+    )
+
+    assert "masked_or_debug_placeholder" not in clean_blockers
 
 
 def test_crm_export_package_blocks_foreign_brand_marker_for_active_brand() -> None:

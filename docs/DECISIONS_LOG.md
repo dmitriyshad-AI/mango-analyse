@@ -822,5 +822,5 @@ warning и пустой словарь, а не падение сборки па
 Проверка: focused pytest `52 passed`; staging mail-enrich по 66 кандидатам
 создал `llm_calls_total=14`, `summary_review_needed=124`, `quick_check=ok`,
 `mail_stage2_visibility_assertion=passed`. Пересборка CRM-пакета дала
-`ready_rows=7` вместо `0`, `family_or_child_data_requires_review=20` вместо
+`ready_rows=3` вместо `0`, `family_or_child_data_requires_review=20` вместо
 `66`, idempotence passed. Прод/CRM/Tallanto/live writes = 0.

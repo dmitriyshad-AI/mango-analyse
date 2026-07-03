@@ -58,7 +58,7 @@ RAW_CHILD_DATA_RE = re.compile(
 MASKED_OR_DEBUG_PLACEHOLDER_RE = re.compile(
     r"<[^>\n]{0,80}masked[^>\n]{0,80}>|"
     r"\b[a-zа-я0-9_]*masked\b|"
-    r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|скрыт[^\]]*|redacted|masked)\]",
+    r"\[(?:name|fio|email|domain|phone|телефон|почта|имя|фио|сжато|текст\s+сжат[^\]]*|скрыт[^\]]*|redacted|masked)\]",
     re.I,
 )
 BRAND_MARKERS = {

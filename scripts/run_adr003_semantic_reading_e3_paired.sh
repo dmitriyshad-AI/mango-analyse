@@ -2,12 +2,34 @@
 set -euo pipefail
 
 DRY_CHECK=0
-if [[ "${1:-}" == "--dry-check" ]]; then
-  DRY_CHECK=1
-  shift
-fi
-if [[ "$#" -ne 0 ]]; then
-  echo "Usage: $0 [--dry-check]" >&2
+RESUME_ON_REPORT=""
+FORCE_RESUME=0
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --dry-check)
+      DRY_CHECK=1
+      shift
+      ;;
+    --resume-on-report)
+      if [[ -z "${2:-}" ]]; then
+        echo "Usage: $0 [--dry-check] [--resume-on-report OUT_DIR] [--force]" >&2
+        exit 2
+      fi
+      RESUME_ON_REPORT="$2"
+      shift 2
+      ;;
+    --force)
+      FORCE_RESUME=1
+      shift
+      ;;
+    *)
+      echo "Usage: $0 [--dry-check] [--resume-on-report OUT_DIR] [--force]" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ "$DRY_CHECK" == "1" && -n "$RESUME_ON_REPORT" ]]; then
+  echo "--dry-check and --resume-on-report are mutually exclusive" >&2
   exit 2
 fi
 
@@ -20,6 +42,8 @@ SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_stagi
 READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf}"
 if [[ "$DRY_CHECK" == "1" ]]; then
   OUT="${OUT:-runs/adr003_semantic_reading_e3_dry_check_${REV_LABEL}}"
+elif [[ -n "$RESUME_ON_REPORT" ]]; then
+  OUT="$RESUME_ON_REPORT"
 else
   OUT="${OUT:-runs/adr003_semantic_reading_e3_paired_${REV_LABEL}}"
 fi
@@ -57,141 +81,16 @@ base_env=(
 validate_leg() {
   local leg="$1"
   local expect_trace="$2"
-  python3 - "$OUT/$leg/dynamic_summary.json" "$OUT/$leg/dynamic_dialog_transcripts.jsonl" "$leg" "$expect_trace" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-summary_path = Path(sys.argv[1])
-transcripts_path = Path(sys.argv[2])
-leg = sys.argv[3]
-expect_trace = sys.argv[4] == "1"
-
-def fail(message: str) -> None:
-    print(f"INVALID_{leg}: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-if not summary_path.is_file():
-    fail(f"missing summary: {summary_path}")
-if not transcripts_path.is_file():
-    fail(f"missing transcripts: {transcripts_path}")
-
-summary = json.loads(summary_path.read_text(encoding="utf-8"))
-profile = (
-    summary.get("run_config", {})
-    .get("key_flags", {})
-    .get("profile", {})
-)
-if profile.get("env") != "pilot_gold_v1" or profile.get("effective") is not True:
-    fail(f"pilot profile not active: {profile!r}")
-
-llm_calls = summary.get("llm_calls") or {}
-if int(llm_calls.get("bot_direct_draft") or 0) <= 0:
-    fail(f"bot_direct_draft is not positive: {llm_calls!r}")
-
-dialogs = [
-    json.loads(line)
-    for line in transcripts_path.read_text(encoding="utf-8").splitlines()
-    if line.strip()
-]
-turns = [turn for dialog in dialogs for turn in (dialog.get("turns") or [])]
-if not turns:
-    fail("no turns in transcripts")
-provider_errors = [
-    str(turn.get("bot_provider_error") or "").strip().casefold()
-    for turn in turns
-    if str(turn.get("bot_provider_error") or "").strip()
-]
-non_timeout_provider_errors = [value for value in provider_errors if value != "timeout"]
-if non_timeout_provider_errors:
-    fail(f"provider errors: {non_timeout_provider_errors[:3]!r}")
-direct_turns = [
-    turn
-    for turn in turns
-    if isinstance(turn.get("bot_direct_path"), dict) and turn.get("bot_direct_path")
-]
-if len(direct_turns) != len(turns):
-    fail(f"direct path metadata on {len(direct_turns)}/{len(turns)} turns")
-
-P0_PREBLOCK_REASONS = {"p0_pre_gate", "direct_path_preblocked_p0"}
-
-def direct_path(turn):
-    value = turn.get("bot_direct_path")
-    return value if isinstance(value, dict) else {}
-
-def reason_evidence(turn):
-    candidates = []
-    reason = turn.get("reason_evidence")
-    if isinstance(reason, dict):
-        candidates.append(reason)
-    direct = direct_path(turn)
-    direct_reason = direct.get("reason_evidence")
-    if isinstance(direct_reason, dict):
-        candidates.append(direct_reason)
-    for candidate in candidates:
-        if candidate:
-            return candidate
-    return {}
-
-def provider_error(turn):
-    candidates = [
-        turn.get("bot_provider_error"),
-        turn.get("provider_error"),
-        reason_evidence(turn).get("provider_error"),
-    ]
-    for candidate in candidates:
-        value = str(candidate or "").strip().casefold()
-        if value:
-            return value
-    return ""
-
-def is_timeout(turn):
-    return provider_error(turn) == "timeout"
-
-def is_p0_preblocked(turn):
-    direct = direct_path(turn)
-    return (
-        direct.get("model_called") is False
-        and direct.get("preblocked") is True
-        and str(direct.get("preblock_reason") or "").strip() in P0_PREBLOCK_REASONS
-    )
-
-def has_frame(turn):
-    frame = turn.get("bot_semantic_frame")
-    return isinstance(frame, dict) and bool(frame)
-
-frame_turns = [turn for turn in turns if has_frame(turn)]
-preblocked_p0 = [turn for turn in turns if is_p0_preblocked(turn)]
-timeouts = [turn for turn in turns if is_timeout(turn)]
-eligible_turns = [turn for turn in turns if not is_p0_preblocked(turn) and not is_timeout(turn)]
-eligible_frame_turns = [turn for turn in eligible_turns if has_frame(turn)]
-if not eligible_turns:
-    fail("no eligible model-called turns for semantic frame validation")
-eligible_frame_rate = len(eligible_frame_turns) / len(eligible_turns)
-if len(eligible_frame_turns) * 100 < len(eligible_turns) * 97:
-    fail(
-        "semantic frame eligible emission "
-        f"{len(eligible_frame_turns)}/{len(eligible_turns)} "
-        f"(preblocked_p0={len(preblocked_p0)} timeouts={len(timeouts)})"
-    )
-trace_turns = [
-    turn
-    for turn in turns
-    if isinstance(turn.get("bot_semantic_reading_trace"), list) and turn.get("bot_semantic_reading_trace")
-]
-if expect_trace and not trace_turns:
-    fail("ON leg has no semantic_reading_trace records")
-if not expect_trace and trace_turns:
-    fail(f"B leg unexpectedly has semantic_reading_trace on {len(trace_turns)} turns")
-
-print(
-    f"VALID_E3_{leg}: dialogs={len(dialogs)} turns={len(turns)} "
-    f"preblocked_p0={len(preblocked_p0)} timeouts={len(timeouts)} "
-    f"model_called_eligible={len(eligible_turns)} frames={len(eligible_frame_turns)} "
-    f"eligible_frame_rate={eligible_frame_rate:.4f} "
-    f"bot_direct_draft={llm_calls.get('bot_direct_draft')} trace_turns={len(trace_turns)}"
-)
-PY
+  local expect_arg=()
+  if [[ "$expect_trace" == "1" ]]; then
+    expect_arg=(--expect-trace)
+  fi
+  PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
+    --summary "$OUT/$leg/dynamic_summary.json" \
+    --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
+    --leg "$leg" \
+    "${expect_arg[@]}" \
+    --out-json "$OUT/$leg/e3_validation.json"
 }
 
 write_sha_manifest() {
@@ -229,8 +128,10 @@ def display_path(path: Path) -> str:
 artifact_paths = {
     "B_transcripts": out_dir / "B" / "dynamic_dialog_transcripts.jsonl",
     "B_summary": out_dir / "B" / "dynamic_summary.json",
+    "B_validation": out_dir / "B" / "e3_validation.json",
     "ON_transcripts": out_dir / "ON" / "dynamic_dialog_transcripts.jsonl",
     "ON_summary": out_dir / "ON" / "dynamic_summary.json",
+    "ON_validation": out_dir / "ON" / "e3_validation.json",
     "REPORT_json": out_dir / "REPORT" / "adr003_semantic_frame_eval_report.json",
     "REPORT_markdown": out_dir / "REPORT" / "adr003_semantic_frame_eval_report.md",
 }
@@ -273,6 +174,63 @@ print(f"sha_manifest={out_dir / 'sha_manifest.json'}")
 PY
 }
 
+run_on_leg() {
+  echo "== ON: B + semantic reading classes =="
+  "${base_env[@]}" \
+    TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
+    python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
+      --out-dir "$OUT/ON" \
+      --progress-json "$OUT/ON/progress.json" \
+      --progress-leg ON
+  validate_leg ON 1
+}
+
+run_report() {
+  echo "== Report =="
+  PYTHONPATH="$ROOT/src" python3 scripts/report_adr003_semantic_frame_eval.py \
+    --off-transcripts "$OUT/B/dynamic_dialog_transcripts.jsonl" \
+    --off-summary "$OUT/B/dynamic_summary.json" \
+    --on-transcripts "$OUT/ON/dynamic_dialog_transcripts.jsonl" \
+    --on-summary "$OUT/ON/dynamic_summary.json" \
+    --out-dir "$OUT/REPORT"
+}
+
+if [[ -n "$RESUME_ON_REPORT" ]]; then
+  if [[ ! -d "$OUT" ]]; then
+    echo "Resume OUT_DIR does not exist: $OUT" >&2
+    exit 2
+  fi
+  for required in \
+    "$OUT/B/dynamic_dialog_transcripts.jsonl" \
+    "$OUT/B/dynamic_summary.json"
+  do
+    if [[ ! -f "$required" ]]; then
+      echo "Resume OUT_DIR is missing required B artifact: $required" >&2
+      exit 2
+    fi
+  done
+  if [[ -e "$OUT/ON" || -e "$OUT/REPORT" || -e "$OUT/sha_manifest.json" ]]; then
+    if [[ "$FORCE_RESUME" != "1" ]]; then
+      echo "Refusing to overwrite existing ON/REPORT/sha_manifest under $OUT; pass --force to replace them." >&2
+      exit 2
+    fi
+    rm -rf "$OUT/ON" "$OUT/REPORT" "$OUT/sha_manifest.json"
+  fi
+  echo "ADR003 E3 resume ON/report"
+  echo "rev=$(git rev-parse HEAD)"
+  echo "scenarios=$SCEN"
+  echo "snapshot=$SNAPSHOT"
+  echo "reading_classes=$READING_CLASSES"
+  echo "out=$OUT"
+  echo "mode=resume-on-report"
+  validate_leg B 0
+  run_on_leg
+  run_report
+  write_sha_manifest
+  echo "Done resume-on-report: $OUT"
+  exit 0
+fi
+
 mkdir -p "$OUT"
 
 echo "ADR003 E3 paired"
@@ -294,14 +252,7 @@ echo "== B: profile + reliable + inline frame, reading classes OFF =="
     --progress-leg B
 validate_leg B 0
 
-echo "== ON: B + semantic reading classes =="
-"${base_env[@]}" \
-  TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
-  python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
-    --out-dir "$OUT/ON" \
-    --progress-json "$OUT/ON/progress.json" \
-    --progress-leg ON
-validate_leg ON 1
+run_on_leg
 
 if [[ "$DRY_CHECK" == "1" ]]; then
   write_sha_manifest
@@ -309,13 +260,7 @@ if [[ "$DRY_CHECK" == "1" ]]; then
   exit 0
 fi
 
-echo "== Report =="
-PYTHONPATH="$ROOT/src" python3 scripts/report_adr003_semantic_frame_eval.py \
-  --off-transcripts "$OUT/B/dynamic_dialog_transcripts.jsonl" \
-  --off-summary "$OUT/B/dynamic_summary.json" \
-  --on-transcripts "$OUT/ON/dynamic_dialog_transcripts.jsonl" \
-  --on-summary "$OUT/ON/dynamic_summary.json" \
-  --out-dir "$OUT/REPORT"
+run_report
 
 write_sha_manifest
 echo "Done: $OUT"

@@ -181,7 +181,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Inline text health gate: `{inline_gate.get('status', 'n/a')}`",
         f"- P0 route lost: `{inline_gate.get('p0_route_lost_count', 'n/a')}`",
         f"- P0 hygiene flag diffs: `{inline_gate.get('p0_hygiene_flag_diff_count', 'n/a')}`",
+        f"- P0 hygiene lost/added: `{inline_gate.get('p0_hygiene_lost_count', 'n/a')}` / `{inline_gate.get('p0_hygiene_added_count', 'n/a')}`",
         f"- Unverified new-number turns: `{inline_gate.get('new_number_unverified_count', 'n/a')}`",
+        f"- Adjacent-fact new-number warnings: `{inline_gate.get('new_number_adjacent_warning_count', 'n/a')}`",
         f"- Dangerous manager-to-self flips: `{inline_gate.get('route_flip_dangerous_count', 'n/a')}`",
         f"- Inline vs posthoc compared turns: `{inline_posthoc.get('compared_turns', 'n/a')}`",
         f"- Inline vs posthoc mismatch count: `{inline_posthoc.get('mismatch_count', 'n/a')}`",
@@ -639,14 +641,27 @@ def _inline_text_health_gate(
 ) -> dict[str, Any]:
     baseline_map = _turn_map(baseline_dialogs)
     inline_map = _turn_map(inline_dialogs)
+    client_history_numbers = _client_history_number_map(inline_dialogs)
+    timeout_dialog_ids = _timeout_dialog_ids(baseline_dialogs) | _timeout_dialog_ids(inline_dialogs)
     common = sorted(set(baseline_map) & set(inline_map))
     missing_baseline = sorted(set(inline_map) - set(baseline_map))
     missing_inline = sorted(set(baseline_map) - set(inline_map))
+    missing_baseline_explained, missing_baseline_unexplained = _split_missing_turns_by_timeout(
+        missing_baseline,
+        timeout_dialog_ids,
+    )
+    missing_inline_explained, missing_inline_unexplained = _split_missing_turns_by_timeout(
+        missing_inline,
+        timeout_dialog_ids,
+    )
     p0_route_lost: list[dict[str, Any]] = []
-    p0_hygiene_flag_diff: list[dict[str, Any]] = []
+    p0_hygiene_lost: list[dict[str, Any]] = []
+    p0_hygiene_added: list[dict[str, Any]] = []
     new_number_unverified: list[dict[str, Any]] = []
+    new_number_adjacent_warning: list[dict[str, Any]] = []
     route_flip_dangerous: list[dict[str, Any]] = []
     new_number_verified = 0
+    number_source_counts: Counter[str] = Counter()
 
     for key in common:
         baseline_turn = baseline_map[key]
@@ -668,21 +683,43 @@ def _inline_text_health_gate(
             if baseline_p0:
                 p0_route_lost.append(dict(example_base))
         elif baseline_p0 != inline_p0:
-            p0_hygiene_flag_diff.append(
-                {
-                    **example_base,
-                    "baseline_p0_signal": baseline_p0,
-                    "inline_p0_signal": inline_p0,
-                }
-            )
+            example = {
+                **example_base,
+                "baseline_p0_signal": baseline_p0,
+                "inline_p0_signal": inline_p0,
+            }
+            if baseline_p0 and not inline_p0:
+                p0_hygiene_lost.append(example)
+            else:
+                p0_hygiene_added.append(example)
 
         baseline_numbers = _numbers(baseline_turn.get("bot_text"))
         inline_numbers = _numbers(inline_turn.get("bot_text"))
-        verified_numbers = _verified_number_claims_from_audit(inline_turn)
-        unverified = sorted(number for number in (inline_numbers - baseline_numbers) if number not in verified_numbers)
-        verified = sorted(number for number in (inline_numbers - baseline_numbers) if number in verified_numbers)
+        classified = _classify_new_numbers(
+            inline_turn,
+            inline_numbers - baseline_numbers,
+            client_history_numbers.get(key, set()),
+        )
+        for source, numbers in classified.items():
+            number_source_counts[source] += len(numbers)
+        verified = sorted(
+            number
+            for source, numbers in classified.items()
+            if source in {"audit", "exact_fact", "client_current", "client_history"}
+            for number in numbers
+        )
+        adjacent = sorted(classified.get("adjacent_fact_warning", ()))
+        unverified = sorted(classified.get("unverified", ()))
         if verified:
             new_number_verified += 1
+        if adjacent:
+            new_number_adjacent_warning.append(
+                {
+                    **example_base,
+                    "new_numbers": adjacent[:8],
+                    "verified_new_numbers": verified[:8],
+                }
+            )
         if unverified:
             new_number_unverified.append(
                 {
@@ -692,26 +729,49 @@ def _inline_text_health_gate(
                 }
             )
 
-    passed = (
-        not missing_baseline
-        and not missing_inline
-        and not p0_route_lost
-        and not new_number_unverified
-        and not route_flip_dangerous
+    fail = bool(p0_route_lost or new_number_unverified or route_flip_dangerous)
+    review = bool(
+        missing_baseline_unexplained
+        or missing_inline_unexplained
+        or p0_hygiene_lost
+        or p0_hygiene_added
+        or new_number_adjacent_warning
     )
+    status = "fail" if fail else ("needs_review" if review else "pass")
+    p0_hygiene_flag_diff = p0_hygiene_lost + p0_hygiene_added
     return {
-        "schema_version": "inline_text_health_gate_v1_2026_07_03",
-        "status": "pass" if passed else "fail",
+        "schema_version": "inline_text_health_gate_v1_1_2026_07_03",
+        "status": status,
         "compared_turns": len(common),
         "missing_baseline_turns": len(missing_baseline),
+        "missing_baseline_explained_count": len(missing_baseline_explained),
+        "missing_baseline_unexplained_count": len(missing_baseline_unexplained),
+        "missing_baseline_explained_examples": missing_baseline_explained[:25],
+        "missing_baseline_unexplained_examples": missing_baseline_unexplained[:25],
         "missing_inline_turns": len(missing_inline),
+        "missing_inline_explained_count": len(missing_inline_explained),
+        "missing_inline_unexplained_count": len(missing_inline_unexplained),
+        "missing_inline_explained_examples": missing_inline_explained[:25],
+        "missing_inline_unexplained_examples": missing_inline_unexplained[:25],
         "p0_route_lost_count": len(p0_route_lost),
         "p0_route_lost_examples": p0_route_lost[:25],
         "p0_hygiene_flag_diff_count": len(p0_hygiene_flag_diff),
         "p0_hygiene_flag_diff_examples": p0_hygiene_flag_diff[:25],
+        "p0_hygiene_lost_count": len(p0_hygiene_lost),
+        "p0_hygiene_lost_examples": p0_hygiene_lost[:25],
+        "p0_hygiene_added_count": len(p0_hygiene_added),
+        "p0_hygiene_added_examples": p0_hygiene_added[:25],
         "new_number_verified_turn_count": new_number_verified,
+        "number_verified_by_audit_count": number_source_counts["audit"],
+        "number_verified_by_exact_fact_count": number_source_counts["exact_fact"],
+        "number_verified_by_client_current_count": number_source_counts["client_current"],
+        "number_verified_by_client_history_count": number_source_counts["client_history"],
+        "number_adjacent_warning_count": number_source_counts["adjacent_fact_warning"],
+        "number_unverified_claim_count": number_source_counts["unverified"],
         "new_number_unverified_count": len(new_number_unverified),
         "new_number_unverified_examples": new_number_unverified[:25],
+        "new_number_adjacent_warning_count": len(new_number_adjacent_warning),
+        "new_number_adjacent_warning_examples": new_number_adjacent_warning[:25],
         "route_flip_dangerous_count": len(route_flip_dangerous),
         "route_flip_dangerous_examples": route_flip_dangerous[:25],
     }
@@ -728,6 +788,136 @@ def _verified_number_claims_from_audit(turn: Mapping[str, Any]) -> set[str]:
             continue
         result.update(_numbers(item.get("claim_text")))
     return result
+
+
+def _classify_new_numbers(
+    turn: Mapping[str, Any],
+    numbers: set[str],
+    client_history_numbers: set[str],
+) -> dict[str, set[str]]:
+    classified: dict[str, set[str]] = {
+        "audit": set(),
+        "exact_fact": set(),
+        "client_current": set(),
+        "client_history": set(),
+        "adjacent_fact_warning": set(),
+        "unverified": set(),
+    }
+    if not numbers:
+        return classified
+    audit_numbers = _verified_number_claims_from_audit(turn)
+    exact_fact_numbers = _selected_fact_numbers(turn, "selected_exact_ids")
+    adjacent_fact_numbers = _selected_fact_numbers(turn, "selected_adjacent_ids")
+    current_client_numbers = _numbers(turn.get("client_message"))
+    for number in numbers:
+        if _number_in(number, audit_numbers):
+            classified["audit"].add(number)
+        elif _number_in(number, exact_fact_numbers):
+            classified["exact_fact"].add(number)
+        elif _number_in(number, current_client_numbers):
+            classified["client_current"].add(number)
+        elif _number_in(number, client_history_numbers):
+            classified["client_history"].add(number)
+        elif _number_in(number, adjacent_fact_numbers):
+            classified["adjacent_fact_warning"].add(number)
+        else:
+            classified["unverified"].add(number)
+    return classified
+
+
+def _number_in(number: str, candidates: set[str]) -> bool:
+    return number in candidates or any(_number_equivalent(number, candidate) for candidate in candidates)
+
+
+def _number_equivalent(left: str, right: str) -> bool:
+    left_norm = str(left or "").casefold().replace("\u00a0", " ").strip()
+    right_norm = str(right or "").casefold().replace("\u00a0", " ").strip()
+    if left_norm == right_norm:
+        return True
+    left_digits = re.sub(r"\D+", "", left_norm)
+    right_digits = re.sub(r"\D+", "", right_norm)
+    if not left_digits or left_digits != right_digits:
+        return False
+    left_is_class = "класс" in left_norm or "кл" in left_norm
+    right_is_class = "класс" in right_norm or "кл" in right_norm
+    left_is_bare = bool(re.fullmatch(r"\d{1,2}", left_digits)) and not any(ch in left_norm for ch in "₽%.,")
+    right_is_bare = bool(re.fullmatch(r"\d{1,2}", right_digits)) and not any(ch in right_norm for ch in "₽%.,")
+    return (left_is_class and right_is_bare) or (right_is_class and left_is_bare)
+
+
+def _selected_fact_numbers(turn: Mapping[str, Any], selection_key: str) -> set[str]:
+    trace = turn.get("bot_fact_retrieval_trace") if isinstance(turn.get("bot_fact_retrieval_trace"), Mapping) else {}
+    selected_ids = {str(item) for item in trace.get(selection_key) or [] if str(item or "").strip()}
+    if selection_key == "selected_exact_ids":
+        for field in ("context_used", "fact_refs", "bot_context_used", "bot_fact_refs"):
+            value = turn.get(field)
+            if isinstance(value, list):
+                selected_ids.update(str(item) for item in value if str(item or "").strip())
+    if not selected_ids:
+        return set()
+    direct = _direct_path_from_turn(turn)
+    retrieved = direct.get("retrieved_facts") if isinstance(direct.get("retrieved_facts"), Mapping) else {}
+    texts: list[Any] = []
+    for fact_id in selected_ids:
+        if fact_id in retrieved:
+            texts.append(retrieved[fact_id])
+    for item in turn.get("bot_confirmed_facts") or []:
+        if not isinstance(item, str):
+            continue
+        prefix = item.split(":", 1)[0].strip()
+        if item.startswith("fact:v3:"):
+            prefix = ":".join(item.split(":", 4)[:4])
+        if any(item.startswith(f"{fact_id}:") or prefix == fact_id for fact_id in selected_ids):
+            texts.append(item)
+    result = _numbers(" ".join(str(text) for text in texts))
+    if selection_key == "selected_exact_ids":
+        result.update(_academic_year_numbers_from_fact_ids(selected_ids))
+    return result
+
+
+def _academic_year_numbers_from_fact_ids(fact_ids: set[str]) -> set[str]:
+    result: set[str] = set()
+    for fact_id in fact_ids:
+        for match in re.finditer(r"(?<!\d)(20\d{2})[_/-](\d{2})(?!\d)", str(fact_id or "")):
+            result.add(match.group(1))
+            result.add(match.group(2))
+            result.add(f"{match.group(1)}/{match.group(2)}")
+    return result
+
+
+def _client_history_number_map(dialogs: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int], set[str]]:
+    result: dict[tuple[str, int], set[str]] = {}
+    for dialog in dialogs:
+        dialog_id = str(dialog.get("dialog_id") or "")
+        seen: set[str] = set()
+        for index, turn in enumerate(_turns(dialog), 1):
+            turn_no = int(turn.get("turn") or index)
+            result[(dialog_id, turn_no)] = set(seen)
+            seen.update(_numbers(turn.get("client_message")))
+    return result
+
+
+def _timeout_dialog_ids(dialogs: Sequence[Mapping[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    for dialog in dialogs:
+        if any(_is_provider_timeout_turn(turn) for turn in _turns(dialog)):
+            result.add(str(dialog.get("dialog_id") or ""))
+    return result
+
+
+def _split_missing_turns_by_timeout(
+    missing: Sequence[tuple[str, int]],
+    timeout_dialog_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    explained: list[dict[str, Any]] = []
+    unexplained: list[dict[str, Any]] = []
+    for dialog_id, turn_no in missing:
+        item = {"dialog_id": dialog_id, "turn": turn_no}
+        if dialog_id in timeout_dialog_ids:
+            explained.append({**item, "reason": "provider_timeout_dialog"})
+        else:
+            unexplained.append(item)
+    return explained, unexplained
 
 
 def _llm_call_delta(off_summary: Mapping[str, Any], on_summary: Mapping[str, Any]) -> dict[str, Any]:
@@ -1139,8 +1329,10 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     notes: list[str] = []
     if diff.get("status") != "compared":
         notes.append("OFF transcripts were not provided; route/text no-op cannot be proven by this report.")
-    elif inline_gate.get("status") != "pass":
+    elif inline_gate.get("status") == "fail":
         notes.append("Inline text health gate failed; inspect p0_route_lost/new_number/route_flip examples.")
+    elif inline_gate.get("status") == "needs_review":
+        notes.append("Inline text health gate needs review; inspect hygiene, adjacent-number, or missing-turn examples.")
     if llm.get("extra_total") is None:
         notes.append("OFF/ON summary pair was not provided; extra model call delta cannot be proven by this report.")
     elif llm.get("mode") == "semantic_frame_enrichment":

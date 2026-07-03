@@ -411,10 +411,32 @@ def test_inline_text_health_gate_treats_p0_hygiene_flag_diff_as_warning(tmp_path
     )
 
     gate = result["inline_text_health_gate"]
-    assert gate["status"] == "pass"
+    assert gate["status"] == "needs_review"
     assert gate["p0_route_lost_count"] == 0
     assert gate["p0_hygiene_flag_diff_count"] == 1
-    assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is True
+    assert gate["p0_hygiene_lost_count"] == 1
+    assert gate["p0_hygiene_added_count"] == 0
+    assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is False
+
+
+def test_inline_text_health_gate_splits_p0_hygiene_added(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    off["turns"][0]["bot_route"] = "draft_for_manager"
+    off["turns"][0]["bot_safety_flags"] = ["manager_approval_required"]
+    on = _dialog(include_frame=True)
+    on["turns"][0]["bot_route"] = "manager_only"
+    on["turns"][0]["bot_safety_flags"] = ["payment_dispute", "manager_approval_required"]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "needs_review"
+    assert gate["p0_hygiene_lost_count"] == 0
+    assert gate["p0_hygiene_added_count"] == 1
 
 
 def test_inline_text_health_gate_verifies_new_numbers_against_fact_text(tmp_path: Path) -> None:
@@ -449,7 +471,57 @@ def test_inline_text_health_gate_verifies_new_numbers_against_fact_text(tmp_path
     assert gate["status"] == "pass"
     assert gate["new_number_verified_turn_count"] == 1
     assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_audit_count"] == 1
     assert result["acceptance"]["flags"]["inline_text_health_gate_ok"] is True
+
+
+def test_inline_text_health_gate_verifies_new_numbers_against_exact_turn_fact(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Старт указан в карточке курса.", include_frame=False)
+    on = _dialog(text="Старт курса — в 2026 году.", include_frame=True)
+    on["turns"][0]["bot_fact_retrieval_trace"] = {"selected_exact_ids": ["course.start.client_safe_text"]}
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            "course.start.client_safe_text": "Курс стартует в 2026 году.",
+            "other.fact": "Нерелевантная стоимость — 12 345 ₽.",
+        }
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_exact_fact_count"] == 1
+
+
+def test_inline_text_health_gate_verifies_academic_year_from_exact_fact_id_only(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Расписание опубликовано.", include_frame=False)
+    on = _dialog(text="Расписание на 2026/27 год опубликовано.", include_frame=True)
+    on["turns"][0]["bot_fact_retrieval_trace"] = {
+        "selected_exact_ids": ["schedule_2026_27.groups.group_start_date.client_safe_text"],
+        "selected_adjacent_ids": ["schedule_2027_28.groups.group_start_date.client_safe_text"],
+    }
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            "schedule_2026_27.groups.group_start_date.client_safe_text": "Расписание опубликовано.",
+            "schedule_2027_28.groups.group_start_date.client_safe_text": "Соседний учебный год.",
+        }
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_exact_fact_count"] == 2
 
 
 def test_inline_text_health_gate_blocks_unverified_new_numbers(tmp_path: Path) -> None:
@@ -483,6 +555,108 @@ def test_inline_text_health_gate_does_not_verify_number_from_raw_fact_blob_witho
     gate = result["inline_text_health_gate"]
     assert gate["status"] == "fail"
     assert gate["new_number_unverified_count"] == 1
+
+
+def test_inline_text_health_gate_reports_adjacent_fact_number_as_review_warning(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Стоимость есть в карточке курса.", include_frame=False)
+    on = _dialog(text="Стоимость соседнего курса — 12 345 ₽.", include_frame=True)
+    on["turns"][0]["bot_fact_retrieval_trace"] = {"selected_adjacent_ids": ["adjacent.price.client_safe_text"]}
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            "adjacent.price.client_safe_text": "Соседний курс стоит 12 345 ₽.",
+        }
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "needs_review"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["new_number_adjacent_warning_count"] == 1
+    assert gate["number_adjacent_warning_count"] == 1
+
+
+def test_inline_text_health_gate_verifies_number_from_client_history_separately(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Хорошо, подберём курс.", include_frame=False)
+    on = _dialog(text="Для 6 класса можно смотреть следующий уровень.", include_frame=True)
+    off["turns"][0]["client_message"] = "Сын 6-й закончил."
+    off["turns"].append(
+        {
+            "turn": 2,
+            "client_message": "Что выбрать дальше?",
+            "bot_route": "draft_for_manager",
+            "bot_text": "Хорошо, подберём курс.",
+            "bot_safety_flags": ["manager_approval_required"],
+        }
+    )
+    on["turns"][0]["client_message"] = "Сын 6-й закончил."
+    on["turns"].append(
+        {
+            "turn": 2,
+            "client_message": "Что выбрать дальше?",
+            "bot_route": "draft_for_manager",
+            "bot_text": "Для 6 класса можно смотреть следующий уровень.",
+            "bot_safety_flags": ["manager_approval_required"],
+            "bot_semantic_frame": _frame(),
+        }
+    )
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_client_history_count"] == 1
+
+
+def test_inline_text_health_gate_explains_missing_turns_by_timeout_dialog(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    on = _dialog(include_frame=True)
+    on["turns"].append(_timeout_turn())
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["missing_baseline_turns"] == 1
+    assert gate["missing_baseline_explained_count"] == 1
+    assert gate["missing_baseline_unexplained_count"] == 0
+
+
+def test_inline_text_health_gate_marks_unexplained_missing_turns_needs_review(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    on = _dialog(include_frame=True)
+    on["turns"].append(
+        {
+            "turn": 2,
+            "client_message": "Ещё вопрос.",
+            "bot_route": "draft_for_manager",
+            "bot_text": "Менеджер проверит.",
+            "bot_safety_flags": ["manager_approval_required"],
+        }
+    )
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "needs_review"
+    assert gate["missing_baseline_unexplained_count"] == 1
 
 
 def test_report_compares_inline_with_posthoc_and_text_health(tmp_path: Path) -> None:

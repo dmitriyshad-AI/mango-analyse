@@ -35,6 +35,11 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     reliable_answerer_prompt_block,
     reliable_answerer_step1_active_for_turn,
 )
+from mango_mvp.customer_timeline.bot_safe_runtime_context import (
+    TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
+    build_customer_memory_for_prompt,
+    scrub_customer_memory_text,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
@@ -373,6 +378,23 @@ def _timeline_memory_shadow_enabled(context: Optional[Mapping[str, Any]] = None)
     )
 
 
+def _timeline_memory_expanded_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if _bot_safe_crm_context_explicitly_disabled(context):
+        return False
+    return _default_off_flag_enabled(
+        context,
+        TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
+        aliases=(
+            "timeline_memory_expanded_shadow",
+            "timeline_memory_expanded_shadow_enabled",
+            "bot_memory_expanded_shadow",
+            "bot_memory_expanded_shadow_enabled",
+            "customer_memory_stage01_shadow",
+            "customer_memory_for_prompt_shadow",
+        ),
+    )
+
+
 def _bot_safe_crm_context_explicitly_disabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if isinstance(context, Mapping):
         for key in (BOT_SAFE_CRM_CONTEXT_ENV, *BOT_SAFE_CRM_CONTEXT_ALIASES):
@@ -593,7 +615,8 @@ def _direct_path_trim_context_text(text: str, limit: int) -> str:
 
 def _direct_path_bot_safe_memory_prompt_text(text: str) -> str:
     value = _direct_path_trim_context_text(text, 700)
-    return _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+    value = _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+    return scrub_customer_memory_text(value)
 
 
 def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
@@ -645,6 +668,25 @@ def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) ->
         "source": "read_only_customer_context.timeline_context.bot_context",
         "next_step_statuses": [str(item.get("next_step_status") or "") for item in items if str(item.get("next_step_status") or "")],
     }
+
+
+def _direct_path_customer_memory_shadow_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not _timeline_memory_expanded_shadow_enabled(context):
+        return {"enabled": False, "reason": "timeline_memory_expanded_shadow_flag_off"}
+    if not isinstance(context, Mapping):
+        return {"enabled": True, "found": False, "reason": "context_missing"}
+    memory = build_customer_memory_for_prompt(
+        context,
+        active_brand=_active_brand(context),
+        item_limit=10,
+        char_budget=8_000,
+        history_limit=20,
+        history_item_chars=500,
+    )
+    payload = dict(memory.to_json_dict())
+    payload["enabled"] = True
+    payload["route_text_shadow_only"] = True
+    return payload
 
 DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "pricing": ("pricing", "price", "стоим", "цен", "дорог", "оплат", "рассроч", "долями", "скидк", "помесяч"),
@@ -2754,6 +2796,7 @@ def _direct_path_metadata(
         "rubric_reason": "",
         "known_slots_next_step_prompt": dict(_direct_path_known_slots_next_step_prompt_trace(context)),
         "bot_safe_crm_context": dict(_direct_path_bot_safe_context_trace(context)),
+        "customer_memory_for_prompt_shadow": dict(_direct_path_customer_memory_shadow_trace(context)),
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),

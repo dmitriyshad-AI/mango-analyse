@@ -630,3 +630,24 @@ install/uninstall; фактическая установка не выполня
 Prod DB, CRM, AMO write, Tallanto, live bot не трогались. Аудиторские notes
 закрыты: service-lock держится до публикации manifest/latest, а service paths
 и source paths валидируются относительно `allowed_root`.
+
+### D-039. Expanded customer memory is shipped as shadow-only metadata
+
+Решение: блок 6 переносит только безопасные части Stage01-памяти:
+builder/scrub/render для `CustomerMemoryForPrompt` и shadow-runner на staging.
+Память не добавляется в текст черновика и не открывается боту: новый флаг
+`TELEGRAM_TIMELINE_MEMORY_EXPANDED_SHADOW` default OFF, а при включении пишет
+только `metadata.customer_memory_for_prompt_shadow`.
+
+Почему так: живой direct-path уже имеет отдельный bot-safe CRM контекст, а
+расширенная память ещё требует смысловой приёмки. Поэтому в этом блоке мы
+проверяем форму, источники и санитарные фильтры без влияния на ответы клиентам.
+`post_layers.py` и `policy_routing.py` намеренно не трогались; старые guard-тесты
+сохранены.
+
+Проверка: shadow-run на staging по клиентам с реальными LLM email-summary дал
+`62` клиентов, `55` с памятью, `7` пустых fail-closed, `safety_violations=0`,
+`prompt_pii_hits=0`, `prompt_service_id_hits=0`,
+`manual_review_flags=0`. Runner читает только staging DB read-only и пишет
+JSONL локально в `.codex_local`, не в Foton/git. Focused pytest:
+`589 passed`; полный pytest: `3969 passed, 5 skipped, 1 warning`.

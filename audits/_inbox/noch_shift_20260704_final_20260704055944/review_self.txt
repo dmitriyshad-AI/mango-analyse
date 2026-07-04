@@ -1,0 +1,247 @@
+# Ночной прогон Codex 2 — максимум без владельца
+
+Дата: 2026-07-04
+Ветка: `codex/email-pipeline-restore`
+HEAD на момент прогона: `c265dace`
+Режим: staging/local/read-only. Боевых записей не было.
+
+## Короткий вывод
+
+Formal pass: ночной набор Н1-Н8 выполнен на staging и локальных пакетах.
+Production/live pass не заявляю: SWAP, AMO-write, включение памяти боту, Wappi-долив и M1 остаются решениями владельца/архитектора.
+
+Главный итог: к утру есть свежий staging, актуальный transfer-package, проверенный локальный SWAP-сценарий, CRM readiness-diff на 3 карточки, книги по менеджерам, Wappi-лист ручной привязки и регрессионные negative-gates для CRM-карточек.
+
+## Что сделано
+
+### Н1 — канонический transfer package
+
+Сначала пакет был пересобран после финального Ф8, затем после ночного staging-инкремента пересобран повторно, чтобы не осталось ссылки на устаревший CRM-снимок.
+
+Канонический пакет сейчас:
+
+- `.codex_local/transfer_package/marathon2_noch_current/manifest.json`
+- CRM export: `.codex_local/staging/finish_n8_crm_export_after_nightly`
+- staging sha: `887b3ad74b4943a1eea2abafc5ea627939858520638a7fb17f6f64d6beb1f7f8`
+- CRM candidates: 66
+- ready к AMO-write после гейтов: 3
+- blocked: 63
+- idempotence: passed
+
+Примечание: внутри transfer manifest историческое имя schema_version содержит `block7`, но фактические ссылки пакета указывают на свежий `finish_n8_crm_export_after_nightly`, не на старый `finish_f4`.
+
+### Н2 — репетиция ночной службы на staging
+
+Ручной nightly-service выполнен на staging:
+
+- duration: 25.991 сек
+- calls_and_amo_incremental: ok
+- tallanto_money_incremental / wappi_history_incremental / mail_archive_incremental: skipped_disabled
+- write_prod_db=false, write_crm=false, write_tallanto=false, sends_messages=false
+
+AMO incremental был выполнен read-only с ограничением `max_pages=2`:
+
+- affected first run: 58
+- changed first run: 70
+- repeat changed: 0
+- page_cap_hit=true для части источников, значит это не полный боевой nightly, а ограниченная репетиция.
+
+Текущий staging после пересчёта:
+
+- timeline_events: 171 818
+- customer_identities: 20 591
+- bot_context_chunks: 131 679
+- identity_links: 93 449
+- customer_objections_v1: 7 155
+- customer_objection_summary_v1: 3 971
+- derived_signals: 2 003
+- derived_signals active/resolved/stale: 1 202 / 78 / 723
+- quick_check=ok
+- foreign_key_check_rows=0
+
+Свежесть источников в staging:
+
+- AMO events: 2026-07-03T20:57:42+00:00
+- AMO snapshot: 2026-07-03T08:53:51+00:00
+- AMO prices: 2026-07-02T10:45:36+00:00
+- call summaries: 2026-07-01T15:03:25+00:00
+- mail archive: 2026-06-21T00:00:00+00:00
+- mail stage2: 2026-06-19T14:53:27+00:00
+- Tallanto calls: 2026-06-04T16:54:54+00:00
+- Telegram history: 2026-04-15T06:38:26+00:00
+
+Собраны обновлённые Excel-артефакты:
+
+- Волна-0: `.codex_local/review/noch_shift_20260704/N2_VOLNA0_dengi_na_polu_refresh.xlsx`
+- Full84 dossier: `.codex_local/review/noch_shift_20260704/N2_VOLNA1_manager_dossier_full84.xlsx`
+
+Волна-0:
+
+- Зависшие факт LTV: 500
+- Сезонные: 90
+- Вернулись и перезвон: 107
+
+Full84:
+
+- customers: 84
+- chronology rows: 2 099
+- family rows: 103
+- money rows: 31
+- signals: 62
+- objections: 210
+- interests: 69
+- pains: 94
+
+### Н3 — досье-книги по менеджерам
+
+AMO использован только read-only GET.
+
+- AMO read-only calls: 72
+- AMO read-only errors: 5
+- user lookup: выполнен, имена менеджеров получены для 12 user id
+
+Собраны книги:
+
+- Менеджер A: 37 клиентов
+- Менеджер B: 9 клиентов
+- Менеджер C: 9 клиентов
+- Менеджер D: 8 клиентов
+- Менеджер E: 8 клиентов
+- Админ: 1 клиент
+- manager_unknown: 12 клиентов
+
+Путь: `.codex_local/review/noch_shift_20260704/N3_manager_dossiers_live/`
+
+### Н4 — Wappi manual pairing workbook
+
+Собран Excel для ручной привязки Wappi-чатов. Автопривязки нет.
+
+- pending_messages: 1 966
+- pending_chats: 145
+- with_candidates: 140
+- high_exact: 2
+- medium_text: 138
+- no_candidate: 5
+
+Важное ограничение: `medium_text` — слабая подсказка для человека, не предвыбор пары. У большинства чатов много кандидатов, поэтому автоматическое связывание запрещено.
+
+Путь: `.codex_local/review/noch_shift_20260704/N4_wappi_manual_pairing/N4_wappi_manual_pairing.xlsx`
+
+### Н5 — локальная репетиция SWAP
+
+Прод-БД не подменялась. Репетиция была только на локальных копиях.
+
+Prod DB:
+
+- sha до: `ef9ef249b4192b768cd1eb826f6df20514994539a3911f9aeee19bbc295d03c8`
+- sha после: `ef9ef249b4192b768cd1eb826f6df20514994539a3911f9aeee19bbc295d03c8`
+- prod_untouched=true
+
+Локальная подмена staging-файла:
+
+- staging sha: `887b3ad74b4943a1eea2abafc5ea627939858520638a7fb17f6f64d6beb1f7f8`
+- quick_check=ok
+- foreign_key_rows=0
+- rollback вернул исходный локальный prod-снимок
+
+Время:
+
+- copy_prod_ro_backup: 2.51 сек
+- copy_staging: 2.632 сек
+
+Дополнительно в Н8 выполнен smoke по 3 ready-клиентам: pass=true.
+
+### Н6 — CRM readiness diff
+
+По 3 ready-карточкам выполнен read-only diff против живого AMO. Записей не было.
+
+- api_calls: 6
+- ready_rows: 3
+- errors: 0
+- contact_fields_compared: 9
+- lead_fields_compared: 9
+- contact_would_change: 9
+- lead_would_change: 9
+- current_empty_targets: 16
+
+Важно: это не readback после записи. Перед любым AMO-write нужен отдельный owner approval и anti-clobber/pre-patch gate, потому что 2 текущих contact-поля непустые и будут затронуты.
+
+### Н7 — golden negative CRM gates
+
+Добавлена синтетическая fixture без ПДн:
+
+- `tests/fixtures/customer_timeline_crm_export_negative_gate_cases.jsonl`
+
+Подключён pytest:
+
+- `tests/test_customer_timeline_crm_export_package.py::test_crm_export_package_golden_negative_gate_cases`
+
+Покрыты классы:
+
+- raw email thread
+- masked/debug placeholder
+- foreign brand marker
+- bank requisites / sensitive data
+- weak/manual-review next step
+- family ambiguous
+- `[сжато]`
+- stale next step date
+- paid-but-collect-payment conflict
+
+Focused tests:
+
+- `79 passed, 1 warning`
+
+### Н8 — финальная проверка
+
+Полный pytest:
+
+- `4036 passed, 5 skipped, 2 warnings in 72.20s`
+
+Трёхклиентный smoke:
+
+- checked_rows: 3
+- crm_export_ready_rows: 3
+- quick_check: ok
+- foreign_key_check_rows: 0
+- pass: true
+
+Проверено для 3 ready-клиентов: identity/events/chunks/opportunities/signals/objections counts, selected_deal linkage, non-empty CRM payload, empty blockers.
+
+## Безопасность
+
+Подтверждение по артефактам:
+
+- prod DB write: 0
+- AMO write: 0
+- Tallanto write: 0
+- CRM write: 0
+- client sends: 0
+- live bot touched: 0
+- M1 запуск: 0
+- ПДн не вынесены в этот отчёт
+
+Все файлы с ПДн и Excel-досье остаются локально под `.codex_local/`.
+
+## Что ждёт человека утром
+
+1. Решить, открывать ли SWAP-окно. Техническая репетиция прошла, но реальная подмена prod-БД не выполнялась.
+2. По 3 CRM ready-карточкам посмотреть readiness diff и принять отдельное решение на AMO-write через anti-clobber gate.
+3. Выбрать менеджеров для пилота досье-книг и отдельно решить, кто вручную разбирает Wappi pairing workbook.
+
+## Известные ограничения
+
+- AMO incremental ночью был ограниченным (`max_pages=2`, page_cap_hit=true), это не полный боевой nightly.
+- Wappi history остаётся pending attribution, не bot-visible memory.
+- Memory для бота остаётся выключенной; staging-пакет не означает включение в live.
+- CRM package — export-only; без semantic/owner approval его нельзя писать в AMO.
+- Medium Wappi matches нельзя считать точными совпадениями.
+
+## Где лежит
+
+- Ночные локальные артефакты: `.codex_local/review/noch_shift_20260704/`
+- Текущий staging: `.codex_local/staging/customer_timeline_staging.sqlite`
+- Свежий CRM export: `.codex_local/staging/finish_n8_crm_export_after_nightly/`
+- Transfer package: `.codex_local/transfer_package/marathon2_noch_current/`
+- Полный pytest output: `.codex_local/review/noch_shift_20260704/N8_full_pytest_output.txt`
+- Audit pack ночи: `audits/_inbox/noch_shift_20260704_final_20260704055944/`

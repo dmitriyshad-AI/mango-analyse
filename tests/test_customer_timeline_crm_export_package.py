@@ -26,6 +26,15 @@ from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
 
 
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+NEGATIVE_GATE_FIXTURE = Path("tests/fixtures/customer_timeline_crm_export_negative_gate_cases.jsonl")
+
+
+def _load_negative_gate_cases() -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in NEGATIVE_GATE_FIXTURE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: Path) -> None:
@@ -79,6 +88,25 @@ def test_crm_export_package_builds_staging_only_deterministic_package(tmp_path: 
     assert row["AI-дата обновления сделки"]
     assert "crm_card_contact_payload_json" in csv_text
     assert "AMO write=0" in preview
+
+
+@pytest.mark.parametrize("case", _load_negative_gate_cases(), ids=lambda case: str(case["case_id"]))
+def test_crm_export_package_golden_negative_gate_cases(case: dict[str, object]) -> None:
+    blockers = _row_blockers(
+        {
+            "contact_card": {"ready_for_amo": True, "blockers": []},
+            "deal_card": {"ready_for_amo": True, "blockers": []},
+        },
+        contact_payload=case["contact_payload"],  # type: ignore[arg-type]
+        deal_payload=case["deal_payload"],  # type: ignore[arg-type]
+        active_brand=str(case.get("active_brand") or ""),
+        as_of=str(case.get("as_of") or ""),
+        family_review_required=bool(case.get("family_review_required")),
+        family_text=str(case.get("family_text") or ""),
+    )
+
+    for expected in case["expected_blockers"]:  # type: ignore[index]
+        assert expected in blockers
 
 
 def test_crm_export_package_adds_interests_and_pains_from_client_call_text(tmp_path: Path) -> None:

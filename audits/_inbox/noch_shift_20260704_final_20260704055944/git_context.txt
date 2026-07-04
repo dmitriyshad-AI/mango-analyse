@@ -1,0 +1,8 @@
+branch: codex/email-pipeline-restore
+rev: c265dace
+
+ M tests/test_customer_timeline_crm_export_package.py
+?? tasks/_done/2026-07-04_TZ_NOCH_maksimum_bez_vladeltsa_dlya_Codex2.md
+?? tests/fixtures/customer_timeline_crm_export_negative_gate_cases.jsonl
+
+ignored audit pack path: audits/_inbox/noch_shift_20260704_final_20260704055944/ (will be force-added)

@@ -730,32 +730,32 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
-    "pattern_preview": "f'(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\\\n]{{0,100}}{_CHILD_INCIDENT_PATTERN}|{_CHILD_INCIDENT_PATTERN}[^.!?\\\\n]{{0,100}}{_CHILD_CONTEXT_PATTERN})'",
-    "pattern_sha256": "077c25b8523069f64a21a9c35b9adb1a4ebfe69c8f121fce3e7a2abe79c5ab36",
+    "pattern_preview": "rf\"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\n]{{0,100}}{_CHILD_INCIDENT_PATTERN}\"\n    rf\"|{_CHILD_INCIDENT_PATTERN}[^.!?\\n]{{0,100}}{_CHILD_CONTEXT_PATTERN})\"",
+    "pattern_sha256": "a1c96f10a43c30f37b935834ba683e49a2e1ca00c137b39c9a435d1ec773e8da",
     "qualname": "<module>",
     "target": "CHILD_INCIDENT_COMPLAINT_RE"
   },
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
-    "pattern_preview": "f'(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\\\n]{{0,120}}(?:остал\\\\w*\\\\s+один|никто\\\\s+не\\\\s+следил|без\\\\s+(?:присмотр\\\\w*|надзор\\\\w*)|потерял\\\\w*)|(?:остал\\\\w*\\\\s+один|н",
-    "pattern_sha256": "8d8545232aa2d31c7a742775fdfa7d692f2637e9af771606b474b37fc101fc76",
+    "pattern_preview": "rf\"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\n]{{0,120}}\"\n    r\"(?:остал\\w*\\s+один|никто\\s+не\\s+следил|без\\s+(?:присмотр\\w*|надзор\\w*)|потерял\\w*)\"\n    rf\"|(?:остал\\w*\\s",
+    "pattern_sha256": "67b50a90fd0409296054e7b545de43ee5f1c16006a0f95568ecf6f887aa5ea70",
     "qualname": "<module>",
     "target": "CHILD_SAFETY_COMPLAINT_RE"
   },
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
-    "pattern_preview": "f'(?:{_PAYMENT_MOVED_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_RESULT_MISSING_PATTERN}|{_PAYMENT_RESULT_MISSING_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_MOVED_PATTERN}",
-    "pattern_sha256": "900eb98bde504d2333b74473f8c1098b2e45393f5358080f725ffd52490292ed",
+    "pattern_preview": "rf\"(?:{_PAYMENT_MOVED_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_RESULT_MISSING_PATTERN}\"\n    rf\"|{_PAYMENT_RESULT_MISSING_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_MOVE",
+    "pattern_sha256": "3b4e18bdce86fe1067f08ac2ea8668bfc90edbc5c75771257a661981e28a1dc6",
     "qualname": "<module>",
     "target": "PAYMENT_DISPUTE_RE"
   },
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
-    "pattern_preview": "f'{_CHILD_CONTEXT_PATTERN}[^.!?\\\\n]{{0,140}}(?:при\\\\s+всех[^.!?\\\\n]{{0,80}})?(?:этого\\\\s+так\\\\s+не\\\\s+оставл\\\\w*|буду\\\\s+разбират\\\\w*|напиш\\\\w*\\\\s+жалоб\\\\w*)'",
-    "pattern_sha256": "fe73e8f19006a1a570496a8d1b5d52fed539e6c62039a046ffde01d307703783",
+    "pattern_preview": "rf\"{_CHILD_CONTEXT_PATTERN}[^.!?\\n]{{0,140}}(?:при\\s+всех[^.!?\\n]{{0,80}})?(?:этого\\s+так\\s+не\\s+оставл\\w*|буду\\s+разбират\\w*|\"\n    r\"напиш\\w*\\s+жалоб\\w*)\"",
+    "pattern_sha256": "96d30e8f2f84787eea1c7b3288b8dded6bcc8b2b8cbeb081822860e86cbcf6f7",
     "qualname": "<module>",
     "target": "CHILD_COMPLAINT_ESCALATION_RE"
   },
@@ -1530,24 +1530,24 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "f'(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})'",
-    "pattern_sha256": "d137325fc582b2e89e719102e38d5dbbc511b2ea35c2ba102368838803f07447",
+    "pattern_preview": "rf\"(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})\"",
+    "pattern_sha256": "f6f7656619f3a4b0d5b75f50214d942986463fd8e003c962dfb247b4d3be8d28",
     "qualname": "<module>",
     "target": "_TONE_CLOSE_STEP_CTA_RE"
   },
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "f'(?<![\\\\w/.-])(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\\\w/.-])'",
-    "pattern_sha256": "a95f5aa2db76951d1bd303c6bea3e892c230a13153acf1b646478271a3db5dc6",
+    "pattern_preview": "rf\"(?<![\\w/.-])(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\"",
+    "pattern_sha256": "6230792bedea5b7418a63e96e50730895a99a034bc7b96a8c3a3afe3a6f1bc6a",
     "qualname": "<module>",
     "target": "PRESALE_SOURCE_ID_TOKEN_RE"
   },
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "f'(?<![\\\\w/.-])(?:по\\\\s+факту|факт|источник|source|source_id|fact_id)\\\\s+(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\\\w/.-])\\\\s*[:;,.—-]?\\\\s*'",
-    "pattern_sha256": "792534ed40a6bb305c033d211371f0ba2932702b5c4546df1b0fd61a18677d1e",
+    "pattern_preview": "rf\"(?<![\\w/.-])(?:по\\s+факту|факт|источник|source|source_id|fact_id)\\s+\"\n    rf\"(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\\w/.-])\\s*[:;,.—-]?\\s*\"",
+    "pattern_sha256": "58bf0c00fc65fcdd017aba7495d9b07a0e0283db57168cc7346da5079b9e3e26",
     "qualname": "<module>",
     "target": "PRESALE_SOURCE_ID_PHRASE_RE"
   },

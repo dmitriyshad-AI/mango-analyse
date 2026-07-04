@@ -321,28 +321,41 @@ def _target_name(parent: ast.AST | None) -> str:
     return ",".join(names)
 
 
-def _pattern_literal(node: ast.Call) -> str:
+def _source_segment(source: str, node: ast.AST) -> str:
+    segment = ast.get_source_segment(source, node)
+    if segment is not None:
+        return segment.strip()
+    return ast.unparse(node).strip()
+
+
+def _source_signature(source: str, node: ast.AST) -> tuple[str, str]:
+    rendered = _source_segment(source, node)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest(), rendered[:240]
+
+
+def _pattern_literal(node: ast.Call, source: str = "") -> str:
     if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
         return node.args[0].value
     if node.args:
-        return ast.unparse(node.args[0])
+        return _source_segment(source, node.args[0]) if source else ast.unparse(node.args[0])
     return ""
 
 
-def _flags_expr(node: ast.Call) -> str:
+def _flags_expr(node: ast.Call, source: str = "") -> str:
     flags: list[str] = []
     if len(node.args) >= 2:
-        flags.append(ast.unparse(node.args[1]))
+        flags.append(_source_segment(source, node.args[1]) if source else ast.unparse(node.args[1]))
     for keyword in node.keywords:
         if keyword.arg == "flags":
-            flags.append(ast.unparse(keyword.value))
+            flags.append(_source_segment(source, keyword.value) if source else ast.unparse(keyword.value))
     return " | ".join(flags)
 
 
 def _regex_snapshot(repo: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for path in sorted((repo / "src/mango_mvp/channels").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
         parents: dict[ast.AST, ast.AST] = {}
         for parent in ast.walk(tree):
             for child in ast.iter_child_nodes(parent):
@@ -366,14 +379,14 @@ def _regex_snapshot(repo: Path) -> list[dict[str, str]]:
 
             def visit_Call(self, node: ast.Call) -> None:
                 if _is_re_compile_call(node):
-                    pattern = _pattern_literal(node)
+                    pattern = _pattern_literal(node, source)
                     rows.append(
                         {
                             "path": str(path.relative_to(repo)),
                             "qualname": ".".join(stack) or "<module>",
                             "target": _target_name(parents.get(node)),
                             "pattern_sha256": hashlib.sha256(pattern.encode("utf-8")).hexdigest(),
-                            "flags": _flags_expr(node),
+                            "flags": _flags_expr(node, source),
                             "pattern_preview": pattern[:160],
                         }
                     )
@@ -422,10 +435,9 @@ def _has_literal_marker_args(node: ast.Call) -> bool:
     return bool(node.args[1:]) and all(_is_literal_marker_value(item) for item in node.args[1:])
 
 
-def _marker_args_signature(node: ast.Call) -> tuple[str, str]:
-    marker_args = ast.Tuple(elts=list(node.args[1:]), ctx=ast.Load())
-    normalized = ast.dump(marker_args, annotate_fields=True, include_attributes=False)
-    rendered = ", ".join(ast.unparse(item) for item in node.args[1:])
+def _marker_args_signature(node: ast.Call, source: str) -> tuple[str, str]:
+    rendered = ", ".join(_source_segment(source, item) for item in node.args[1:])
+    normalized = json.dumps([_source_segment(source, item) for item in node.args[1:]], ensure_ascii=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest(), rendered[:240]
 
 
@@ -433,17 +445,16 @@ def _is_text_table_name(name: str) -> bool:
     return name.isupper() and any(part in name for part in TEXT_TABLE_NAME_PARTS)
 
 
-def _value_signature(node: ast.AST) -> tuple[str, str]:
-    rendered = ast.unparse(node)
-    normalized = ast.dump(node, annotate_fields=True, include_attributes=False)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest(), rendered[:240]
+def _value_signature(node: ast.AST, source: str) -> tuple[str, str]:
+    return _source_signature(source, node)
 
 
 def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for rel_path in DIRECT_PATH_PATTERN_FILES:
         path = repo / rel_path
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
         parents: dict[ast.AST, ast.AST] = {}
         for parent in ast.walk(tree):
             for child in ast.iter_child_nodes(parent):
@@ -468,7 +479,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
             def visit_Assign(self, node: ast.Assign) -> None:
                 for target in node.targets:
                     if isinstance(target, ast.Name) and _is_text_table_name(target.id):
-                        signature, preview = _value_signature(node.value)
+                        signature, preview = _value_signature(node.value, source)
                         rows.append(
                             {
                                 "path": rel_path,
@@ -483,7 +494,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name) and node.value is not None and _is_text_table_name(node.target.id):
-                    signature, preview = _value_signature(node.value)
+                    signature, preview = _value_signature(node.value, source)
                     rows.append(
                         {
                             "path": rel_path,
@@ -499,7 +510,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
             def visit_Call(self, node: ast.Call) -> None:
                 marker_helper = _marker_helper_name(node)
                 if marker_helper and _has_literal_marker_args(node):
-                    signature, preview = _marker_args_signature(node)
+                    signature, preview = _marker_args_signature(node, source)
                     rows.append(
                         {
                             "path": rel_path,
@@ -513,7 +524,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                 if _is_re_compile_call(node) or _is_inline_re_call(node):
                     func = node.func
                     assert isinstance(func, ast.Attribute)
-                    pattern = _pattern_literal(node)
+                    pattern = _pattern_literal(node, source)
                     rows.append(
                         {
                             "path": rel_path,
@@ -522,7 +533,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                             "symbol": f"re.{func.attr}",
                             "target": _target_name(parents.get(node)),
                             "pattern_sha256": hashlib.sha256(pattern.encode("utf-8")).hexdigest(),
-                            "flags": _flags_expr(node),
+                            "flags": _flags_expr(node, source),
                             "pattern_preview": pattern[:160],
                         }
                     )
@@ -536,7 +547,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                 ):
                     comparators = " ".join(ast.unparse(comparator) for comparator in node.comparators)
                     if any(part in comparators.casefold() for part in TEXT_LIKE_EXPR_PARTS):
-                        expression = ast.unparse(node)
+                        expression = _source_segment(source, node)
                         operator = " ".join(type(item).__name__ for item in node.ops)
                         rows.append(
                             {

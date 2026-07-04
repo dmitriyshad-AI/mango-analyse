@@ -22,7 +22,7 @@ DEFAULT_PROD_DB = (
     / "customer_timeline.sqlite"
 )
 DEFAULT_STAGING_DB = ROOT / ".codex_local" / "staging" / "customer_timeline_staging.sqlite"
-DEFAULT_CRM_EXPORT = ROOT / ".codex_local" / "staging" / "block7_crm_export_v2_final"
+DEFAULT_CRM_EXPORT = ROOT / ".codex_local" / "staging" / "finish_f4_crm_export_current_transfer_v1"
 DEFAULT_OUT_DIR = ROOT / ".codex_local" / "transfer_package" / "marathon2_block7_current"
 
 CORE_COUNT_TABLES = (

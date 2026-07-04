@@ -979,3 +979,23 @@ LibreSSL и тестовый `canonical_calls_db_missing:*`. Ф11 после и�
 gold до v1.1: `gold_rows=23`, `exact_count_ok=23`, `strict_pass=true`,
 `false_high=0`, `architect_review_required=false`. Прод/CRM/Tallanto/live
 writes = 0.
+
+### D-055. Transfer package points to the current canonical CRM export snapshot
+
+Решение: финальный transfer-пакет для передачи владельцу ссылается на
+`.codex_local/staging/finish_f4_crm_export_current_transfer_v1`, а не на
+устаревший `.codex_local/staging/block7_crm_export_v2_final`.
+
+Почему так: старый block7-снимок был собран до semantic/gate/mail-fix и давал
+`ready_rows=0`, тогда как принятый архитектором CRM-пакет v6/v6-compatible даёт
+`ready_rows=3`. Показывать владельцу оба числа без пояснения опасно: это
+выглядит как конфликт результатов. Для текущей staging-БД CRM export пересобран
+заново, чтобы sha staging совпадал с transfer-манифестом.
+
+Проверка: свежий CRM export
+`finish_f4_crm_export_current_transfer_v1` дал `candidate_rows=66`,
+`ready_rows=3`, `blocked_rows=63`, `idempotence.passed=true`,
+`timeline_db_sha256=d04e4b...`. Transfer-пакет
+`.codex_local/transfer_package/marathon2_block7_20260703/` перегенерирован с
+этим CRM export и теперь в `crm_package_reference.md`/`manifest.json` показывает
+`ready=3`. Прод/CRM/Tallanto/live writes = 0.

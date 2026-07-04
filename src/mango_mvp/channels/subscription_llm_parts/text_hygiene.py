@@ -9,6 +9,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraf
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_p0_text_hygiene_enabled,
     _payment_refund_dispute_split_enabled,
+    _text_hygiene_payment_fix_enabled,
 )
 from mango_mvp.channels.subscription_llm_parts.policy_routing import PAYMENT_LINK_SAFE_TEXT
 
@@ -80,6 +81,32 @@ _PRESALE_REFUND_CONTEXT_RE = re.compile(
     r"|(?:запис[ьи]\s+и\s+оплат\w*|оплат\w*\s+и\s+запис[ьи])[^.!?\n]{0,60}"
     r"(?:нет|ещ[её]\s+нет|не\s+было)[^.!?\n]{0,100}(?:передума\w*|спокойно)"
     r")"
+)
+
+
+_REFUND_MEANING_WORDS = (
+    "возврат",
+    "вернуть",
+    "верните",
+    "вернете",
+    "вернёте",
+    "вернем",
+    "вернём",
+    "деньги назад",
+)
+
+_PAYMENT_NON_REFUND_WORDS = (
+    "оплат",
+    "платеж",
+    "платёж",
+    "списал",
+    "списали",
+    "списание",
+    "чек",
+    "квитанц",
+    "доступ",
+    "логин",
+    "пароль",
 )
 
 
@@ -202,12 +229,22 @@ def _direct_path_p0_hygiene_kind(
     for key in ("direct_path_model_p0",):
         value = metadata.get(key)
         if isinstance(value, Mapping) and bool(value.get("is_p0")):
-            return _normalize_p0_hygiene_kind(value.get("p0_kind"))
+            return _payment_fix_adjusted_kind(
+                _normalize_p0_hygiene_kind(value.get("p0_kind")),
+                raw_kind=value.get("p0_kind"),
+                context=context,
+                client_message=client_message,
+            )
     direct = metadata.get("direct_path")
     if isinstance(direct, Mapping):
         value = direct.get("model_p0")
         if isinstance(value, Mapping) and bool(value.get("is_p0")):
-            return _normalize_p0_hygiene_kind(value.get("p0_kind"))
+            return _payment_fix_adjusted_kind(
+                _normalize_p0_hygiene_kind(value.get("p0_kind")),
+                raw_kind=value.get("p0_kind"),
+                context=context,
+                client_message=client_message,
+            )
     flags = {str(flag or "").strip().casefold() for flag in result.safety_flags}
     for kind in ("payment_dispute", "refund", "complaint", "legal_threat", "legal"):
         if kind in flags or f"direct_path_model_p0_{kind}" in flags:
@@ -220,8 +257,52 @@ def _direct_path_p0_hygiene_kind(
     if _ROUTE_LEGAL_CONTRACT_RE.search(str(client_message or "")):
         return "legal_threat"
     if _ROUTE_REFUND_RE.search(str(client_message or "")):
+        if _text_hygiene_payment_fix_enabled(context) and not _client_message_has_refund_meaning(client_message):
+            if _client_message_has_payment_non_refund_meaning(client_message):
+                return "payment_dispute"
+            return ""
         return "refund"
     return ""
+
+
+def _payment_fix_adjusted_kind(
+    kind: str,
+    *,
+    raw_kind: object,
+    context: Optional[Mapping[str, Any]],
+    client_message: str,
+) -> str:
+    if not _text_hygiene_payment_fix_enabled(context):
+        return kind
+    raw = str(raw_kind or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if raw not in {
+        "paid_context",
+        "paid_operation",
+        "paid_operation_context",
+        "paid_refund_context",
+        "paid_transfer_context",
+    }:
+        return kind
+    if _client_message_has_refund_meaning(client_message):
+        return "refund"
+    if _client_message_has_payment_non_refund_meaning(client_message):
+        return "payment_dispute"
+    return "payment_dispute"
+
+
+def _client_message_has_refund_meaning(client_message: str) -> bool:
+    text = str(client_message or "").casefold().replace("ё", "е")
+    if any(word.replace("ё", "е") in text for word in _REFUND_MEANING_WORDS):
+        return True
+    payment_or_money = any(word in text for word in ("оплат", "деньг", "платеж", "сумм"))
+    if payment_or_money and ("обратно" in text or "отда" in text):
+        return True
+    return False
+
+
+def _client_message_has_payment_non_refund_meaning(client_message: str) -> bool:
+    text = str(client_message or "").casefold().replace("ё", "е")
+    return any(word.replace("ё", "е") in text for word in _PAYMENT_NON_REFUND_WORDS)
 
 
 def _normalize_p0_hygiene_kind(value: object) -> str:

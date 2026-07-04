@@ -3480,6 +3480,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "'обратно' in text",
+    "expression_sha256": "3406ac571a2d2df3c573a076bc8cb49f96b3cc6ebb8dd3a0cee0c727777b94fa",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "_client_message_has_refund_meaning",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "'обуч' in client_haystack",
     "expression_sha256": "91a10fa37a40c4451dac46a68c48416d87bc5a0e9a4fcab3d357c33bfca0f7b9",
     "node_kind": "string_contains",
@@ -3669,6 +3677,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_terminal_safe_template",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "'отда' in text",
+    "expression_sha256": "5f88760f38ba1b9919b5275994d6bc5ee3c4300c27904fb00bf6655d82b17c2a",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "_client_message_has_refund_meaning",
     "symbol": "In"
   },
   {

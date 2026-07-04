@@ -110,6 +110,8 @@ DIRECT_SLOT_TOPIC_SHADOW_ENV = "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"
 
 DIRECT_P0_TEXT_HYGIENE_ENV = "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"
 
+TEXT_HYGIENE_PAYMENT_FIX_ENV = "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX"
+
 P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
 
 SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
@@ -242,7 +244,31 @@ DIRECT_PATH_PROSE_MODEL_LED_BLOCK = (
 
 
 def _direct_path_prose_model_led_block(context: Optional[Mapping[str, Any]]) -> str:
-    return f"{DIRECT_PATH_PROSE_MODEL_LED_BLOCK}\n\n" if _prose_model_led_enabled(context) else ""
+    if not _prose_model_led_enabled(context):
+        return ""
+    block = DIRECT_PATH_PROSE_MODEL_LED_BLOCK
+    if _text_hygiene_payment_fix_enabled(context):
+        block = block.replace(
+            "- Не пиши «в фактах нет», «по фактам не вижу», «у меня нет данных» клиенту. "
+            "Скажи по-человечески: эту деталь нужно проверить у менеджера.\n",
+            "- Если факта не хватает, не пиши клиенту «в фактах нет», «по фактам не вижу» "
+            "или «у меня нет данных». Скажи по-человечески: «точно не подскажу — уточню у менеджера».\n",
+        )
+    return f"{block}\n\n"
+
+
+def _text_hygiene_payment_fix_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
+    if not _text_hygiene_payment_fix_enabled(context):
+        return ""
+    return (
+        "Формулировки при неполных фактах:\n"
+        "- Если нет проверенной опоры для детали, пиши: «точно не подскажу — уточню у менеджера», "
+        "а не служебное «в фактах нет».\n"
+        "- Не отрицай существование курса, направления или формата без явного факта. Без точной опоры пиши: "
+        "«в списке направлений не вижу — уточню у менеджера».\n"
+        "- Если слово «справка» двусмысленно после вопроса о занятиях, коротко уточни, что нужно: "
+        "информация по занятиям или документ. Не продавай справку-документ вместо ответа о занятиях.\n\n"
+    )
 
 
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -323,6 +349,13 @@ def _direct_p0_text_hygiene_enabled(context: Optional[Mapping[str, Any]] = None)
         context,
         DIRECT_P0_TEXT_HYGIENE_ENV,
         aliases=("direct_p0_text_hygiene", "direct_p0_text_hygiene_enabled"),
+    )
+
+def _text_hygiene_payment_fix_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        TEXT_HYGIENE_PAYMENT_FIX_ENV,
+        aliases=("text_hygiene_payment_fix", "text_hygiene_payment_fix_enabled"),
     )
 
 def _p0_model_classes_v2_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -2749,6 +2782,7 @@ def _build_direct_path_prompt(
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
         f"{_direct_path_prose_model_led_block(context)}"
         f"{_direct_path_route_rubric_block(context)}"
+        f"{_text_hygiene_payment_fix_prompt_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"

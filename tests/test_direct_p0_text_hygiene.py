@@ -38,15 +38,22 @@ def test_tone_close_detect_enabled_by_pilot_profile_with_explicit_override(monke
 def test_p0_adr_flags_enabled_by_pilot_profile_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(subscription_llm.P0_MODEL_CLASSES_V2_ENV, raising=False)
     monkeypatch.delenv(subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV, raising=False)
+    monkeypatch.delenv(subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV, raising=False)
 
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._p0_model_classes_v2_enabled({}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({}) is False
+    assert subscription_llm._text_hygiene_payment_fix_enabled({}) is False
     assert subscription_llm._p0_model_classes_v2_enabled(_profile_context()) is True
     assert subscription_llm._direct_p0_text_hygiene_enabled(_profile_context()) is True
+    assert subscription_llm._text_hygiene_payment_fix_enabled(_profile_context()) is False
     assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), subscription_llm.P0_MODEL_CLASSES_V2_ENV: "0"}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "0"}) is False
+    assert subscription_llm._text_hygiene_payment_fix_enabled(
+        {**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"}
+    ) is True
     assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), "p0_model_classes_v2_enabled": False}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), "direct_p0_text_hygiene_enabled": False}) is False
 
@@ -150,6 +157,82 @@ def test_direct_p0_text_hygiene_provider_level_scrubs_refund_sales_tail() -> Non
     assert result.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
 
 
+def _paid_operation_context_result() -> SubscriptionDraftResult:
+    return SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=(
+            "По данным записи и оплаты менеджер проверит ситуацию. "
+            "Если нужно, можно перейти к следующему шагу."
+        ),
+        risk_level="high",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "paid_operation_context",
+                "model_reason": "оплатный контекст без уточнения класса",
+            }
+        },
+    )
+
+
+def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_payment_without_refund() -> None:
+    result = _paid_operation_context_result()
+    profile = _profile_context()
+
+    off = scrub_direct_path_p0_text(
+        result,
+        context=profile,
+        client_message="Оплату ещё не вносил, доступ не появился.",
+    )
+    on = scrub_direct_path_p0_text(
+        result,
+        context={**profile, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
+        client_message="Оплату ещё не вносил, доступ не появился.",
+    )
+    no_profile = scrub_direct_path_p0_text(
+        result,
+        context={subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
+        client_message="Оплату ещё не вносил, доступ не появился.",
+    )
+
+    assert "по возврату" in off.draft_text.casefold()
+    assert off.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+    assert "возврат" not in on.draft_text.casefold()
+    assert "по оплате нужно сверить данные" in on.draft_text.casefold()
+    assert on.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+    assert no_profile is result
+
+
+def test_text_hygiene_payment_fix_keeps_real_refund_as_refund() -> None:
+    result = _paid_operation_context_result()
+
+    for message in ("Хочу вернуть деньги.", "Отдайте оплату обратно."):
+        scrubbed = scrub_direct_path_p0_text(
+            result,
+            context={**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
+            client_message=message,
+        )
+
+        assert "по возврату" in scrubbed.draft_text.casefold()
+        assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+def test_text_hygiene_payment_fix_keeps_receipt_question_out_of_refund_template() -> None:
+    result = _paid_operation_context_result()
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
+        client_message="Оплатил, чек прислать?",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert "возврат" not in lowered
+    assert "по оплате нужно сверить данные" in lowered
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+
+
 def test_direct_p0_text_hygiene_payment_dispute_keeps_route_and_removes_sales_text() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -222,6 +305,27 @@ def test_direct_p0_text_hygiene_prompt_instruction_is_flagged_only() -> None:
     assert "P0-гигиена текста" not in off_prompt
     assert "P0-гигиена текста" in on_prompt
     assert "не обещай исход возврата" in on_prompt
+
+
+def test_text_hygiene_payment_fix_prompt_formulations_are_flagged_and_keep_json_anchor() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.PROSE_MODEL_LED_ENV: "1",
+    }
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Нужна справка по занятиям.", context=context)
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Нужна справка по занятиям.",
+        context={**context, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
+    )
+
+    assert "точно не подскажу — уточню у менеджера" not in off_prompt
+    assert "в списке направлений не вижу — уточню у менеджера" not in off_prompt
+    assert "точно не подскажу — уточню у менеджера" in on_prompt
+    assert "в списке направлений не вижу — уточню у менеджера" in on_prompt
+    assert "информация по занятиям или документ" in on_prompt
+    assert '"draft_text": "текст для клиента"' in on_prompt
 
 
 def test_direct_p0_text_hygiene_contract_dispute_zero_collects_detail_request() -> None:

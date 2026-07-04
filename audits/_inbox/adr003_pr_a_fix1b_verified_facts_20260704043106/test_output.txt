@@ -1,0 +1,65 @@
+# Тесты
+
+## Targeted PR-A + moratorium
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'fix1b or llm_missing_facts_do_not_block_autonomy or live_availability_missing_fact_blocks_autonomy' tests/test_adr003_regex_understanding_moratorium.py
+```
+
+Результат:
+
+```text
+15 passed, 555 deselected in 1.38s
+```
+
+## Wide neighboring tests
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_adr003_semantic_reading_trace.py tests/test_reliable_answerer_step1.py tests/test_adr003_regex_understanding_moratorium.py
+```
+
+Результат:
+
+```text
+588 passed in 38.98s
+```
+
+## Full pytest
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+4031 passed, 5 skipped, 1 warning in 80.33s
+```
+
+Warning: urllib3 NotOpenSSLWarning из пользовательского Python окружения, не связан с PR-A.
+
+## Local Fix1b micro-measure
+
+Артефакты:
+
+- `fix1b_micro_cases.jsonl`
+- `fix1b_micro_results.jsonl`
+- `fix1b_micro_summary.json`
+
+Результат:
+
+```json
+{
+  "total": 20,
+  "passed": 20,
+  "failed": [],
+  "neg_promoted": [],
+  "pos_not_promoted": []
+}
+```

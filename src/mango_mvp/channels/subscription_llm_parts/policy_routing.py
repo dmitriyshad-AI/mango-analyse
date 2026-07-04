@@ -97,6 +97,8 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 
+FIX1B_AUTONOMY_VERIFIED_FACTS_ENV = "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS"
+
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
 
@@ -2771,6 +2773,88 @@ def apply_high_risk_content_guards(
         metadata=metadata,
     )
 
+def _fix1b_autonomy_verified_facts_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping) and context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV) is not None:
+        return _truthy_value(context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
+    return _truthy_value(os.getenv(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
+
+
+def _fix1b_autonomy_verified_facts_corridor(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    if not _fix1b_autonomy_verified_facts_enabled(context):
+        return False
+    if result.message_type != "question":
+        return False
+    topic = str(result.topic_id or "").strip()
+    if topic not in AUTONOMY_MATRIX_SAFE_TOPIC_IDS or not _autonomy_topic_allowed(topic, context):
+        return False
+    active_brand = _active_brand(context)
+    if active_brand == "unknown":
+        return False
+    if "conversation_intent_plan_live_availability" in result.safety_flags:
+        return False
+    if is_high_risk_result(result) or detect_high_risk_input_markers(client_message, context=context):
+        return False
+    if not _has_client_safe_current_fact(context):
+        return False
+    fact_texts = _fresh_fact_texts(context)
+    if not fact_texts:
+        return False
+    draft_text = str(result.draft_text or "")
+    if not (_claim_supported_by_facts(draft_text, fact_texts) or _keep_answer_supported(draft_text, fact_texts)):
+        return False
+    facts_blob = " ".join(str(item or "") for item in fact_texts)
+    if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):
+        return False
+    if find_unsupported_numeric_promises(draft_text, context=context):
+        return False
+    if _fix1b_draft_mentions_foreign_brand(draft_text, active_brand=active_brand):
+        return False
+    if _result_has_live_status_missing_fact(result, client_message=client_message, context=context):
+        return False
+    if _asks_live_status_or_booking_question(draft_text):
+        return False
+    plan = _conversation_intent_plan(context)
+    scope = str(plan.get("fact_scope") or "").strip()
+    if scope and _scope_guard_has_foreign_concrete_fact(
+        draft_text,
+        requested_scope=scope,
+        blocked_neighbor_scopes=tuple(str(item) for item in plan.get("blocked_neighbor_scopes", ()) or ()),
+    ):
+        return False
+    return True
+
+
+def _fix1b_draft_mentions_foreign_brand(draft_text: str, *, active_brand: str) -> bool:
+    terms = BRAND_FORBIDDEN_TERMS.get(active_brand, ())
+    normalized = str(draft_text or "").casefold()
+    return any(str(term or "").casefold() in normalized for term in terms if str(term or "").strip())
+
+
+def _with_fix1b_autonomy_trace(
+    result: SubscriptionDraftResult,
+    *,
+    enabled: bool,
+    status: str,
+    reason: str,
+    changed_fields: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    record = semantic_reading_trace_record(
+        reading_class="fix1b",
+        enabled=enabled,
+        status=status,
+        decision="allow_autonomy" if status == "fix1b_promote" else "keep_guard",
+        reason=reason,
+        source="autonomy_matrix_guard",
+        changed_fields=changed_fields,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
+
 def apply_autonomy_matrix_guard(
     result: SubscriptionDraftResult,
     *,
@@ -2894,18 +2978,43 @@ def apply_autonomy_matrix_guard(
             "Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
             draft_text=_live_status_manager_check_text(client_message=client_message, context=context),
         )
+    fix1b_corridor = _fix1b_autonomy_verified_facts_corridor(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    if _fix1b_autonomy_verified_facts_enabled(context):
+        result = _with_fix1b_autonomy_trace(
+            result,
+            enabled=True,
+            status="fix1b_promote" if fix1b_corridor else "no_op",
+            reason="verified_fact_corridor" if fix1b_corridor else "corridor_not_satisfied",
+            changed_fields=("route", "safety_flags", "manager_checklist") if fix1b_corridor else (),
+        )
+        flags = list(result.safety_flags)
+        checklist = list(result.manager_checklist)
+        metadata = dict(result.metadata)
     if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text):
-        return demote(
-            "draft_for_manager",
-            "autonomy_default_cautious_missing_facts",
-            "Автономный ответ запрещен: есть недостающие факты.",
-        )
+        if fix1b_corridor:
+            metadata["fix1b_autonomy_verified_facts"] = True
+        else:
+            return demote(
+                "draft_for_manager",
+                "autonomy_default_cautious_missing_facts",
+                "Автономный ответ запрещен: есть недостающие факты.",
+            )
     if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text):
-        return demote(
-            "draft_for_manager",
-            "autonomy_default_cautious_unverified_fact",
-            "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
-        )
+        if fix1b_corridor:
+            metadata["fix1b_autonomy_verified_facts"] = True
+        else:
+            return demote(
+                "draft_for_manager",
+                "autonomy_default_cautious_unverified_fact",
+                "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
+            )
+    if fix1b_corridor:
+        flags.append("fix1b_autonomy_verified_facts_promoted")
+        metadata["fix1b_autonomy_verified_facts"] = True
     if "conversation_intent_plan_live_availability" in flags:
         return demote(
             "draft_for_manager",

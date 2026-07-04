@@ -134,6 +134,10 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
+from mango_mvp.channels.subscription_llm_parts.policy_routing import (
+    FIX1B_AUTONOMY_VERIFIED_FACTS_ENV,
+    apply_autonomy_matrix_guard,
+)
 from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
     build_direct_path_semantic_frame_posthoc_prompt,
@@ -6767,6 +6771,118 @@ def test_llm_missing_facts_do_not_block_autonomy_when_context_fact_is_verified()
 
     assert result.route == "bot_answer_self_for_pilot"
     assert "autonomy_default_cautious_missing_facts" not in result.safety_flags
+
+
+def _fix1b_result(**overrides: object) -> SubscriptionDraftResult:
+    payload = {
+        "route": "draft_for_manager",
+        "draft_text": "Фотон: онлайн-курс для 5 класса стоит 37 000 ₽.",
+        "message_type": "question",
+        "topic_id": "theme:001_pricing",
+        "topic_confidence": 0.91,
+        "missing_facts": ["prices.current"],
+    }
+    payload.update(overrides)
+    return SubscriptionDraftResult(**payload)
+
+
+def _fix1b_context(**overrides: object) -> dict[str, object]:
+    context: dict[str, object] = {
+        "active_brand": "foton",
+        FIX1B_AUTONOMY_VERIFIED_FACTS_ENV: "1",
+        "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+        "facts_context": {"client_safe": True, "fresh": True, "facts_missing": True},
+        "confirmed_facts": {"fact:price": "Фотон: онлайн-курс для 5 класса стоит 37 000 ₽."},
+    }
+    context.update(overrides)
+    return context
+
+
+def test_fix1b_promotes_verified_fact_when_only_llm_missing_fact_is_stale() -> None:
+    result = apply_autonomy_matrix_guard(
+        _fix1b_result(),
+        client_message="Сколько стоит онлайн для 5 класса?",
+        context=_fix1b_context(),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "fix1b_autonomy_verified_facts_promoted" in result.safety_flags
+    assert "autonomy_default_cautious_missing_facts" not in result.safety_flags
+    assert "autonomy_matrix_promoted_safe_draft" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"]
+    assert trace[-1]["class"] == "fix1b"
+    assert trace[-1]["status"] == "fix1b_promote"
+
+
+def test_fix1b_off_keeps_original_missing_fact_demote() -> None:
+    result = apply_autonomy_matrix_guard(
+        _fix1b_result(),
+        client_message="Сколько стоит онлайн для 5 класса?",
+        context=_fix1b_context(**{FIX1B_AUTONOMY_VERIFIED_FACTS_ENV: "0"}),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "fix1b_autonomy_verified_facts_promoted" not in result.safety_flags
+    assert "autonomy_default_cautious_missing_facts" in result.safety_flags
+    assert "semantic_reading_trace" not in result.metadata
+
+
+@pytest.mark.parametrize(
+    ("provider_overrides", "context_overrides", "client_message", "expected_flag"),
+    [
+        ({"topic_id": "theme:030_partnership_b2b"}, {}, "Сколько стоит онлайн для 5 класса?", "autonomy_default_cautious_topic_not_allowed"),
+        ({}, {"active_brand": "unknown"}, "Сколько стоит онлайн для 5 класса?", "autonomy_default_cautious_unknown_brand"),
+        ({}, {"facts_context": {"client_safe": False, "fresh": False, "facts_missing": True}, "confirmed_facts": {}}, "Сколько стоит онлайн для 5 класса?", "autonomy_default_cautious_missing_facts"),
+        ({}, {"confirmed_facts": {}}, "Сколько стоит онлайн для 5 класса?", "autonomy_default_cautious_missing_facts"),
+        ({"draft_text": "Фотон: онлайн-курс для 5 класса стоит 39 000 ₽."}, {}, "Сколько стоит онлайн для 5 класса?", "autonomy_default_cautious_missing_facts"),
+        ({"topic_id": "theme:009_refund"}, {}, "Сколько стоит онлайн для 5 класса?", "autonomy_blocked_high_risk"),
+        (
+            {"safety_flags": ("conversation_intent_plan_live_availability",)},
+            {"facts_context": {"client_safe": True, "fresh": True, "facts_missing": False}},
+            "Сколько стоит онлайн для 5 класса?",
+            "autonomy_default_cautious_live_status_missing",
+        ),
+        ({}, {}, "Пожалуюсь в прокуратуру, верните деньги.", "high_risk_manager_only"),
+    ],
+)
+def test_fix1b_corridor_rejects_required_negative_conditions(
+    provider_overrides: dict[str, object],
+    context_overrides: dict[str, object],
+    client_message: str,
+    expected_flag: str,
+) -> None:
+    result = apply_autonomy_matrix_guard(
+        _fix1b_result(**provider_overrides),
+        client_message=client_message,
+        context=_fix1b_context(**context_overrides),
+    )
+
+    assert result.route in {"draft_for_manager", "manager_only"}
+    assert "fix1b_autonomy_verified_facts_promoted" not in result.safety_flags
+    assert expected_flag in result.safety_flags
+
+
+@pytest.mark.parametrize(
+    "draft_text",
+    [
+        "Фотон: онлайн-курс для 5 класса стоит 37 000 ₽, а индивидуальный тариф — 99 999 ₽.",
+        "Фотон: онлайн-курс для 5 класса стоит 37 000 ₽. В УНПК можно выбрать похожий формат.",
+        "Фотон: онлайн-курс для 5 класса стоит 37 000 ₽, места в группе есть.",
+    ],
+)
+def test_fix1b_corridor_rejects_partial_support_for_numbers_brand_and_live_status(draft_text: str) -> None:
+    result = apply_autonomy_matrix_guard(
+        _fix1b_result(draft_text=draft_text),
+        client_message="Сколько стоит онлайн для 5 класса?",
+        context=_fix1b_context(),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "fix1b_autonomy_verified_facts_promoted" not in result.safety_flags
+    assert "autonomy_default_cautious_missing_facts" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"]
+    assert trace[-1]["class"] == "fix1b"
+    assert trace[-1]["status"] == "no_op"
 
 
 def test_live_availability_missing_fact_blocks_autonomy_even_with_verified_program_fact() -> None:

@@ -105,3 +105,18 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` так�
 
 - `_AVAILABILITY_PROMISE_RE` и `availability_promise_detected()` в `reliable_answerer.py` остаются. Это проверка уже сгенерированного ответа на опасное обещание мест/группы/брони без live-факта, а не понимание сырого клиентского текста.
 - `dialogue_memory.py` grade/subject/format extraction пока остаётся. На текущем HEAD `semantic_reading_slots` являются hidden storage и не заменяют `known_slots`; удалять старое извлечение можно только после отдельного `slots_gsf -> known_slots` merge с `source=semantic_reading_llm` и запретом попадания в `client_confirmed_slots`.
+
+## Разрешенное обновление 2026-07-04: PR-A Fix1b verified-fact autonomy corridor
+
+Добавлен default-OFF флаг `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS`.
+
+Это не новый детектор смысла клиента. Флаг не читает сырой клиентский текст для выбора intent/topic/P0. Он только сужает ложные выходные демоуты `autonomy_default_cautious_missing_facts` и `autonomy_default_cautious_unverified_fact`, когда уже готовый черновик:
+
+- относится к разрешенной autonomy-теме;
+- имеет определенный бренд;
+- не P0/high-risk;
+- полностью поддержан свежими client-safe фактами;
+- не содержит неподтвержденных чисел/дат/брендов;
+- не обещает live-наличие мест/групп/брони.
+
+Live-status пол, P0-пол, brand/fabrication проверки и legacy availability-promise floor не обходятся. Новые стоп-юниты покрывают частичную поддержку: лишнее число, чужой бренд и живые места.

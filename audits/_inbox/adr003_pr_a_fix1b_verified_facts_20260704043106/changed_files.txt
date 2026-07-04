@@ -1,0 +1,7 @@
+M docs/ADR003_ETAP_T_DECISIONS.md
+M docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md
+M src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
+M tests/test_adr003_regex_understanding_moratorium.py
+M tests/test_subscription_llm_draft_provider.py
+A tasks/tz_pr_a_fix1b_wrapper.md
+A audits/_inbox/adr003_pr_a_fix1b_verified_facts_20260704043106/

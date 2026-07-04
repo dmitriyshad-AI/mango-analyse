@@ -29,8 +29,12 @@ def test_adr003_flag_acceptance_runner_isolates_sibling_package_flags() -> None:
     assert "-u TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS" in text
     assert "-u TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX" in text
     assert "-u TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
+    assert "package_flags_off=(" in text
+    assert "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX=0" in text
+    assert "TELEGRAM_DIALOG_SUMMARY_ROLLING=0" in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
     assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1" in text
+    assert 'run_leg B "${base_env[@]}" "${package_flags_off[@]}"' in text
     assert '"$TARGET_FLAG=$TARGET_FLAG_VALUE"' in text
 
 

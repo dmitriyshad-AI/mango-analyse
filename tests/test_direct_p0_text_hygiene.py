@@ -42,15 +42,16 @@ def test_p0_adr_flags_enabled_by_pilot_profile_with_explicit_override(monkeypatc
 
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._p0_model_classes_v2_enabled({}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({}) is False
     assert subscription_llm._text_hygiene_payment_fix_enabled({}) is False
     assert subscription_llm._p0_model_classes_v2_enabled(_profile_context()) is True
     assert subscription_llm._direct_p0_text_hygiene_enabled(_profile_context()) is True
-    assert subscription_llm._text_hygiene_payment_fix_enabled(_profile_context()) is False
+    assert subscription_llm._text_hygiene_payment_fix_enabled(_profile_context()) is True
     assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), subscription_llm.P0_MODEL_CLASSES_V2_ENV: "0"}) is False
     assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "0"}) is False
+    assert subscription_llm._text_hygiene_payment_fix_enabled({**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"}) is False
     assert subscription_llm._text_hygiene_payment_fix_enabled(
         {**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"}
     ) is True
@@ -182,6 +183,11 @@ def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_paymen
 
     off = scrub_direct_path_p0_text(
         result,
+        context={**profile, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"},
+        client_message="Оплату ещё не вносил, доступ не появился.",
+    )
+    profile_on = scrub_direct_path_p0_text(
+        result,
         context=profile,
         client_message="Оплату ещё не вносил, доступ не появился.",
     )
@@ -198,6 +204,9 @@ def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_paymen
 
     assert "по возврату" in off.draft_text.casefold()
     assert off.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+    assert "возврат" not in profile_on.draft_text.casefold()
+    assert "по оплате нужно сверить данные" in profile_on.draft_text.casefold()
+    assert profile_on.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
     assert "возврат" not in on.draft_text.casefold()
     assert "по оплате нужно сверить данные" in on.draft_text.casefold()
     assert on.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"

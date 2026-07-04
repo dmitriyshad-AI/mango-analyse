@@ -2794,6 +2794,59 @@ def _fix1b_autonomy_verified_facts_enabled(context: Optional[Mapping[str, Any]] 
     return _truthy_value(os.getenv(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
 
 
+def _fix1b_has_paid_operation_context(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_p0, Mapping) and str(direct_p0.get("p0_kind") or "") == "paid_operation_context":
+        return True
+    return "direct_path_model_p0_paid_operation_context" in set(result.safety_flags)
+
+
+def _fix1b_has_positive_confirmed_fact_source(context: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    positive_key_markers = (
+        "price",
+        "address",
+        "schedule",
+        "format",
+        "product",
+        "program",
+        "course",
+        "camp",
+        "lvsh",
+        "group",
+        "platform",
+        "installment",
+    )
+    negative_key_markers = ("absence", "missing", "not_available", "unavailable", "closed", "cancelled")
+
+    def walk(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                key_text = str(key or "").casefold()
+                if any(marker in key_text for marker in negative_key_markers):
+                    continue
+                if any(marker in key_text for marker in positive_key_markers):
+                    return True
+                if walk(nested):
+                    return True
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return any(walk(item) for item in value)
+        return False
+
+    return any(
+        walk(context.get(key))
+        for key in (
+            "confirmed_facts",
+            "facts_context",
+            "dialogue_contract_pipeline",
+            "knowledge_snippets",
+            "context_used",
+        )
+    )
+
+
 def _fix1b_autonomy_verified_facts_corridor(
     result: SubscriptionDraftResult,
     *,
@@ -2814,13 +2867,17 @@ def _fix1b_autonomy_verified_facts_corridor(
         return False
     if is_high_risk_result(result) or detect_high_risk_input_markers(client_message, context=context):
         return False
+    if _fix1b_has_paid_operation_context(result):
+        return False
     if not _has_client_safe_current_fact(context):
+        return False
+    if not _fix1b_has_positive_confirmed_fact_source(context):
         return False
     fact_texts = _fresh_fact_texts(context)
     if not fact_texts:
         return False
     draft_text = str(result.draft_text or "")
-    if not (_claim_supported_by_facts(draft_text, fact_texts) or _keep_answer_supported(draft_text, fact_texts)):
+    if not _claim_supported_by_facts(draft_text, fact_texts):
         return False
     facts_blob = " ".join(str(item or "") for item in fact_texts)
     if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):

@@ -71,6 +71,12 @@ base_env=(
   PYTHONPATH="$ROOT/src"
 )
 
+package_flags_off=(
+  TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS=0
+  TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX=0
+  TELEGRAM_DIALOG_SUMMARY_ROLLING=0
+)
+
 validate_leg() {
   local leg="$1"
   PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
@@ -149,8 +155,8 @@ manifest = {
     "sha256": {name: sha256(path) for name, path in paths.items()},
     "artifacts": artifacts,
     "env_contract": {
-        "B": "pilot_gold_v1 profile, target flag and sibling package flags unset",
-        "ON": f"pilot_gold_v1 profile plus {target_flag}={target_flag_value}; sibling package flags unset",
+        "B": "pilot_gold_v1 profile with package flags explicitly set to 0",
+        "ON": f"pilot_gold_v1 profile with package flags explicitly set to 0, plus {target_flag}={target_flag_value}",
         "TELEGRAM_SEMANTIC_READING_CLASSES": "unset in process env so pilot profile default classes apply",
     },
 }
@@ -198,8 +204,8 @@ if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"
 fi
 
-run_leg B "${base_env[@]}"
-run_leg ON "${base_env[@]}" "$TARGET_FLAG=$TARGET_FLAG_VALUE"
+run_leg B "${base_env[@]}" "${package_flags_off[@]}"
+run_leg ON "${base_env[@]}" "${package_flags_off[@]}" "$TARGET_FLAG=$TARGET_FLAG_VALUE"
 
 if [[ "$DRY_CHECK" == "1" ]]; then
   write_sha_manifest

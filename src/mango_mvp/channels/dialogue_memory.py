@@ -36,6 +36,7 @@ DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
+    DIALOG_SUMMARY_ROLLING_ENV,
 )
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
@@ -851,12 +852,7 @@ def _memory_llm_summary(value: Any) -> str:
 
 
 def _dialog_summary_rolling_enabled(context: Mapping[str, Any] | None = None) -> bool:
-    value: Any = None
-    if isinstance(context, Mapping):
-        value = context.get(DIALOG_SUMMARY_ROLLING_ENV)
-    if value is None:
-        value = os.getenv(DIALOG_SUMMARY_ROLLING_ENV)
-    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+    return _memory_profile_flag_enabled(DIALOG_SUMMARY_ROLLING_ENV, context)
 
 
 def _dialog_summary_candidate(value: Any, *, active_brand: str = "") -> str:
@@ -1082,13 +1078,20 @@ def _memory_provenance_enabled() -> bool:
     return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
-def _memory_profile_flag_enabled(env_name: str) -> bool:
+def _memory_profile_flag_enabled(env_name: str, context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, Mapping) and env_name in context:
+        return str(context.get(env_name) or "").strip().lower() in {"1", "true", "yes", "on", "да"}
     explicit = os.getenv(env_name)
     if explicit is not None:
-        return str(explicit).strip().lower() in {"1", "true", "yes", "on"}
+        return str(explicit).strip().lower() in {"1", "true", "yes", "on", "да"}
+    profile = ""
+    if isinstance(context, Mapping):
+        profile = str(context.get(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
+    if not profile:
+        profile = str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
     return (
         env_name in MEMORY_PROFILE_DEFAULT_ON_FLAGS
-        and str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
+        and profile == DIRECT_PATH_PILOT_CONFIG_VERSION
     )
 
 

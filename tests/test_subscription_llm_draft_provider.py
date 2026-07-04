@@ -137,6 +137,7 @@ from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     FIX1B_AUTONOMY_VERIFIED_FACTS_ENV,
     apply_autonomy_matrix_guard,
+    _fix1b_has_paid_operation_context,
 )
 from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
@@ -6909,6 +6910,41 @@ def test_fix1b_corridor_rejects_partial_support_for_numbers_brand_and_live_statu
     trace = result.metadata["semantic_reading_trace"]
     assert trace[-1]["class"] == "fix1b"
     assert trace[-1]["status"] == "no_op"
+
+
+def test_fix1b_corridor_rejects_negative_existence_claim_even_when_fact_supported() -> None:
+    result = apply_autonomy_matrix_guard(
+        _fix1b_result(draft_text="Фотон: курса для 5 класса нет."),
+        client_message="Есть курс для 5 класса?",
+        context=_fix1b_context(
+            confirmed_facts={"fact:absence": "Фотон: курса для 5 класса нет."},
+        ),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "fix1b_autonomy_verified_facts_promoted" not in result.safety_flags
+    assert "autonomy_default_cautious_missing_facts" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"]
+    assert trace[-1]["class"] == "fix1b"
+    assert trace[-1]["status"] == "no_op"
+
+
+def test_fix1b_corridor_rejects_paid_operation_context() -> None:
+    paid_result = _fix1b_result(
+        metadata={"direct_path_model_p0": {"p0_kind": "paid_operation_context"}},
+        safety_flags=("direct_path_model_p0_paid_operation_context",),
+    )
+    assert _fix1b_has_paid_operation_context(paid_result) is True
+    assert _fix1b_has_paid_operation_context(_fix1b_result()) is False
+
+    result = apply_autonomy_matrix_guard(
+        paid_result,
+        client_message="Сколько стоит онлайн для 5 класса?",
+        context=_fix1b_context(),
+    )
+
+    assert result.route in {"draft_for_manager", "manager_only"}
+    assert "fix1b_autonomy_verified_facts_promoted" not in result.safety_flags
 
 
 def test_live_availability_missing_fact_blocks_autonomy_even_with_verified_program_fact() -> None:
@@ -15288,6 +15324,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         RETRIEVER_NEED_SHADOW_ENV,
         subscription_llm.ANSWERABILITY_SHADOW_ENV,
         AUTONOMY_SCOPE_PRECISION_ENV,
+        subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -15310,8 +15347,10 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
     assert subscription_llm._deal_action_decision_enabled(context) is True
     assert subscription_llm._direct_path_model_p0_enabled(context) is True
+    assert subscription_llm._text_hygiene_payment_fix_enabled(context) is True
     assert subscription_llm._deal_action_decision_enabled(legacy_context) is False
     assert subscription_llm._direct_path_model_p0_enabled(legacy_context) is False
+    assert subscription_llm._text_hygiene_payment_fix_enabled(legacy_context) is False
     assert subscription_llm._template_from_kb_enabled(context) is True
     assert TONE_CLOSE_DETECT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert TONE_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
@@ -15333,6 +15372,10 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.P0_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._text_hygiene_payment_fix_enabled(
+        {**context, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"}
+    ) is False
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False

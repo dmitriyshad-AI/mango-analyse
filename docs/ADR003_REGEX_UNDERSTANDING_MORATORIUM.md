@@ -148,3 +148,16 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обн�
 Снятие ложного P0 в этом коммите не переносится на frame: legacy-поведение остаётся единственным источником такого repair до отдельного замера.
 
 `intent_actions` не добавлен в `PILOT_PROFILE_DEFAULT_READING_CLASSES`; профильное включение возможно только отдельным решением после M1-пары и регрейда.
+
+## Разрешенное обновление 2026-07-04: профиль PaymentFix/PR-D и подготовка среза-1a
+
+После M1-регрейда PaymentFix и PR-D переведены в default-ON профиль `pilot_gold_v1` с сохранением явного `=0` override:
+
+- `TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX` — текстовая гигиена оплаты/возврата, не новый regex-понимальщик клиента;
+- `TELEGRAM_DIALOG_SUMMARY_ROLLING` — запись безопасной сводки из inline LLM-поля `dialog_summary`, без записи в `known_slots`/CRM/Tallanto/AMO.
+
+`TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` остается default-OFF. Коридор ужесточен до включения: отрицательные утверждения о существовании и paid-context во входе не промоутятся.
+
+Runner для Package-2 получает только измерительный `TARGET_READING_CLASS`: `intent_actions` добавляется в ON-ногу через env, но не в профильный default. Это сохраняет чистый baseline.
+
+Inline text health gate получил узкую верификацию адресных чисел `20`/`30` из selected exact address fact текущего хода. Raw fact blob и adjacent facts не становятся pass-источником.

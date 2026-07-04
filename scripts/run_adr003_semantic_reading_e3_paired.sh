@@ -39,7 +39,15 @@ cd "$ROOT"
 REV_LABEL="${REV_LABEL:-e3_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl}"
 SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
-READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf}"
+BASE_READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf}"
+TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"
+READING_CLASSES="$BASE_READING_CLASSES"
+if [[ -n "$TARGET_READING_CLASS" ]]; then
+  case ",$READING_CLASSES," in
+    *",$TARGET_READING_CLASS,"*) ;;
+    *) READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}" ;;
+  esac
+fi
 if [[ "$DRY_CHECK" == "1" ]]; then
   OUT="${OUT:-runs/adr003_semantic_reading_e3_dry_check_${REV_LABEL}}"
 elif [[ -n "$RESUME_ON_REPORT" ]]; then
@@ -98,7 +106,7 @@ validate_leg() {
 }
 
 write_sha_manifest() {
-  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$ROOT" <<'PY'
+  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASS" "$ROOT" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -107,13 +115,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
-root = Path(sys.argv[6]).resolve()
+root = Path(sys.argv[7]).resolve()
 paths = {
     "scenario": Path(sys.argv[2]),
     "snapshot": Path(sys.argv[3]),
     "runner": Path(sys.argv[4]),
 }
 reading_classes = sys.argv[5]
+target_reading_class = sys.argv[6]
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -167,6 +176,7 @@ manifest = {
         "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
         "TELEGRAM_RELIABLE_ANSWERER_STEP1": "1",
         "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes,
+        "TARGET_READING_CLASS": target_reading_class,
     },
 }
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -225,6 +235,7 @@ if [[ -n "$RESUME_ON_REPORT" ]]; then
   echo "scenarios=$SCEN"
   echo "snapshot=$SNAPSHOT"
   echo "reading_classes=$READING_CLASSES"
+  echo "target_reading_class=$TARGET_READING_CLASS"
   echo "out=$OUT"
   echo "mode=resume-on-report"
   validate_leg B 0
@@ -242,6 +253,7 @@ echo "rev=$(git rev-parse HEAD)"
 echo "scenarios=$SCEN"
 echo "snapshot=$SNAPSHOT"
 echo "reading_classes=$READING_CLASSES"
+echo "target_reading_class=$TARGET_READING_CLASS"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"

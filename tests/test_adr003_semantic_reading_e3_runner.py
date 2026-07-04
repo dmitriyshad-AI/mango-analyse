@@ -48,6 +48,15 @@ def test_adr003_e3_runner_validates_eligible_frame_rate_not_all_turns() -> None:
     assert "semantic frame metadata on" not in text
 
 
+def test_adr003_e3_runner_can_append_target_reading_class_without_profile_default() -> None:
+    text = _runner_text()
+
+    assert 'TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"' in text
+    assert 'READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}"' in text
+    assert '"TARGET_READING_CLASS": target_reading_class' in text
+    assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" not in text
+
+
 def test_adr003_e3_runner_has_resume_on_report_mode() -> None:
     text = _runner_text()
 

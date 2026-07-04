@@ -99,3 +99,27 @@
 Решение: `intent_actions` добавлен только в allowlist `TELEGRAM_SEMANTIC_READING_CLASSES`, но не в `PILOT_PROFILE_DEFAULT_READING_CLASSES`. В переходном режиме `apply_conversation_intent_plan_guard` считает legacy-решение как раньше, затем читает только inline `SemanticFrame` на той же стадии direct-path pipeline и применяет fail-closed/max-conservative слой.
 
 Обоснование: срез заменяет выходное route-решение, а не входные чтения `conversation_intent_plan`. Posthoc frame появляется позже и не является той же стадией. При `requested_action=check_availability` frame может переустановить protective-сигнал `conversation_intent_plan_live_availability`, чтобы Fix1b/autonomy не начали обещать живые места. При отсутствии inline frame, низкой confidence, невалидном enum или source mismatch применяется legacy. Frame-based false-P0 repair в этом коммите не включается; его продолжает делать только legacy-логика до отдельного замера. Профильное включение и deletion legacy-вычисления остаются отдельными решениями после пары и регрейда.
+
+## D-017. PaymentFix и PR-D включаются в `pilot_gold_v1` как профильные дефолты
+
+Решение: после M1-регрейда трех приемочных пар добавить `TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX` и `TELEGRAM_DIALOG_SUMMARY_ROLLING` в профильный default-ON контур `pilot_gold_v1`, сохранив явный env/context override `=0`.
+
+Обоснование: PaymentFix и PR-D прошли независимые пары; это не включает live runtime и не трогает AMO/CRM/Tallanto. PaymentFix чинит текстовую болезнь #16, PR-D хранит короткую безопасную rolling summary. `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` в профиль не добавляется из-за найденных дыр коридора.
+
+## D-018. Fix1b hardening до любого включения
+
+Решение: `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` остается default-OFF. Коридор дополнительно блокирует отрицательные утверждения о существовании курса/группы/программы и входящий paid-context (`чек`, `квитанция`, `скрин оплаты`, `оплатил/оплачено`).
+
+Обоснование: M1-регрейд подтвердил безопасность Fix1b, но не разрешил включение: коридор мог пропустить отрицательное существование и оплаченный контекст. Эти стопы относятся к верификации готового черновика/операционного контекста, а не к новому чтению client intent.
+
+## D-019. Package-2 runner добавляет целевой reading-класс поверх профиля только env-ом
+
+Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. Профильный default reading classes не меняется.
+
+Обоснование: срез-1a должен измерять `intent_actions` как единственную новую переменную поверх текущего профиля. Добавлять `intent_actions` в профиль до пары нельзя: baseline стал бы загрязнен и неатрибутируем.
+
+## D-020. Inline text gate верифицирует адресные числа только из источников хода
+
+Решение: числа адресов вроде `20`/`30` считаются verified, если они пришли из selected exact address fact или уже подтверждены `number_audit`; произвольный raw blob фактов не становится источником истины.
+
+Обоснование: это снимает ложные тревоги гейта на адресах, но не открывает проход любым числам из базы. Граница сохраняет правило: проверяется только источник текущего хода, adjacent facts остаются warning, а не pass.

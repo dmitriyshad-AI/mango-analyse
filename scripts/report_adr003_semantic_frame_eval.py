@@ -911,10 +911,24 @@ def _selected_fact_numbers(turn: Mapping[str, Any], selection_key: str) -> set[s
             prefix = ":".join(item.split(":", 4)[:4])
         if any(item.startswith(f"{fact_id}:") or prefix == fact_id for fact_id in selected_ids):
             texts.append(item)
+        elif selection_key == "selected_exact_ids" and _selected_ids_are_address_facts(selected_ids) and _is_client_safe_address_fact_text(item):
+            texts.append(item)
     result = _numbers(" ".join(str(text) for text in texts))
     if selection_key == "selected_exact_ids":
         result.update(_academic_year_numbers_from_fact_ids(selected_ids))
     return result
+
+
+def _selected_ids_are_address_facts(fact_ids: set[str]) -> bool:
+    markers = ("address", "location", "moscow_regular_address", "адрес")
+    return any(any(marker in str(fact_id or "").casefold() for marker in markers) for fact_id in fact_ids)
+
+
+def _is_client_safe_address_fact_text(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    if "client_safe_text" not in normalized and not normalized.startswith("fact:v3:"):
+        return False
+    return bool(re.search(r"(?:адрес|сретенк|красносельск|менделеево|москва|площадк|метро)", normalized, re.I))
 
 
 def _academic_year_numbers_from_fact_ids(fact_ids: set[str]) -> set[str]:

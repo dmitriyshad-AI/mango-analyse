@@ -5,10 +5,14 @@ import json
 import pytest
 
 from mango_mvp.channels.dialogue_memory import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIALOG_SUMMARY_ROLLING_ENV,
+    MEMORY_PROFILE_DEFAULT_ON_FLAGS,
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     MEMORY_CHILD_IDENTITY_MODEL_ENV,
+    _dialog_summary_rolling_enabled,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
@@ -251,6 +255,18 @@ def test_dialogue_summary_rolling_preserves_previous_summary_only_when_enabled(m
         context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
     )
     assert on.conversation_summary_short == previous["conversation_summary_short"]
+
+
+def test_dialogue_summary_rolling_enabled_by_pilot_profile_with_explicit_override(monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(DIALOG_SUMMARY_ROLLING_ENV, raising=False)
+
+    profile = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert DIALOG_SUMMARY_ROLLING_ENV in MEMORY_PROFILE_DEFAULT_ON_FLAGS
+    assert _dialog_summary_rolling_enabled({}) is False
+    assert _dialog_summary_rolling_enabled(profile) is True
+    assert _dialog_summary_rolling_enabled({**profile, DIALOG_SUMMARY_ROLLING_ENV: "0"}) is False
 
 
 def test_dialogue_summary_rolling_empty_previous_uses_slot_fallback() -> None:

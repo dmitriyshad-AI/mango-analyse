@@ -352,7 +352,7 @@ def _direct_p0_text_hygiene_enabled(context: Optional[Mapping[str, Any]] = None)
     )
 
 def _text_hygiene_payment_fix_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         TEXT_HYGIENE_PAYMENT_FIX_ENV,
         aliases=("text_hygiene_payment_fix", "text_hygiene_payment_fix_enabled"),

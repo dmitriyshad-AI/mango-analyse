@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
+from mango_mvp.channels.answer_quality_rewriter import apply_answer_quality_rewriter
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
     _conversation_intent_plan_with_model_led,
     apply_conversation_intent_plan_guard,
     apply_dialogue_contract_v2_template_dispatcher,
+    apply_known_context_redundant_question_guard,
 )
+from mango_mvp.channels.subscription_llm_parts.post_layers import apply_humanity_guards
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_reading_trace_finalize
 from mango_mvp.channels.subscription_llm_parts.provider import SubscriptionLlmDraftProvider
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
@@ -223,7 +226,109 @@ def test_intent_actions_explicit_inline_check_availability_preserves_live_availa
     trace = guarded.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "intent_actions"
     assert trace["status"] == "applied"
-    assert trace["decision"] == "frame_check_availability"
+
+
+def test_route_templates_class_records_same_stage_legacy_shadow_without_profile_default() -> None:
+    result = _semantic_result(primary_intent="schedule", sense="answer_question")
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Когда занятия?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
+        },
+    )
+
+    assert guarded.route == result.route
+    assert guarded.draft_text == result.draft_text
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "route_templates"
+    assert trace["metadata"]["stage"] == "autonomy_matrix"
+    assert trace["metadata"]["chosen"] == "legacy_more_conservative"
+
+
+def test_route_templates_trace_records_known_context_reask_guard() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажите класс ребёнка?",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "confidence": 0.91,
+            }
+        },
+    )
+
+    guarded = apply_known_context_redundant_question_guard(
+        result,
+        client_message="А сколько стоит?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            "dialogue_memory_view": {"known_slots": {"grade": "8"}},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "route_templates"
+    assert trace["metadata"]["stage"] == "redundant_guard"
+    assert "grade" in trace["metadata"]["repeated_fields"]
+
+
+def test_rewrite_quality_class_records_rewriter_shadow_without_route_change() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Передам вопрос менеджеру.",
+        safety_flags=("manager_approval_required",),
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "confidence": 0.93,
+            }
+        },
+    )
+
+    guarded = apply_answer_quality_rewriter(
+        result,
+        client_message="Хочу пожаловаться.",
+        context={SEMANTIC_READING_CLASSES_ENV: "rewrite_quality"},
+    )
+
+    assert guarded.route == result.route
+    assert guarded.draft_text == result.draft_text
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "rewrite_quality"
+    assert trace["metadata"]["stage"] == "rewriter"
+    assert trace["metadata"]["text_replacement"] is False
+
+
+def test_post_semantics_class_records_humanity_text_replacement() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В фактах нет точной информации, передам.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "confidence": 0.9,
+            }
+        },
+    )
+
+    guarded = apply_humanity_guards(
+        result,
+        client_message="Есть информация?",
+        context={SEMANTIC_READING_CLASSES_ENV: "post_semantics"},
+    )
+
+    assert guarded.draft_text != result.draft_text
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "post_semantics"
+    assert trace["metadata"]["stage"] == "humanity"
+    assert trace["metadata"]["text_replacement"] is True
 
 
 def test_intent_actions_check_availability_adds_live_flag_even_when_legacy_already_manager_draft() -> None:

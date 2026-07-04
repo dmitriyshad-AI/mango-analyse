@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
@@ -11,7 +12,17 @@ SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
 SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
 
-ALLOWED_SEMANTIC_READING_CLASSES = frozenset({"sense_seats", "off_topic", "slots_gsf", "intent_actions"})
+ALLOWED_SEMANTIC_READING_CLASSES = frozenset(
+    {
+        "sense_seats",
+        "off_topic",
+        "slots_gsf",
+        "intent_actions",
+        "route_templates",
+        "rewrite_quality",
+        "post_semantics",
+    }
+)
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})
 SEMANTIC_READING_DECISION_CONFIDENCE = 0.70
 
@@ -106,6 +117,39 @@ def _clean_trace_fields(value: Any) -> list[str]:
         if item and item not in out:
             out.append(item)
     return out[:12]
+
+
+def _trace_text_hash(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def semantic_reading_transition_metadata(
+    *,
+    stage: str,
+    draft_before: Any = "",
+    draft_after: Any = "",
+    text_replacement: bool = False,
+    legacy_decision: str = "",
+    frame_decision: str = "",
+    chosen: str = "",
+    extra: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "stage": _clean_trace_text(stage, limit=80),
+        "draft_before_hash": _trace_text_hash(draft_before),
+        "draft_after_hash": _trace_text_hash(draft_after),
+        "text_replacement": bool(text_replacement),
+        "legacy_decision": _clean_trace_text(legacy_decision, limit=120),
+        "frame_decision": _clean_trace_text(frame_decision, limit=120),
+        "chosen": _clean_trace_text(chosen, limit=120),
+    }
+    if isinstance(extra, Mapping):
+        for key, value in extra.items():
+            payload[_clean_trace_text(key, limit=80)] = value
+    return payload
 
 
 def semantic_reading_trace_record(

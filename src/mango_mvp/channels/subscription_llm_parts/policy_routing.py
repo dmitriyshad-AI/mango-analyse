@@ -54,6 +54,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     reading_class_enabled,
     semantic_reading_trace_record,
     semantic_frame_from_metadata,
+    semantic_reading_transition_metadata,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
     MEMORY_PROVENANCE_ENV,
@@ -3439,6 +3440,14 @@ def apply_conversation_intent_plan_guard(
         client_message=client_message,
         context=context,
     )
+    if reading_class_enabled(context, "route_templates"):
+        legacy_result = _route_templates_transition_trace(
+            result,
+            legacy_result,
+            context=context,
+            stage="autonomy_matrix",
+            reason="conversation_intent_plan_legacy_shadow",
+        )
     if not reading_class_enabled(context, "intent_actions"):
         return legacy_result
     return _apply_intent_actions_transition_guard(
@@ -3447,6 +3456,53 @@ def apply_conversation_intent_plan_guard(
         client_message=client_message,
         context=context,
     )
+
+
+def _route_templates_transition_trace(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    reason: str,
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    changed_fields: list[str] = []
+    if legacy_result.route != original.route:
+        changed_fields.append("route")
+    if legacy_result.draft_text != original.draft_text:
+        changed_fields.append("draft_text")
+    if legacy_result.safety_flags != original.safety_flags:
+        changed_fields.append("safety_flags")
+    if legacy_result.manager_checklist != original.manager_checklist:
+        changed_fields.append("manager_checklist")
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status="applied" if changed_fields else "shadow_only",
+        decision="legacy_more_conservative",
+        reason=reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=changed_fields,
+        conflicts=("legacy_route",) if legacy_result.route != original.route else (),
+        metadata=semantic_reading_transition_metadata(
+            stage=stage,
+            draft_before=original.draft_text,
+            draft_after=legacy_result.draft_text,
+            text_replacement=legacy_result.draft_text != original.draft_text,
+            legacy_decision=legacy_result.route,
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen="legacy_more_conservative",
+            extra={
+                "legacy_route": legacy_result.route,
+                "original_route": original.route,
+                "primary_intent": reading.primary_intent if reading is not None else "",
+            },
+        ),
+    )
+    return replace(legacy_result, metadata=append_reading_trace_record(legacy_result.metadata, record))
 
 
 def _apply_conversation_intent_plan_legacy_guard(
@@ -3980,7 +4036,7 @@ def apply_known_context_redundant_question_guard(
     }
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     repair_text = _known_context_repair_text(result, client_message=client_message, context=context, repeated=repeated)
-    return replace(
+    guarded = replace(
         result,
         route=route,
         draft_text=repair_text,
@@ -3989,6 +4045,31 @@ def apply_known_context_redundant_question_guard(
         context_warnings=tuple(dict.fromkeys([*result.context_warnings, "asked_known_data_again"])),
         metadata=metadata,
     )
+    if not reading_class_enabled(context, "route_templates"):
+        return guarded
+    reading = SemanticReading.from_result(result, context=context)
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status="applied",
+        decision="legacy_more_conservative",
+        reason="known_context_redundant_question_guard",
+        source=reading.source if reading is not None else "",
+        confidence=reading.frame_confidence if reading is not None else 0.0,
+        changed_fields=("route", "draft_text"),
+        conflicts=("reask_known_slots",),
+        metadata=semantic_reading_transition_metadata(
+            stage="redundant_guard",
+            draft_before=result.draft_text,
+            draft_after=guarded.draft_text,
+            text_replacement=True,
+            legacy_decision="repair_reask_known_slots",
+            frame_decision=reading.requested_action if reading is not None else "",
+            chosen="legacy_more_conservative",
+            extra={"repeated_fields": list(repeated)},
+        ),
+    )
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 def apply_funnel_policy_guard(
     result: SubscriptionDraftResult,

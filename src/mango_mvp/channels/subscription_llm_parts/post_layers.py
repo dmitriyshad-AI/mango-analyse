@@ -101,6 +101,14 @@ from mango_mvp.channels.subscription_llm_parts.codex_exec import (
     _CodexRetryableError,
     _PromptProviderError,
 )
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    append_reading_trace_record,
+    reading_class_enabled,
+    semantic_frame_from_metadata,
+    semantic_reading_trace_record,
+    semantic_reading_transition_metadata,
+)
 
 from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_ENV,
@@ -4748,7 +4756,7 @@ def apply_humanity_guards(
 
     if not changed:
         return result
-    return replace(
+    guarded = replace(
         result,
         route=route,
         draft_text=draft_text,
@@ -4756,6 +4764,41 @@ def apply_humanity_guards(
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
     )
+    if not reading_class_enabled(context, "post_semantics"):
+        return guarded
+    reading = SemanticReading.from_result(result, context=context)
+    frame = semantic_frame_from_metadata(result.metadata)
+    trace_flags = [
+        flag
+        for flag in guarded.safety_flags
+        if str(flag).startswith("humanity_") or str(flag).startswith("phase2_")
+    ]
+    record = semantic_reading_trace_record(
+        reading_class="post_semantics",
+        enabled=True,
+        status="applied",
+        decision="legacy_more_conservative",
+        reason="humanity_guards_changed_output",
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=(
+            *(() if guarded.route == result.route else ("route",)),
+            *(() if guarded.draft_text == result.draft_text else ("draft_text",)),
+            "safety_flags",
+        ),
+        conflicts=trace_flags,
+        metadata=semantic_reading_transition_metadata(
+            stage="humanity",
+            draft_before=result.draft_text,
+            draft_after=guarded.draft_text,
+            text_replacement=guarded.draft_text != result.draft_text,
+            legacy_decision=guarded.route,
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen="legacy_more_conservative",
+            extra={"humanity_flags": trace_flags[:12]},
+        ),
+    )
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 
 def apply_humanity_x2_rewriter(

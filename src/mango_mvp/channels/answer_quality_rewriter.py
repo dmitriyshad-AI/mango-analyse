@@ -6,6 +6,14 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
 from mango_mvp.channels.p0_recall_spec import codes_from_text
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    append_reading_trace_record,
+    reading_class_enabled,
+    semantic_frame_from_metadata,
+    semantic_reading_trace_record,
+    semantic_reading_transition_metadata,
+)
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 if TYPE_CHECKING:
@@ -237,7 +245,15 @@ def apply_answer_quality_rewriter(
     assessment = assess_answer_quality(result, client_message=client_message, context=context)
     current = _with_answer_quality_metadata(result, assessment, rewritten=False, rewrite_provider="none")
     if not assessment.needs_rewrite:
-        return current
+        return _with_rewrite_quality_trace(
+            current,
+            result,
+            assessment=assessment,
+            context=context,
+            status="shadow_only",
+            decision="legacy_no_rewrite",
+            reason="assessment_passed_or_locked",
+        )
 
     rewrite_text, route, missing_facts = _deterministic_rewrite(current, client_message=client_message, context=context, assessment=assessment)
     provider = "deterministic" if rewrite_text else "none"
@@ -281,17 +297,33 @@ def apply_answer_quality_rewriter(
         provider = "llm_runner" if rewrite_text else provider
 
     if not rewrite_text:
-        return current
+        return _with_rewrite_quality_trace(
+            current,
+            result,
+            assessment=assessment,
+            context=context,
+            status="fail_closed",
+            decision="legacy_no_rewrite",
+            reason="no_safe_rewrite_text",
+        )
 
     validation_errors = _rewrite_validation_errors(rewrite_text, context=context) if provider == "llm_runner" else ()
     if validation_errors:
-        return _with_answer_quality_metadata(
-            current,
-            assessment,
-            rewritten=False,
-            rewrite_provider=provider,
-            rewrite_rejected=True,
-            rewrite_rejection_reasons=validation_errors,
+        return _with_rewrite_quality_trace(
+            _with_answer_quality_metadata(
+                current,
+                assessment,
+                rewritten=False,
+                rewrite_provider=provider,
+                rewrite_rejected=True,
+                rewrite_rejection_reasons=validation_errors,
+            ),
+            result,
+            assessment=assessment,
+            context=context,
+            status="fail_closed",
+            decision="legacy_validation_reject",
+            reason="rewrite_validation_errors",
         )
 
     next_route = route or getattr(current, "route", "")
@@ -321,22 +353,86 @@ def apply_answer_quality_rewriter(
             finding.code for finding in post_assessment.findings if finding.severity in {"blocker", "rewrite"}
         )
         if post_blockers:
-            return _with_answer_quality_metadata(
-                current,
-                assessment,
-                rewritten=False,
-                rewrite_provider=provider,
-                post_assessment=post_assessment,
-                rewrite_rejected=True,
-                rewrite_rejection_reasons=post_blockers,
+            return _with_rewrite_quality_trace(
+                _with_answer_quality_metadata(
+                    current,
+                    assessment,
+                    rewritten=False,
+                    rewrite_provider=provider,
+                    post_assessment=post_assessment,
+                    rewrite_rejected=True,
+                    rewrite_rejection_reasons=post_blockers,
+                ),
+                result,
+                assessment=assessment,
+                context=context,
+                status="fail_closed",
+                decision="legacy_post_reject",
+                reason="post_assessment_blockers",
             )
-    return _with_answer_quality_metadata(
-        rewritten,
-        assessment,
-        rewritten=True,
-        rewrite_provider=provider,
-        post_assessment=post_assessment,
+    return _with_rewrite_quality_trace(
+        _with_answer_quality_metadata(
+            rewritten,
+            assessment,
+            rewritten=True,
+            rewrite_provider=provider,
+            post_assessment=post_assessment,
+        ),
+        result,
+        assessment=assessment,
+        context=context,
+        status="applied",
+        decision="legacy_rewrite",
+        reason=provider,
     )
+
+
+def _with_rewrite_quality_trace(
+    result: "SubscriptionDraftResult",
+    before: "SubscriptionDraftResult",
+    *,
+    assessment: AnswerQualityAssessment,
+    context: Mapping[str, Any] | None,
+    status: str,
+    decision: str,
+    reason: str,
+) -> "SubscriptionDraftResult":
+    if not reading_class_enabled(context, "rewrite_quality"):
+        return result
+    reading = SemanticReading.from_result(before, context=context)
+    frame = semantic_frame_from_metadata(getattr(before, "metadata", {}) or {})
+    finding_codes = [finding.code for finding in assessment.findings]
+    changed_fields: list[str] = []
+    if getattr(result, "route", "") != getattr(before, "route", ""):
+        changed_fields.append("route")
+    if getattr(result, "draft_text", "") != getattr(before, "draft_text", ""):
+        changed_fields.append("draft_text")
+    record = semantic_reading_trace_record(
+        reading_class="rewrite_quality",
+        enabled=True,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=changed_fields,
+        conflicts=finding_codes,
+        metadata=semantic_reading_transition_metadata(
+            stage="rewriter",
+            draft_before=getattr(before, "draft_text", ""),
+            draft_after=getattr(result, "draft_text", ""),
+            text_replacement=getattr(result, "draft_text", "") != getattr(before, "draft_text", ""),
+            legacy_decision="rewrite" if assessment.needs_rewrite else "pass",
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen=decision,
+            extra={
+                "finding_codes": finding_codes,
+                "needs_rewrite": assessment.needs_rewrite,
+                "rewrite_provider": str((getattr(result, "metadata", {}) or {}).get("answer_quality_rewrite_provider") or ""),
+            },
+        ),
+    )
+    return replace(result, metadata=append_reading_trace_record(getattr(result, "metadata", {}) or {}, record))
 
 
 def build_answer_quality_llm_rewrite_prompt(

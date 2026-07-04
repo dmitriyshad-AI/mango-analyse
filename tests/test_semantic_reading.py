@@ -303,7 +303,7 @@ def test_semantic_reading_slots_are_not_written_when_mask_off(monkeypatch) -> No
         DialogueMemory(
             session_id="s1",
             active_brand="foton",
-            turns=(DialogueTurn("client", "Нужна физика онлайн для 9 класса."),),
+            turns=(DialogueTurn("client", "Хочу подобрать занятия."),),
         ),
         answer_text="Передам менеджеру.",
         route="draft_for_manager",
@@ -327,6 +327,37 @@ def test_slots_reask_does_not_create_hidden_slots_without_slots_gsf(monkeypatch)
         previous_memory={"session_id": "s1", "active_brand": "foton"},
     )
 
+    assert followup.do_not_reask_slots == ()
+
+
+def test_slots_reask_with_semantic_payload_is_noop_when_slots_gsf_is_off(monkeypatch) -> None:
+    monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "")
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    neutral_memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        turns=(DialogueTurn("client", "Хочу подобрать занятия."),),
+    )
+    updated = update_dialogue_memory_after_answer(
+        neutral_memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        semantic_reading=SemanticReading(
+            source="inline",
+            product_grade="9 класс",
+            product_subject="физика",
+            product_format="онлайн",
+            frame_confidence=0.91,
+        ).to_memory_dict(),
+    )
+    followup = build_dialogue_memory(
+        current_message="А расписание есть?",
+        active_brand="foton",
+        previous_memory=updated.to_json_dict(),
+    )
+
+    assert updated.semantic_reading_slots == {}
+    assert "semantic_reading_slots" not in updated.to_json_dict()
     assert followup.do_not_reask_slots == ()
 
 

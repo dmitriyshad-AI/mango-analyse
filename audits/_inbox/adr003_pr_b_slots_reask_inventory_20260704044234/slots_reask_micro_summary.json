@@ -1,0 +1,12 @@
+{
+  "total": 12,
+  "passed": 12,
+  "failed": [],
+  "off_behavior": "no hidden slot names added to do_not_reask_slots",
+  "on_behavior": "only non-empty hidden slot names are added",
+  "prompt_leak_count": 0,
+  "brands": [
+    "foton",
+    "unpk"
+  ]
+}

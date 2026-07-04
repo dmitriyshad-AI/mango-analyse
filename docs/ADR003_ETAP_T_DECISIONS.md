@@ -81,3 +81,9 @@
 Решение: `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` оставлен default-OFF и не добавлен в профиль. Коридор может снять только два ложных демоута (`autonomy_default_cautious_missing_facts`, `autonomy_default_cautious_unverified_fact`) и только если весь черновик поддержан свежими client-safe фактами, не содержит неподтвержденных чисел/дат, чужого бренда или live-обещаний мест. Trace-класс `fix1b` не входит в `TELEGRAM_SEMANTIC_READING_CLASSES`; это диагностическая запись применения коридора, а не новый пользовательский reading-класс.
 
 Обоснование: найденный баг находится в проверке выхода: бот уже дал проверенный ценовой/адресный ответ, но старый cautious-layer понижал его в `draft_for_manager`. Расширять понимание клиента здесь не нужно. Reader agreement и будущий регрейд должны видеть, где коридор сработал, но P0/live/brand/fabrication полы остаются выше и не обходятся.
+
+## D-014. PR-B slots_reask остается hidden-storage/read-only механизмом
+
+Решение: `TELEGRAM_SLOTS_REASK` оставлен default-OFF и не добавлен в профиль. Он не создаёт `semantic_reading_slots`; hidden-слоты создаются только активной маской `TELEGRAM_SEMANTIC_READING_CLASSES=slots_gsf`. PR-B только читает имена уже записанных hidden-слотов и добавляет эти имена в `do_not_ask_again`, чтобы бот не переспрашивал grade/subject/format. Значения hidden-слотов не попадают в `known_slots`, `client_confirmed_slots` или `to_prompt_view()`.
+
+Обоснование: это анти-переспрос, а не merge semantic slots into memory. Старые regex G/S/F и `known_slots` остаются до отдельного `slots_gsf -> known_slots` решения с `source=semantic_reading_llm`. В текущем HEAD три sim/update точки уже пробрасывают `semantic_reading=` в память; блок PR-B зафиксирован как инвентаризация существующего механизма и проверка его границ.

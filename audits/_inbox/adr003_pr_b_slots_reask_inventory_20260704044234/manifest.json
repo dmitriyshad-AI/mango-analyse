@@ -1,0 +1,24 @@
+{
+  "slug": "adr003_pr_b_slots_reask_inventory",
+  "created_at": "2026-07-04T04:42:34",
+  "repo_head": "5ef4cfdf",
+  "semantic_required": true,
+  "client_paths": [
+    "src/mango_mvp/channels/dialogue_memory.py",
+    "scripts/run_telegram_dynamic_client_sim.py",
+    "src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py"
+  ],
+  "files_written_before_manifest": [
+    "changed_files.txt",
+    "implementation_notes.md",
+    "test_output.txt",
+    "semantic_review.md",
+    "risk_review.md",
+    "backward_compatibility.md",
+    "slots_reask_micro_summary.json"
+  ],
+  "pii_redaction": [
+    "ru_phone",
+    "email"
+  ]
+}

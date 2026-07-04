@@ -1,0 +1,41 @@
+# Тесты
+
+## Targeted PR-B
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_semantic_reading.py -k 'slots_reask or semantic_reading_slots' tests/test_dynamic_client_sim_semantic_reading_memory.py
+```
+
+Результат:
+
+```text
+8 passed, 19 deselected in 0.54s
+```
+
+## Full pytest
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+4032 passed, 5 skipped, 1 warning in 79.98s
+```
+
+Warning: urllib3 NotOpenSSLWarning из пользовательского Python окружения, не связан с PR-B.
+
+## Local slots_reask micro-measure
+
+12 deterministic OFF/ON сценариев без LLM:
+
+- OFF: `do_not_reask_slots=[]`;
+- ON: добавляются только имена non-empty hidden slots;
+- prompt-leak `semantic_reading_slots`/`#SENTINEL#`: 0.
+
+Результат: `12/12 passed`.

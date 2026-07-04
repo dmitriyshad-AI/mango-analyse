@@ -32,6 +32,7 @@ MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
 SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
+DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
@@ -446,6 +447,16 @@ def build_dialogue_memory(
         semantic_slot_names = _semantic_reading_slot_names(_prev_semantic_reading_slots(previous_memory))
         if semantic_slot_names:
             do_not_reask = tuple(sorted({*do_not_reask, *semantic_slot_names}))
+    prev_summary = ""
+    if isinstance(previous, DialogueMemory):
+        prev_summary = str(previous.conversation_summary_short or "")[:500]
+    elif isinstance(previous_memory, Mapping):
+        prev_summary = str(previous_memory.get("conversation_summary_short") or "")[:500]
+    summary = (
+        prev_summary
+        if _dialog_summary_rolling_enabled(context) and prev_summary
+        else _conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question)
+    )
     return DialogueMemory(
         session_id=session_id or _stable_session_id(brand, turns),
         active_brand=brand,
@@ -472,7 +483,7 @@ def build_dialogue_memory(
         current_message_roles=current_roles.to_prompt_view(),
         proactive_state=dict(previous.proactive_state) if isinstance(previous, DialogueMemory) else {},
         slot_history=slot_history,
-        conversation_summary_short=_conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question),
+        conversation_summary_short=summary,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=_pending_manager_actions(commitments)),
     )
 
@@ -485,7 +496,9 @@ def update_dialogue_memory_after_answer(
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
     semantic_reading: Mapping[str, Any] | None = None,
+    dialog_summary: str | None = None,
     memory_llm_fn: Callable[[str], object] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
     answer = _clean(answer_text)
@@ -555,6 +568,10 @@ def update_dialogue_memory_after_answer(
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
+    if _dialog_summary_rolling_enabled(context):
+        candidate = _dialog_summary_candidate(dialog_summary, active_brand=current.active_brand)
+        if candidate:
+            updated = replace(updated, conversation_summary_short=candidate[:500])
     if _memory_provenance_enabled():
         return updated
     if memory_llm_fn is None:
@@ -831,6 +848,69 @@ def _memory_llm_summary(value: Any) -> str:
     if _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE.search(text):
         return ""
     return text[:500]
+
+
+def _dialog_summary_rolling_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(DIALOG_SUMMARY_ROLLING_ENV)
+    if value is None:
+        value = os.getenv(DIALOG_SUMMARY_ROLLING_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _dialog_summary_candidate(value: Any, *, active_brand: str = "") -> str:
+    summary = _memory_llm_summary(value)
+    if not summary:
+        return ""
+    if _summary_has_unsupported_number(summary):
+        return ""
+    if _summary_mentions_other_brand(summary, active_brand):
+        return ""
+    if _summary_has_pii(summary):
+        return ""
+    return summary[:500]
+
+
+def _summary_has_pii(text: str) -> bool:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.support import (  # noqa: PLC0415
+            _A2_PHONE_RE,
+            _CLIENT_EMAIL_RE,
+        )
+    except Exception:
+        return False
+    return bool(_A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text))
+
+
+def _summary_has_unsupported_number(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("\u00a0", " ")
+    if "процент" in normalized:
+        return True
+    digits = [char if char.isdigit() else " " for char in normalized]
+    groups = "".join(digits).split()
+    if sum(len(group) for group in groups) >= 4:
+        return True
+    if any(sep in normalized for sep in (".", "/")):
+        parts = [part for part in normalized.replace("/", ".").split(".") if part]
+        for first, second in zip(parts, parts[1:]):
+            left = "".join(char for char in first[-2:] if char.isdigit())
+            right = "".join(char for char in second[:2] if char.isdigit())
+            if len(left) in {1, 2} and len(right) in {1, 2}:
+                return True
+    return False
+
+
+def _summary_mentions_other_brand(text: str, active_brand: str = "") -> bool:
+    normalized = str(text or "").casefold()
+    brand = str(active_brand or "").strip().casefold()
+    if brand == "foton":
+        foreign_terms = ("унпк", "унфт", "мфти", "unpk", "mipt")
+    elif brand == "unpk":
+        foreign_terms = ("фотон", "foton", "cdpo", "цдпо")
+    else:
+        foreign_terms = ("унпк", "унфт", "мфти", "unpk", "mipt", "фотон", "foton", "cdpo", "цдпо")
+    return any(term in normalized for term in foreign_terms)
 
 
 def _coerce_turn(raw: DialogueTurn | Mapping[str, Any]) -> DialogueTurn:

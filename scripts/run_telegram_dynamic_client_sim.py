@@ -107,6 +107,28 @@ def _semantic_reading_memory_from_turn(turn: Mapping[str, Any]) -> Mapping[str, 
     return _semantic_reading_memory_from_result(frozen)
 
 
+def _dialog_summary_from_result(result: Any) -> str:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    candidate = str(metadata.get("dialog_summary_candidate") or "").strip()
+    if candidate:
+        return candidate
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        return str(direct.get("dialog_summary_candidate") or "").strip()
+    return ""
+
+
+def _dialog_summary_from_turn(turn: Mapping[str, Any]) -> str:
+    direct = turn.get("bot_direct_path")
+    if isinstance(direct, Mapping):
+        candidate = str(direct.get("dialog_summary_candidate") or "").strip()
+        if candidate:
+            return candidate
+    return str(turn.get("bot_dialog_summary") or turn.get("dialog_summary_candidate") or "").strip()
+
+
 class FakeClientModel:
     def generate(self, prompt: str) -> Mapping[str, Any]:
         if "turn_index=1" in prompt:
@@ -1860,7 +1882,9 @@ def attach_context_facts_to_dialog(
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
             semantic_reading=_semantic_reading_memory_from_turn(turn),
+            dialog_summary=_dialog_summary_from_turn(turn),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
         )
         dialogue_memory = updated_memory.to_json_dict()
         turns.append(turn)
@@ -1996,7 +2020,9 @@ def _enrich_one_transcript_with_semantic_frame(
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
             semantic_reading=_semantic_reading_memory_from_result(framed),
+            dialog_summary=_dialog_summary_from_result(framed),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
         )
         dialogue_memory = updated_memory.to_json_dict()
         recent_messages.append(f"Клиент: {client_message}")
@@ -2091,7 +2117,9 @@ def run_one_dialog(
             fact_refs=result.context_used,
             safety_flags=result.safety_flags,
             semantic_reading=_semantic_reading_memory_from_result(result),
+            dialog_summary=_dialog_summary_from_result(result),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
         )
         dialogue_memory = updated_memory.to_json_dict()
         confirmed_facts_for_judge = facts_for_judge(

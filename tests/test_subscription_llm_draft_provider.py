@@ -396,6 +396,31 @@ def test_answerability_shadow_payload_off_does_not_store_self_eval() -> None:
     assert "answerability_self" not in result.metadata
 
 
+def test_dialog_summary_payload_off_does_not_store_candidate() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру.",
+            "dialog_summary": "Клиент выбирает курс.",
+        }
+    )
+
+    assert "dialog_summary_candidate" not in result.metadata
+
+
+def test_dialog_summary_payload_on_stores_candidate() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру.",
+            "dialog_summary": "Клиент выбирает курс; ждёт следующий шаг.",
+        },
+        include_dialog_summary=True,
+    )
+
+    assert result.metadata["dialog_summary_candidate"] == "Клиент выбирает курс; ждёт следующий шаг."
+
+
 def test_answerability_shadow_payload_on_is_observe_only() -> None:
     result = _normalize_direct_path_payload(
         {
@@ -14601,6 +14626,52 @@ def test_presale_direct_path_prompt_filters_pii_slots_but_keeps_safe_slots() -> 
     assert "Артём" in provider.last_prompt
     assert "+7 999" not in provider.last_prompt
     assert "conversation_summary_short" not in provider.last_prompt
+
+
+def test_direct_path_prompt_adds_dialog_summary_field_when_flag_on() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
+    )
+
+    provider.build_draft(
+        "А что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_DIALOG_SUMMARY_ROLLING": "1",
+            "dialogue_memory_view": {
+                "conversation_summary_short": "Клиент выбирает физику для ребёнка в 7 классе.",
+            },
+            "confirmed_facts": {"format.foton": "Фотон: есть очные и онлайн-занятия."},
+        },
+    )
+
+    assert "ПРЕДЫДУЩАЯ СВОДКА: Клиент выбирает физику для ребёнка в 7 классе." in provider.last_prompt
+    assert '"dialog_summary": "обновлённая короткая сводка диалога"' in provider.last_prompt
+
+
+def test_direct_path_prompt_does_not_include_unsafe_previous_dialog_summary() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
+    )
+
+    provider.build_draft(
+        "А что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "TELEGRAM_DIALOG_SUMMARY_ROLLING": "1",
+            "dialogue_memory_view": {
+                "conversation_summary_short": "Ирина оставила телефон +7 999 123-45-67 и почту test@example.com.",
+            },
+            "confirmed_facts": {"format.foton": "Фотон: есть очные и онлайн-занятия."},
+        },
+    )
+
+    assert "ПРЕДЫДУЩАЯ СВОДКА: —" in provider.last_prompt
+    assert "+7 999" not in provider.last_prompt
+    assert "test@example.com" not in provider.last_prompt
 
 
 def test_presale_direct_path_prompt_masks_current_and_recent_pii_but_keeps_child_first_name() -> None:

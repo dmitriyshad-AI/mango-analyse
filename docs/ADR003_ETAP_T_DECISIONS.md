@@ -87,3 +87,9 @@
 Решение: `TELEGRAM_SLOTS_REASK` оставлен default-OFF и не добавлен в профиль. Он не создаёт `semantic_reading_slots`; hidden-слоты создаются только активной маской `TELEGRAM_SEMANTIC_READING_CLASSES=slots_gsf`. PR-B только читает имена уже записанных hidden-слотов и добавляет эти имена в `do_not_ask_again`, чтобы бот не переспрашивал grade/subject/format. Значения hidden-слотов не попадают в `known_slots`, `client_confirmed_slots` или `to_prompt_view()`.
 
 Обоснование: это анти-переспрос, а не merge semantic slots into memory. Старые regex G/S/F и `known_slots` остаются до отдельного `slots_gsf -> known_slots` решения с `source=semantic_reading_llm`. В текущем HEAD три sim/update точки уже пробрасывают `semantic_reading=` в память; блок PR-B зафиксирован как инвентаризация существующего механизма и проверка его границ.
+
+## D-015. PR-D rolling dialog summary производится inline и пишется fail-closed
+
+Решение: `TELEGRAM_DIALOG_SUMMARY_ROLLING` оставлен default-OFF и не добавлен в профиль. Поле `dialog_summary` добавляется только в основной direct-path JSON при включённом флаге, без отдельного LLM-вызова. Запись в `DialogueMemory.conversation_summary_short` идёт отдельной веткой `update_dialogue_memory_after_answer(dialog_summary=...)`, до раннего возврата memory-provenance, но не через `_apply_memory_llm_update`.
+
+Обоснование: старый memory-LLM слой трогает слоты и исторически конфликтовал с provenance. PR-D должен хранить только короткую смысловую сводку диалога, без записи фактов в `known_slots` и без ПДн/чужого бренда/цен и дат. Direct path получает предыдущую сводку как безопасный prompt context, а Wappi использует её вместо сырьевой 6-строчной склейки только при включённом флаге.

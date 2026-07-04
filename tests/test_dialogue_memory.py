@@ -5,6 +5,7 @@ import json
 import pytest
 
 from mango_mvp.channels.dialogue_memory import (
+    DIALOG_SUMMARY_ROLLING_ENV,
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     MEMORY_CHILD_IDENTITY_MODEL_ENV,
@@ -226,6 +227,133 @@ def test_dialogue_memory_summary_falls_back_to_slot_glue_without_model() -> None
     assert "класс: 8" in updated.conversation_summary_short
     assert "предмет: физика" in updated.conversation_summary_short
     assert "формат: онлайн" in updated.conversation_summary_short
+
+
+def test_dialogue_summary_rolling_preserves_previous_summary_only_when_enabled(monkeypatch) -> None:
+    previous = {
+        "session_id": "s-summary",
+        "active_brand": "foton",
+        "conversation_summary_short": "Клиент ранее сказал: ребёнок в 7 классе, интересует физика.",
+    }
+
+    monkeypatch.delenv(DIALOG_SUMMARY_ROLLING_ENV, raising=False)
+    off = build_dialogue_memory(
+        current_message="А сколько стоит онлайн?",
+        active_brand="foton",
+        previous_memory=previous,
+    )
+    assert off.conversation_summary_short != previous["conversation_summary_short"]
+
+    on = build_dialogue_memory(
+        current_message="А сколько стоит онлайн?",
+        active_brand="foton",
+        previous_memory=previous,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+    assert on.conversation_summary_short == previous["conversation_summary_short"]
+
+
+def test_dialogue_summary_rolling_empty_previous_uses_slot_fallback() -> None:
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика, онлайн",
+        active_brand="foton",
+        previous_memory={"session_id": "s-empty", "active_brand": "foton"},
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert "класс: 8" in memory.conversation_summary_short
+    assert "предмет: физика" in memory.conversation_summary_short
+
+
+def test_dialogue_summary_rolling_writes_safe_inline_candidate() -> None:
+    memory = build_dialogue_memory(
+        current_message="Сын в 7 классе, интересует физика очно.",
+        active_brand="foton",
+        session_id="s-summary-write",
+    )
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент ищет очную физику для ребёнка в 7 классе; ждёт следующий шаг от менеджера.",
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert "7 классе" in updated.conversation_summary_short
+    assert "физик" in updated.conversation_summary_short
+    assert "менеджер" in updated.conversation_summary_short
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Клиенту назвали цену 9 900 ₽ и дату 12 июля.",
+        "Клиенту назвали цену 9900 и дату 12.07.2026.",
+        "Клиенту назвали цену 9 900 без валюты.",
+        "Клиенту обещали скидку десять процентов.",
+        "Клиент Фотона сравнивает с УНПК МФТИ.",
+        "Клиент оставил телефон +7 999 123-45-67 и email test@example.com.",
+    ],
+)
+def test_dialogue_summary_rolling_rejects_unsafe_candidates(candidate: str) -> None:
+    memory = build_dialogue_memory(
+        current_message="Сын в 7 классе, интересует физика очно.",
+        active_brand="foton",
+        session_id="s-summary-unsafe",
+    )
+    previous_summary = memory.conversation_summary_short
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary=candidate,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert updated.conversation_summary_short == previous_summary
+
+
+def test_dialogue_summary_rolling_trims_to_500_chars() -> None:
+    memory = build_dialogue_memory(
+        current_message="Хочу подобрать занятия.",
+        active_brand="foton",
+        session_id="s-summary-trim",
+    )
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент обсуждает подбор курса. " * 40,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert len(updated.conversation_summary_short) == 500
+
+
+def test_dialogue_summary_rolling_updates_before_memory_provenance_return(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    memory = build_dialogue_memory(
+        current_message="Хочу подобрать занятия.",
+        active_brand="foton",
+        session_id="s-summary-provenance",
+    )
+
+    def fail_if_called(_prompt: str):
+        raise AssertionError("memory LLM must not be called")
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент выбирает курс; менеджер должен помочь с подбором.",
+        memory_llm_fn=fail_if_called,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert updated.conversation_summary_short.startswith("Клиент выбирает курс")
+    assert updated.to_prompt_view()["memory_provenance"]["enabled"] is True
 
 
 def test_dialogue_memory_llm_is_optional_and_regex_fallback_stays_unchanged() -> None:

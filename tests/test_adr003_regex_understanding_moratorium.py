@@ -170,6 +170,11 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "FIX1B_AUTONOMY_VERIFIED_FACTS_ENV",
         "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS",
     ),
+    (
+        "src/mango_mvp/channels/dialogue_memory.py",
+        "DIALOG_SUMMARY_ROLLING_ENV",
+        "TELEGRAM_DIALOG_SUMMARY_ROLLING",
+    ),
     ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "STEP4_KEEP_ANSWER_ENV", "TELEGRAM_STEP4_KEEP_ANSWER"),
     (
         "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -274,6 +279,7 @@ UNDERSTANDING_ENV_KEYWORDS = (
     "INTENT",
     "FRAME",
     "SHADOW",
+    "SUMMARY",
     "RETRIEVER",
     "ANSWER",
     "PROOF",

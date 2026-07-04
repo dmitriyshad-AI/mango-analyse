@@ -120,3 +120,15 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` так�
 - не обещает live-наличие мест/групп/брони.
 
 Live-status пол, P0-пол, brand/fabrication проверки и legacy availability-promise floor не обходятся. Новые стоп-юниты покрывают частичную поддержку: лишнее число, чужой бренд и живые места.
+
+## Разрешенное обновление 2026-07-04: PR-D rolling dialog summary
+
+Добавлен default-OFF флаг `TELEGRAM_DIALOG_SUMMARY_ROLLING`.
+
+Это не новый regex-понимальщик клиента. Сводка производится моделью в уже существующем direct-path вызове через аддитивное поле `dialog_summary` и не добавляет отдельный LLM-вызов. Детерминированная часть только верифицирует запись в память: отбрасывает суммы/проценты/даты через существующий summary-фильтр, ПДн через существующие phone/email regex из direct-path support и чужой бренд через brand-token guard без новых `re.compile`.
+
+Сводка не пишет `known_slots`, `client_confirmed_slots`, CRM/Tallanto/AMO и не включает флаг в профиль. При OFF старый slot-glue `conversation_summary_short` сохраняется.
+
+Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлен намеренно на две технические проверки в provider: наличие `"dialog_summary"` и маркера `ПРЕДЫДУЩАЯ СВОДКА` в уже собранном prompt. Это не чтение смысла клиентского текста, а выбор, нужно ли нормализовать аддитивное JSON-поле из того же LLM-вызова.
+
+После аудита snapshot расширен ещё одной fail-closed проверкой в `dialogue_memory.py`: строка `процент` внутри `_summary_has_unsupported_number`. Это не классификация клиентского запроса; это запрет записи model-generated rolling summary в память, если модель внесла процент/скидку без проверенного факта.

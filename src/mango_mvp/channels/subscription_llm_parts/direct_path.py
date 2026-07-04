@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import yaml
 
+from mango_mvp.channels.dialogue_memory import _dialog_summary_candidate, _dialog_summary_rolling_enabled
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_venue_scope import (
     FACT_VENUE_SCOPE_ENV,
@@ -2613,6 +2614,8 @@ def _build_direct_path_prompt(
     intent_field = ""
     semantic_frame_instruction = ""
     semantic_frame_field = ""
+    dialog_summary_instruction = ""
+    dialog_summary_field = ""
     assumed_scope_instruction = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
@@ -2708,6 +2711,22 @@ def _build_direct_path_prompt(
             '"requested_action": "answer_question|check_availability|enroll|send_materials|send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown", '
             '"answerability": "answer_self|manager_only|uncertain", "must_handoff": false, "evidence": [], "confidence": 0.0},\n'
         )
+    if _dialog_summary_rolling_enabled(context):
+        previous_summary = ""
+        if isinstance(memory, Mapping):
+            previous_summary = _dialog_summary_candidate(
+                memory.get("conversation_summary_short"),
+                active_brand=active_brand,
+            )
+        dialog_summary_instruction = (
+            "Диалоговая сводка: дополнительно заполни поле dialog_summary. Это накопительная память диалога, "
+            "2-4 короткие фразы: кто клиент/ребёнок без ФИО и телефонов, что обсуждали, что уже решили или "
+            "договорились, на чём остановились. Продолжай предыдущую сводку, не теряя её смысла. "
+            "Не добавляй цены, суммы, проценты, даты, обещания от имени школы или упоминание другой школы, "
+            "если это не звучало явно и безопасно в диалоге.\n"
+            f"ПРЕДЫДУЩАЯ СВОДКА: {previous_summary or '—'}\n\n"
+        )
+        dialog_summary_field = '  "dialog_summary": "обновлённая короткая сводка диалога",\n'
     if _deal_action_decision_enabled(context):
         action_proposal_instruction = (
             "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
@@ -2735,6 +2754,7 @@ def _build_direct_path_prompt(
         f"{p0_instruction}"
         f"{intent_instruction}"
         f"{semantic_frame_instruction}"
+        f"{dialog_summary_instruction}"
         f"{action_proposal_instruction}"
         f"{assumed_scope_instruction}"
         + (f"{reliable_answerer_block}\n\n" if reliable_answerer_block else "") +
@@ -2762,6 +2782,7 @@ def _build_direct_path_prompt(
         f"{p0_fields}"
         f"{intent_field}"
         f"{semantic_frame_field}"
+        f"{dialog_summary_field}"
         f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'
@@ -2879,6 +2900,8 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
         direct["semantic_frame"] = dict(frame)
         # Backward-compatible alias while older reports/tests migrate.
         direct["semantic_frame_shadow"] = dict(frame)
+    if str(metadata.get("dialog_summary_candidate") or "").strip():
+        direct["dialog_summary_candidate"] = str(metadata.get("dialog_summary_candidate") or "").strip()[:500]
     metadata["direct_path"] = direct
     if isinstance(direct_meta.get("answer_coverage_plan"), Mapping):
         metadata["answer_coverage_plan"] = dict(direct_meta["answer_coverage_plan"])  # type: ignore[index]

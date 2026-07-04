@@ -2057,6 +2057,7 @@ class SubscriptionLlmDraftProvider:
             payload,
             raw_response=raw,
             include_semantic_frame_shadow='"semantic_frame"' in prompt_text and "SemanticFrame SHADOW" in prompt_text,
+            include_dialog_summary='"dialog_summary"' in prompt_text and "ПРЕДЫДУЩАЯ СВОДКА" in prompt_text,
         )
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
 
@@ -3443,6 +3444,7 @@ def _normalize_direct_path_payload(
     raw_response: Optional[str] = None,
     include_answerability_self: bool = False,
     include_semantic_frame_shadow: bool = False,
+    include_dialog_summary: bool = False,
 ) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
@@ -3478,6 +3480,10 @@ def _normalize_direct_path_payload(
         # Backward-compatible alias for one release: TZ154/text hygiene and
         # older simulators may still read the historical shadow key.
         metadata["semantic_frame_shadow"] = semantic_frame
+    if include_dialog_summary:
+        dialog_summary = " ".join(str(payload.get("dialog_summary") or "").split())[:500]
+        if dialog_summary:
+            metadata["dialog_summary_candidate"] = dialog_summary
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),
         broad_group=str(payload.get("broad_group") or "direct_path"),

@@ -690,6 +690,8 @@ class PublicPilotBotRuntime:
                 route=result.route,
                 fact_refs=result.context_used,
                 safety_flags=result.safety_flags,
+                dialog_summary=dialog_summary_from_result(result),
+                context=context,
             )
             session.dialogue_memory = updated_memory.to_json_dict()
             context = {**dict(context), "dialogue_memory_view": updated_memory.to_prompt_view()}
@@ -1149,6 +1151,19 @@ class PublicPilotBotRuntime:
                 chat_id=chat_id,
                 payload={"brand": self.config.brand, "error": str(exc)[:240]},
             )
+
+
+def dialog_summary_from_result(result: object) -> str:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    candidate = str(metadata.get("dialog_summary_candidate") or "").strip()
+    if candidate:
+        return candidate
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        return str(direct.get("dialog_summary_candidate") or "").strip()
+    return ""
 
 
 def public_reply_text(result: SubscriptionDraftResult) -> str:

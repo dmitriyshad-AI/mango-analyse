@@ -132,3 +132,19 @@ Live-status пол, P0-пол, brand/fabrication проверки и legacy avai
 Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлен намеренно на две технические проверки в provider: наличие `"dialog_summary"` и маркера `ПРЕДЫДУЩАЯ СВОДКА` в уже собранном prompt. Это не чтение смысла клиентского текста, а выбор, нужно ли нормализовать аддитивное JSON-поле из того же LLM-вызова.
 
 После аудита snapshot расширен ещё одной fail-closed проверкой в `dialogue_memory.py`: строка `процент` внутри `_summary_has_unsupported_number`. Это не классификация клиентского запроса; это запрет записи model-generated rolling summary в память, если модель внесла процент/скидку без проверенного факта.
+
+## Разрешенное обновление 2026-07-04: Package-2 Srez-1a intent_actions shadow
+
+Добавлен reading-класс `intent_actions` в allowlist `TELEGRAM_SEMANTIC_READING_CLASSES`.
+
+Это не новый regex/keyword-понимальщик клиента и не профильное включение. Класс работает только при явном env в измерительной ON-ноге и читает только inline `SemanticFrame` из уже готового direct-path JSON на той же стадии, где раньше применялся `conversation_intent_plan` output guard.
+
+В переходном режиме legacy-guard считается как раньше, а frame-решение может только:
+
+- fail-close к legacy при отсутствии inline frame, низкой уверенности, невалидном enum или posthoc/source mismatch;
+- переустановить защитный сигнал `conversation_intent_plan_live_availability` для `requested_action=check_availability`;
+- записать trace конфликта для регрейда.
+
+Снятие ложного P0 в этом коммите не переносится на frame: legacy-поведение остаётся единственным источником такого repair до отдельного замера.
+
+`intent_actions` не добавлен в `PILOT_PROFILE_DEFAULT_READING_CLASSES`; профильное включение возможно только отдельным решением после M1-пары и регрейда.

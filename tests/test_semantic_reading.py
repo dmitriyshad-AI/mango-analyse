@@ -35,10 +35,11 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     assert enabled_classes({}) == frozenset()
     assert reading_class_enabled({}, "off_topic") is False
 
-    context = {SEMANTIC_READING_CLASSES_ENV: "off_topic,slots_gsf,unknown"}
-    assert enabled_classes(context) == frozenset({"off_topic", "slots_gsf"})
+    context = {SEMANTIC_READING_CLASSES_ENV: "off_topic,slots_gsf,intent_actions,unknown"}
+    assert enabled_classes(context) == frozenset({"off_topic", "slots_gsf", "intent_actions"})
     assert reading_class_enabled(context, "off_topic") is True
     assert reading_class_enabled(context, "sense_seats") is False
+    assert reading_class_enabled(context, "intent_actions") is True
 
 
 def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypatch) -> None:
@@ -47,6 +48,7 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
 
     assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic"})
     assert reading_class_enabled(None, "slots_gsf") is True
+    assert reading_class_enabled(None, "intent_actions") is False
 
     assert enabled_classes({SEMANTIC_READING_CLASSES_ENV: ""}) == frozenset()
     assert reading_class_enabled({SEMANTIC_READING_CLASSES_ENV: ""}, "slots_gsf") is False

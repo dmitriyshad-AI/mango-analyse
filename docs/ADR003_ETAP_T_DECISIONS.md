@@ -93,3 +93,9 @@
 Решение: `TELEGRAM_DIALOG_SUMMARY_ROLLING` оставлен default-OFF и не добавлен в профиль. Поле `dialog_summary` добавляется только в основной direct-path JSON при включённом флаге, без отдельного LLM-вызова. Запись в `DialogueMemory.conversation_summary_short` идёт отдельной веткой `update_dialogue_memory_after_answer(dialog_summary=...)`, до раннего возврата memory-provenance, но не через `_apply_memory_llm_update`.
 
 Обоснование: старый memory-LLM слой трогает слоты и исторически конфликтовал с provenance. PR-D должен хранить только короткую смысловую сводку диалога, без записи фактов в `known_slots` и без ПДн/чужого бренда/цен и дат. Direct path получает предыдущую сводку как безопасный prompt context, а Wappi использует её вместо сырьевой 6-строчной склейки только при включённом флаге.
+
+## D-016. Package-2 Srez-1a `intent_actions` остается explicit-env и same-stage
+
+Решение: `intent_actions` добавлен только в allowlist `TELEGRAM_SEMANTIC_READING_CLASSES`, но не в `PILOT_PROFILE_DEFAULT_READING_CLASSES`. В переходном режиме `apply_conversation_intent_plan_guard` считает legacy-решение как раньше, затем читает только inline `SemanticFrame` на той же стадии direct-path pipeline и применяет fail-closed/max-conservative слой.
+
+Обоснование: срез заменяет выходное route-решение, а не входные чтения `conversation_intent_plan`. Posthoc frame появляется позже и не является той же стадией. При `requested_action=check_availability` frame может переустановить protective-сигнал `conversation_intent_plan_live_availability`, чтобы Fix1b/autonomy не начали обещать живые места. При отсутствии inline frame, низкой confidence, невалидном enum или source mismatch применяется legacy. Frame-based false-P0 repair в этом коммите не включается; его продолжает делать только legacy-логика до отдельного замера. Профильное включение и deletion legacy-вычисления остаются отдельными решениями после пары и регрейда.

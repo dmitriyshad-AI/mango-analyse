@@ -142,6 +142,7 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
     build_direct_path_semantic_frame_posthoc_prompt,
 )
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import SEMANTIC_READING_CLASSES_ENV
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -11555,6 +11556,44 @@ class _DirectPathShadowProvider(_DirectPathProvider):
         if isinstance(self.shadow_payload, Exception):
             raise self.shadow_payload
         return self.shadow_payload
+
+
+def test_direct_path_intent_actions_runs_without_intent_model_led() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:013_schedule",
+            draft_text="Да, можно записаться.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "check_availability",
+                    "answerability": "manager_only",
+                    "must_handoff": True,
+                    "risk_class": "manager_action",
+                    "confidence": 0.94,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Есть места на смену 6-17 июля?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
+            SEMANTIC_READING_CLASSES_ENV: "intent_actions",
+            "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in result.safety_flags
+    assert provider.calls == 1
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "intent_actions"
+    assert trace["decision"] == "frame_check_availability"
 
 
 def test_tz137_slot_topic_shadow_default_off_does_not_call_runner() -> None:

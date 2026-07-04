@@ -53,6 +53,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     off_topic_reading_decision,
     reading_class_enabled,
     semantic_reading_trace_record,
+    semantic_frame_from_metadata,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
     MEMORY_PROVENANCE_ENV,
@@ -101,6 +102,7 @@ FIX1B_AUTONOMY_VERIFIED_FACTS_ENV = "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS"
 
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
+INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD = 0.80
 
 INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
 INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"off_topic", "other"})
@@ -119,6 +121,19 @@ INTENT_MODEL_LED_ANSWER_POLICY = {
     "price_fix": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
     "other": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
 }
+INTENT_ACTIONS_FRAME_REQUESTED_ACTIONS = frozenset(
+    {
+        "answer_question",
+        "check_availability",
+        "enroll",
+        "send_materials",
+        "send_payment_link",
+        "send_document",
+        "refund_or_cancel",
+        "handoff_manager",
+        "unknown",
+    }
+)
 
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 
@@ -3362,6 +3377,27 @@ def apply_conversation_intent_plan_guard(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
+    legacy_result = _apply_conversation_intent_plan_legacy_guard(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    if not reading_class_enabled(context, "intent_actions"):
+        return legacy_result
+    return _apply_intent_actions_transition_guard(
+        result,
+        legacy_result,
+        client_message=client_message,
+        context=context,
+    )
+
+
+def _apply_conversation_intent_plan_legacy_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
     """Align draft topic/route with the context-level conversation plan.
 
     The plan is deliberately higher level than keyword rules: words such as
@@ -3465,6 +3501,206 @@ def apply_conversation_intent_plan_guard(
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
     )
+
+
+def _intent_actions_route_rank(route: str) -> int:
+    normalized = str(route or "").strip()
+    if normalized in {"blocked", "manager_only"}:
+        return 4
+    if normalized == "draft_for_manager":
+        return 3
+    if normalized in AUTONOMOUS_ROUTES:
+        return 1
+    return 2
+
+
+def _intent_actions_frame(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    frame = semantic_frame_from_metadata(metadata)
+    return frame if isinstance(frame, Mapping) else {}
+
+
+def _intent_actions_legacy_active_for_existing_pipeline(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return _intent_model_led_enabled(context) and isinstance(metadata.get("direct_path_model_intent"), Mapping)
+
+
+def _intent_actions_frame_fail_reason(frame: Mapping[str, Any]) -> str:
+    if not frame:
+        return "no_frame"
+    if str(frame.get("source") or "").strip().casefold() != "inline":
+        return "source_not_inline"
+    requested_action = str(frame.get("requested_action") or "").strip()
+    if requested_action not in INTENT_ACTIONS_FRAME_REQUESTED_ACTIONS:
+        return "invalid_requested_action"
+    try:
+        confidence = float(frame.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD:
+        return "low_confidence"
+    return ""
+
+
+def _intent_actions_frame_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "y", "да", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "нет", "off"}:
+            return False
+    return None
+
+
+def _intent_actions_trace(
+    result: SubscriptionDraftResult,
+    *,
+    status: str,
+    reason: str,
+    frame: Mapping[str, Any],
+    legacy_result: SubscriptionDraftResult,
+    frame_result: Optional[SubscriptionDraftResult] = None,
+    chosen: str = "legacy",
+    changed_fields: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    metadata = {
+        "legacy_route": legacy_result.route,
+        "frame_route": frame_result.route if frame_result is not None else result.route,
+        "chosen": chosen,
+        "requested_action": str(frame.get("requested_action") or ""),
+        "answerability": str(frame.get("answerability") or ""),
+        "must_handoff": _intent_actions_frame_bool(frame.get("must_handoff")) if frame else None,
+        "risk_class": str(frame.get("risk_class") or ""),
+    }
+    conflict_fields: tuple[str, ...] = ()
+    if (frame_result is not None and frame_result.route != legacy_result.route) or result.route != legacy_result.route:
+        conflict_fields = ("legacy_route",)
+    record = semantic_reading_trace_record(
+        reading_class="intent_actions",
+        enabled=True,
+        status=status,
+        decision=chosen,
+        reason=reason,
+        source=str(frame.get("source") or "") if frame else "",
+        confidence=frame.get("confidence", 0.0) if frame else 0.0,
+        changed_fields=changed_fields,
+        conflicts=conflict_fields,
+        metadata=metadata,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
+
+def _intent_actions_live_availability_result(
+    result: SubscriptionDraftResult,
+    *,
+    frame: Mapping[str, Any],
+) -> SubscriptionDraftResult:
+    flags = list(result.safety_flags)
+    checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+    route = result.route
+    if route in AUTONOMOUS_ROUTES:
+        route = "draft_for_manager"
+        flags.append("semantic_frame_live_check_handoff")
+        metadata["semantic_frame_intent_actions_route_applied"] = "draft_for_manager"
+    flags.append("conversation_intent_plan_live_availability")
+    flags.append("semantic_frame_intent_actions_live_availability")
+    checklist.append(
+        "SemanticFrame: вопрос про место/наличие/бронь требует проверки менеджером; не обещать место до проверки."
+    )
+    metadata["semantic_frame_intent_actions"] = {
+        "requested_action": str(frame.get("requested_action") or ""),
+        "confidence": frame.get("confidence", 0.0),
+        "source": str(frame.get("source") or ""),
+    }
+    return replace(
+        result,
+        route=route,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
+    )
+
+
+def _apply_intent_actions_transition_guard(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    frame = _intent_actions_frame(original)
+    legacy_active = _intent_actions_legacy_active_for_existing_pipeline(original, context)
+    base_result = legacy_result if legacy_active else original
+    base_name = "legacy" if legacy_active else "original"
+    fail_reason = _intent_actions_frame_fail_reason(frame)
+    if fail_reason:
+        return _intent_actions_trace(
+            base_result,
+            status="fail_closed",
+            reason=fail_reason,
+            frame=frame,
+            legacy_result=legacy_result,
+            chosen=base_name,
+        )
+
+    requested_action = str(frame.get("requested_action") or "").strip()
+    frame_result: Optional[SubscriptionDraftResult] = None
+    reason = "no_matching_frame_action"
+
+    if requested_action == "check_availability":
+        frame_result = _intent_actions_live_availability_result(base_result, frame=frame)
+        reason = "frame_check_availability"
+
+    if frame_result is None:
+        return _intent_actions_trace(
+            base_result,
+            status="no_op",
+            reason=reason,
+            frame=frame,
+            legacy_result=legacy_result,
+            chosen=base_name,
+        )
+
+    if requested_action == "check_availability":
+        chosen = frame_result
+        chosen_name = "frame_check_availability"
+    elif _intent_actions_route_rank(frame_result.route) > _intent_actions_route_rank(base_result.route):
+        chosen = frame_result
+        chosen_name = "frame_more_conservative"
+    else:
+        chosen = base_result
+        chosen_name = base_name
+
+    changed_fields: list[str] = []
+    if chosen.route != base_result.route:
+        changed_fields.append("route")
+    if chosen.safety_flags != base_result.safety_flags:
+        changed_fields.append("safety_flags")
+    if chosen.manager_checklist != base_result.manager_checklist:
+        changed_fields.append("manager_checklist")
+
+    return _intent_actions_trace(
+        chosen,
+        status="applied" if changed_fields else "shadow_only",
+        reason=reason,
+        frame=frame,
+        legacy_result=legacy_result,
+        frame_result=frame_result,
+        chosen=chosen_name,
+        changed_fields=changed_fields,
+    )
+
 
 def _conversation_intent_plan(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
     if not isinstance(context, Mapping):

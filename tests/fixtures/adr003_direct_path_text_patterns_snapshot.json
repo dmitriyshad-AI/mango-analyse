@@ -10385,6 +10385,22 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "<module>",
+    "symbol": "INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD",
+    "value_preview": "0.8",
+    "value_sha256": "9a91a2df174d8ffdc850d55b5dfc469abc27454dd79d39f75be4ea9296141495"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
+    "symbol": "INTENT_ACTIONS_FRAME_REQUESTED_ACTIONS",
+    "value_preview": "frozenset({'answer_question', 'check_availability', 'enroll', 'send_materials', 'send_payment_link', 'send_document', 'refund_or_cancel', 'handoff_manager', 'unknown'})",
+    "value_sha256": "4c5d8760473b77726150c139954bd4a68884235430c4cbc4c79e18d6f86e2250"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "<module>",
     "symbol": "INTENT_MODEL_LED_ALLOWED",
     "value_preview": "INTENT_MODEL_LED_TARGETS | frozenset({'off_topic', 'other'})",
     "value_sha256": "e6d537e358cc710222bae0db77c242763d672571ae2eb4ae3b47e215e6b39437"

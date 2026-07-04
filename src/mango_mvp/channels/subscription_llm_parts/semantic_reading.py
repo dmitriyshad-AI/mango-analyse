@@ -11,7 +11,7 @@ SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
 SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
 
-ALLOWED_SEMANTIC_READING_CLASSES = frozenset({"sense_seats", "off_topic", "slots_gsf"})
+ALLOWED_SEMANTIC_READING_CLASSES = frozenset({"sense_seats", "off_topic", "slots_gsf", "intent_actions"})
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})
 SEMANTIC_READING_DECISION_CONFIDENCE = 0.70
 

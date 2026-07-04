@@ -26,16 +26,17 @@ from mango_mvp.channels.subscription_llm import (
 from mango_mvp.channels.subscription_llm_parts.provider import build_direct_path_semantic_frame_posthoc_prompt
 
 
-def test_semantic_frame_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_semantic_frame_shadow_flag_is_default_off_profile_on_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(SEMANTIC_FRAME_SHADOW_ENV, raising=False)
     profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
 
     assert subscription_llm._semantic_frame_shadow_enabled({}) is False
-    assert subscription_llm._semantic_frame_shadow_enabled(profile_context) is False
-    assert SEMANTIC_FRAME_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_shadow_enabled(profile_context) is True
+    assert SEMANTIC_FRAME_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._semantic_frame_shadow_enabled({SEMANTIC_FRAME_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_shadow_enabled({"semantic_frame_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_shadow_enabled({SEMANTIC_FRAME_SHADOW_ENV: "0"}) is False
+    assert subscription_llm._semantic_frame_shadow_enabled({**profile_context, SEMANTIC_FRAME_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_decision_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,8 +127,8 @@ def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
 
     assert '"semantic_frame"' not in off_prompt
     assert "SemanticFrame SHADOW" not in off_prompt
-    assert '"semantic_frame"' not in profile_prompt
-    assert "SemanticFrame SHADOW" not in profile_prompt
+    assert '"semantic_frame"' in profile_prompt
+    assert "SemanticFrame SHADOW" in profile_prompt
     assert '"semantic_frame"' in on_prompt
     assert "SemanticFrame SHADOW" in on_prompt
     assert "не меняй из-за него route, draft_text" in on_prompt

@@ -13,6 +13,7 @@ from mango_mvp.channels.dialogue_memory import (
     update_dialogue_memory_after_answer,
 )
 from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_prompt_known_slots
+from mango_mvp.channels.subscription_llm_parts.support import DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     SEMANTIC_READING_CLASSES_ENV,
@@ -29,6 +30,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
 
 def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
 
     assert enabled_classes({}) == frozenset()
     assert reading_class_enabled({}, "off_topic") is False
@@ -37,6 +39,21 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     assert enabled_classes(context) == frozenset({"off_topic", "slots_gsf"})
     assert reading_class_enabled(context, "off_topic") is True
     assert reading_class_enabled(context, "sense_seats") is False
+
+
+def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypatch) -> None:
+    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+
+    assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic"})
+    assert reading_class_enabled(None, "slots_gsf") is True
+
+    assert enabled_classes({SEMANTIC_READING_CLASSES_ENV: ""}) == frozenset()
+    assert reading_class_enabled({SEMANTIC_READING_CLASSES_ENV: ""}, "slots_gsf") is False
+    monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "")
+    assert enabled_classes({}) == frozenset()
+    monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "off_topic")
+    assert enabled_classes({}) == frozenset({"off_topic"})
 
 
 def test_semantic_reading_reads_inline_frame_without_exposing_p0_fields() -> None:
@@ -254,6 +271,30 @@ def test_semantic_reading_slots_hidden_storage_does_not_leak_to_behavior(monkeyp
     assert updated.topic_focus == {}
     assert safe_next_action(updated) == {}
     assert "grade" not in _direct_path_prompt_known_slots({"dialogue_memory_view": updated.to_prompt_view()})
+
+
+def test_semantic_reading_slots_profile_default_writes_hidden_storage(monkeypatch) -> None:
+    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+
+    updated = update_dialogue_memory_after_answer(
+        DialogueMemory(
+            session_id="s1",
+            active_brand="foton",
+            turns=(DialogueTurn("client", "Нужна физика онлайн для 9 класса."),),
+        ),
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        semantic_reading=SemanticReading(
+            source="inline",
+            product_grade="9 класс",
+            product_subject="физика",
+            frame_confidence=0.91,
+        ).to_memory_dict(),
+    )
+
+    assert updated.semantic_reading_slots["grade"]["value"] == "9"
+    assert updated.semantic_reading_slots["subject"]["value"] == "физика"
 
 
 def test_semantic_reading_slots_are_not_written_when_mask_off(monkeypatch) -> None:

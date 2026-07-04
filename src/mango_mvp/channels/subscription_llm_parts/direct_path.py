@@ -332,7 +332,7 @@ def _p0_model_classes_v2_enabled(context: Optional[Mapping[str, Any]] = None) ->
     )
 
 def _semantic_frame_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         SEMANTIC_FRAME_SHADOW_ENV,
         aliases=("semantic_frame_shadow", "semantic_frame_shadow_enabled"),

@@ -6,6 +6,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 
 SEMANTIC_READING_CLASSES_ENV = "TELEGRAM_SEMANTIC_READING_CLASSES"
+PILOT_PROFILE_DEFAULT_READING_CLASSES = "sense_seats,slots_gsf,off_topic"
 SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
 SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"
@@ -35,7 +36,19 @@ def _context_value(context: Optional[Mapping[str, Any]], key: str, default: Any 
         for candidate in (key, key.lower(), "semantic_reading_classes"):
             if candidate in context:
                 return context.get(candidate)
-    return os.getenv(key, default)
+    if key in os.environ:
+        return os.getenv(key, default)
+    if key == SEMANTIC_READING_CLASSES_ENV and _pilot_profile_default_reading_classes_enabled(context):
+        return PILOT_PROFILE_DEFAULT_READING_CLASSES
+    return default
+
+
+def _pilot_profile_default_reading_classes_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.support import _pilot_gold_profile_enabled
+    except Exception:
+        return False
+    return _pilot_gold_profile_enabled(context)
 
 
 def _csv_values(value: Any) -> frozenset[str]:

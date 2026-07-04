@@ -1,0 +1,32 @@
+# Тесты
+
+## Целевые
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py tests/test_semantic_reading.py tests/test_adr003_regex_understanding_moratorium.py
+71 passed in 3.72s
+```
+
+## Runtime resolution
+
+```text
+context_profile_frame_shadow True
+context_profile_classes ['off_topic', 'sense_seats', 'slots_gsf']
+explicit_empty_classes []
+env_profile_slots_none True
+env_empty_slots_none False
+```
+
+## Local profile smoke
+
+```text
+OUT=runs/adr003_profile_smoke_76f80736_20260704_040503
+dialogs=20 turns=20 ok=true hard_gate_failures=0
+VALID_E3_PROFILE_SMOKE: dialogs=20 turns=20 preblocked_p0=0 timeouts=0 timeout_turns=0 timeout_dialogs=0 model_not_called=0 model_called_eligible=20 frames=20 eligible_frame_rate=1.0000 bot_direct_draft=20 trace_turns=20 gate_blocked_turns=10
+```
+
+## Full pytest
+
+```text
+4018 passed, 5 skipped, 1 warning in 96.37s
+```

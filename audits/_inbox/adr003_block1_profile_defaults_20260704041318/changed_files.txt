@@ -1,0 +1,6 @@
+M src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+ M src/mango_mvp/channels/subscription_llm_parts/semantic_reading.py
+ M src/mango_mvp/channels/subscription_llm_parts/support.py
+ M tests/test_direct_path_semantic_frame_shadow.py
+ M tests/test_semantic_reading.py
+?? tasks/_running/2026-07-04_TZ_nochnoy_marafon_adr003_shest_blokov.md

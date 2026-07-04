@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline.family_gold import FamilyGoldCheckConfig, check_family_gold
 
 
@@ -66,6 +68,27 @@ def test_family_gold_check_detects_false_high(tmp_path: Path) -> None:
 
     assert summary["false_high"] == 1
     assert summary["strict_pass"] is False
+
+
+def test_family_gold_details_must_stay_under_codex_local(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _insert_family(db, customer_id="customer:ok", children=("Аня",), confidences=("high",))
+    gold = _gold(
+        tmp_path,
+        [{"customer_id": "customer:ok", "expected_children_count": 1, "expected_link_confidence": "high", "flags": []}],
+    )
+
+    with pytest.raises(ValueError, match=".codex_local"):
+        check_family_gold(
+            FamilyGoldCheckConfig(
+                timeline_db=db,
+                gold_jsonl=gold,
+                allowed_root=tmp_path,
+                out_json=tmp_path / "public_family_gold_details.json",
+            )
+        )
+
+    assert not (tmp_path / "public_family_gold_details.json").exists()
 
 
 def _db(tmp_path: Path) -> Path:

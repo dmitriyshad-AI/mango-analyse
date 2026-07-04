@@ -50,10 +50,19 @@ def check_family_gold(config: FamilyGoldCheckConfig) -> Mapping[str, Any]:
         "cases": cases,
     }
     if config.out_json:
-        out = guard_customer_timeline_output_path(config.out_json, config.allowed_root)
+        out = _guard_local_family_gold_output_path(config.out_json, config.allowed_root)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return summary
+
+
+def _guard_local_family_gold_output_path(path: Path | str, allowed_root: Path | str) -> Path:
+    resolved = guard_customer_timeline_output_path(path, allowed_root)
+    root = Path(allowed_root).resolve(strict=False)
+    relative = resolved.relative_to(root)
+    if not relative.parts or relative.parts[0] != ".codex_local":
+        raise ValueError("family gold details contain PII and must stay under .codex_local")
+    return resolved
 
 
 def _check_case(con: sqlite3.Connection, gold: Mapping[str, Any], *, tenant_id: str) -> Mapping[str, Any]:

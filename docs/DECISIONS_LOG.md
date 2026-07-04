@@ -725,11 +725,10 @@ identity-risk.
 Проверка: staging-пересчёт после аудиторского bridge-fix дал
 `family_links_total 8408 -> 7074`, семьи с `>=4` детьми `189 -> 50`,
 подозрительные `>=4` singleton-evidence семьи `175 -> 10`,
-`high_in_ge4=0`, `quick_check=ok`, JSON валиден. Gold v1:
-`22/23` exact children count, `false_high=0`; единственный спорный кейс
-`customer:10e0...` оставлен как конфликт ground-truth: сырой `profile_fields`
-кладёт `Даниил` и `Орел/Орлов Даниил` в один профильный `child_key`, поэтому
-искусственно разделять их кодом нельзя без риска ухудшить реальные данные.
+`high_in_ge4=0`, `quick_check=ok`, JSON валиден. Первичный gold v1 показал
+одно расхождение без false-high; архитектор затем исправил gold до v1.1,
+подтвердив, что `Даниил` и форма `Орел/Орлов Даниил` относятся к одному
+ребёнку. На gold v1.1 verifier даёт `23/23`, `strict_pass=true`, `false_high=0`.
 
 ### D-043. Transfer package reports unknown git metadata instead of failing
 
@@ -783,7 +782,7 @@ rejected — менеджерский price-offer в теле письма, ко
 клиентов: `canonical_calls_loaded=65974`, `interests_total=17`, `pains_total=7`,
 CRM/Tallanto/messages writes = false, Excel и summary только в `.codex_local`.
 
-### D-046. Family gold acceptance reports the remaining mismatch instead of tuning code
+### D-046. Family gold acceptance verifies graph without tuning code to a bad gold row
 
 Решение: Ф11 добавляет read-only verifier для `family_gold_v1.jsonl`.
 Проверка сравнивает `expected_children_count`, считает false-high и понимает
@@ -791,14 +790,15 @@ CRM/Tallanto/messages writes = false, Excel и summary только в `.codex_l
 flags не маскируется и не чинится эвристикой: оно возвращается архитектору как
 `architect_review_required`.
 
-Почему так: gold v1 — внешний ground-truth, но уже есть один конфликт между
-сырьём profile_fields и ожидаемым разбиением. Подгонять семейный граф под одну
-строку опасно: можно снова открыть класс ложных слияний/разделений детей.
+Почему так: gold v1 — внешний ground-truth, но если он расходится с сырьём,
+подгонять семейный граф опасно. В одном случае verifier вернул
+`architect_review_required`; архитектор исправил gold до v1.1, подтвердив, что
+форма «фамилия впереди» относится к тому же ребёнку.
 
-Проверка: на текущем staging `gold_rows=23`, `exact_count_ok=22`,
-`count_mismatches=1`, `unflagged_count_mismatches=1`, `false_high=0`,
-`parent_name_among_children_rows=0`, `quick_check=ok`. Подробный JSON с именами
-остаётся только в `.codex_local/review/f11_family_gold/`.
+Проверка: на текущем staging с gold v1.1 `gold_rows=23`, `exact_count_ok=23`,
+`count_mismatches=0`, `strict_pass=true`, `architect_review_required=false`,
+`false_high=0`, `parent_name_among_children_rows=0`, `quick_check=ok`.
+Подробный JSON с именами остаётся только в `.codex_local/review/f11_family_gold/`.
 
 ### D-047. F4 CRM export uses quality-based family gate and all-candidate mail enrich
 
@@ -968,12 +968,14 @@ writes = 0.
 Почему так: марафон сознательно не писал в prod/CRM/live. Его результат —
 пакеты, staging-БД, отчёты, Excel для менеджерской вычитки и скрипты
 применения/сверки. Называть это production-ready было бы опасно: часть
-смысловых проверок остаётся human-gate, а Ф11 содержит одну спорную строку
-family gold без false-high, которую должен решить архитектор.
+смысловых проверок остаётся human-gate, M1/Wappi/CRM-write требуют отдельных
+решений, а перенос staging в prod не выполнялся.
 
 Проверка: после фикса fail-soft warning для отсутствующей canonical calls DB
+и guard, запрещающего писать подробный family-gold JSON вне `.codex_local`,
 полный `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest tests/ -q`
-дал `4026 passed, 5 skipped` за `96.52s`. Warnings ожидаемые: системный
-LibreSSL и тестовый `canonical_calls_db_missing:*`. Ф11:
-`gold_rows=23`, `exact_count_ok=22`, `false_high=0`,
-`architect_review_required=true`. Прод/CRM/Tallanto/live writes = 0.
+дал `4027 passed, 5 skipped` за `85.33s`. Warnings ожидаемые: системный
+LibreSSL и тестовый `canonical_calls_db_missing:*`. Ф11 после исправления
+gold до v1.1: `gold_rows=23`, `exact_count_ok=23`, `strict_pass=true`,
+`false_high=0`, `architect_review_required=false`. Прод/CRM/Tallanto/live
+writes = 0.

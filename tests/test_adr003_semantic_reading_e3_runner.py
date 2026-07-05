@@ -40,6 +40,8 @@ def test_adr003_e3_runner_validates_eligible_frame_rate_not_all_turns() -> None:
     validator_text = _validator_text()
 
     assert "scripts/validate_adr003_e3_leg.py" in text
+    assert '--forbid-trace-class "$TARGET_READING_CLASS"' in text
+    assert '--require-trace-class "$TARGET_READING_CLASS"' in text
     assert "eligible_frame_rate" in validator_text
     assert "preblocked_p0=" in validator_text
     assert "timeouts=" in validator_text
@@ -48,13 +50,23 @@ def test_adr003_e3_runner_validates_eligible_frame_rate_not_all_turns() -> None:
     assert "semantic frame metadata on" not in text
 
 
-def test_adr003_e3_runner_can_append_target_reading_class_without_profile_default() -> None:
+def test_adr003_e3_runner_can_append_target_reading_class_on_top_of_profile_default() -> None:
     text = _runner_text()
 
     assert 'TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"' in text
     assert 'READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}"' in text
     assert '"TARGET_READING_CLASS": target_reading_class' in text
     assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" not in text
+    assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
+
+
+def test_adr003_e3_runner_baseline_uses_profile_reading_classes() -> None:
+    text = _runner_text()
+    baseline_section = text[text.index("== B:") : text.index("validate_leg B 0", text.index("== B:"))]
+    on_section = text[text.index("== ON:") : text.index("validate_leg ON 1", text.index("== ON:"))]
+
+    assert "TELEGRAM_SEMANTIC_READING_CLASSES=" not in baseline_section
+    assert 'TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES"' in on_section
 
 
 def test_adr003_e3_runner_has_resume_on_report_mode() -> None:
@@ -206,6 +218,58 @@ def test_e3_leg_validator_excludes_model_not_called_from_frame_denominator(tmp_p
     assert result["model_not_called"] == 1
     assert result["model_called_eligible"] == 1
     assert result["frames"] == 1
+
+
+def test_e3_leg_validator_allows_profile_traces_while_forbidding_target_class(tmp_path: Path) -> None:
+    summary, transcripts = _write_e3_fixture(
+        tmp_path,
+        _e3_turn(bot_semantic_reading_trace=[{"class": "sense_seats", "status": "no_op"}]),
+    )
+
+    result = validate_leg(
+        summary_path=summary,
+        transcripts_path=transcripts,
+        leg="B",
+        expect_trace=False,
+        forbid_trace_class="intent_actions",
+    )
+
+    assert result["status"] == "valid"
+    assert result["trace_turns"] == 1
+    assert result["forbidden_trace_turns"] == 0
+
+
+def test_e3_leg_validator_rejects_target_trace_in_baseline(tmp_path: Path) -> None:
+    summary, transcripts = _write_e3_fixture(
+        tmp_path,
+        _e3_turn(bot_semantic_reading_trace=[{"class": "intent_actions", "status": "applied"}]),
+    )
+
+    with pytest.raises(SystemExit):
+        validate_leg(
+            summary_path=summary,
+            transcripts_path=transcripts,
+            leg="B",
+            expect_trace=False,
+            forbid_trace_class="intent_actions",
+        )
+
+
+def test_e3_leg_validator_requires_target_trace_in_on_leg(tmp_path: Path) -> None:
+    summary, transcripts = _write_e3_fixture(
+        tmp_path,
+        _e3_turn(bot_semantic_reading_trace=[{"class": "intent_actions", "status": "applied"}]),
+    )
+
+    result = validate_leg(
+        summary_path=summary,
+        transcripts_path=transcripts,
+        leg="ON",
+        expect_trace=True,
+        require_trace_class="intent_actions",
+    )
+
+    assert result["required_trace_turns"] == 1
 
 
 def test_e3_leg_validator_fails_when_timeouts_exceed_budget(tmp_path: Path) -> None:

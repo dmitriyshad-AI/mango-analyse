@@ -114,12 +114,18 @@
 
 ## D-019. Package-2 runner добавляет целевой reading-класс поверх профиля только env-ом
 
-Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. Профильный default reading classes не меняется.
+Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. B-нога не задаёт `TELEGRAM_SEMANTIC_READING_CLASSES=` пустой строкой, а запускается как чистый профиль `pilot_gold_v1`. Валидатор разрешает профильные traces в B, но запрещает target-class trace; ON обязан иметь target-class trace. Профильный default reading classes не меняется.
 
 Обоснование: срез-1a должен измерять `intent_actions` как единственную новую переменную поверх текущего профиля. Добавлять `intent_actions` в профиль до пары нельзя: baseline стал бы загрязнен и неатрибутируем.
 
-## D-020. Inline text gate верифицирует адресные числа только из источников хода
+## D-020. Inline text gate верифицирует адресные числа и учебный год только из источников хода
 
-Решение: числа адресов вроде `20`/`30` считаются verified, если они пришли из selected exact address fact или уже подтверждены `number_audit`; произвольный raw blob фактов не становится источником истины.
+Решение: числа адресов вроде `20`/`30` считаются verified, если они пришли из selected exact address fact или уже подтверждены `number_audit`; учебный год `2026/27` считается verified только из selected exact fact id, текста selected exact fact или metadata этого же selected exact fact (`product`/`academic_year`/`school_year`). Произвольный raw blob фактов не становится источником истины, а служебные даты вида `2026_06_11` не считаются учебным годом.
 
-Обоснование: это снимает ложные тревоги гейта на адресах, но не открывает проход любым числам из базы. Граница сохраняет правило: проверяется только источник текущего хода, adjacent facts остаются warning, а не pass.
+Обоснование: это снимает ложные тревоги гейта на адресах и строках `2026/27`, но не открывает проход любым числам из базы. Граница сохраняет правило: проверяется только источник текущего хода, adjacent facts остаются warning, а не pass.
+
+## D-021. Deletion №1 остановлен до свежей пары после фикса B-ноги
+
+Решение: не удалять legacy live-availability ветку `conversation_intent_plan` на основании пары `adr003_srez1a_pair_72c84090_20260704_ready`. Сначала нужно переснять pair после исправления runner: B = чистый профиль, ON = профиль + `TARGET_READING_CLASS=intent_actions`. `intent_actions` пока не добавляется в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а профильное включение/deletion остаются отдельным решением после свежего регрейда.
+
+Обоснование: старая B-нога явно задавала `TELEGRAM_SEMANTIC_READING_CLASSES=` и тем самым глушила профильные default-классы `sense_seats,slots_gsf,off_topic`. Такая пара полезна для разведки, но не является достаточным доказательством безопасности deletion на боевом профиле. Удаление legacy ветки без профильного replacement может снять защитный `conversation_intent_plan_live_availability`, на который опираются live-status/Fix1b/autonomy полы.

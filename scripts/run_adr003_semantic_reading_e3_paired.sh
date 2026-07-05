@@ -75,6 +75,7 @@ base_env=(
   -u TELEGRAM_SEMANTIC_FRAME_SELF_ANSWER_SHADOW
   -u TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW
   -u TELEGRAM_SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW
+  -u TELEGRAM_SEMANTIC_READING_CLASSES
   TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1
   TELEGRAM_DIRECT_PATH=1
   TELEGRAM_BOT_GOLD_REAL=1
@@ -95,6 +96,14 @@ validate_leg() {
       --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
       --leg "$leg" \
       --expect-trace \
+      --require-trace-class "$TARGET_READING_CLASS" \
+      --out-json "$OUT/$leg/e3_validation.json"
+  elif [[ -n "$TARGET_READING_CLASS" ]]; then
+    PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
+      --summary "$OUT/$leg/dynamic_summary.json" \
+      --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
+      --leg "$leg" \
+      --forbid-trace-class "$TARGET_READING_CLASS" \
       --out-json "$OUT/$leg/e3_validation.json"
   else
     PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
@@ -259,9 +268,8 @@ if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"
 fi
 
-echo "== B: profile + reliable + inline frame, reading classes OFF =="
+echo "== B: profile + reliable + inline frame, profile reading classes =="
 "${base_env[@]}" \
-  TELEGRAM_SEMANTIC_READING_CLASSES= \
   python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
     --out-dir "$OUT/B" \
     --progress-json "$OUT/B/progress.json" \

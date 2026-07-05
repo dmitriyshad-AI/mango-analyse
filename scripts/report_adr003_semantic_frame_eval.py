@@ -916,6 +916,8 @@ def _selected_fact_numbers(turn: Mapping[str, Any], selection_key: str) -> set[s
     result = _numbers(" ".join(str(text) for text in texts))
     if selection_key == "selected_exact_ids":
         result.update(_academic_year_numbers_from_fact_ids(selected_ids))
+        result.update(_academic_year_numbers_from_texts(texts))
+        result.update(_academic_year_numbers_from_selected_fact_metadata(direct, selected_ids))
     return result
 
 
@@ -934,11 +936,36 @@ def _is_client_safe_address_fact_text(text: str) -> bool:
 def _academic_year_numbers_from_fact_ids(fact_ids: set[str]) -> set[str]:
     result: set[str] = set()
     for fact_id in fact_ids:
-        for match in re.finditer(r"(?<!\d)(20\d{2})[_/-](\d{2})(?!\d)", str(fact_id or "")):
+        for match in re.finditer(r"(?<!\d)(20\d{2})[_/-](\d{2})(?![_/-]\d{2})(?!\d)", str(fact_id or "")):
             result.add(match.group(1))
             result.add(match.group(2))
             result.add(f"{match.group(1)}/{match.group(2)}")
     return result
+
+
+def _academic_year_numbers_from_texts(texts: Sequence[Any]) -> set[str]:
+    result: set[str] = set()
+    for text in texts:
+        normalized = str(text or "")
+        for match in re.finditer(r"(?<!\d)(20\d{2})\s*/\s*(\d{2})(?!\s*/\s*\d{2})(?!\d)", normalized):
+            result.add(match.group(1))
+            result.add(match.group(2))
+            result.add(f"{match.group(1)}/{match.group(2)}")
+    return result
+
+
+def _academic_year_numbers_from_selected_fact_metadata(direct: Mapping[str, Any], fact_ids: set[str]) -> set[str]:
+    metadata = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
+    values: set[str] = set()
+    for fact_id in fact_ids:
+        item = metadata.get(fact_id)
+        if not isinstance(item, Mapping):
+            continue
+        for key in ("product", "academic_year", "school_year"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                values.add(value)
+    return _academic_year_numbers_from_fact_ids(values)
 
 
 def _client_history_number_map(dialogs: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int], set[str]]:

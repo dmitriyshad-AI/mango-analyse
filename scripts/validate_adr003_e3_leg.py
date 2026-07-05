@@ -38,6 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--transcripts", type=Path, required=True)
     parser.add_argument("--leg", required=True)
     parser.add_argument("--expect-trace", action="store_true")
+    parser.add_argument("--require-trace-class", default="")
+    parser.add_argument("--forbid-trace-class", default="")
     parser.add_argument("--out-json", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -46,6 +48,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         transcripts_path=args.transcripts,
         leg=args.leg,
         expect_trace=args.expect_trace,
+        require_trace_class=args.require_trace_class,
+        forbid_trace_class=args.forbid_trace_class,
     )
     if args.out_json:
         args.out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +64,8 @@ def validate_leg(
     transcripts_path: Path,
     leg: str,
     expect_trace: bool,
+    require_trace_class: str = "",
+    forbid_trace_class: str = "",
 ) -> dict[str, Any]:
     if not summary_path.is_file():
         _fail(leg, f"missing summary: {summary_path}")
@@ -145,8 +151,18 @@ def validate_leg(
     ]
     if expect_trace and not trace_turns:
         _fail(leg, "ON leg has no semantic_reading_trace records")
-    if not expect_trace and trace_turns:
-        _fail(leg, f"B leg unexpectedly has semantic_reading_trace on {len(trace_turns)} turns")
+    required_trace_class = str(require_trace_class or "").strip()
+    forbidden_trace_class = str(forbid_trace_class or "").strip()
+    required_trace_turns = [turn for turn in turns if required_trace_class and required_trace_class in _trace_classes(turn)]
+    forbidden_trace_turns = [turn for turn in turns if forbidden_trace_class and forbidden_trace_class in _trace_classes(turn)]
+    if required_trace_class and not required_trace_turns:
+        _fail(leg, f"{leg} leg has no semantic_reading_trace records for class {required_trace_class!r}")
+    if forbidden_trace_turns:
+        _fail(
+            leg,
+            f"{leg} leg unexpectedly has semantic_reading_trace class {forbidden_trace_class!r} "
+            f"on {len(forbidden_trace_turns)} turns",
+        )
 
     gate_blocked_turns = [turn for turn in turns if _is_gate_blocked_turn(turn)]
     return {
@@ -167,6 +183,10 @@ def validate_leg(
         "eligible_frame_rate": round(eligible_frame_rate, 6),
         "bot_direct_draft": llm_calls.get("bot_direct_draft"),
         "trace_turns": len(trace_turns),
+        "required_trace_class": required_trace_class,
+        "required_trace_turns": len(required_trace_turns),
+        "forbidden_trace_class": forbidden_trace_class,
+        "forbidden_trace_turns": len(forbidden_trace_turns),
         "gate_blocked_turns": len(gate_blocked_turns),
     }
 
@@ -258,6 +278,17 @@ def _is_model_called(turn: Mapping[str, Any]) -> bool:
 def _has_frame(turn: Mapping[str, Any]) -> bool:
     frame = turn.get("bot_semantic_frame")
     return isinstance(frame, Mapping) and bool(frame)
+
+
+def _trace_classes(turn: Mapping[str, Any]) -> set[str]:
+    records = turn.get("bot_semantic_reading_trace")
+    if not isinstance(records, list):
+        return set()
+    return {
+        str(record.get("class") or "").strip()
+        for record in records
+        if isinstance(record, Mapping) and str(record.get("class") or "").strip()
+    }
 
 
 def _is_gate_blocked_turn(turn: Mapping[str, Any]) -> bool:

@@ -615,6 +615,84 @@ def test_inline_text_health_gate_verifies_academic_year_from_exact_fact_id_only(
     assert gate["number_verified_by_exact_fact_count"] == 2
 
 
+def test_inline_text_health_gate_verifies_academic_year_from_exact_fact_text(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Адрес и учебный год есть в базе.", include_frame=False)
+    on = _dialog(text="Адрес действует в 2026/27 учебном году.", include_frame=True)
+    on["turns"][0]["bot_fact_retrieval_trace"] = {"selected_exact_ids": ["address.current.client_safe_text"]}
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            "address.current.client_safe_text": "client_safe_text: Адрес действует в 2026/27 учебном году.",
+        }
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_exact_fact_count"] == 2
+
+
+def test_inline_text_health_gate_verifies_academic_year_from_selected_fact_metadata(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Адрес есть в базе.", include_frame=False)
+    on = _dialog(text="Для регулярных курсов 2026/27 есть адрес Верхняя Красносельская.", include_frame=True)
+    fact_id = "r4_owner_2026_06_11.unpk.moscow_regular_address"
+    on["turns"][0]["bot_fact_retrieval_trace"] = {"selected_exact_ids": [fact_id]}
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            fact_id: "В Москве у УНПК есть действующие адреса: Сретенка, 20 и Верхняя Красносельская, 30.",
+        },
+        "wide_fact_metadata": {
+            fact_id: {
+                "product": "regular_courses_2026_27",
+                "client_safe": "true",
+                "fact_type": "location",
+            }
+        },
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "pass"
+    assert gate["new_number_unverified_count"] == 0
+    assert gate["number_verified_by_exact_fact_count"] == 2
+
+
+def test_inline_text_health_gate_does_not_verify_service_date_from_fact_id(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(text="Адрес есть в базе.", include_frame=False)
+    on = _dialog(text="Адрес обновлён 2026/06.", include_frame=True)
+    on["turns"][0]["bot_fact_retrieval_trace"] = {
+        "selected_exact_ids": ["fact:v3:unpk:r4_owner_2026_06_11_unpk_moscow_regular_address:4e3213ebc7"],
+    }
+    on["turns"][0]["bot_direct_path"] = {
+        "retrieved_facts": {
+            "fact:v3:unpk:r4_owner_2026_06_11_unpk_moscow_regular_address:4e3213ebc7": (
+                "client_safe_text: В Москве у УНПК есть действующие адреса: Сретенка, 20."
+            ),
+        }
+    }
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    result = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)
+
+    gate = result["inline_text_health_gate"]
+    assert gate["status"] == "fail"
+    assert gate["new_number_unverified_count"] == 1
+    assert gate["number_unverified_claim_count"] >= 1
+
+
 def test_inline_text_health_gate_verifies_address_numbers_from_selected_address_fact(tmp_path: Path) -> None:
     off_transcripts = tmp_path / "off.jsonl"
     on_transcripts = tmp_path / "on.jsonl"

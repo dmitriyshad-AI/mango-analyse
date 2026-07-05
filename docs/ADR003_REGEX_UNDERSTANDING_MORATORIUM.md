@@ -160,4 +160,6 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обн�
 
 Runner для Package-2 получает только измерительный `TARGET_READING_CLASS`: `intent_actions` добавляется в ON-ногу через env, но не в профильный default. Это сохраняет чистый baseline.
 
-Inline text health gate получил узкую верификацию адресных чисел `20`/`30` из selected exact address fact текущего хода. Raw fact blob и adjacent facts не становятся pass-источником.
+Уточнение после регрейда среза-1a: B-нога runner больше не задаёт пустой `TELEGRAM_SEMANTIC_READING_CLASSES=` и должна запускаться как чистый профиль `pilot_gold_v1`; ON-нога добавляет target-class явным env. Пара `72c84090` полезна как разведка, но не является финальным основанием для deletion legacy live-availability ветки. Deletion требует свежей пары после фикса runner и отдельного решения.
+
+Inline text health gate получил узкую верификацию адресных чисел `20`/`30` и учебного года `2026/27` из selected exact fact текущего хода: id, текста или metadata выбранного exact-факта. Raw fact blob и adjacent facts не становятся pass-источником; служебные даты вида `2026_06_11` не считаются учебным годом.

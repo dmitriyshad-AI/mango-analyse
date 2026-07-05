@@ -54,6 +54,11 @@ def test_adr003_e3_runner_can_append_target_reading_class_on_top_of_profile_defa
     text = _runner_text()
 
     assert 'TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"' in text
+    base_section = text[
+        text.index('BASE_READING_CLASSES="${READING_CLASSES:-') : text.index("TARGET_READING_CLASS=", text.index("BASE_READING_CLASSES="))
+    ]
+    assert "intent_actions" in base_section
+    assert "already in profile/base READING_CLASSES" in text
     assert 'READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}"' in text
     assert '"TARGET_READING_CLASS": target_reading_class' in text
     assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" not in text
@@ -253,6 +258,14 @@ def test_e3_leg_validator_rejects_target_trace_in_baseline(tmp_path: Path) -> No
             expect_trace=False,
             forbid_trace_class="intent_actions",
         )
+
+
+def test_adr003_e3_runner_rejects_profile_default_target() -> None:
+    text = _runner_text()
+
+    assert "already in profile/base READING_CLASSES" in text
+    assert "would not be an attributable B/ON target" in text
+    assert "exit 2" in text[text.index("already in profile/base READING_CLASSES") :]
 
 
 def test_e3_leg_validator_requires_target_trace_in_on_leg(tmp_path: Path) -> None:

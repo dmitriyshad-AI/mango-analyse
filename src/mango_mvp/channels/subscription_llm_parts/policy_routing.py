@@ -3506,10 +3506,7 @@ def _live_status_read_transition_trace(
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
     plan = _conversation_intent_plan(context)
-    legacy_live_status = (
-        "conversation_intent_plan_live_availability" in legacy_result.safety_flags
-        or str(plan.get("primary_intent") or "").strip() == "live_availability"
-    )
+    legacy_live_status = "conversation_intent_plan_live_availability" in legacy_result.safety_flags
     frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
     frame_product = {}
     if isinstance(frame.get("requested_product"), Mapping):
@@ -3644,10 +3641,7 @@ def _live_status_read_transition_apply(
     frame = semantic_frame_from_metadata(original.metadata)
     plan = _conversation_intent_plan(context)
     frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
-    legacy_live_status = (
-        "conversation_intent_plan_live_availability" in legacy_result.safety_flags
-        or str(plan.get("primary_intent") or "").strip() == "live_availability"
-    )
+    legacy_live_status = "conversation_intent_plan_live_availability" in legacy_result.safety_flags
     fail_reason = (
         _live_status_hard_floor_reason(original)
         or _live_status_hard_floor_reason(legacy_result)
@@ -3960,21 +3954,12 @@ def _apply_conversation_intent_plan_legacy_guard(
         checklist.append("План диалога распознал P0/high-risk тему: автономный ответ запрещён.")
         metadata["conversation_intent_plan_route_applied"] = "manager_only"
 
-    elif primary_intent == "live_availability":
-        if topic_from_plan and topic != plan_topic:
-            topic = plan_topic
-            flags.append("conversation_intent_plan_topic_applied")
-            metadata["conversation_intent_plan_topic_from"] = result.topic_id
-        if route in AUTONOMOUS_ROUTES:
-            route = "draft_for_manager"
-            flags.append("conversation_intent_plan_live_check_handoff")
-            metadata["conversation_intent_plan_route_applied"] = "draft_for_manager"
-        flags.append("conversation_intent_plan_live_availability")
-        checklist.append(
-            "План диалога: вопрос про место/наличие/бронь требует проверки менеджером; не обещать место до проверки."
-        )
-
-    elif topic_from_plan and topic != plan_topic and (not is_high_risk_result(result) or semantic_non_p0):
+    elif (
+        primary_intent != "live_availability"
+        and topic_from_plan
+        and topic != plan_topic
+        and (not is_high_risk_result(result) or semantic_non_p0)
+    ):
         original_high_risk = is_high_risk_result(result)
         topic = plan_topic
         flags.append("conversation_intent_plan_topic_applied")
@@ -4147,6 +4132,17 @@ def _intent_actions_live_availability_result(
     )
 
 
+def _conversation_plan_live_availability_floor_result(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> Optional[SubscriptionDraftResult]:
+    plan = _conversation_intent_plan(context)
+    if str(plan.get("primary_intent") or "").strip() != "live_availability":
+        return None
+    return _intent_actions_live_availability_result(result, frame={})
+
+
 def _apply_intent_actions_transition_guard(
     original: SubscriptionDraftResult,
     legacy_result: SubscriptionDraftResult,
@@ -4161,6 +4157,18 @@ def _apply_intent_actions_transition_guard(
     base_name = "legacy" if legacy_active else ("previous_apply" if previous_apply_active else "original")
     fail_reason = _intent_actions_frame_fail_reason(frame)
     if fail_reason:
+        plan_floor = _conversation_plan_live_availability_floor_result(base_result, context=context)
+        if plan_floor is not None:
+            return _intent_actions_trace(
+                plan_floor,
+                status="fail_closed",
+                reason=fail_reason,
+                frame=frame,
+                legacy_result=legacy_result,
+                frame_result=plan_floor,
+                chosen="conversation_plan_live_availability_floor",
+                changed_fields=_route_templates_changed_fields(base_result, plan_floor),
+            )
         return _intent_actions_trace(
             base_result,
             status="fail_closed",

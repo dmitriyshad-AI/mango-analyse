@@ -39,12 +39,15 @@ cd "$ROOT"
 REV_LABEL="${REV_LABEL:-e3_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl}"
 SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
-BASE_READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf}"
+BASE_READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf,intent_actions}"
 TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"
 READING_CLASSES="$BASE_READING_CLASSES"
 if [[ -n "$TARGET_READING_CLASS" ]]; then
   case ",$READING_CLASSES," in
-    *",$TARGET_READING_CLASS,"*) ;;
+    *",$TARGET_READING_CLASS,"*)
+      echo "TARGET_READING_CLASS '$TARGET_READING_CLASS' is already in profile/base READING_CLASSES; this would not be an attributable B/ON target." >&2
+      exit 2
+      ;;
     *) READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}" ;;
   esac
 fi

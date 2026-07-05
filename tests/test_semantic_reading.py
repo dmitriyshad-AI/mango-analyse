@@ -72,9 +72,9 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
 
-    assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic"})
+    assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic", "intent_actions"})
     assert reading_class_enabled(None, "slots_gsf") is True
-    assert reading_class_enabled(None, "intent_actions") is False
+    assert reading_class_enabled(None, "intent_actions") is True
     assert reading_class_enabled(None, "route_templates") is False
     assert reading_class_enabled(None, "rewrite_quality") is False
     assert reading_class_enabled(None, "post_semantics") is False

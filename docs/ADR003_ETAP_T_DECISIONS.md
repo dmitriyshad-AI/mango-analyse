@@ -114,9 +114,9 @@
 
 ## D-019. Package-2 runner добавляет целевой reading-класс поверх профиля только env-ом
 
-Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. B-нога не задаёт `TELEGRAM_SEMANTIC_READING_CLASSES=` пустой строкой, а запускается как чистый профиль `pilot_gold_v1`. Валидатор разрешает профильные traces в B, но запрещает target-class trace; ON обязан иметь target-class trace. Профильный default reading classes не меняется.
+Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. B-нога не задаёт `TELEGRAM_SEMANTIC_READING_CLASSES=` пустой строкой, а запускается как чистый профиль `pilot_gold_v1`. Валидатор разрешает профильные traces в B, но запрещает target-class trace; ON обязан иметь target-class trace. Профильный default reading classes на момент D-019 не менялся; после D-032 `intent_actions` стал профильным default, и раннер теперь отказывает, если target уже входит в профиль/base.
 
-Обоснование: срез-1a должен измерять `intent_actions` как единственную новую переменную поверх текущего профиля. Добавлять `intent_actions` в профиль до пары нельзя: baseline стал бы загрязнен и неатрибутируем.
+Обоснование: срез-1a должен был измерить `intent_actions` как единственную новую переменную поверх текущего профиля. Добавлять `intent_actions` в профиль до пары было нельзя: baseline стал бы загрязнен и неатрибутируем. Это ограничение снято только после D-032.
 
 ## D-020. Inline text gate верифицирует адресные числа и учебный год только из источников хода
 
@@ -126,9 +126,9 @@
 
 ## D-021. Deletion №1 остановлен до свежей пары после фикса B-ноги
 
-Решение: не удалять legacy live-availability ветку `conversation_intent_plan` на основании пары `adr003_srez1a_pair_72c84090_20260704_ready`. Сначала нужно переснять pair после исправления runner: B = чистый профиль, ON = профиль + `TARGET_READING_CLASS=intent_actions`. `intent_actions` пока не добавляется в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а профильное включение/deletion остаются отдельным решением после свежего регрейда.
+Решение: не удалять legacy live-availability ветку `conversation_intent_plan` на основании пары `adr003_srez1a_pair_72c84090_20260704_ready`. Сначала нужно переснять pair после исправления runner: B = чистый профиль, ON = профиль + `TARGET_READING_CLASS=intent_actions`. На момент D-021 `intent_actions` не добавлялся в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а профильное включение/deletion оставались отдельным решением после свежего регрейда. Это решение superseded by D-032 после свежей пары и `да №5`.
 
-Обоснование: старая B-нога явно задавала `TELEGRAM_SEMANTIC_READING_CLASSES=` и тем самым глушила профильные default-классы `sense_seats,slots_gsf,off_topic`. Такая пара полезна для разведки, но не является достаточным доказательством безопасности deletion на боевом профиле. Удаление legacy ветки без профильного replacement может снять защитный `conversation_intent_plan_live_availability`, на который опираются live-status/Fix1b/autonomy полы.
+Обоснование: старая B-нога явно задавала `TELEGRAM_SEMANTIC_READING_CLASSES=` и тем самым глушила профильные default-классы `sense_seats,slots_gsf,off_topic`. Такая пара полезна для разведки, но не является достаточным доказательством безопасности deletion на боевом профиле. Удаление legacy ветки без профильного replacement могло снять защитный `conversation_intent_plan_live_availability`, на который опираются live-status/Fix1b/autonomy полы; D-032 делает deletion атомарно с replacement и fail-closed fallback.
 
 ## D-022. Apply-класс задаётся точкой, а не широким reading-классом
 
@@ -189,3 +189,9 @@
 Решение: добавить default-OFF apply point `live_status_read/conversation_intent_plan`. Он работает только при включённых `TELEGRAM_SEMANTIC_READING_CLASSES=live_status_read` и `TELEGRAM_READING_APPLY_CLASSES=live_status_read/conversation_intent_plan`. `SemanticFrame.requested_action=check_availability` ставит страховку живых мест: `draft_for_manager` для автономного route, флаг `conversation_intent_plan_live_availability` и manager checklist «не обещать место до проверки». `risk_class=manager_action/missing_facts` для `check_availability` не блокирует apply, потому что это ожидаемый смысл «проверить наличие у менеджера», а не P0. `send_document`/`enroll` без availability-смысла не ставят live-status demote и могут снять ложный legacy live-status. Paid/P0/high-risk/blocked/manager_only остаются fail-closed floor; P0/high-risk проверяется не только по flags, но и через `is_high_risk_result()` и `direct_path_model_p0` metadata.
 
 Обоснование: регрейд Ж2 показал: 10/12 legacy-хитов подтверждены frame, 2 only-legacy — ложные или более правильно закрытые другим смыслом, а 10 only-frame — слепая зона legacy. Поэтому замена должна идти по объединению смыслов: availability защищаем, paid отправляем менеджеру, document/enroll без availability не считаем «местами». Аудит дополнительно поймал опасный обход: high-risk мог быть задан через `topic_id/risk_level/direct_path_model_p0`, а не через flags; поэтому floor использует общий high-risk классификатор. Профильное включение и deletion legacy по-прежнему запрещены до микро-пары и отдельного решения.
+
+## D-032. Профильное включение `intent_actions` и deletion №1 после регрейда пары 1a
+
+Решение: после raw-регрейда свежей пары 1a и отдельного «да» владельца `intent_actions` добавлен в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а legacy output-ветка `primary_intent == "live_availability"` внутри `conversation_intent_plan` guard удалена. Входной `conversation_intent_plan.py` и детектор `_asks_live_availability` не тронуты. Отдельный apply-класс `live_status_read/conversation_intent_plan` не включается в профиль. Если inline-frame отсутствует или невалиден, но старый план видит `live_availability`, `intent_actions` fail-closed ставит manager/check-live floor, чтобы не было тихого автономного ответа без frame.
+
+Обоснование: пара 1a показала, что inline `SemanticFrame.requested_action=check_availability` переустанавливает защитный сигнал `conversation_intent_plan_live_availability` там, где старый output-guard был слеп, и не понижает `manager_only`/`blocked`. Удаляем именно выходное legacy-применение, а не источник метаданных или safety floor. Это первый шаг «минус-лазанья»: live availability на этом участке теперь идёт через frame; legacy `primary_intent` остаётся только fail-closed запасным полом при неисправном frame.

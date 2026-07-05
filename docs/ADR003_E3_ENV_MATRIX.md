@@ -52,11 +52,12 @@ Profile env: `TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1`
 
 | flag | leg | expected effect | negative controls |
 |---|---|---|---|
-| `TELEGRAM_SEMANTIC_READING_CLASSES=sense_seats,off_topic,slots_gsf` | ON only | enable three reader insertions and trace | P0, brand, metadata-only off-topic, slot leak tests |
+| `TELEGRAM_SEMANTIC_READING_CLASSES=sense_seats,off_topic,slots_gsf,intent_actions,<target>` | ON only | enable the current profile readers plus one target reader for measurement | P0, brand, metadata-only off-topic, slot leak tests |
 
 ## Notes
 
 - `B` and `ON` both use `pilot_gold_v1` and reliable answerer.
-- `ON` differs from `B` only by `TELEGRAM_SEMANTIC_READING_CLASSES`.
+- Profile defaults now include `sense_seats,off_topic,slots_gsf,intent_actions`; ON must preserve them when adding a target class.
+- `ON` differs from `B` only by the additional target class in `TELEGRAM_SEMANTIC_READING_CLASSES`.
 - No profile tuple changes are made by this stage.
 - Live bot, P0 floor/preblock and legacy deletion are out of scope.

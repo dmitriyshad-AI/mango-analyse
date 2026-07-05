@@ -221,7 +221,7 @@ def test_intent_actions_explicit_inline_check_availability_preserves_live_availa
         client_message="Есть места на смену 6-17 июля?",
         context={
             SEMANTIC_READING_CLASSES_ENV: "intent_actions",
-            "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:026_camp_general"},
         },
     )
 
@@ -265,8 +265,8 @@ def test_live_status_read_records_conversation_plan_shadow_without_behavior_chan
         },
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     trace = guarded.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "live_status_read"
     assert trace["status"] == "shadow_only"
@@ -304,8 +304,8 @@ def test_live_status_read_plan_observer_does_not_apply_legacy_route() -> None:
     trace = traced.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "live_status_read"
     assert trace["metadata"]["stage"] == "conversation_intent_plan_observer"
-    assert trace["decision"] == "legacy_live_status"
-    assert "route" in trace["changed_fields"]
+    assert trace["decision"] == "legacy_not_live_status"
+    assert trace["changed_fields"] == []
 
 
 def _live_status_frame_result(
@@ -392,7 +392,8 @@ def test_live_status_apply_preserves_legacy_when_both_see_availability() -> None
     trace = result.metadata["semantic_reading_trace"][0]
     assert trace["status"] == "applied"
     assert trace["decision"] == "frame_check_availability"
-    assert trace["metadata"]["legacy_live_status"] is True
+    assert trace["metadata"]["legacy_live_status"] is False
+    assert trace["conflict_with"] == ["legacy_missing_live_status"]
 
 
 def test_live_status_apply_keeps_paid_floor_even_when_frame_is_availability() -> None:
@@ -552,8 +553,8 @@ def test_live_status_apply_clears_false_legacy_for_document_or_enroll_without_av
     trace = result.metadata["semantic_reading_trace"][0]
     assert trace["status"] == "applied"
     assert trace["decision"] == "frame_not_live_status"
-    assert trace["reason"] == "frame_clears_legacy_live_status"
-    assert trace["conflict_with"] == ["legacy_false_live_status"]
+    assert trace["reason"] == "frame_no_live_status"
+    assert trace["conflict_with"] == []
 
 
 @pytest.mark.parametrize(
@@ -683,12 +684,12 @@ def test_route_templates_apply_keeps_live_availability_floor_when_frame_is_safe(
         },
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     trace = guarded.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "route_templates"
     assert trace["status"] == "fail_closed"
-    assert trace["reason"] == "live_availability_floor"
+    assert trace["reason"] == "manual_approval_floor"
     assert trace["decision"] == "legacy_more_conservative"
 
 
@@ -1224,7 +1225,7 @@ def test_intent_actions_low_confidence_frame_fails_closed_to_legacy() -> None:
     assert trace["reason"] == "low_confidence"
 
 
-def test_intent_actions_no_frame_keeps_original_when_legacy_was_not_active() -> None:
+def test_intent_actions_missing_frame_with_live_plan_fails_closed_to_manager() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         topic_id="theme:001_pricing",
@@ -1240,13 +1241,72 @@ def test_intent_actions_no_frame_keeps_original_when_legacy_was_not_active() -> 
         },
     )
 
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert "semantic_frame_intent_actions_live_availability" in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "no_frame"
+    assert trace["decision"] == "conversation_plan_live_availability_floor"
+    assert "route" in trace["changed_fields"]
+
+
+def test_intent_actions_invalid_frame_with_live_plan_fails_closed_to_manager() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        draft_text="Да, можно записаться.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "reserve_live_seat",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "risk_class": "manager_action",
+                "confidence": 0.99,
+            }
+        },
+    )
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть места?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "intent_actions",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:026_camp_general"},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "invalid_requested_action"
+    assert trace["decision"] == "conversation_plan_live_availability_floor"
+
+
+def test_intent_actions_no_frame_keeps_original_when_legacy_was_not_active() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        draft_text="Да, можно записаться.",
+        metadata={},
+    )
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть места?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "intent_actions",
+            "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
+        },
+    )
+
     assert guarded.route == "bot_answer_self_for_pilot"
     assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     trace = guarded.metadata["semantic_reading_trace"][0]
     assert trace["status"] == "fail_closed"
     assert trace["reason"] == "no_frame"
     assert trace["decision"] == "original"
-    assert trace["conflict_with"] == ["legacy_route"]
+    assert trace["conflict_with"] == []
 
 
 def test_intent_actions_no_frame_keeps_legacy_when_existing_pipeline_would_apply_it() -> None:
@@ -1271,4 +1331,4 @@ def test_intent_actions_no_frame_keeps_legacy_when_existing_pipeline_would_apply
     trace = guarded.metadata["semantic_reading_trace"][0]
     assert trace["status"] == "fail_closed"
     assert trace["reason"] == "no_frame"
-    assert trace["decision"] == "legacy"
+    assert trace["decision"] == "conversation_plan_live_availability_floor"

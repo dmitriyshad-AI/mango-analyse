@@ -149,6 +149,8 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обн�
 
 `intent_actions` не добавлен в `PILOT_PROFILE_DEFAULT_READING_CLASSES`; профильное включение возможно только отдельным решением после M1-пары и регрейда.
 
+Обновление 2026-07-05 после свежего регрейда пары 1a и отдельного «да» владельца: это отдельное решение принято. `intent_actions` теперь входит в профильный default `pilot_gold_v1`, а legacy output-ветка `primary_intent == "live_availability"` в `conversation_intent_plan` guard удалена. Входной детектор live_availability и `live_status_read/conversation_intent_plan` apply-point этим шагом не включались и не удалялись. Старый plan live_availability остаётся только как fail-closed fallback при отсутствующем/невалидном inline-frame, не как штатный пониматель.
+
 ## Разрешенное обновление 2026-07-04: профиль PaymentFix/PR-D и подготовка среза-1a
 
 После M1-регрейда PaymentFix и PR-D переведены в default-ON профиль `pilot_gold_v1` с сохранением явного `=0` override:

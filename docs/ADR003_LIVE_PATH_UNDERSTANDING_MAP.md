@@ -64,7 +64,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 | Route rubric regen | `provider.py:1186-1201`, `direct_path.py:3105-3121` | Один повторный вызов, если `draft_for_manager` без `missing_facts` при фактах или fallback open question | live, model+rule mixed |
 | Model P0 route | `provider.py:1202-1206`, `provider.py:2507-2555` | Поднимает route до `manager_only`, если модель/floor видит P0 | live, safety mixed |
 | P0 text hygiene | `provider.py:1207-1211`, `text_hygiene.py:113-185`, `text_hygiene.py:222-427` | Чистит текст по refund/payment/complaint/legal, различает presale refund / refund claim / payment dispute / forward payment | live, safety floor |
-| Conversation intent plan guard | `provider.py:1212-1220`, `policy_routing.py:3432-3458` | Legacy/LLM comparison for route/action; `intent_actions` применяется только при явном `TELEGRAM_SEMANTIC_READING_CLASSES`, не по профильному default | live, mixed |
+| Conversation intent plan guard | `provider.py:1212-1220`, `policy_routing.py:3432-3458` | Legacy/LLM comparison for route/action; после `да №5` `intent_actions` входит в профильный default, а legacy output-ветка live_availability удалена | live, mixed |
 | Reliable answerer guard | `provider.py:1221-1225`, `direct_path.py:2611-2614`, `direct_path.py:2641`, `direct_path.py:2794`, `reliable_answerer.py:149-244`, `reliable_answerer.py:303-419` | Строит план покрытия вопроса, вставляет prompt-block и блокирует обещания мест/групп без live-факта, trace `sense_seats` | live, safety floor + trace |
 | Assumed scope guard | `provider.py:1226`, `direct_path.py:2773-2779`, `direct_path.py:3049-3102` | Не дает утверждать неподтвержденные параметры как клиентские; `2773-2779` - prompt-инструкция, `3049-3102` - runtime guard | live, safety/memory |
 | Semantic output verifier | `provider.py:1228-1234`, `post_layers.py:5064-5201` | Финальная проверка вывода/выдумок/claim issues | live, output safety |
@@ -126,7 +126,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 - Источники смысла: `semantic_roles`, known slots, current message, previous focus, held state, keyword/risk signals.
 - Живость: plan участвует в `required_fact_keys`, `fact_scope`, `answer_topics`, `route_bias`, prompt и guard.
 - Тип: `mixed`.
-- Replacement-кандидат: частично уже заменяется SemanticReading/SemanticFrame (`slots_gsf`, `route_templates`; `intent_actions` только при явном включении). Нужна поузловая резка, не массовое удаление.
+- Replacement-кандидат: частично уже заменяется SemanticReading/SemanticFrame (`slots_gsf`, `intent_actions`; `route_templates` остаётся отдельным apply-кандидатом). Нужна поузловая резка, не массовое удаление.
 
 ### 7. Semantic roles
 
@@ -225,7 +225,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 ## Что уже можно считать закрытым
 
 - Срез 1 (`sense_seats`, `slots_gsf`, `off_topic`) уже прошел отдельные замеры/регрейды и вошел в профильный default через прежние решения. Это не означает полного удаления всех regex, а только закрытие конкретных классов.
-- `intent_actions` не входит в профильный default; он работает только при явном `TELEGRAM_SEMANTIC_READING_CLASSES`. В текущем срезе его не надо считать новым profile-default apply без отдельного замера.
+- `intent_actions` после регрейда пары 1a и `да №5` входит в профильный default; legacy output-ветка live_availability удалена, входной `conversation_intent_plan.py` не тронут.
 - `route_templates/autonomy_matrix` показал высокий agreement в локальной диагностике и является кандидатом на следующий узкий эксперимент/замер, но не на включение без B/ON приемки.
 
 ## Что нельзя утверждать
@@ -266,7 +266,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Принятые правки аудиторов:
 
-- `intent_actions` не считать profile-default: он живет только при явном `TELEGRAM_SEMANTIC_READING_CLASSES`.
+- После `да №5` старое аудиторское ограничение про explicit-only снято: `intent_actions` теперь profile-default; новые target-классы всё ещё добавляются только явным env.
 - `rewrite_quality`, `post_semantics`, `route_templates/redundant_guard` помечены как `dead_on_direct_path/frozen_monolith_only`, а не как кандидаты на apply.
 - Bot-safe memory step guard вынесен отдельной live safety-точкой.
 - Identity/prompt-injection и final output guards не считаются закрытыми срезом `off_topic`.

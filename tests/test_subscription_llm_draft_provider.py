@@ -725,12 +725,22 @@ def test_direct_identity_question_gets_brand_safe_policy_c_answer() -> None:
     assert "GPT" not in unpk.draft_text
 
 
-def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> None:
+def test_conversation_intent_plan_guard_uses_profile_intent_actions_replacement() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         topic_id="theme:001_pricing",
         topic_confidence=0.84,
         draft_text="Да, текущая цена такая-то, можно закрепить условия.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "risk_class": "manager_action",
+                "confidence": 0.94,
+            }
+        },
     )
 
     guarded = apply_conversation_intent_plan_guard(
@@ -738,6 +748,7 @@ def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> Non
         client_message="Можно закрепить место на ЛВШ?",
         context={
             "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             "conversation_intent_plan": {
                 "primary_intent": "live_availability",
                 "topic_id": "theme:026_camp_general",
@@ -748,10 +759,11 @@ def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> Non
         },
     )
 
-    assert guarded.topic_id == "theme:026_camp_general"
+    assert guarded.topic_id == "theme:001_pricing"
     assert guarded.route == "draft_for_manager"
     assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_topic_applied" in guarded.safety_flags
+    assert "semantic_frame_intent_actions_live_availability" in guarded.safety_flags
+    assert "conversation_intent_plan_topic_applied" not in guarded.safety_flags
 
 
 def test_followup_deadline_guard_catches_absolute_datetime_with_vernutsya() -> None:
@@ -11619,8 +11631,8 @@ def test_direct_path_intent_actions_runs_without_intent_model_led() -> None:
         context={
             "active_brand": "foton",
             DIRECT_PATH_ENV: "1",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
-            SEMANTIC_READING_CLASSES_ENV: "intent_actions",
             "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
         },
     )
@@ -11706,8 +11718,8 @@ def test_direct_path_live_status_read_alone_is_trace_only_and_does_not_apply_int
     assert [trace["class"] for trace in traces] == ["live_status_read", "live_status_read"]
     assert traces[0]["metadata"]["stage"] == "conversation_intent_plan_observer"
     assert traces[0]["status"] == "shadow_only"
-    assert traces[0]["decision"] == "legacy_live_status"
-    assert traces[0]["changed_fields"]
+    assert traces[0]["decision"] == "legacy_not_live_status"
+    assert traces[0]["changed_fields"] == []
     assert traces[1]["status"] == "suppressed"
     assert traces[1]["reason"] == "reliable_step1_off"
 
@@ -13678,7 +13690,7 @@ def test_intent_model_led_false_live_availability_keeps_direct_answer() -> None:
     assert guarded.metadata["conversation_intent_primary_intent"] == "address"
 
 
-def test_intent_model_led_true_live_availability_still_hands_off() -> None:
+def test_intent_model_led_true_live_availability_no_longer_hands_off_without_frame() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text="Я уточню по группе.",
@@ -13713,9 +13725,9 @@ def test_intent_model_led_true_live_availability_still_hands_off() -> None:
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "live_availability"
 
 
@@ -13754,7 +13766,8 @@ def test_intent_model_led_off_topic_is_metadata_only_until_semantic_reading_clas
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied"] is False
     assert guarded.metadata["intent_model_led"]["skip_reason"] == "off_topic_metadata_only"
     assert guarded.metadata["conversation_intent_primary_intent"] == "live_availability"
@@ -13796,9 +13809,9 @@ def test_intent_model_led_does_not_demote_explicit_availability_question() -> No
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied"] is False
     assert guarded.metadata["intent_model_led"]["skip_reason"] == "explicit_live_availability_floor"
 
@@ -13838,8 +13851,8 @@ def test_intent_model_led_low_confidence_does_not_demote_live_availability() -> 
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied"] is False
     assert guarded.metadata["intent_model_led"]["skip_reason"] == "low_confidence"
 
@@ -13870,8 +13883,8 @@ def test_intent_model_led_is_ignored_when_flag_off() -> None:
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     assert "intent_model_led" not in guarded.metadata
 
 

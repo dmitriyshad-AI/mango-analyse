@@ -136,6 +136,7 @@ from mango_mvp.channels.subscription_llm import (
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     FIX1B_AUTONOMY_VERIFIED_FACTS_ENV,
+    apply_roles_read_trace,
     apply_autonomy_matrix_guard,
     _fix1b_has_paid_operation_context,
 )
@@ -11702,9 +11703,177 @@ def test_direct_path_live_status_read_alone_is_trace_only_and_does_not_apply_int
     assert result.route == "bot_answer_self_for_pilot"
     assert "conversation_intent_plan_live_availability" not in result.safety_flags
     traces = result.metadata["semantic_reading_trace"]
-    assert traces[0]["class"] == "live_status_read"
-    assert traces[0]["status"] == "suppressed"
-    assert traces[0]["reason"] == "reliable_step1_off"
+    assert [trace["class"] for trace in traces] == ["live_status_read", "live_status_read"]
+    assert traces[0]["metadata"]["stage"] == "conversation_intent_plan_observer"
+    assert traces[0]["status"] == "shadow_only"
+    assert traces[0]["decision"] == "legacy_live_status"
+    assert traces[0]["changed_fields"]
+    assert traces[1]["status"] == "suppressed"
+    assert traces[1]["reason"] == "reliable_step1_off"
+
+
+def test_direct_path_reask_read_traces_known_slot_reask_without_changing_text() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:001_pricing",
+            draft_text="Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "reask_read",
+            "dialogue_memory_view": {"known_slots": {"grade": "8 класс"}},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее."
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "reask_read"
+    assert trace["status"] == "would_flag"
+    assert trace["decision"] == "known_slot_reask"
+    assert trace["metadata"]["repeated_slot_keys"] == ["grade"]
+    assert trace["metadata"]["known_slot_keys"] == ["active_brand", "grade"]
+
+
+def test_direct_path_reask_read_does_not_leak_hidden_slot_values() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:001_pricing",
+            draft_text="Стоимость зависит от формата.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "reask_read",
+            "dialogue_memory_view": {
+                "semantic_reading_slots": {
+                    "grade": {"value": "9#SENTINEL#", "source_name": "semantic_reading_llm"},
+                    "subject": {"value": "химия#SENTINEL#", "source_name": "semantic_reading_llm"},
+                },
+                "do_not_reask_slots": ["grade", "subject"],
+            },
+        },
+    )
+
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "reask_read"
+    assert trace["metadata"]["semantic_hidden_slot_names"] == ["grade", "subject"]
+    assert trace["metadata"]["hidden_slots_are_client_confirmed"] is False
+    assert "SENTINEL" not in str(trace)
+    assert "химия" not in str(trace)
+    assert "SENTINEL" not in provider.last_prompt
+    assert "химия" not in provider.last_prompt
+    assert "semantic_reading_slots" not in provider.last_prompt
+
+
+def test_direct_path_roles_read_traces_tax_without_changing_route() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:008_tax_deduction",
+            draft_text="Для налогового вычета нужна справка об оплате.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "payment_readiness": "none",
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Сколько можно вернуть по налоговому вычету?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "roles_read",
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "roles_read"
+    assert trace["metadata"]["payment_source"] == "tax_deduction"
+    assert trace["metadata"]["refund_frame"] == "none"
+    assert trace["metadata"]["plan_primary_intent"] == "tax"
+
+
+def test_direct_path_roles_read_traces_refund_dispute_without_downgrade() -> None:
+    result = apply_roles_read_trace(
+        SubscriptionDraftResult(
+            route="manager_only",
+            topic_id="theme:003_payment_status",
+            draft_text="Передам менеджеру вопрос по оплате.",
+            safety_flags=("payment_dispute", "manager_approval_required", "no_auto_send"),
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "refund_or_cancel",
+                    "payment_readiness": "dispute",
+                    "risk_class": "payment_dispute",
+                    "confidence": 0.96,
+                }
+            },
+        ),
+        context={
+            "active_brand": "foton",
+            SEMANTIC_READING_CLASSES_ENV: "roles_read",
+            "conversation_intent_plan": {
+                "primary_intent": "refund",
+                "topic_id": "theme:003_payment_status",
+                "payment_source": "course_payment",
+                "refund_frame": "dispute",
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert "payment_dispute" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "roles_read"
+    assert trace["metadata"]["payment_source"] == "course_payment"
+    assert trace["metadata"]["refund_frame"] == "dispute"
+    assert trace["metadata"]["frame_requested_action"] == "refund_or_cancel"
 
 
 def test_tz137_slot_topic_shadow_default_off_does_not_call_runner() -> None:

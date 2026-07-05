@@ -9,6 +9,7 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     apply_conversation_intent_plan_guard,
     apply_dialogue_contract_v2_template_dispatcher,
     apply_known_context_redundant_question_guard,
+    apply_live_status_read_plan_trace,
 )
 from mango_mvp.channels.subscription_llm_parts.post_layers import apply_humanity_guards
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_reading_trace_finalize
@@ -272,6 +273,39 @@ def test_live_status_read_records_conversation_plan_shadow_without_behavior_chan
     assert "Иванов" not in str(trace)
 
 
+def test_live_status_read_plan_observer_does_not_apply_legacy_route() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:013_schedule",
+        draft_text="Передам менеджеру, чтобы он проверил наличие.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "check_availability",
+                "requested_product": {"grade": "9 класс", "subject": "математика"},
+                "confidence": 0.94,
+            }
+        },
+    )
+
+    traced = apply_live_status_read_plan_trace(
+        result,
+        client_message="Есть ли свободные места в группе 9 класса по математике?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:013_schedule"},
+        },
+    )
+
+    assert traced.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in traced.safety_flags
+    trace = traced.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "live_status_read"
+    assert trace["metadata"]["stage"] == "conversation_intent_plan_observer"
+    assert trace["decision"] == "legacy_live_status"
+    assert "route" in trace["changed_fields"]
+
+
 def test_route_templates_class_records_same_stage_legacy_shadow_without_profile_default() -> None:
     result = _semantic_result(primary_intent="schedule", sense="answer_question")
 
@@ -369,6 +403,131 @@ def test_route_templates_apply_can_restore_safe_original_without_text_replacemen
     assert trace["status"] == "applied"
     assert trace["decision"] == "frame_safe_original"
     assert trace["metadata"]["text_replacement"] is False
+
+
+def test_route_templates_apply_keeps_brand_floor() -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:013_schedule",
+        draft_text="Занятия проходят онлайн.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.96,
+            }
+        },
+    )
+    legacy = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id=original.topic_id,
+        draft_text=original.draft_text,
+        safety_flags=("brand_separation_guarded", "manager_approval_required", "no_auto_send"),
+        metadata=original.metadata,
+    )
+
+    guarded = _route_templates_transition_trace(
+        original,
+        legacy,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+        },
+        stage="autonomy_matrix",
+        reason="unit_brand_floor",
+    )
+
+    assert guarded.route == "draft_for_manager"
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "brand_floor"
+    assert trace["decision"] == "legacy_more_conservative"
+
+
+def test_route_templates_apply_keeps_payment_confirmation_floor() -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:002_payment_method",
+        draft_text="Оплата прошла, доступ будет открыт.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.96,
+            }
+        },
+    )
+    legacy = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id=original.topic_id,
+        draft_text=original.draft_text,
+        safety_flags=("payment_confirmation_without_two_sources", "manager_approval_required", "no_auto_send"),
+        metadata=original.metadata,
+    )
+
+    guarded = _route_templates_transition_trace(
+        original,
+        legacy,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+        },
+        stage="autonomy_matrix",
+        reason="unit_payment_floor",
+    )
+
+    assert guarded.route == "draft_for_manager"
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "payment_confirmation_floor"
+
+
+def test_route_templates_apply_keeps_topic_id_floor() -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:013_schedule",
+        draft_text="Занятия проходят онлайн.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.96,
+            }
+        },
+    )
+    legacy = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:026_camp_general",
+        draft_text=original.draft_text,
+        safety_flags=("autonomy_default_cautious_topic_not_allowed", "manager_approval_required", "no_auto_send"),
+        metadata=original.metadata,
+    )
+
+    guarded = _route_templates_transition_trace(
+        original,
+        legacy,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+        },
+        stage="autonomy_matrix",
+        reason="unit_topic_floor",
+    )
+
+    assert guarded.route == "draft_for_manager"
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "topic_id_floor"
+    assert "topic_id" in trace["changed_fields"]
 
 
 def test_route_templates_trace_records_known_context_reask_guard() -> None:

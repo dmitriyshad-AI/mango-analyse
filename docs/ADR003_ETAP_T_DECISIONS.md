@@ -153,3 +153,33 @@
 Решение: для Ж3 усилить тест, что hidden `semantic_reading_slots` не становятся `known_slots`/`client_confirmed_slots` и не попадают в direct-path prompt как подтверждённые значения. Для Ж4 усилить тесты: «сколько можно вернуть по налоговому вычету» остаётся tax/non-refund, а «уже оплатил, хочу вернуть оплату» даже с упоминанием налогового вычета остаётся `refund_frame=dispute` и `manager_only`.
 
 Обоснование: Ж3 и Ж4 имеют высокую цену ошибки: слоты могут превратиться в ложные клиентские подтверждения, а деньги — в P0-пропуск. До отдельной trace-пары и per-class регрейда здесь нельзя включать apply или менять runtime-поведение; быстрый безопасный шаг — закрепить границы автоматическими sentinel-тестами.
+
+## D-026. Apply `route_templates/autonomy_matrix` усиливается дополнительными floors
+
+Решение: `TELEGRAM_READING_APPLY_CLASSES=route_templates/autonomy_matrix` остаётся default-OFF и может выбирать frame-safe original только если legacy не сработал как brand/payment/manual/live/topic floor. В floor добавлены `brand_separation_guarded`/cross-brand, `payment_confirmation_without_two_sources`/`payment_source_conflict`, `manager_approval_required+no_auto_send` без известного autonomy-cautious false-positive, и `topic_id` mismatch.
+
+Обоснование: аудитор нашёл, что первый scaffold доказывал P0/live floor, но не доказывал brand/payment floors прямо в apply-ветке. Поздние final gates всё ещё существуют, но apply должен быть fail-closed сам по себе, чтобы не зависеть от неявной очередности слоёв.
+
+## D-027. Ж2 `live_status_read` получает входной trace-observer
+
+Решение: если `live_status_read` включён, но настоящий `apply_conversation_intent_plan_guard` не вызван соседним режимом, direct-path пишет trace-only observer рядом с `conversation_intent_plan` без применения route/text/safety изменений. Если guard уже вызван профилем/`intent_actions`/apply, используется существующий trace на той же стадии, без дубля.
+
+Обоснование: разведка показала, что один `live_status_read` хорошо видит `reliable_answerer_output_guard`, но не всегда видит входной классификатор `conversation_intent_plan`. Observer нужен для honest agreement Ж2: legacy live-status vs `SemanticFrame.requested_action`, но до регрейда это не имеет права менять поведение.
+
+## D-028. Ж3 начинается с final-text `reask_read` trace, не с переноса legacy guard
+
+Решение: добавить default-OFF class `reask_read`, который на финальном direct-path тексте пишет trace-only запись о повторном вопросе уже известных `grade/subject/format` и о hidden `semantic_reading_slots` только по именам слотов, без значений. Runtime text/route не меняются.
+
+Обоснование: живой direct-path почти не доходит до старого `apply_known_context_redundant_question_guard`; переносить его вслепую означало бы снова мерить мёртвый код. Сначала нужен наблюдатель на финальном тексте, а hidden slots не должны стать client-confirmed или утечь в prompt/trace значениями.
+
+## D-029. Ж4 начинается с `roles_read` trace, без попытки чинить деньги маршрутом
+
+Решение: добавить default-OFF class `roles_read`, который пишет trace-only запись по смысловым ролям денег/записи: `payment_source`, `refund_frame`, `enrollment_vs_recording`, `transfer_sense`, поля `SemanticFrame` и итоговый route/topic. Runtime text/route/safety flags не меняются.
+
+Обоснование: роли вроде «возврат оплаты курса» vs «налоговый вычет» и «записать на курс» vs «запись урока» стоят рядом с P0/деньгами. До отдельной пары и регрейда здесь нельзя делать apply. Trace нужен, чтобы увидеть реальные расхождения frame с legacy на живом direct-path, а не переносить regex-узлы из замороженного монолита.
+
+## D-030. Hidden semantic slots запрещены в prompt-памяти значениями
+
+Решение: `dialogue_memory_view.semantic_reading_slots` не передаётся в direct-path prompt как память диалога даже при выключенном `PRESALE_PII_MEMORY`. В trace для `reask_read` разрешены только имена hidden-слотов, без `value`; в prompt hidden-значения не попадают.
+
+Обоснование: `semantic_reading_slots` — это вывод модели, а не подтверждённые клиентом `known_slots`. Аудит показал, что старый путь мог вставить эти значения в блок «Память диалога». Это могло сделать LLM-вывод похожим на клиентское подтверждение. Для Ж3 это критичный boundary: не переспросить уже известное можно только после отдельного решения, но нельзя тихо считать hidden-slot фактом.

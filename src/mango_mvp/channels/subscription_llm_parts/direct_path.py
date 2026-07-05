@@ -2242,7 +2242,8 @@ def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Map
         return {}
     memory = context["dialogue_memory_view"]
     if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
-        return memory
+        # Semantic-reading slots are LLM-inferred hidden hints, not client-confirmed memory.
+        return {str(key): value for key, value in memory.items() if str(key) != "semantic_reading_slots"}
     result: dict[str, Any] = {}
     for key in ("known_slots", "client_confirmed_slots", "crm_known_slots", "topic_focus"):
         value = memory.get(key)

@@ -581,7 +581,10 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     apply_high_risk_content_guards,
     apply_input_policy_guards,
     apply_known_context_redundant_question_guard,
+    apply_live_status_read_plan_trace,
     apply_payment_confirmation_guard,
+    apply_reask_read_trace,
+    apply_roles_read_trace,
     apply_subscription_policy_guards,
     apply_taxonomy_topic_guard,
     apply_unstated_subject_guard,
@@ -990,7 +993,9 @@ class SubscriptionLlmDraftProvider:
             manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
             self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
             decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
-            return apply_semantic_reading_trace_finalize(decision_shadowed, context=context)
+            reask_traced = apply_reask_read_trace(decision_shadowed, context=context)
+            roles_traced = apply_roles_read_trace(reask_traced, context=context)
+            return apply_semantic_reading_trace_finalize(roles_traced, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -1213,12 +1218,19 @@ class SubscriptionLlmDraftProvider:
                 context=context,
                 client_message=client_message,
             )
-            if (
+            conversation_plan_guard_enabled = (
                 (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result))
                 or reading_class_enabled(context, "intent_actions")
                 or reading_apply_class_enabled(context, "route_templates/autonomy_matrix")
-            ):
+            )
+            if conversation_plan_guard_enabled:
                 result = apply_conversation_intent_plan_guard(
+                    result,
+                    client_message=client_message,
+                    context=context,
+                )
+            else:
+                result = apply_live_status_read_plan_trace(
                     result,
                     client_message=client_message,
                     context=context,

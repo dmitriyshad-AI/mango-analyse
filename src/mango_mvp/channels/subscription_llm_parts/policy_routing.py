@@ -3466,12 +3466,35 @@ def apply_conversation_intent_plan_guard(
     )
 
 
+def apply_live_status_read_plan_trace(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "live_status_read"):
+        return result
+    legacy_result = _apply_conversation_intent_plan_legacy_guard(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    return _live_status_read_transition_trace(
+        result,
+        legacy_result,
+        context=context,
+        stage="conversation_intent_plan_observer",
+        trace_only=True,
+    )
+
+
 def _live_status_read_transition_trace(
     original: SubscriptionDraftResult,
     legacy_result: SubscriptionDraftResult,
     *,
     context: Optional[Mapping[str, Any]] = None,
     stage: str,
+    trace_only: bool = False,
 ) -> SubscriptionDraftResult:
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
@@ -3515,7 +3538,8 @@ def _live_status_read_transition_trace(
             "frame_requested_product": frame_product,
         },
     )
-    return replace(legacy_result, metadata=append_reading_trace_record(legacy_result.metadata, record))
+    target = original if trace_only else legacy_result
+    return replace(target, metadata=append_reading_trace_record(target.metadata, record))
 
 
 def _route_templates_transition_trace(
@@ -3647,6 +3671,8 @@ def _route_templates_changed_fields(
     changed_fields: list[str] = []
     if legacy_result.route != original.route:
         changed_fields.append("route")
+    if legacy_result.topic_id != original.topic_id:
+        changed_fields.append("topic_id")
     if legacy_result.draft_text != original.draft_text:
         changed_fields.append("draft_text")
     if legacy_result.safety_flags != original.safety_flags:
@@ -3685,13 +3711,30 @@ def _route_templates_legacy_floor_reason(
     if legacy_result.route in {"blocked", "manager_only"} or original.route in {"blocked", "manager_only"}:
         return "hard_route_floor"
     flag_text = " ".join(str(flag or "") for flag in (*original.safety_flags, *legacy_result.safety_flags)).casefold()
+    flags = {str(flag or "").strip() for flag in (*original.safety_flags, *legacy_result.safety_flags)}
     if any(
         marker in flag_text
         for marker in ("p0", "payment_dispute", "refund", "complaint", "legal", "high_risk", "manager_only_p0", "funnel_p0")
     ):
         return "p0_or_high_risk_floor"
+    if flags & _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS:
+        return "brand_floor"
+    if any(flag.startswith("payment_confirmation_") or flag == "payment_source_conflict" for flag in flags):
+        return "payment_confirmation_floor"
     if "conversation_intent_plan_live_availability" in legacy_result.safety_flags:
         return "live_availability_floor"
+    if legacy_result.topic_id != original.topic_id:
+        return "topic_id_floor"
+    autonomy_cautious_false_positive = any(
+        marker in flag_text
+        for marker in (
+            "autonomy_default_cautious_missing_facts",
+            "autonomy_default_cautious_unverified_fact",
+            "autonomy_default_cautious_topic_not_allowed",
+        )
+    )
+    if flags.issuperset({"manager_approval_required", "no_auto_send"}) and not autonomy_cautious_false_positive:
+        return "manual_approval_floor"
     return ""
 
 
@@ -4260,6 +4303,113 @@ def apply_known_context_redundant_question_guard(
         ),
     )
     return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
+
+
+def apply_reask_read_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "reask_read"):
+        return result
+    repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
+    known = known_context_fields(context)
+    hidden_slots = _semantic_hidden_slot_names(context)
+    do_not_reask = _do_not_reask_slot_names_from_context(context)
+    record = semantic_reading_trace_record(
+        reading_class="reask_read",
+        enabled=True,
+        status="would_flag" if repeated else "shadow_only",
+        decision="known_slot_reask" if repeated else "no_reask_detected",
+        reason="direct_path_final_text_reask_observer",
+        source="deterministic_observer",
+        confidence=1.0,
+        changed_fields=(),
+        conflicts=("known_slot_reask",) if repeated else (),
+        metadata={
+            "stage": "direct_path_final_text",
+            "repeated_slot_keys": list(repeated),
+            "known_slot_keys": sorted(key for key in known if key in {"grade", "subject", "format", "active_brand"}),
+            "do_not_reask_slots": sorted(do_not_reask),
+            "semantic_hidden_slot_names": sorted(hidden_slots),
+            "hidden_slots_are_client_confirmed": False,
+        },
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
+
+def apply_roles_read_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "roles_read"):
+        return result
+    plan = _conversation_intent_plan(context)
+    frame = semantic_frame_from_metadata(result.metadata)
+    record = semantic_reading_trace_record(
+        reading_class="roles_read",
+        enabled=True,
+        status="shadow_only",
+        decision="roles_observed",
+        reason="direct_path_final_roles_observer",
+        source=str(frame.get("source") or "context"),
+        confidence=frame.get("confidence", 0.0) if frame else 0.0,
+        changed_fields=(),
+        conflicts=(),
+        metadata={
+            "stage": "direct_path_final_roles",
+            "final_route": result.route,
+            "final_topic_id": result.topic_id,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "plan_topic_id": str(plan.get("topic_id") or ""),
+            "payment_source": str(plan.get("payment_source") or ""),
+            "refund_frame": str(plan.get("refund_frame") or ""),
+            "enrollment_vs_recording": str(plan.get("enrollment_vs_recording") or ""),
+            "transfer_sense": str(plan.get("transfer_sense") or ""),
+            "frame_requested_action": str(frame.get("requested_action") or ""),
+            "frame_payment_readiness": str(frame.get("payment_readiness") or ""),
+            "frame_risk_class": str(frame.get("risk_class") or ""),
+        },
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
+
+def _semantic_hidden_slot_names(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    result: set[str] = set()
+    for container in (context, context.get("dialogue_memory_view")):
+        if not isinstance(container, Mapping):
+            continue
+        slots = container.get("semantic_reading_slots")
+        if isinstance(slots, Mapping):
+            result.update(str(key or "").strip() for key in slots if str(key or "").strip())
+    return result
+
+
+def _do_not_reask_slot_names_from_context(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    result: set[str] = set()
+    for container in (
+        context,
+        context.get("conversation_intent_plan"),
+        context.get("planner_intent"),
+        context.get("answer_contract"),
+        context.get("dialogue_memory_view"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        raw = container.get("do_not_reask_slots") or container.get("do_not_ask_again")
+        if isinstance(raw, str):
+            value = raw.strip()
+            if value:
+                result.add(value)
+        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+            result.update(str(item or "").strip() for item in raw if str(item or "").strip())
+    return result
+
 
 def apply_funnel_policy_guard(
     result: SubscriptionDraftResult,

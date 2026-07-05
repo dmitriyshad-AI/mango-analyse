@@ -40,8 +40,8 @@ def test_adr003_e3_runner_validates_eligible_frame_rate_not_all_turns() -> None:
     validator_text = _validator_text()
 
     assert "scripts/validate_adr003_e3_leg.py" in text
-    assert '--forbid-trace-class "$TARGET_READING_CLASS"' in text
-    assert '--require-trace-class "$TARGET_READING_CLASS"' in text
+    assert '--forbid-trace-class "$TARGET_READING_CLASSES"' in text
+    assert '--require-trace-class "$TARGET_READING_CLASSES"' in text
     assert "eligible_frame_rate" in validator_text
     assert "preblocked_p0=" in validator_text
     assert "timeouts=" in validator_text
@@ -54,15 +54,28 @@ def test_adr003_e3_runner_can_append_target_reading_class_on_top_of_profile_defa
     text = _runner_text()
 
     assert 'TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"' in text
+    assert 'TARGET_READING_CLASSES="${TARGET_READING_CLASSES:-$TARGET_READING_CLASS}"' in text
     base_section = text[
         text.index('BASE_READING_CLASSES="${READING_CLASSES:-') : text.index("TARGET_READING_CLASS=", text.index("BASE_READING_CLASSES="))
     ]
     assert "intent_actions" in base_section
     assert "already in profile/base READING_CLASSES" in text
-    assert 'READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}"' in text
-    assert '"TARGET_READING_CLASS": target_reading_class' in text
+    assert 'READING_CLASSES="${READING_CLASSES},${target_reading_class}"' in text
+    assert '"TARGET_READING_CLASSES": target_reading_classes' in text
     assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" not in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
+
+
+def test_adr003_e3_runner_supports_target_class_list_and_on_apply_only() -> None:
+    text = _runner_text()
+    baseline_section = text[text.index("== B:") : text.index("validate_leg B 0", text.index("== B:"))]
+    on_section = text[text.index("== ON:") : text.index("validate_leg ON 1", text.index("== ON:"))]
+
+    assert 'TARGET_APPLY_CLASSES="${TARGET_APPLY_CLASSES:-}"' in text
+    assert "-u TELEGRAM_READING_APPLY_CLASSES" in text
+    assert "TELEGRAM_READING_APPLY_CLASSES=" not in baseline_section
+    assert 'TELEGRAM_READING_APPLY_CLASSES="$TARGET_APPLY_CLASSES"' in on_section
+    assert "target_apply_classes=$TARGET_APPLY_CLASSES" in text
 
 
 def test_adr003_e3_runner_baseline_uses_profile_reading_classes() -> None:
@@ -242,6 +255,7 @@ def test_e3_leg_validator_allows_profile_traces_while_forbidding_target_class(tm
     assert result["status"] == "valid"
     assert result["trace_turns"] == 1
     assert result["forbidden_trace_turns"] == 0
+    assert result["forbidden_trace_turns_by_class"] == {"intent_actions": 0}
 
 
 def test_e3_leg_validator_rejects_target_trace_in_baseline(tmp_path: Path) -> None:
@@ -258,6 +272,32 @@ def test_e3_leg_validator_rejects_target_trace_in_baseline(tmp_path: Path) -> No
             expect_trace=False,
             forbid_trace_class="intent_actions",
         )
+
+
+def test_e3_leg_validator_handles_trace_class_lists(tmp_path: Path) -> None:
+    summary, transcripts = _write_e3_fixture(
+        tmp_path,
+        _e3_turn(
+            bot_semantic_reading_trace=[
+                {"class": "route_templates", "status": "applied"},
+                {"class": "live_status_read", "status": "applied"},
+            ]
+        ),
+    )
+
+    result = validate_leg(
+        summary_path=summary,
+        transcripts_path=transcripts,
+        leg="ON",
+        expect_trace=True,
+        require_trace_class="route_templates,live_status_read",
+    )
+
+    assert result["required_trace_classes"] == ["route_templates", "live_status_read"]
+    assert result["required_trace_turns_by_class"] == {
+        "route_templates": 1,
+        "live_status_read": 1,
+    }
 
 
 def test_adr003_e3_runner_rejects_profile_default_target() -> None:

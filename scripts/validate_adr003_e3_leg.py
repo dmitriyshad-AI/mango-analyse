@@ -151,17 +151,26 @@ def validate_leg(
     ]
     if expect_trace and not trace_turns:
         _fail(leg, "ON leg has no semantic_reading_trace records")
-    required_trace_class = str(require_trace_class or "").strip()
-    forbidden_trace_class = str(forbid_trace_class or "").strip()
-    required_trace_turns = [turn for turn in turns if required_trace_class and required_trace_class in _trace_classes(turn)]
-    forbidden_trace_turns = [turn for turn in turns if forbidden_trace_class and forbidden_trace_class in _trace_classes(turn)]
-    if required_trace_class and not required_trace_turns:
-        _fail(leg, f"{leg} leg has no semantic_reading_trace records for class {required_trace_class!r}")
-    if forbidden_trace_turns:
+    required_trace_classes = _csv_values(require_trace_class)
+    forbidden_trace_classes = _csv_values(forbid_trace_class)
+    required_trace_turns_by_class = {
+        trace_class: len([turn for turn in turns if trace_class in _trace_classes(turn)])
+        for trace_class in required_trace_classes
+    }
+    forbidden_trace_turns_by_class = {
+        trace_class: len([turn for turn in turns if trace_class in _trace_classes(turn)])
+        for trace_class in forbidden_trace_classes
+    }
+    missing_required = [trace_class for trace_class, count in required_trace_turns_by_class.items() if count == 0]
+    if missing_required:
+        _fail(leg, f"{leg} leg has no semantic_reading_trace records for classes {missing_required!r}")
+    forbidden_hits = {
+        trace_class: count for trace_class, count in forbidden_trace_turns_by_class.items() if count > 0
+    }
+    if forbidden_hits:
         _fail(
             leg,
-            f"{leg} leg unexpectedly has semantic_reading_trace class {forbidden_trace_class!r} "
-            f"on {len(forbidden_trace_turns)} turns",
+            f"{leg} leg unexpectedly has semantic_reading_trace target classes {forbidden_hits!r}",
         )
 
     gate_blocked_turns = [turn for turn in turns if _is_gate_blocked_turn(turn)]
@@ -183,10 +192,14 @@ def validate_leg(
         "eligible_frame_rate": round(eligible_frame_rate, 6),
         "bot_direct_draft": llm_calls.get("bot_direct_draft"),
         "trace_turns": len(trace_turns),
-        "required_trace_class": required_trace_class,
-        "required_trace_turns": len(required_trace_turns),
-        "forbidden_trace_class": forbidden_trace_class,
-        "forbidden_trace_turns": len(forbidden_trace_turns),
+        "required_trace_class": ",".join(required_trace_classes),
+        "required_trace_classes": required_trace_classes,
+        "required_trace_turns": sum(required_trace_turns_by_class.values()),
+        "required_trace_turns_by_class": required_trace_turns_by_class,
+        "forbidden_trace_class": ",".join(forbidden_trace_classes),
+        "forbidden_trace_classes": forbidden_trace_classes,
+        "forbidden_trace_turns": sum(forbidden_trace_turns_by_class.values()),
+        "forbidden_trace_turns_by_class": forbidden_trace_turns_by_class,
         "gate_blocked_turns": len(gate_blocked_turns),
     }
 
@@ -208,6 +221,17 @@ def _valid_line(result: Mapping[str, Any]) -> str:
 def _fail(leg: str, message: str) -> None:
     print(f"INVALID_{leg}: {message}", flush=True)
     raise SystemExit(1)
+
+
+def _csv_values(value: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in str(value or "").split(","):
+        item = raw.strip()
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 def _direct_path(turn: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -41,15 +41,46 @@ SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_pa
 SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
 BASE_READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf,intent_actions}"
 TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"
+TARGET_READING_CLASSES="${TARGET_READING_CLASSES:-$TARGET_READING_CLASS}"
+TARGET_READING_CLASSES="$(
+  python3 - "$TARGET_READING_CLASSES" <<'PY'
+import sys
+seen = set()
+items = []
+for raw in str(sys.argv[1] or "").split(","):
+    item = raw.strip()
+    if item and item not in seen:
+        seen.add(item)
+        items.append(item)
+print(",".join(items))
+PY
+)"
+TARGET_APPLY_CLASSES="${TARGET_APPLY_CLASSES:-}"
+TARGET_APPLY_CLASSES="$(
+  python3 - "$TARGET_APPLY_CLASSES" <<'PY'
+import sys
+seen = set()
+items = []
+for raw in str(sys.argv[1] or "").split(","):
+    item = raw.strip()
+    if item and item not in seen:
+        seen.add(item)
+        items.append(item)
+print(",".join(items))
+PY
+)"
 READING_CLASSES="$BASE_READING_CLASSES"
-if [[ -n "$TARGET_READING_CLASS" ]]; then
-  case ",$READING_CLASSES," in
-    *",$TARGET_READING_CLASS,"*)
-      echo "TARGET_READING_CLASS '$TARGET_READING_CLASS' is already in profile/base READING_CLASSES; this would not be an attributable B/ON target." >&2
-      exit 2
-      ;;
-    *) READING_CLASSES="${READING_CLASSES},${TARGET_READING_CLASS}" ;;
-  esac
+if [[ -n "$TARGET_READING_CLASSES" ]]; then
+  IFS=',' read -r -a target_reading_class_items <<< "$TARGET_READING_CLASSES"
+  for target_reading_class in "${target_reading_class_items[@]}"; do
+    case ",$READING_CLASSES," in
+      *",$target_reading_class,"*)
+        echo "TARGET_READING_CLASS '$target_reading_class' is already in profile/base READING_CLASSES; this would not be an attributable B/ON target." >&2
+        exit 2
+        ;;
+      *) READING_CLASSES="${READING_CLASSES},${target_reading_class}" ;;
+    esac
+  done
 fi
 if [[ "$DRY_CHECK" == "1" ]]; then
   OUT="${OUT:-runs/adr003_semantic_reading_e3_dry_check_${REV_LABEL}}"
@@ -79,6 +110,7 @@ base_env=(
   -u TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW
   -u TELEGRAM_SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW
   -u TELEGRAM_SEMANTIC_READING_CLASSES
+  -u TELEGRAM_READING_APPLY_CLASSES
   TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1
   TELEGRAM_DIRECT_PATH=1
   TELEGRAM_BOT_GOLD_REAL=1
@@ -99,14 +131,14 @@ validate_leg() {
       --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
       --leg "$leg" \
       --expect-trace \
-      --require-trace-class "$TARGET_READING_CLASS" \
+      --require-trace-class "$TARGET_READING_CLASSES" \
       --out-json "$OUT/$leg/e3_validation.json"
-  elif [[ -n "$TARGET_READING_CLASS" ]]; then
+  elif [[ -n "$TARGET_READING_CLASSES" ]]; then
     PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
       --summary "$OUT/$leg/dynamic_summary.json" \
       --transcripts "$OUT/$leg/dynamic_dialog_transcripts.jsonl" \
       --leg "$leg" \
-      --forbid-trace-class "$TARGET_READING_CLASS" \
+      --forbid-trace-class "$TARGET_READING_CLASSES" \
       --out-json "$OUT/$leg/e3_validation.json"
   else
     PYTHONPATH="$ROOT/src" python3 scripts/validate_adr003_e3_leg.py \
@@ -118,7 +150,7 @@ validate_leg() {
 }
 
 write_sha_manifest() {
-  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASS" "$ROOT" <<'PY'
+  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASSES" "$TARGET_APPLY_CLASSES" "$ROOT" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -127,14 +159,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
-root = Path(sys.argv[7]).resolve()
+root = Path(sys.argv[8]).resolve()
 paths = {
     "scenario": Path(sys.argv[2]),
     "snapshot": Path(sys.argv[3]),
     "runner": Path(sys.argv[4]),
 }
 reading_classes = sys.argv[5]
-target_reading_class = sys.argv[6]
+target_reading_classes = sys.argv[6]
+target_apply_classes = sys.argv[7]
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -188,7 +221,8 @@ manifest = {
         "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
         "TELEGRAM_RELIABLE_ANSWERER_STEP1": "1",
         "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes,
-        "TARGET_READING_CLASS": target_reading_class,
+        "TELEGRAM_READING_APPLY_CLASSES": target_apply_classes,
+        "TARGET_READING_CLASSES": target_reading_classes,
     },
 }
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +238,7 @@ run_on_leg() {
   echo "== ON: B + semantic reading classes =="
   "${base_env[@]}" \
     TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
+    TELEGRAM_READING_APPLY_CLASSES="$TARGET_APPLY_CLASSES" \
     python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
       --out-dir "$OUT/ON" \
       --progress-json "$OUT/ON/progress.json" \
@@ -247,7 +282,8 @@ if [[ -n "$RESUME_ON_REPORT" ]]; then
   echo "scenarios=$SCEN"
   echo "snapshot=$SNAPSHOT"
   echo "reading_classes=$READING_CLASSES"
-  echo "target_reading_class=$TARGET_READING_CLASS"
+  echo "target_reading_classes=$TARGET_READING_CLASSES"
+  echo "target_apply_classes=$TARGET_APPLY_CLASSES"
   echo "out=$OUT"
   echo "mode=resume-on-report"
   validate_leg B 0
@@ -265,7 +301,8 @@ echo "rev=$(git rev-parse HEAD)"
 echo "scenarios=$SCEN"
 echo "snapshot=$SNAPSHOT"
 echo "reading_classes=$READING_CLASSES"
-echo "target_reading_class=$TARGET_READING_CLASS"
+echo "target_reading_classes=$TARGET_READING_CLASSES"
+echo "target_apply_classes=$TARGET_APPLY_CLASSES"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"

@@ -69,6 +69,11 @@ for raw in str(sys.argv[1] or "").split(","):
 print(",".join(items))
 PY
 )"
+RUN_ORDER="${RUN_ORDER:-B_FIRST}"
+if [[ "$RUN_ORDER" != "B_FIRST" && "$RUN_ORDER" != "ON_FIRST" ]]; then
+  echo "RUN_ORDER must be B_FIRST or ON_FIRST, got: $RUN_ORDER" >&2
+  exit 2
+fi
 READING_CLASSES="$BASE_READING_CLASSES"
 if [[ -n "$TARGET_READING_CLASSES" ]]; then
   IFS=',' read -r -a target_reading_class_items <<< "$TARGET_READING_CLASSES"
@@ -150,7 +155,7 @@ validate_leg() {
 }
 
 write_sha_manifest() {
-  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASSES" "$TARGET_APPLY_CLASSES" "$ROOT" <<'PY'
+  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASSES" "$TARGET_APPLY_CLASSES" "$RUN_ORDER" "$ROOT" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -159,7 +164,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
-root = Path(sys.argv[8]).resolve()
+root = Path(sys.argv[9]).resolve()
 paths = {
     "scenario": Path(sys.argv[2]),
     "snapshot": Path(sys.argv[3]),
@@ -168,6 +173,7 @@ paths = {
 reading_classes = sys.argv[5]
 target_reading_classes = sys.argv[6]
 target_apply_classes = sys.argv[7]
+run_order = sys.argv[8]
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -223,6 +229,7 @@ manifest = {
         "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes,
         "TELEGRAM_READING_APPLY_CLASSES": target_apply_classes,
         "TARGET_READING_CLASSES": target_reading_classes,
+        "RUN_ORDER": run_order,
     },
 }
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -244,6 +251,16 @@ run_on_leg() {
       --progress-json "$OUT/ON/progress.json" \
       --progress-leg ON
   validate_leg ON 1
+}
+
+run_b_leg() {
+  echo "== B: profile + reliable + inline frame, profile reading classes =="
+  "${base_env[@]}" \
+    python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
+      --out-dir "$OUT/B" \
+      --progress-json "$OUT/B/progress.json" \
+      --progress-leg B
+  validate_leg B 0
 }
 
 run_report() {
@@ -284,6 +301,7 @@ if [[ -n "$RESUME_ON_REPORT" ]]; then
   echo "reading_classes=$READING_CLASSES"
   echo "target_reading_classes=$TARGET_READING_CLASSES"
   echo "target_apply_classes=$TARGET_APPLY_CLASSES"
+  echo "run_order=$RUN_ORDER"
   echo "out=$OUT"
   echo "mode=resume-on-report"
   validate_leg B 0
@@ -303,20 +321,19 @@ echo "snapshot=$SNAPSHOT"
 echo "reading_classes=$READING_CLASSES"
 echo "target_reading_classes=$TARGET_READING_CLASSES"
 echo "target_apply_classes=$TARGET_APPLY_CLASSES"
+echo "run_order=$RUN_ORDER"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"
 fi
 
-echo "== B: profile + reliable + inline frame, profile reading classes =="
-"${base_env[@]}" \
-  python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
-    --out-dir "$OUT/B" \
-    --progress-json "$OUT/B/progress.json" \
-    --progress-leg B
-validate_leg B 0
-
-run_on_leg
+if [[ "$RUN_ORDER" == "ON_FIRST" ]]; then
+  run_on_leg
+  run_b_leg
+else
+  run_b_leg
+  run_on_leg
+fi
 
 if [[ "$DRY_CHECK" == "1" ]]; then
   write_sha_manifest

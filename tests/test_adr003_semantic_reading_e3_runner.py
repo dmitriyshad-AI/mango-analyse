@@ -78,6 +78,17 @@ def test_adr003_e3_runner_supports_target_class_list_and_on_apply_only() -> None
     assert "target_apply_classes=$TARGET_APPLY_CLASSES" in text
 
 
+def test_adr003_e3_runner_supports_on_first_order() -> None:
+    text = _runner_text()
+
+    assert 'RUN_ORDER="${RUN_ORDER:-B_FIRST}"' in text
+    assert 'RUN_ORDER must be B_FIRST or ON_FIRST' in text
+    assert 'if [[ "$RUN_ORDER" == "ON_FIRST" ]]' in text
+    on_first_section = text[text.index('if [[ "$RUN_ORDER" == "ON_FIRST" ]]') :]
+    assert on_first_section.index("run_on_leg") < on_first_section.index("run_b_leg")
+    assert '"RUN_ORDER": run_order' in text
+
+
 def test_adr003_e3_runner_baseline_uses_profile_reading_classes() -> None:
     text = _runner_text()
     baseline_section = text[text.index("== B:") : text.index("validate_leg B 0", text.index("== B:"))]

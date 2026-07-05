@@ -1222,6 +1222,7 @@ class SubscriptionLlmDraftProvider:
                 (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result))
                 or reading_class_enabled(context, "intent_actions")
                 or reading_apply_class_enabled(context, "route_templates/autonomy_matrix")
+                or reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan")
             )
             if conversation_plan_guard_enabled:
                 result = apply_conversation_intent_plan_guard(

@@ -11712,6 +11712,45 @@ def test_direct_path_live_status_read_alone_is_trace_only_and_does_not_apply_int
     assert traces[1]["reason"] == "reliable_step1_off"
 
 
+def test_direct_path_live_status_apply_invokes_plan_guard_without_intent_actions() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:013_schedule",
+            draft_text="По проверенным фактам курс есть.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "check_availability",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                    "requested_product": {"grade": "8", "subject": "математика", "format": "очно"},
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Есть ли сейчас свободные места?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            "conversation_intent_plan": {"primary_intent": "pricing", "topic_id": "theme:013_schedule"},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "live_status_read"
+    assert trace["status"] == "applied"
+    assert trace["decision"] == "frame_check_availability"
+
+
 def test_direct_path_reask_read_traces_known_slot_reask_without_changing_text() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

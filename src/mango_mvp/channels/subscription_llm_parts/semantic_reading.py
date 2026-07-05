@@ -30,6 +30,7 @@ ALLOWED_SEMANTIC_READING_CLASSES = frozenset(
 ALLOWED_READING_APPLY_CLASSES = frozenset(
     {
         "route_templates/autonomy_matrix",
+        "live_status_read/conversation_intent_plan",
     }
 )
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})

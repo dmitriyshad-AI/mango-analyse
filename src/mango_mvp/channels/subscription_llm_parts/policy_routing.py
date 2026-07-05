@@ -3496,6 +3496,13 @@ def _live_status_read_transition_trace(
     stage: str,
     trace_only: bool = False,
 ) -> SubscriptionDraftResult:
+    if not trace_only and reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan"):
+        return _live_status_read_transition_apply(
+            original,
+            legacy_result,
+            context=context,
+            stage=stage,
+        )
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
     plan = _conversation_intent_plan(context)
@@ -3540,6 +3547,168 @@ def _live_status_read_transition_trace(
     )
     target = original if trace_only else legacy_result
     return replace(target, metadata=append_reading_trace_record(target.metadata, record))
+
+
+def _live_status_frame_apply_fail_reason(reading: Optional[SemanticReading], frame: Mapping[str, Any]) -> str:
+    if reading is None or not frame:
+        return "no_frame"
+    if reading.source != "inline":
+        return "source_not_inline"
+    if reading.frame_confidence < 0.90:
+        return "low_confidence"
+    risk_class = str(frame.get("risk_class") or "").strip().casefold()
+    if risk_class in {
+        "p0",
+        "high_risk",
+        "payment_dispute",
+        "refund_claim",
+        "refund",
+        "legal",
+        "legal_threat",
+        "complaint",
+        "money_dispute",
+    }:
+        return "risk_class_floor"
+    if reading.requested_action not in {"check_availability", "enroll", "send_document"}:
+        return "requested_action_not_live_status_relevant"
+    return ""
+
+
+def _live_status_hard_floor_reason(result: SubscriptionDraftResult) -> str:
+    if result.route in {"blocked", "manager_only"}:
+        return "hard_route_floor"
+    if is_high_risk_result(result):
+        return "p0_or_high_risk_floor"
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_p0, Mapping):
+        direct_risk = str(direct_p0.get("risk_level") or "").strip().casefold()
+        direct_kind = str(direct_p0.get("p0_kind") or direct_p0.get("p0_kind_raw") or "").strip().casefold()
+        if bool(direct_p0.get("is_p0")) or direct_risk in {"high", "p0", "critical", "high_risk"}:
+            return "p0_or_high_risk_floor"
+        if direct_kind in {"refund", "payment_dispute", "complaint", "legal_threat", "contract_dispute", "cancellation_service_request"}:
+            return "p0_or_high_risk_floor"
+    flag_text = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    flags = {str(flag or "").strip() for flag in result.safety_flags}
+    if any(
+        marker in flag_text
+        for marker in ("p0", "payment_dispute", "refund", "complaint", "legal", "high_risk", "manager_only_p0", "funnel_p0")
+    ):
+        return "p0_or_high_risk_floor"
+    if _fix1b_has_paid_operation_context(result):
+        return "paid_operation_floor"
+    if flags & _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS:
+        return "brand_floor"
+    if any(flag.startswith("payment_confirmation_") or flag == "payment_source_conflict" for flag in flags):
+        return "payment_confirmation_floor"
+    return ""
+
+
+def _live_status_frame_guarded_result(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    topic_id: str = "",
+) -> SubscriptionDraftResult:
+    route = result.route
+    flags = list(result.safety_flags)
+    checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+    if route in AUTONOMOUS_ROUTES:
+        route = "draft_for_manager"
+        flags.append("conversation_intent_plan_live_check_handoff")
+        metadata["live_status_read_route_applied"] = "draft_for_manager"
+    flags.extend(("conversation_intent_plan_live_availability", "semantic_frame_live_status_read_live_availability"))
+    checklist.append(
+        "SemanticFrame: вопрос про наличие/бронь/место требует проверки менеджером; не обещать место до проверки."
+    )
+    metadata["live_status_read_frame_applied"] = True
+    return replace(
+        result,
+        topic_id=topic_id or result.topic_id,
+        route=route,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
+    )
+
+
+def _live_status_read_transition_apply(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    plan = _conversation_intent_plan(context)
+    frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
+    legacy_live_status = (
+        "conversation_intent_plan_live_availability" in legacy_result.safety_flags
+        or str(plan.get("primary_intent") or "").strip() == "live_availability"
+    )
+    fail_reason = (
+        _live_status_hard_floor_reason(original)
+        or _live_status_hard_floor_reason(legacy_result)
+        or _live_status_frame_apply_fail_reason(reading, frame)
+    )
+    if fail_reason:
+        chosen = legacy_result
+        status = "fail_closed"
+        decision = "legacy_more_conservative"
+        reason = fail_reason
+    elif frame_action == "check_availability":
+        chosen = legacy_result if legacy_live_status else _live_status_frame_guarded_result(
+            original,
+            context=context,
+            topic_id=str(legacy_result.topic_id or ""),
+        )
+        status = "applied"
+        decision = "frame_check_availability"
+        reason = "frame_live_availability"
+    else:
+        chosen = original
+        status = "applied"
+        decision = "frame_not_live_status"
+        reason = "frame_clears_legacy_live_status" if legacy_live_status else "frame_no_live_status"
+
+    product = {}
+    if isinstance(frame.get("requested_product"), Mapping):
+        raw_product = frame["requested_product"]  # type: ignore[index]
+        product = {
+            key: str(raw_product.get(key) or "")[:80]
+            for key in ("grade", "subject", "format")
+            if str(raw_product.get(key) or "").strip()
+        }
+    conflicts: tuple[str, ...] = ()
+    if frame_action == "check_availability" and not legacy_live_status:
+        conflicts = ("legacy_missing_live_status",)
+    elif legacy_live_status and frame_action in {"enroll", "send_document"}:
+        conflicts = ("legacy_false_live_status",)
+    record = semantic_reading_trace_record(
+        reading_class="live_status_read",
+        enabled=True,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=_route_templates_changed_fields(original, chosen),
+        conflicts=conflicts,
+        metadata={
+            "stage": stage,
+            "apply_enabled": True,
+            "legacy_route": legacy_result.route,
+            "original_route": original.route,
+            "chosen_route": chosen.route,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "frame_requested_action": frame_action,
+            "frame_requested_product": product,
+            "legacy_live_status": legacy_live_status,
+        },
+    )
+    return replace(chosen, metadata=append_reading_trace_record(chosen.metadata, record))
 
 
 def _route_templates_transition_trace(
@@ -3987,8 +4156,9 @@ def _apply_intent_actions_transition_guard(
 ) -> SubscriptionDraftResult:
     frame = _intent_actions_frame(original)
     legacy_active = _intent_actions_legacy_active_for_existing_pipeline(original, context)
-    base_result = legacy_result if legacy_active else original
-    base_name = "legacy" if legacy_active else "original"
+    previous_apply_active = reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan")
+    base_result = legacy_result if legacy_active or previous_apply_active else original
+    base_name = "legacy" if legacy_active else ("previous_apply" if previous_apply_active else "original")
     fail_reason = _intent_actions_frame_fail_reason(frame)
     if fail_reason:
         return _intent_actions_trace(

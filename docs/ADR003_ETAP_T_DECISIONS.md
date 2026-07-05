@@ -129,3 +129,27 @@
 Решение: не удалять legacy live-availability ветку `conversation_intent_plan` на основании пары `adr003_srez1a_pair_72c84090_20260704_ready`. Сначала нужно переснять pair после исправления runner: B = чистый профиль, ON = профиль + `TARGET_READING_CLASS=intent_actions`. `intent_actions` пока не добавляется в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а профильное включение/deletion остаются отдельным решением после свежего регрейда.
 
 Обоснование: старая B-нога явно задавала `TELEGRAM_SEMANTIC_READING_CLASSES=` и тем самым глушила профильные default-классы `sense_seats,slots_gsf,off_topic`. Такая пара полезна для разведки, но не является достаточным доказательством безопасности deletion на боевом профиле. Удаление legacy ветки без профильного replacement может снять защитный `conversation_intent_plan_live_availability`, на который опираются live-status/Fix1b/autonomy полы.
+
+## D-022. Apply-класс задаётся точкой, а не широким reading-классом
+
+Решение: добавить отдельный env `TELEGRAM_READING_APPLY_CLASSES` с allowlist точек применения, сейчас только `route_templates/autonomy_matrix`. Значение `route_templates` в `TELEGRAM_SEMANTIC_READING_CLASSES` включает trace/read-класс, но не включает apply. Apply срабатывает только при одновременном `TELEGRAM_SEMANTIC_READING_CLASSES=route_templates` и `TELEGRAM_READING_APPLY_CLASSES=route_templates/autonomy_matrix`.
+
+Обоснование: широкий apply по имени `route_templates` случайно включил бы все будущие route-template точки одним флагом и сделал бы замеры неатрибутируемыми. Точечный stage-key позволяет резать «лазанью» по одному живому месту и сохраняет дисциплину default-OFF.
+
+## D-023. `route_templates/autonomy_matrix` применяет frame только как узкий safe-bypass
+
+Решение: apply-ветка `route_templates/autonomy_matrix` может вернуть исходный безопасный ответ вместо legacy-demote только когда inline SemanticFrame имеет `confidence>=0.90`, `requested_action=answer_question`, `answerability=answer_self`, `must_handoff=false`, `risk_class=safe`; при любом P0/high-risk/manager_only/blocked/live-availability floor, отсутствии frame, posthoc source, низкой confidence или замене текста выбирается legacy. Direct-path вызывает `apply_conversation_intent_plan_guard` для этой точки даже без `intent_model_led`.
+
+Обоснование: это первый apply-механизм после trace, поэтому он должен быть fail-closed и не иметь права снимать полы безопасности. Цель — измерить точечное снятие ложного route-template понижения, а не переписать routing целиком.
+
+## D-024. Ж2 строится как trace-only на реально живых live-status точках
+
+Решение: добавить класс `live_status_read` в allowlist reading-классов, но не в профиль. Сам по себе `live_status_read` не вызывает `conversation_intent_plan` guard, потому что этот guard меняет route; trace рядом с `conversation_intent_plan` пишется только если guard уже вызван другой активной причиной (`intent_model_led`/`intent_actions`/apply stage). Дополнительно trace пишется в `reliable_answerer` output guard: legacy-решение, frame `requested_action`, нормализованные grade/subject/format, фасеты и availability-promise status. `requested_product.raw_text` и сырой клиентский текст в trace не пишутся.
+
+Обоснование: Ж2 должен сначала доказать исполняемость и agreement на живом direct-path. Писать trace в dead monolith или в `build_answer_coverage_plan` нельзя: первое не влияет на бота, второе раздует trace и смешает prompt-time вычисления с output-guard решением. Удаление стема «мест» и apply для Ж2 остаются после agreement-регрейда.
+
+## D-025. Ж3/Ж4 сейчас закрываются sentinel-гейтами, без нового поведения
+
+Решение: для Ж3 усилить тест, что hidden `semantic_reading_slots` не становятся `known_slots`/`client_confirmed_slots` и не попадают в direct-path prompt как подтверждённые значения. Для Ж4 усилить тесты: «сколько можно вернуть по налоговому вычету» остаётся tax/non-refund, а «уже оплатил, хочу вернуть оплату» даже с упоминанием налогового вычета остаётся `refund_frame=dispute` и `manager_only`.
+
+Обоснование: Ж3 и Ж4 имеют высокую цену ошибки: слоты могут превратиться в ложные клиентские подтверждения, а деньги — в P0-пропуск. До отдельной trace-пары и per-class регрейда здесь нельзя включать apply или менять runtime-поведение; быстрый безопасный шаг — закрепить границы автоматическими sentinel-тестами.

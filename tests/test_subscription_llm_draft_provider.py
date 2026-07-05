@@ -143,7 +143,7 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
     build_direct_path_semantic_frame_posthoc_prompt,
 )
-from mango_mvp.channels.subscription_llm_parts.semantic_reading import SEMANTIC_READING_CLASSES_ENV
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import READING_APPLY_CLASSES_ENV, SEMANTIC_READING_CLASSES_ENV
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -11630,6 +11630,81 @@ def test_direct_path_intent_actions_runs_without_intent_model_led() -> None:
     trace = result.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "intent_actions"
     assert trace["decision"] == "frame_check_availability"
+
+
+def test_direct_path_route_templates_apply_runs_without_intent_model_led() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:013_schedule",
+            draft_text="Занятия проходят онлайн.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Это онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+            "conversation_intent_plan": {"primary_intent": "format", "topic_id": "theme:014_format"},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert provider.calls == 1
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "route_templates"
+    assert trace["metadata"]["stage"] == "autonomy_matrix"
+    assert trace["metadata"]["apply_enabled"] is True
+
+
+def test_direct_path_live_status_read_alone_is_trace_only_and_does_not_apply_intent_guard() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:013_schedule",
+            draft_text="Занятия проходят онлайн.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Есть места на смену 6-17 июля?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:026_camp_general"},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in result.safety_flags
+    traces = result.metadata["semantic_reading_trace"]
+    assert traces[0]["class"] == "live_status_read"
+    assert traces[0]["status"] == "suppressed"
+    assert traces[0]["reason"] == "reliable_step1_off"
 
 
 def test_tz137_slot_topic_shadow_default_off_does_not_call_runner() -> None:

@@ -51,6 +51,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     SemanticReading,
     append_reading_trace_record,
     off_topic_reading_decision,
+    reading_apply_class_enabled,
     reading_class_enabled,
     semantic_reading_trace_record,
     semantic_frame_from_metadata,
@@ -3440,6 +3441,13 @@ def apply_conversation_intent_plan_guard(
         client_message=client_message,
         context=context,
     )
+    if reading_class_enabled(context, "live_status_read"):
+        legacy_result = _live_status_read_transition_trace(
+            result,
+            legacy_result,
+            context=context,
+            stage="conversation_intent_plan",
+        )
     if reading_class_enabled(context, "route_templates"):
         legacy_result = _route_templates_transition_trace(
             result,
@@ -3458,6 +3466,58 @@ def apply_conversation_intent_plan_guard(
     )
 
 
+def _live_status_read_transition_trace(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    plan = _conversation_intent_plan(context)
+    legacy_live_status = (
+        "conversation_intent_plan_live_availability" in legacy_result.safety_flags
+        or str(plan.get("primary_intent") or "").strip() == "live_availability"
+    )
+    frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
+    frame_product = {}
+    if isinstance(frame.get("requested_product"), Mapping):
+        product = frame["requested_product"]  # type: ignore[index]
+        frame_product = {
+            key: str(product.get(key) or "")[:80]
+            for key in ("grade", "subject", "format")
+            if str(product.get(key) or "").strip()
+        }
+    changed_fields = _route_templates_changed_fields(original, legacy_result)
+    decision = "legacy_live_status" if legacy_live_status else "legacy_not_live_status"
+    conflicts: tuple[str, ...] = ()
+    if legacy_live_status and frame_action not in {"check_availability", "enroll", "handoff_manager"}:
+        conflicts = ("frame_requested_action",)
+    elif not legacy_live_status and frame_action == "check_availability":
+        conflicts = ("legacy_missing_live_status",)
+    record = semantic_reading_trace_record(
+        reading_class="live_status_read",
+        enabled=True,
+        status="shadow_only",
+        decision=decision,
+        reason="conversation_intent_plan_live_status_shadow",
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=changed_fields,
+        conflicts=conflicts,
+        metadata={
+            "stage": stage,
+            "legacy_route": legacy_result.route,
+            "original_route": original.route,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "frame_requested_action": frame_action,
+            "frame_requested_product": frame_product,
+        },
+    )
+    return replace(legacy_result, metadata=append_reading_trace_record(legacy_result.metadata, record))
+
+
 def _route_templates_transition_trace(
     original: SubscriptionDraftResult,
     legacy_result: SubscriptionDraftResult,
@@ -3466,6 +3526,14 @@ def _route_templates_transition_trace(
     stage: str,
     reason: str,
 ) -> SubscriptionDraftResult:
+    if reading_apply_class_enabled(context, "route_templates/autonomy_matrix"):
+        return _route_templates_transition_apply(
+            original,
+            legacy_result,
+            context=context,
+            stage=stage,
+            reason=reason,
+        )
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
     changed_fields: list[str] = []
@@ -3503,6 +3571,128 @@ def _route_templates_transition_trace(
         ),
     )
     return replace(legacy_result, metadata=append_reading_trace_record(legacy_result.metadata, record))
+
+
+def _route_templates_transition_apply(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    reason: str,
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    changed_fields = _route_templates_changed_fields(original, legacy_result)
+    fail_reason = _route_templates_frame_apply_fail_reason(frame)
+    chosen = legacy_result
+    chosen_name = "legacy_more_conservative"
+    status = "fail_closed" if fail_reason else "shadow_only"
+    trace_reason = fail_reason or reason
+    trace_changed_fields: Sequence[str] = changed_fields
+
+    if not fail_reason:
+        floor_reason = _route_templates_legacy_floor_reason(original, legacy_result)
+        if floor_reason:
+            status = "fail_closed"
+            trace_reason = floor_reason
+        elif not changed_fields:
+            status = "shadow_only"
+            trace_reason = reason
+        elif legacy_result.draft_text != original.draft_text:
+            status = "fail_closed"
+            trace_reason = "legacy_text_replacement"
+        else:
+            chosen = original
+            chosen_name = "frame_safe_original"
+            status = "applied"
+            trace_reason = reason
+
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status=status,
+        decision=chosen_name,
+        reason=trace_reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=trace_changed_fields,
+        conflicts=("legacy_route",) if legacy_result.route != original.route else (),
+        metadata=semantic_reading_transition_metadata(
+            stage=stage,
+            draft_before=original.draft_text,
+            draft_after=chosen.draft_text,
+            text_replacement=chosen.draft_text != original.draft_text,
+            legacy_decision=legacy_result.route,
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen=chosen_name,
+            extra={
+                "apply_enabled": True,
+                "legacy_route": legacy_result.route,
+                "original_route": original.route,
+                "primary_intent": reading.primary_intent if reading is not None else "",
+                "answerability": str(frame.get("answerability") or ""),
+                "must_handoff": _intent_actions_frame_bool(frame.get("must_handoff")) if frame else None,
+                "risk_class": str(frame.get("risk_class") or ""),
+            },
+        ),
+    )
+    return replace(chosen, metadata=append_reading_trace_record(chosen.metadata, record))
+
+
+def _route_templates_changed_fields(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+) -> list[str]:
+    changed_fields: list[str] = []
+    if legacy_result.route != original.route:
+        changed_fields.append("route")
+    if legacy_result.draft_text != original.draft_text:
+        changed_fields.append("draft_text")
+    if legacy_result.safety_flags != original.safety_flags:
+        changed_fields.append("safety_flags")
+    if legacy_result.manager_checklist != original.manager_checklist:
+        changed_fields.append("manager_checklist")
+    return changed_fields
+
+
+def _route_templates_frame_apply_fail_reason(frame: Mapping[str, Any]) -> str:
+    if not frame:
+        return "no_frame"
+    if str(frame.get("source") or "").strip().casefold() != "inline":
+        return "source_not_inline"
+    try:
+        confidence = float(frame.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.90:
+        return "low_confidence"
+    if str(frame.get("requested_action") or "").strip() != "answer_question":
+        return "requested_action_not_answer_question"
+    if str(frame.get("answerability") or "").strip() != "answer_self":
+        return "answerability_not_answer_self"
+    if _intent_actions_frame_bool(frame.get("must_handoff")) is not False:
+        return "must_handoff_not_false"
+    if str(frame.get("risk_class") or "").strip() != "safe":
+        return "risk_class_not_safe"
+    return ""
+
+
+def _route_templates_legacy_floor_reason(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+) -> str:
+    if legacy_result.route in {"blocked", "manager_only"} or original.route in {"blocked", "manager_only"}:
+        return "hard_route_floor"
+    flag_text = " ".join(str(flag or "") for flag in (*original.safety_flags, *legacy_result.safety_flags)).casefold()
+    if any(
+        marker in flag_text
+        for marker in ("p0", "payment_dispute", "refund", "complaint", "legal", "high_risk", "manager_only_p0", "funnel_p0")
+    ):
+        return "p0_or_high_risk_floor"
+    if "conversation_intent_plan_live_availability" in legacy_result.safety_flags:
+        return "live_availability_floor"
+    return ""
 
 
 def _apply_conversation_intent_plan_legacy_guard(

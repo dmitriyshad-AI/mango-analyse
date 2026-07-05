@@ -5,6 +5,7 @@ from mango_mvp.channels.answer_quality_rewriter import apply_answer_quality_rewr
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
     _conversation_intent_plan_with_model_led,
+    _route_templates_transition_trace,
     apply_conversation_intent_plan_guard,
     apply_dialogue_contract_v2_template_dispatcher,
     apply_known_context_redundant_question_guard,
@@ -17,6 +18,7 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     apply_reliable_answerer_output_guard,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    READING_APPLY_CLASSES_ENV,
     SEMANTIC_READING_CLASSES_ENV,
     append_reading_trace_record,
     semantic_reading_trace_record,
@@ -228,6 +230,48 @@ def test_intent_actions_explicit_inline_check_availability_preserves_live_availa
     assert trace["status"] == "applied"
 
 
+def test_live_status_read_records_conversation_plan_shadow_without_behavior_change() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        draft_text="Стоимость смены зависит от программы.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "requested_product": {
+                    "grade": "8 класс",
+                    "subject": "физика",
+                    "format": "очно",
+                    "raw_text": "8 класс, физика, ФИО Иванов",
+                },
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.95,
+            }
+        },
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть места на смену 6-17 июля?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:026_camp_general"},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "live_status_read"
+    assert trace["status"] == "shadow_only"
+    assert trace["metadata"]["stage"] == "conversation_intent_plan"
+    assert trace["metadata"]["frame_requested_product"] == {"grade": "8 класс", "subject": "физика", "format": "очно"}
+    assert "Иванов" not in str(trace)
+
+
 def test_route_templates_class_records_same_stage_legacy_shadow_without_profile_default() -> None:
     result = _semantic_result(primary_intent="schedule", sense="answer_question")
 
@@ -246,6 +290,85 @@ def test_route_templates_class_records_same_stage_legacy_shadow_without_profile_
     assert trace["class"] == "route_templates"
     assert trace["metadata"]["stage"] == "autonomy_matrix"
     assert trace["metadata"]["chosen"] == "legacy_more_conservative"
+
+
+def test_route_templates_apply_keeps_live_availability_floor_when_frame_is_safe() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        draft_text="Есть программа для 8 класса.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.96,
+            }
+        },
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть места на смену 6-17 июля?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:026_camp_general"},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "route_templates"
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "live_availability_floor"
+    assert trace["decision"] == "legacy_more_conservative"
+
+
+def test_route_templates_apply_can_restore_safe_original_without_text_replacement_or_floor() -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:013_schedule",
+        draft_text="Занятия проходят онлайн.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "risk_class": "safe",
+                "confidence": 0.95,
+            }
+        },
+    )
+    legacy = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:013_schedule",
+        draft_text=original.draft_text,
+        safety_flags=("manager_approval_required", "no_auto_send", "autonomy_default_cautious_topic_not_allowed"),
+        metadata=original.metadata,
+    )
+
+    guarded = _route_templates_transition_trace(
+        original,
+        legacy,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "route_templates",
+            READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix",
+        },
+        stage="autonomy_matrix",
+        reason="unit_safe_apply",
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == original.draft_text
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "applied"
+    assert trace["decision"] == "frame_safe_original"
+    assert trace["metadata"]["text_replacement"] is False
 
 
 def test_route_templates_trace_records_known_context_reask_guard() -> None:
@@ -275,6 +398,26 @@ def test_route_templates_trace_records_known_context_reask_guard() -> None:
     assert trace["class"] == "route_templates"
     assert trace["metadata"]["stage"] == "redundant_guard"
     assert "grade" in trace["metadata"]["repeated_fields"]
+
+
+def test_live_status_read_records_reliable_answerer_facets_and_keeps_floor() -> None:
+    result = apply_reliable_answerer_output_guard(
+        _semantic_result(),
+        client_message="Есть места на смену?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            RELIABLE_ANSWERER_STEP1_ENV: "1",
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "reliable_answerer_availability_promise_blocked" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "live_status_read"
+    assert trace["status"] == "applied"
+    assert trace["decision"] == "legacy_availability_promise_blocked"
+    assert trace["metadata"]["stage"] == "reliable_answerer_output_guard"
+    assert trace["metadata"]["availability_promise_detected"] is True
 
 
 def test_rewrite_quality_class_records_rewriter_shadow_without_route_change() -> None:

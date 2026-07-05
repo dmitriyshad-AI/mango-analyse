@@ -197,7 +197,11 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 )
 
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
-from mango_mvp.channels.subscription_llm_parts.semantic_reading import finalize_reading_trace_metadata, reading_class_enabled
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    finalize_reading_trace_metadata,
+    reading_apply_class_enabled,
+    reading_class_enabled,
+)
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_GOLD_REAL_PACK_ENV,
@@ -1209,9 +1213,10 @@ class SubscriptionLlmDraftProvider:
                 context=context,
                 client_message=client_message,
             )
-            if (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result)) or reading_class_enabled(
-                context,
-                "intent_actions",
+            if (
+                (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result))
+                or reading_class_enabled(context, "intent_actions")
+                or reading_apply_class_enabled(context, "route_templates/autonomy_matrix")
             ):
                 result = apply_conversation_intent_plan_guard(
                     result,

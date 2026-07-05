@@ -307,6 +307,7 @@ def apply_reliable_answerer_output_guard(
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     sense_trace_enabled = reading_class_enabled(context, "sense_seats")
+    live_status_trace_enabled = reading_class_enabled(context, "live_status_read")
 
     def with_sense_trace(
         current: SubscriptionDraftResult,
@@ -333,8 +334,61 @@ def apply_reliable_answerer_output_guard(
         )
         return replace(current, metadata=append_reading_trace_record(current.metadata, record))
 
+    def with_live_status_trace(
+        current: SubscriptionDraftResult,
+        *,
+        status: str,
+        reason: str,
+        decision: str,
+        reliable_trace: Optional[Mapping[str, Any]] = None,
+        changed_fields: Sequence[str] = (),
+        conflicts: Sequence[str] = (),
+    ) -> SubscriptionDraftResult:
+        if not live_status_trace_enabled:
+            return current
+        reading = SemanticReading.from_result(current, context=context)
+        trace_payload = dict(reliable_trace or {})
+        plan = trace_payload.get("answer_coverage_plan") if isinstance(trace_payload.get("answer_coverage_plan"), Mapping) else {}
+        record = semantic_reading_trace_record(
+            reading_class="live_status_read",
+            enabled=True,
+            status=status,
+            decision=decision,
+            reason=reason,
+            source=reading.source if reading is not None else "",
+            confidence=max(reading.intent_confidence, reading.frame_confidence) if reading is not None else 0.0,
+            changed_fields=changed_fields,
+            conflicts=conflicts,
+            metadata={
+                "stage": "reliable_answerer_output_guard",
+                "frame_requested_action": reading.requested_action if reading is not None else "",
+                "frame_requested_product": {
+                    "grade": reading.product_grade,
+                    "subject": reading.product_subject,
+                    "format": reading.product_format,
+                }
+                if reading is not None
+                else {},
+                "client_facets": list(plan.get("client_facets") or []),
+                "covered_facets_in_text": list(trace_payload.get("covered_facets_in_text") or []),
+                "missing_facets_acknowledged": list(trace_payload.get("missing_facets_acknowledged") or []),
+                "availability_promise_detected": bool(trace_payload.get("availability_promise_detected")),
+                "whole_handoff_detected": bool(trace_payload.get("whole_handoff_detected")),
+            },
+        )
+        return replace(current, metadata=append_reading_trace_record(current.metadata, record))
+
     if not reliable_answerer_step1_enabled(context):
-        return with_sense_trace(result, status="suppressed", reason="reliable_step1_off")
+        return with_sense_trace(
+            with_live_status_trace(
+                result,
+                status="suppressed",
+                reason="reliable_step1_off",
+                decision="reliable_step1_off",
+            ),
+            status="suppressed",
+            reason="reliable_step1_off",
+        )
     bypass_reason = reliable_answerer_step1_bypass_reason(
         client_message,
         context=context,
@@ -343,7 +397,12 @@ def apply_reliable_answerer_output_guard(
     )
     if bypass_reason:
         return with_sense_trace(
-            _strip_reliable_answerer_metadata(result, bypass_reason),
+            with_live_status_trace(
+                _strip_reliable_answerer_metadata(result, bypass_reason),
+                status="suppressed",
+                reason=f"reliable_bypass:{bypass_reason}",
+                decision="reliable_bypass",
+            ),
             status="suppressed",
             reason=f"reliable_bypass:{bypass_reason}",
         )
@@ -376,14 +435,27 @@ def apply_reliable_answerer_output_guard(
             metadata=metadata,
         )
         return with_sense_trace(
-            blocked,
+            with_live_status_trace(
+                blocked,
+                status="applied",
+                decision="legacy_availability_promise_blocked",
+                reason="availability_promise_blocked",
+                reliable_trace=trace,
+                changed_fields=("route", "draft_text", "safety_flags", "manager_checklist", "forbidden_promises_detected"),
+            ),
             status="applied",
             decision=sense_decision,
             reason="availability_promise_floor_kept" if sense_decision == "not_seats" else "availability_promise_blocked",
             changed_fields=("route", "draft_text", "safety_flags", "manager_checklist", "forbidden_promises_detected"),
         )
     return with_sense_trace(
-        current,
+        with_live_status_trace(
+            current,
+            status="no_op",
+            decision="legacy_no_availability_promise",
+            reason="availability_guard_not_triggered",
+            reliable_trace=trace,
+        ),
         status="no_op",
         decision=sense_decision,
         reason="availability_guard_not_triggered",

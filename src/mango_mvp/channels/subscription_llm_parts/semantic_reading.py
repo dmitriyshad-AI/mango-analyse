@@ -7,6 +7,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 
 SEMANTIC_READING_CLASSES_ENV = "TELEGRAM_SEMANTIC_READING_CLASSES"
+READING_APPLY_CLASSES_ENV = "TELEGRAM_READING_APPLY_CLASSES"
 PILOT_PROFILE_DEFAULT_READING_CLASSES = "sense_seats,slots_gsf,off_topic"
 SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
@@ -21,6 +22,14 @@ ALLOWED_SEMANTIC_READING_CLASSES = frozenset(
         "route_templates",
         "rewrite_quality",
         "post_semantics",
+        "live_status_read",
+        "reask_read",
+        "roles_read",
+    }
+)
+ALLOWED_READING_APPLY_CLASSES = frozenset(
+    {
+        "route_templates/autonomy_matrix",
     }
 )
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})
@@ -44,7 +53,10 @@ _FORMAT_ALIASES = {
 
 def _context_value(context: Optional[Mapping[str, Any]], key: str, default: Any = "") -> Any:
     if isinstance(context, Mapping):
-        for candidate in (key, key.lower(), "semantic_reading_classes"):
+        candidates = [key, key.lower()]
+        if key == SEMANTIC_READING_CLASSES_ENV:
+            candidates.append("semantic_reading_classes")
+        for candidate in candidates:
             if candidate in context:
                 return context.get(candidate)
     if key in os.environ:
@@ -78,6 +90,16 @@ def enabled_classes(context: Optional[Mapping[str, Any]] = None) -> frozenset[st
 
 def reading_class_enabled(context: Optional[Mapping[str, Any]], name: str) -> bool:
     return str(name or "").strip().casefold() in enabled_classes(context)
+
+
+def apply_classes(context: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
+    return _csv_values(_context_value(context, READING_APPLY_CLASSES_ENV, "")) & ALLOWED_READING_APPLY_CLASSES
+
+
+def reading_apply_class_enabled(context: Optional[Mapping[str, Any]], name: str) -> bool:
+    normalized = str(name or "").strip().casefold()
+    base_class = normalized.split("/", 1)[0]
+    return base_class in enabled_classes(context) and normalized in apply_classes(context)
 
 
 def _clamp01(value: Any) -> float:

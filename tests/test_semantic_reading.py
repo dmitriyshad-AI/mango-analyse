@@ -12,15 +12,18 @@ from mango_mvp.channels.dialogue_memory import (
     safe_next_action,
     update_dialogue_memory_after_answer,
 )
-from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_prompt_known_slots
+from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt, _direct_path_prompt_known_slots
 from mango_mvp.channels.subscription_llm_parts.support import DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    READING_APPLY_CLASSES_ENV,
     SEMANTIC_READING_CLASSES_ENV,
     SEMANTIC_READING_SLOT_SOURCE,
     SemanticReading,
+    apply_classes,
     enabled_classes,
     off_topic_reading_decision,
+    reading_apply_class_enabled,
     reading_class_enabled,
     sense_seats_reading_decision,
     slot_candidates_from_reading,
@@ -35,9 +38,24 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     assert enabled_classes({}) == frozenset()
     assert reading_class_enabled({}, "off_topic") is False
 
-    context = {SEMANTIC_READING_CLASSES_ENV: "off_topic,slots_gsf,intent_actions,route_templates,rewrite_quality,post_semantics,unknown"}
+    context = {
+        SEMANTIC_READING_CLASSES_ENV: (
+            "off_topic,slots_gsf,intent_actions,route_templates,rewrite_quality,post_semantics,"
+            "live_status_read,reask_read,roles_read,unknown"
+        )
+    }
     assert enabled_classes(context) == frozenset(
-        {"off_topic", "slots_gsf", "intent_actions", "route_templates", "rewrite_quality", "post_semantics"}
+        {
+            "off_topic",
+            "slots_gsf",
+            "intent_actions",
+            "route_templates",
+            "rewrite_quality",
+            "post_semantics",
+            "live_status_read",
+            "reask_read",
+            "roles_read",
+        }
     )
     assert reading_class_enabled(context, "off_topic") is True
     assert reading_class_enabled(context, "sense_seats") is False
@@ -45,6 +63,9 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     assert reading_class_enabled(context, "route_templates") is True
     assert reading_class_enabled(context, "rewrite_quality") is True
     assert reading_class_enabled(context, "post_semantics") is True
+    assert reading_class_enabled(context, "live_status_read") is True
+    assert reading_class_enabled(context, "reask_read") is True
+    assert reading_class_enabled(context, "roles_read") is True
 
 
 def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypatch) -> None:
@@ -57,6 +78,9 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     assert reading_class_enabled(None, "route_templates") is False
     assert reading_class_enabled(None, "rewrite_quality") is False
     assert reading_class_enabled(None, "post_semantics") is False
+    assert reading_class_enabled(None, "live_status_read") is False
+    assert reading_class_enabled(None, "reask_read") is False
+    assert reading_class_enabled(None, "roles_read") is False
 
     assert enabled_classes({SEMANTIC_READING_CLASSES_ENV: ""}) == frozenset()
     assert reading_class_enabled({SEMANTIC_READING_CLASSES_ENV: ""}, "slots_gsf") is False
@@ -64,6 +88,32 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     assert enabled_classes({}) == frozenset()
     monkeypatch.setenv(SEMANTIC_READING_CLASSES_ENV, "off_topic")
     assert enabled_classes({}) == frozenset({"off_topic"})
+
+
+def test_semantic_reading_apply_classes_are_default_off_and_require_enabled_class(monkeypatch) -> None:
+    monkeypatch.delenv(READING_APPLY_CLASSES_ENV, raising=False)
+    monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+
+    assert apply_classes({}) == frozenset()
+    assert reading_apply_class_enabled({}, "route_templates/autonomy_matrix") is False
+    assert (
+        reading_apply_class_enabled(
+            {READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix"},
+            "route_templates/autonomy_matrix",
+        )
+        is False
+    )
+    context = {
+        SEMANTIC_READING_CLASSES_ENV: "route_templates,live_status_read",
+        READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix,roles_read/refund_tax,unknown",
+    }
+
+    assert apply_classes(context) == frozenset({"route_templates/autonomy_matrix"})
+    assert reading_apply_class_enabled(context, "route_templates/autonomy_matrix") is True
+    assert reading_apply_class_enabled(context, "route_templates") is False
+    assert reading_apply_class_enabled(context, "live_status_read") is False
+    assert reading_apply_class_enabled(context, "roles_read/refund_tax") is False
 
 
 def test_semantic_reading_reads_inline_frame_without_exposing_p0_fields() -> None:
@@ -394,6 +444,35 @@ def test_slots_reask_reads_previous_hidden_slot_names_without_prompt_value_leak(
     assert followup.to_prompt_view()["known_slots"] == {}
     assert followup.to_prompt_view()["client_confirmed_slots"] == {}
     assert "#SENTINEL#" not in prompt_view_text
+
+
+def test_semantic_hidden_slots_do_not_enter_direct_path_prompt_as_confirmed_values(monkeypatch) -> None:
+    monkeypatch.setenv(SLOTS_REASK_ENV, "1")
+    previous = {
+        "session_id": "s1",
+        "active_brand": "foton",
+        "semantic_reading_slots": {
+            "grade": {"value": "9#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+            "subject": {"value": "физика#SENTINEL#", "source_name": SEMANTIC_READING_SLOT_SOURCE},
+        },
+    }
+    followup = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory=previous,
+    )
+
+    prompt = _build_direct_path_prompt(
+        "А сколько стоит?",
+        context={"active_brand": "foton", "dialogue_memory_view": followup.to_prompt_view()},
+        facts={},
+    )
+
+    assert "#SENTINEL#" not in prompt
+    assert "semantic_reading_slots" not in prompt
+    assert '"client_confirmed_slots": {}' in prompt
+    assert '"known_slots": {}' in prompt
+    assert "grade" not in _direct_path_prompt_known_slots({"dialogue_memory_view": followup.to_prompt_view()})
 
 
 def test_slots_reask_ignores_empty_hidden_values_and_never_leaks_sentinels(monkeypatch) -> None:

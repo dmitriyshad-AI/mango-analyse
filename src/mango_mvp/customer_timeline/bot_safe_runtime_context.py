@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
-from mango_mvp.customer_timeline.source_policy import MAIL_STAGE2_SOURCE_SYSTEM
+from mango_mvp.customer_timeline.source_policy import CHANNEL_HISTORY_SOURCE_SYSTEMS, MAIL_STAGE2_SOURCE_SYSTEM
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
@@ -21,6 +21,7 @@ CUSTOMER_MEMORY_FOR_PROMPT_SCHEMA_VERSION = "customer_memory_for_prompt_v1_2026_
 BOT_SAFE_TIMELINE_CONTEXT_SOURCE = "customer_timeline_bot_context"
 BOT_SAFE_CHUNK_TYPE = "bot_safe_summary"
 MAIL_STAGE2_CHUNK_TYPE = "email_message"
+CHANNEL_HISTORY_CHUNK_TYPE = "channel_message"
 DEFAULT_BOT_SAFE_TENANT_ID = "foton"
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
@@ -377,6 +378,24 @@ def _safe_item_for_brand(
             "allowed_for_bot": True,
             "requires_manager_review": False,
         }
+    if source_system in CHANNEL_HISTORY_SOURCE_SYSTEMS and chunk_type == CHANNEL_HISTORY_CHUNK_TYPE:
+        if not _channel_history_item_visible_for_active_brand(tags, source_system=source_system, active_brand=active_brand):
+            return {}
+        text = _sanitize_channel_history_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary")))
+        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
+            return {}
+        return {
+            "chunk_type": CHANNEL_HISTORY_CHUNK_TYPE,
+            "text": _truncate(text, 700),
+            "event_at": _clean_text(item.get("event_at")),
+            "next_step_status": _next_step_status(item),
+            "freshness_score": item.get("freshness_score"),
+            "relevance_tags": [
+                tag for tag in tags if tag in {"channel", "bot_visible", source_system, active_brand}
+            ],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }
     if chunk_type != BOT_SAFE_CHUNK_TYPE:
         return {}
     if not _item_visible_for_active_brand(tags, active_brand=active_brand):
@@ -423,6 +442,19 @@ def _mail_stage2_item_visible_for_active_brand(tags: Sequence[str], *, active_br
     if known_brand_tags != {active_brand}:
         return False
     return {"email", "bot_visible", MAIL_STAGE2_SOURCE_SYSTEM}.issubset(tag_set)
+
+
+def _channel_history_item_visible_for_active_brand(
+    tags: Sequence[str],
+    *,
+    source_system: str,
+    active_brand: str,
+) -> bool:
+    tag_set = set(tags)
+    known_brand_tags = tag_set & _KNOWN_BRANDS
+    if known_brand_tags != {active_brand}:
+        return False
+    return {"channel", "bot_visible", source_system}.issubset(tag_set)
 
 
 def _bot_context_items_from_context(context: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
@@ -508,6 +540,10 @@ def _sanitize_mail_stage2_text_for_bot(text: object) -> str:
     value = _mask_russian_person_names(value)
     value = value.replace("mailto:", "").replace("tel:", "")
     return _clean_text(value)
+
+
+def _sanitize_channel_history_text_for_bot(text: object) -> str:
+    return _sanitize_mail_stage2_text_for_bot(text)
 
 
 def _mask_russian_person_names(text: str) -> str:

@@ -28,6 +28,7 @@ class NightlyServiceStep:
     name: str
     kind: str
     enabled: bool = True
+    required: bool = True
     config: Optional[NightlyIncrementalConfig] = None
     reason: Optional[str] = None
 
@@ -73,35 +74,84 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
     }
     with service_lock(timeline_db, timeout_seconds=config.lock_timeout_seconds) as lock_info:
         report["lock"] = lock_info
+        failed_required_steps: list[str] = []
         for index, step in enumerate(config.steps, start=1):
             step_started = time.monotonic()
             if not step.enabled:
+                status = "failed_required_disabled" if step.required else "skipped_disabled"
+                if step.required:
+                    failed_required_steps.append(step.name)
                 report["steps"].append(
                     {
                         "index": index,
                         "name": step.name,
                         "kind": step.kind,
-                        "status": "skipped_disabled",
+                        "status": status,
+                        "required": step.required,
                         "reason": step.reason,
                         "duration_seconds": 0.0,
                     }
                 )
                 continue
             if step.kind != "nightly_incremental":
-                raise ValueError(f"unsupported nightly service step kind: {step.kind}")
+                reason = f"unsupported nightly service step kind: {step.kind}"
+                if step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    failed_step_report(
+                        index=index,
+                        step=step,
+                        reason=reason,
+                        duration_seconds=round(time.monotonic() - step_started, 3),
+                    )
+                )
+                continue
             if step.config is None:
-                raise ValueError(f"enabled step {step.name} requires config")
-            step_report = run_nightly_incremental(step.config)
+                reason = f"enabled step {step.name} requires config"
+                if step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    failed_step_report(
+                        index=index,
+                        step=step,
+                        reason=reason,
+                        duration_seconds=round(time.monotonic() - step_started, 3),
+                    )
+                )
+                continue
+            try:
+                step_report = run_nightly_incremental(step.config)
+            except Exception as exc:  # service-level fail-soft: report and keep manifest writing.
+                if step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    failed_step_report(
+                        index=index,
+                        step=step,
+                        reason=f"step_exception:{type(exc).__name__}",
+                        duration_seconds=round(time.monotonic() - step_started, 3),
+                        error=exc,
+                    )
+                )
+                continue
             step_path = run_dir / f"{index:02d}_{step.name}.json"
             write_json(step_path, step_report)
+            summary = summarize_report(step_report)
+            step_failed_required_sources = summary.get("failed_required_sources") or ()
+            step_gate_passed = bool(summary.get("gate_passed", True))
+            status = "ok" if step_gate_passed else "failed_required_source"
+            if not step_gate_passed and step.required:
+                failed_required_steps.append(step.name)
             report["steps"].append(
                 {
                     "index": index,
                     "name": step.name,
                     "kind": step.kind,
-                    "status": "ok",
+                    "status": status,
+                    "required": step.required,
                     "report_path": str(step_path),
-                    "summary": summarize_report(step_report),
+                    "summary": summary,
+                    "failed_required_sources": list(step_failed_required_sources),
                     "duration_seconds": round(time.monotonic() - step_started, 3),
                 }
             )
@@ -109,13 +159,20 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         manifest["run_id"] = run_id
         manifest["service_report_path"] = str(run_dir / "service_report.json")
         manifest["published_at"] = datetime.now(timezone.utc).isoformat()
+        failed_required_steps = list(dict.fromkeys(failed_required_steps))
+        report["failed_required_steps"] = failed_required_steps
+        report["partial_failure"] = bool(failed_required_steps)
+        report["overall_status"] = "partial" if failed_required_steps else "ok"
         manifest_path = publish_dir / f"customer_timeline_snapshot_{run_id}.json"
         write_json(manifest_path, manifest)
         latest_path = publish_dir / "latest_customer_timeline_snapshot.json"
-        shutil.copyfile(manifest_path, latest_path)
+        latest_published = not failed_required_steps
+        if latest_published:
+            shutil.copyfile(manifest_path, latest_path)
         report["snapshot_manifest"] = {
             "path": str(manifest_path),
-            "latest_path": str(latest_path),
+            "latest_path": str(latest_path) if latest_published else None,
+            "latest_published": latest_published,
             "sha256": manifest["files"]["sqlite"]["sha256"],
             "counts": manifest["counts"],
         }
@@ -177,6 +234,7 @@ def service_step_from_json(
     if not name or not kind:
         raise ValueError("nightly service step requires name and kind")
     enabled = bool(payload.get("enabled", True))
+    required = bool(payload.get("required", True))
     reason = str(payload.get("reason")) if payload.get("reason") else None
     config = None
     if kind == "nightly_incremental":
@@ -198,7 +256,7 @@ def service_step_from_json(
         )
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
-    return NightlyServiceStep(name=name, kind=kind, enabled=enabled, config=config, reason=reason)
+    return NightlyServiceStep(name=name, kind=kind, enabled=enabled, required=required, config=config, reason=reason)
 
 
 def source_from_json(payload: Any, *, tenant_id: str) -> IncrementalSourceConfig:
@@ -211,7 +269,30 @@ def source_from_json(payload: Any, *, tenant_id: str) -> IncrementalSourceConfig
         tenant_id=str(payload.get("tenant_id") or tenant_id),
         source_ref=str(payload["source_ref"]) if payload.get("source_ref") else None,
         normalizer=str(payload.get("normalizer") or "jsonl"),
+        required=bool(payload.get("required", True)),
     )
+
+
+def failed_step_report(
+    *,
+    index: int,
+    step: NightlyServiceStep,
+    reason: str,
+    duration_seconds: float,
+    error: Exception | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "index": index,
+        "name": step.name,
+        "kind": step.kind,
+        "status": "failed" if step.required else "skipped_optional_failed",
+        "required": step.required,
+        "reason": reason,
+        "duration_seconds": duration_seconds,
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+    return payload
 
 
 def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, Path, Path]:

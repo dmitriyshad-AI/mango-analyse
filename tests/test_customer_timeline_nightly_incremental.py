@@ -141,13 +141,71 @@ def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failu
     first = run_nightly_incremental(config)
     second = run_nightly_incremental(config)
 
-    assert first["source_errors"] == [{"source": "amo_updates", "reason": "source_unavailable"}]
-    assert second["source_errors"] == [{"source": "amo_updates", "reason": "source_unavailable"}]
+    expected_error = {
+        "source": "amo_updates",
+        "source_system": "amocrm_snapshot",
+        "required": True,
+        "reason": "source_unavailable",
+    }
+    assert first["source_errors"] == [expected_error]
+    assert second["source_errors"] == [expected_error]
     with CustomerTimelineSQLiteStore.open_read_only(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path) as store:
         cursor = store.get_ingestion_cursor("foton", "amocrm_snapshot")
     assert cursor is not None
     assert cursor.metadata["consecutive_failures"] == 2
     assert cursor.metadata["alert"] is True
+
+
+def test_nightly_incremental_fail_soft_keeps_other_sources_running(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    bad_path = tmp_path / "bad.jsonl"
+    good_path = tmp_path / "good.jsonl"
+    bad_path.write_text("{not-json}\n", encoding="utf-8")
+    write_jsonl(
+        good_path,
+        [
+            {
+                "source_id": "good-event-1",
+                "customer_id": "customer:test-1",
+                "event_type": "system_note",
+                "event_at": "2026-06-21T10:00:00+00:00",
+                "updated_at": "2026-06-21T10:00:00+00:00",
+                "direction": "system",
+                "summary": "Второй источник должен импортироваться.",
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="bad_json",
+                source_system="bad_json_source",
+                path=bad_path,
+                source_ref="test:bad-json",
+            ),
+            IncrementalSourceConfig(
+                name="good_json",
+                source_system="good_json_source",
+                path=good_path,
+                source_ref="test:good-json",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+        lock_timeout_seconds=2,
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["overall_status"] == "partial"
+    assert report["failed_required_sources"] == ["bad_json"]
+    assert report["source_errors"][0]["reason"] == "source_exception:JSONDecodeError"
+    assert report["sources"][0]["status"] == "failed"
+    assert report["sources"][1]["status"] == "ok"
+    assert report["changed_customer_ids"] == ["customer:test-1"]
+    assert event_count(tmp_path) == 1
 
 
 def test_single_run_lock_waits_for_existing_holder(tmp_path: Path) -> None:
@@ -180,4 +238,3 @@ def test_single_run_lock_waits_for_existing_holder(tmp_path: Path) -> None:
 
     assert time.monotonic() - started >= 0.1
     assert result["waited"] > 0
-

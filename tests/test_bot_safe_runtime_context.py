@@ -23,6 +23,8 @@ from mango_mvp.customer_timeline.contracts import (
     IdentityStatus,
 )
 from mango_mvp.customer_timeline.source_policy import (
+    CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
+    CHANNEL_HISTORY_BOT_VISIBLE_ENV,
     MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     MAIL_STAGE2_BOT_VISIBLE_ENV,
 )
@@ -221,6 +223,80 @@ def test_bot_safe_crm_context_blocks_e4b_mail_foreign_brand(tmp_path: Path, monk
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "УНПК: клиент просил программу" not in raw
+
+
+def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="channel_message",
+                text="Фотон: клиент в Telegram уточнял, можно ли продолжить обучение в онлайн-формате.",
+                source_system="telegram_history",
+                source_ref="telegram:test",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("channel", "bot_visible", "telegram_history", "foton"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "клиент в Telegram уточнял" in raw
+    assert "telegram_history" in raw
+
+
+def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="channel_message",
+                text=(
+                    "Фотон: клиент написал телефон 8 (800) 550 25 88, "
+                    "почту synthetic@example.invalid и ссылку https://pay.example.invalid."
+                ),
+                source_system="telegram_history",
+                source_ref="telegram:pii",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("channel", "bot_visible", "telegram_history", "foton"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "8 (800) 550 25 88" not in raw
+    assert "synthetic@example.invalid" not in raw
+    assert "https://pay.example.invalid" not in raw
+    assert "[контактные данные у менеджера]" in raw
+    assert "[ссылка скрыта]" in raw
 
 
 def test_customer_memory_for_prompt_shadow_uses_only_safe_context_and_scrubs() -> None:

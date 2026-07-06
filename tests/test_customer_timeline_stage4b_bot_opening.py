@@ -60,7 +60,7 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert first["plan"]["candidate_chunks"] == 1
     assert first["apply"]["chunks_updated"] == 1
     assert first["after"]["mail_stage2_chunks_bot_visible"] == 1
-    assert first["final_checks"]["mail_stage2_review_violations_after"] == 0
+    assert first["final_checks"]["candidate_review_violations_after"] == 0
     assert second["plan"]["already_open"] == 1
     assert second["apply"]["chunks_updated"] == 0
 
@@ -87,6 +87,183 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert rows[empty_event.event_id]["requires_manager_review"] == 1
     assert rows[hidden_event.event_id]["allowed_for_bot"] == 0
     assert rows[hidden_event.event_id]["requires_manager_review"] == 1
+
+
+def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        clean_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:channel-clean",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        conflict_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:channel-conflict",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        wappi_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:wappi-clean",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        for customer in (clean_customer, conflict_customer, wappi_customer):
+            store.upsert_customer(customer)
+
+        telegram_event = _channel_event(
+            clean_customer,
+            "telegram_history",
+            "telegram-open",
+            match_status="strong_unique",
+            text="Фотон. Клиент спрашивает, когда следующее занятие.",
+        )
+        conflict_event = _channel_event(
+            conflict_customer,
+            "telegram_history",
+            "telegram-conflict",
+            match_status="strong_unique",
+            text="Фотон. Этот клиент с открытым конфликтом.",
+        )
+        wappi_event = _channel_event(
+            wappi_customer,
+            "wappi_max",
+            "wappi-open",
+            match_status="manual",
+            text="Фотон. Клиент уточнил адрес занятия.",
+        )
+        pending_event = _channel_event(
+            clean_customer,
+            "telegram_history",
+            "telegram-pending",
+            match_status="ambiguous",
+            text="Фотон. Неоднозначный telegram не должен открыться.",
+        )
+        for event in (telegram_event, conflict_event, wappi_event, pending_event):
+            store.upsert_event(event)
+            store.upsert_bot_context_chunk(_channel_chunk(event, text=event.summary or ""))
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=(conflict_customer.customer_id,),
+            status="open",
+        )
+
+    config = Stage4BBotOpeningConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        out_dir=tmp_path / "out",
+        apply=True,
+        allow_test_paths=True,
+    )
+    report = run_stage4b_bot_opening(config)
+
+    assert report["plan"]["source_system_counts"] == {"telegram_history": 1, "wappi_max": 1}
+    assert report["apply"]["chunks_updated"] == 2
+    assert report["plan"]["skipped"]["channel_events_not_openable_identity"] == 2
+    assert report["final_checks"]["opened_disallowed_identity_after"] == 0
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = {
+            row["event_id"]: row
+            for row in con.execute(
+                "SELECT event_id, allowed_for_bot, requires_manager_review, record_json FROM bot_context_chunks"
+            )
+        }
+    assert rows[telegram_event.event_id]["allowed_for_bot"] == 1
+    assert rows[telegram_event.event_id]["requires_manager_review"] == 0
+    telegram_payload = json.loads(rows[telegram_event.event_id]["record_json"])
+    assert {"channel", "telegram_history", "bot_visible", "foton"}.issubset(set(telegram_payload["relevance_tags"]))
+    assert rows[wappi_event.event_id]["allowed_for_bot"] == 1
+    assert rows[wappi_event.event_id]["requires_manager_review"] == 0
+    assert rows[conflict_event.event_id]["allowed_for_bot"] == 0
+    assert rows[conflict_event.event_id]["requires_manager_review"] == 1
+    assert rows[pending_event.event_id]["allowed_for_bot"] == 0
+    assert rows[pending_event.event_id]["requires_manager_review"] == 1
+
+
+def test_stage4b_retracts_previously_opened_non_strong_or_conflicted_chunks(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        partial_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="partial",
+            customer_id="customer:partial-rich",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        conflicted_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:conflicted-rich",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        other_tenant_customer = CustomerIdentity(
+            tenant_id="unpk",
+            identity_status="partial",
+            customer_id="customer:other-tenant-rich",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        store.upsert_customer(partial_customer)
+        store.upsert_customer(conflicted_customer)
+        store.upsert_customer(other_tenant_customer)
+        partial_event = _mail_event(partial_customer, "partial-rich", "Фотон. Partial identity уже ошибочно открыт.")
+        conflict_event = _mail_event(conflicted_customer, "conflicted-rich", "Фотон. Conflict ref уже ошибочно открыт.")
+        other_tenant_event = _mail_event(other_tenant_customer, "other-tenant-rich", "УНПК. Соседний tenant не трогать.")
+        store.upsert_event(partial_event)
+        store.upsert_event(conflict_event)
+        store.upsert_event(other_tenant_event)
+        store.upsert_bot_context_chunk(_mail_chunk(partial_event, text=partial_event.summary or ""))
+        store.upsert_bot_context_chunk(_mail_chunk(conflict_event, text=conflict_event.summary or ""))
+        store.upsert_bot_context_chunk(_mail_chunk(other_tenant_event, text=other_tenant_event.summary or ""))
+        store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=("phone_hash:test", "customer:customer:conflicted-rich"),
+            status="open",
+        )
+        store._con.execute(  # noqa: SLF001 - simulate a previous bad opening that must be retracted.
+            """
+            UPDATE bot_context_chunks
+            SET allowed_for_bot = 1,
+                requires_manager_review = 0,
+                record_json = json_set(record_json, '$.metadata.e4b_bot_opening.opened', true)
+            WHERE event_id IN (?, ?, ?)
+            """,
+            (partial_event.event_id, conflict_event.event_id, other_tenant_event.event_id),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    config = Stage4BBotOpeningConfig(
+        timeline_db_path=db_path,
+        allowed_root=tmp_path,
+        out_dir=tmp_path / "out",
+        apply=True,
+        allow_test_paths=True,
+    )
+    report = run_stage4b_bot_opening(config)
+
+    assert report["plan"]["candidate_chunks"] == 0
+    assert report["apply"]["chunks_retracted_not_openable"] == 2
+    assert report["final_checks"]["opened_disallowed_identity_after"] == 0
+    with sqlite3.connect(db_path) as con:
+        rows = {
+            row[0]: row
+            for row in con.execute(
+                "SELECT event_id, tenant_id, allowed_for_bot, requires_manager_review FROM bot_context_chunks"
+            )
+        }
+        assert rows[partial_event.event_id][2:] == (0, 1)
+        assert rows[conflict_event.event_id][2:] == (0, 1)
+        assert rows[other_tenant_event.event_id][1:] == ("unpk", 1, 0)
 
 
 def test_stage4b_refuses_non_staging_path_without_test_override(tmp_path: Path) -> None:
@@ -129,7 +306,7 @@ def test_stage4b_refuses_nested_fake_staging_path(tmp_path: Path) -> None:
 
 def _mail_event(customer: CustomerIdentity, suffix: str, summary: str) -> TimelineEvent:
     return TimelineEvent(
-        tenant_id="foton",
+        tenant_id=customer.tenant_id,
         customer_id=customer.customer_id,
         event_type="email_message",
         event_at=NOW,
@@ -152,6 +329,48 @@ def _mail_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
         source_ref=event.source_ref,
         source_system=event.source_system,
         chunk_type="email_message",
+        text=text,
+        summary=event.summary or "",
+        event_at=event.event_at,
+        allowed_for_bot=False,
+        requires_manager_review=True,
+        created_at=event.created_at,
+    )
+
+
+def _channel_event(
+    customer: CustomerIdentity,
+    source_system: str,
+    suffix: str,
+    *,
+    match_status: str,
+    text: str,
+) -> TimelineEvent:
+    event_type = "max_message" if source_system == "wappi_max" else "telegram_message"
+    return TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=event_type,
+        event_at=NOW,
+        source_system=source_system,
+        source_id=f"{suffix:0<64}"[:64],
+        direction="inbound",
+        summary=text,
+        text_preview=text,
+        match_status=match_status,
+        created_at=NOW,
+        record={"message_id": suffix},
+    )
+
+
+def _channel_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
+    return BotContextChunk(
+        tenant_id=event.tenant_id,
+        customer_id=event.customer_id or "",
+        event_id=event.event_id,
+        source_ref=event.source_ref,
+        source_system=event.source_system,
+        chunk_type="channel_message",
         text=text,
         summary=event.summary or "",
         event_at=event.event_at,

@@ -220,7 +220,7 @@ def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None
     assert chunk_row == (0, 1)
 
 
-def test_nightly_service_rejects_mango_processed_summary_allowed_for_bot_true(tmp_path: Path) -> None:
+def test_nightly_service_fail_closes_mango_processed_summary_allowed_for_bot_true(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
     source_path = tmp_path / "mango_calls_unsafe.jsonl"
@@ -252,8 +252,42 @@ def test_nightly_service_rejects_mango_processed_summary_allowed_for_bot_true(tm
     config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     config = service_config_from_json(config_path)
 
-    with pytest.raises(ValueError, match="allowed_for_bot=False"):
-        run_nightly_service(config)
+    report = run_nightly_service(config)
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed_required_source"
+    assert report["steps"][0]["summary"]["failed_required_sources"] == ["mango_calls"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+    assert not (tmp_path / "published" / "latest_customer_timeline_snapshot.json").exists()
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+
+
+def test_nightly_service_optional_source_failure_keeps_latest_publish(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_path = write_service_config(tmp_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["steps"][0]["config"]["sources"].append(
+        {
+            "name": "optional_missing",
+            "source_system": "optional_missing_source",
+            "path": str(tmp_path / "missing_optional.jsonl"),
+            "source_ref": "test:optional-missing",
+            "normalizer": "jsonl",
+            "required": False,
+        }
+    )
+    config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    config = service_config_from_json(config_path)
+
+    report = run_nightly_service(config)
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["source_statuses"] == {"ok": 1, "skipped": 1}
+    assert report["snapshot_manifest"]["latest_published"] is True
+    assert (tmp_path / "published" / "latest_customer_timeline_snapshot.json").exists()
 
 
 def test_nightly_service_records_disabled_step_without_running(tmp_path: Path) -> None:
@@ -262,7 +296,10 @@ def test_nightly_service_records_disabled_step_without_running(tmp_path: Path) -
 
     report = run_nightly_service(config)
 
-    assert report["steps"][0]["status"] == "skipped_disabled"
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed_required_disabled"
+    assert report["failed_required_steps"] == ["local_jsonl"]
+    assert report["snapshot_manifest"]["latest_published"] is False
     assert report["snapshot_manifest"]["counts"]["timeline_events"] == 0
 
 

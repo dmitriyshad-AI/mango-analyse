@@ -128,6 +128,50 @@ def test_bot_safe_context_prompt_drops_pii_items() -> None:
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in prompt
 
 
+def test_bot_safe_context_prompt_reads_opened_telegram_history_chunks() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-telegram",
+                "chunk_type": "channel_message",
+                "text": "Фотон: клиент в Telegram уточнял, можно ли продолжить обучение онлайн.",
+                "event_at": "2026-06-22T12:00:00+00:00",
+                "next_step_status": "active",
+                "source_system": "telegram_history",
+                "relevance_tags": ["channel", "bot_visible", "telegram_history", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+            {
+                "chunk_id": "chunk-telegram-unpk",
+                "chunk_type": "channel_message",
+                "text": "УНПК: чужой бренд.",
+                "source_system": "telegram_history",
+                "relevance_tags": ["channel", "bot_visible", "telegram_history", "unpk"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+            {
+                "chunk_id": "chunk-telegram-pii",
+                "chunk_type": "channel_message",
+                "text": "Фотон: телефон +79991234567.",
+                "source_system": "telegram_history",
+                "relevance_tags": ["channel", "bot_visible", "telegram_history", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+        ],
+    )
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+
+    assert "клиент в Telegram уточнял" in prompt
+    assert "УНПК: чужой бренд" not in prompt
+    assert "+79991234567" not in prompt
+
+
 def test_bot_safe_context_prompt_requires_known_active_brand() -> None:
     context = _context(flag=True)
     context["active_brand"] = "unknown"

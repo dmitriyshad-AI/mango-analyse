@@ -44,6 +44,7 @@ class IncrementalSourceConfig:
     tenant_id: str = "foton"
     source_ref: Optional[str] = None
     normalizer: str = "jsonl"
+    required: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_key(self.name, "source name"))
@@ -123,6 +124,10 @@ class SourceLoadResult:
             "affected_customer_ids": list(self.affected_customer_ids),
             "would_change_customer_ids": list(self.would_change_customer_ids),
             "skipped_reason": self.skipped_reason,
+            "required": self.source.required,
+            "status": "failed" if self.skipped_reason and self.source.required else (
+                "skipped" if self.skipped_reason else "ok"
+            ),
         }
 
 
@@ -317,32 +322,56 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
             import_reports: list[Mapping[str, Any]] = []
             cursor_updates: list[Mapping[str, Any]] = []
             for source in config.sources:
-                loaded = load_incremental_jsonl_source(store, source, safety_margin_seconds=config.safety_margin_seconds)
+                try:
+                    loaded = load_incremental_jsonl_source(
+                        store,
+                        source,
+                        safety_margin_seconds=config.safety_margin_seconds,
+                    )
+                except Exception as exc:  # fail-soft per source; the service gate decides whether this is blocking.
+                    reason = f"source_exception:{type(exc).__name__}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["sources"].append(source_failure_report(source, reason=reason, error=exc))
+                    report["source_errors"].append(source_error(source, reason=reason, error=exc))
+                    continue
                 report["sources"].append(loaded.to_json_dict())
                 if loaded.skipped_reason:
                     update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
-                    report["source_errors"].append({"source": source.name, "reason": loaded.skipped_reason})
+                    report["source_errors"].append(source_error(source, reason=loaded.skipped_reason))
+                    continue
+                if not loaded.records:
+                    affected.update(loaded.affected_customer_ids)
+                    continue
+                try:
+                    imported = TimelineImportService(store).import_records(
+                        loaded.records,
+                        normalizer=normalizer_for_source(source),
+                        tenant_id=source.tenant_id,
+                        source_ref=source.effective_source_ref,
+                        idempotency_key=stable_digest(
+                            {
+                                "schema_version": NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
+                                "source": source.effective_source_ref,
+                                "records": [record.payload_hash for record in loaded.records],
+                            }
+                        ),
+                        dry_run=False,
+                        actor=config.actor,
+                    )
+                except Exception as exc:  # keep other sources running if one importer breaks.
+                    reason = f"import_exception:{type(exc).__name__}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
                 affected.update(loaded.affected_customer_ids)
                 would_change.update(loaded.would_change_customer_ids)
-                if not loaded.records:
+                imported_payload = imported.to_json_dict()
+                import_reports.append(imported_payload)
+                if not imported.validation_ok:
+                    reason = f"import_validation_failed:rejected_count={imported.rejected_count}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["source_errors"].append(source_error(source, reason=reason))
                     continue
-                imported = TimelineImportService(store).import_records(
-                    loaded.records,
-                    normalizer=normalizer_for_source(source),
-                    tenant_id=source.tenant_id,
-                    source_ref=source.effective_source_ref,
-                    idempotency_key=stable_digest(
-                        {
-                            "schema_version": NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
-                            "source": source.effective_source_ref,
-                            "records": [record.payload_hash for record in loaded.records],
-                        }
-                    ),
-                    dry_run=False,
-                    actor=config.actor,
-                )
-                import_reports.append(imported.to_json_dict())
                 if loaded.max_source_ts is not None:
                     cursor_ts = loaded.max_source_ts - timedelta(seconds=config.safety_margin_seconds)
                     cursor = store.upsert_ingestion_cursor(
@@ -367,6 +396,16 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
             report["changed_customer_count"] = len(selected_customers)
             report["imports"] = import_reports
             report["cursor_updates"] = cursor_updates
+            failed_required_sources = [
+                str(item.get("source"))
+                for item in report["source_errors"]
+                if item.get("required") is True
+            ]
+            report["failed_required_sources"] = failed_required_sources
+            report["overall_status"] = "ok" if not report["source_errors"] else (
+                "partial" if failed_required_sources else "ok_with_skipped_optional"
+            )
+            report["gate_passed"] = not failed_required_sources
     recalc_started = time.monotonic()
     report["rebuild"] = rebuild_affected_outputs(config, customer_ids=report["changed_customer_ids"])
     report["phase_seconds"]["rebuild"] = round(time.monotonic() - recalc_started, 3)
@@ -375,6 +414,57 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
     report["duration_seconds"] = round((finished - started).total_seconds(), 3)
     append_jsonl(config.journal_path, report)
     return report
+
+
+def source_error(
+    source: IncrementalSourceConfig,
+    *,
+    reason: str,
+    error: Exception | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "source": source.name,
+        "source_system": source.source_system,
+        "required": source.required,
+        "reason": reason,
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_message"] = safe_error_message(error)
+    return payload
+
+
+def source_failure_report(
+    source: IncrementalSourceConfig,
+    *,
+    reason: str,
+    error: Exception | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "source": asdict(source) | {"path": str(source.path)},
+        "cursor_before": None,
+        "fetch_from": None,
+        "rows_total": 0,
+        "rows_selected": 0,
+        "records": 0,
+        "max_source_ts": None,
+        "affected_customer_ids": [],
+        "would_change_customer_ids": [],
+        "skipped_reason": reason,
+        "required": source.required,
+        "status": "failed" if source.required else "skipped",
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_message"] = safe_error_message(error)
+    return payload
+
+
+def safe_error_message(error: Exception) -> str:
+    text = " ".join(str(error or "").replace("\n", " ").split())
+    if len(text) > 240:
+        text = text[:240].rstrip()
+    return text
 
 
 def load_incremental_jsonl_source(
@@ -587,9 +677,12 @@ def append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
-    source_statuses = Counter("skipped" if item.get("skipped_reason") else "ok" for item in report.get("sources", ()))
+    source_statuses = Counter(str(item.get("status") or ("skipped" if item.get("skipped_reason") else "ok")) for item in report.get("sources", ()))
     return {
         "schema_version": report.get("schema_version"),
+        "overall_status": report.get("overall_status"),
+        "gate_passed": report.get("gate_passed"),
+        "failed_required_sources": report.get("failed_required_sources"),
         "duration_seconds": report.get("duration_seconds"),
         "source_statuses": dict(source_statuses),
         "affected_customer_count": report.get("affected_customer_count"),

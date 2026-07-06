@@ -38,6 +38,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report = {
             "schema_version": report.get("schema_version"),
             "run_id": report.get("run_id"),
+            "overall_status": report.get("overall_status"),
+            "partial_failure": report.get("partial_failure"),
+            "failed_required_steps": report.get("failed_required_steps"),
             "duration_seconds": report.get("duration_seconds"),
             "steps": [
                 {
@@ -57,4 +60,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

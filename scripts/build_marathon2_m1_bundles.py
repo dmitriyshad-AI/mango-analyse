@@ -19,10 +19,15 @@ DEFAULT_MEMORY_SCENARIOS = Path("product_data/telegram_dynamic_test_sets/memory_
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path(".codex_local/review/m1_bundles/f5_m1_bundles")
 SCHEMA_VERSION = "marathon2_f5_m1_bundles_v1_2026_07_03"
+BOT_CONTEXT_OVERLAY_CHUNK_TYPES = ("bot_safe_summary", "email_message", "channel_message")
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+\s*7|8|7)?(?:[\s\u00a0()./\-–—]*\d){10}(?!\d)")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
+LOOSE_AT_TOKEN_RE = re.compile(r"\S*@\S*")
+URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9.-]+\.(?:ru|рф|com|org|net)(?:/\S*)?", re.I)
+LONG_DIGIT_TOKEN_RE = re.compile(r"(?<!\d)\d{10,}(?!\d)")
 SERVICE_ID_RE = re.compile(r"\b(?:customer|timeline_event|bot_context_chunk):[a-f0-9]{16,}\b", re.I)
+OVERLAY_TEXT_FIELDS = ("text", "summary", "safe_text", "display_text")
 
 
 def utc_now() -> str:
@@ -260,18 +265,18 @@ def create_memory_overlay_db(source_db: Path, overlay_db: Path, customer_ids: Se
             WHERE customer_id IN ({placeholders})
               AND allowed_for_bot = 1
               AND requires_manager_review = 0
-              AND chunk_type = 'bot_safe_summary'
+              AND chunk_type IN ({','.join('?' for _ in BOT_CONTEXT_OVERLAY_CHUNK_TYPES)})
               AND (superseded_by IS NULL OR superseded_by = '')
             ORDER BY customer_id, event_at DESC, created_at DESC, ordinal, chunk_id
             """,
-            tuple(customer_ids),
+            tuple(customer_ids) + BOT_CONTEXT_OVERLAY_CHUNK_TYPES,
         ).fetchall()
         for table, rows in (("customer_identities", identity_rows), ("bot_context_chunks", chunk_rows)):
             if not rows:
                 continue
             columns = rows[0].keys()
             insert_sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})"
-            dst.executemany(insert_sql, [tuple(row[col] for col in columns) for row in rows])
+            dst.executemany(insert_sql, [_overlay_row_values(table, row, columns) for row in rows])
         dst.commit()
     pii_hits = scan_overlay_for_pii(overlay_db)
     if pii_hits:
@@ -282,6 +287,18 @@ def create_memory_overlay_db(source_db: Path, overlay_db: Path, customer_ids: Se
         identities = int(check.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0])
         chunks = int(check.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0])
         customers_with_chunks = int(check.execute("SELECT COUNT(DISTINCT customer_id) FROM bot_context_chunks").fetchone()[0])
+        chunk_type_counts = {
+            str(row["chunk_type"]): int(row["n"])
+            for row in check.execute(
+                "SELECT chunk_type, COUNT(*) AS n FROM bot_context_chunks GROUP BY chunk_type ORDER BY chunk_type"
+            ).fetchall()
+        }
+        source_system_counts = {
+            str(row["source_system"]): int(row["n"])
+            for row in check.execute(
+                "SELECT source_system, COUNT(*) AS n FROM bot_context_chunks GROUP BY source_system ORDER BY source_system"
+            ).fetchall()
+        }
     return {
         "overlay_db": str(overlay_db),
         "overlay_sha256": sha256_file(overlay_db),
@@ -289,7 +306,10 @@ def create_memory_overlay_db(source_db: Path, overlay_db: Path, customer_ids: Se
         "customer_ids_requested": len(set(customer_ids)),
         "customer_identities": identities,
         "bot_safe_chunks": chunks,
+        "bot_context_chunks": chunks,
         "customers_with_chunks": customers_with_chunks,
+        "chunk_type_counts": chunk_type_counts,
+        "source_system_counts": source_system_counts,
         "pii_scan": "passed",
     }
 
@@ -314,6 +334,37 @@ def scan_overlay_for_pii(db_path: Path) -> list[str]:
     return hits
 
 
+def _overlay_row_values(table: str, row: sqlite3.Row, columns: Sequence[str]) -> tuple[Any, ...]:
+    values = {column: row[column] for column in columns}
+    if table != "bot_context_chunks":
+        return tuple(values[column] for column in columns)
+    payload = _loads(values.get("record_json"))
+    if payload:
+        for key in OVERLAY_TEXT_FIELDS:
+            if key in payload:
+                payload[key] = _sanitize_overlay_text(payload.get(key))
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            for key in OVERLAY_TEXT_FIELDS:
+                if key in metadata:
+                    metadata[key] = _sanitize_overlay_text(metadata.get(key))
+            payload["metadata"] = metadata
+        values["record_json"] = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return tuple(values[column] for column in columns)
+
+
+def _sanitize_overlay_text(value: object) -> str:
+    text = str(value or "")
+    text = EMAIL_RE.sub("[контактные данные у менеджера]", text)
+    text = LOOSE_AT_TOKEN_RE.sub("[контактные данные у менеджера]", text)
+    text = URL_RE.sub("[ссылка скрыта]", text)
+    text = PHONE_RE.sub("[контактные данные у менеджера]", text)
+    text = LONG_DIGIT_TOKEN_RE.sub("[служебный номер скрыт]", text)
+    text = SERVICE_ID_RE.sub("[служебный идентификатор скрыт]", text)
+    text = text.replace("mailto:", "").replace("tel:", "")
+    return _text(text)
+
+
 def build_memory_shadow_bundle(
     *,
     source_db: Path,
@@ -331,7 +382,7 @@ def build_memory_shadow_bundle(
     write_jsonl(micro_path, micro_rows)
     write_jsonl(full_path, full_rows)
     customer_ids = sorted(set(persona_customer_ids(micro_rows) + persona_customer_ids(full_rows)))
-    overlay = create_memory_overlay_db(source_db, out_dir / "memory_shadow_overlay.sqlite", customer_ids)
+    overlay = create_memory_overlay_db(source_db, out_dir / "memory_shadow_overlay_v3.sqlite", customer_ids)
     judge_path = out_dir / "memory_shadow_judge_instruction.md"
     judge_path.write_text(MEMORY_SHADOW_JUDGE_PROMPT, encoding="utf-8")
     commands_path = out_dir / "memory_shadow_run_commands.sh"

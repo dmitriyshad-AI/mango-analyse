@@ -557,21 +557,31 @@ def _direct_path_bot_safe_context_items(
                 continue
             if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
                 continue
-            if str(item.get("chunk_type") or "").strip().casefold() != "bot_safe_summary":
-                continue
+            source_system = str(item.get("source_system") or "").strip().casefold()
+            chunk_type = str(item.get("chunk_type") or "").strip().casefold()
             tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
-            if not _direct_path_bot_safe_item_visible(tags, active_brand=active_brand):
+            if not _direct_path_bot_safe_item_visible(
+                tags,
+                active_brand=active_brand,
+                source_system=source_system,
+                chunk_type=chunk_type,
+            ):
                 continue
             text = str(item.get("summary") or item.get("text") or "").strip()
             if not text or _direct_path_bot_safe_text_has_pii(text):
                 continue
             result.append(
                 {
-                    "chunk_type": "bot_safe_summary",
+                    "chunk_type": chunk_type,
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),
                     "next_step_status": _direct_path_bot_safe_next_step_status(item),
-                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
+                    "relevance_tags": _direct_path_bot_safe_visible_tags(
+                        tags,
+                        active_brand=active_brand,
+                        source_system=source_system,
+                        chunk_type=chunk_type,
+                    ),
                 }
             )
             if len(result) >= max(1, int(limit or 3)):
@@ -590,13 +600,46 @@ def _direct_path_bot_safe_next_step_status(item: Mapping[str, Any]) -> str:
     return status if status in {"active", "needs_manager_review", "empty"} else ""
 
 
-def _direct_path_bot_safe_item_visible(tags: set[str], *, active_brand: str) -> bool:
-    if "bot_safe" not in tags:
+def _direct_path_bot_safe_item_visible(
+    tags: set[str],
+    *,
+    active_brand: str,
+    source_system: str,
+    chunk_type: str,
+) -> bool:
+    if chunk_type == "bot_safe_summary":
+        required_tags = {"bot_safe"}
+        allow_unknown_brand = True
+    elif source_system == "mail_archive_stage2" and chunk_type == "email_message":
+        required_tags = {"email", "bot_visible", "mail_archive_stage2"}
+        allow_unknown_brand = False
+    elif source_system in {"telegram_history", "wappi_telegram", "wappi_max"} and chunk_type == "channel_message":
+        required_tags = {"channel", "bot_visible", source_system}
+        allow_unknown_brand = False
+    else:
+        return False
+    if not required_tags.issubset(tags):
         return False
     known_brand_tags = tags & {"foton", "unpk"}
     if known_brand_tags - {active_brand}:
         return False
-    return active_brand in tags or "unknown" in tags
+    return active_brand in tags or (allow_unknown_brand and "unknown" in tags)
+
+
+def _direct_path_bot_safe_visible_tags(
+    tags: set[str],
+    *,
+    active_brand: str,
+    source_system: str,
+    chunk_type: str,
+) -> list[str]:
+    if chunk_type == "bot_safe_summary":
+        candidates = ("bot_safe", "structured", active_brand, "unknown")
+    elif source_system == "mail_archive_stage2":
+        candidates = ("email", "bot_visible", "mail_archive_stage2", active_brand)
+    else:
+        candidates = ("channel", "bot_visible", source_system, active_brand)
+    return [tag for tag in candidates if tag in tags]
 
 
 def _direct_path_bot_safe_text_has_pii(text: str) -> bool:

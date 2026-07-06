@@ -999,3 +999,35 @@ writes = 0.
 `.codex_local/transfer_package/marathon2_block7_20260703/` перегенерирован с
 этим CRM export и теперь в `crm_package_reference.md`/`manifest.json` показывает
 `ready=3`. Прод/CRM/Tallanto/live writes = 0.
+
+### D-056. Owner-approved bot data opening is staging-only before M1 memory measure
+
+Решение: по «ДА» владельца от 04.07 rich-память открывается боту только в
+staging-БД и только через Э4б-gate: linked/non-conflicted, not blocked/pending,
+known content brand (`foton`/`unpk`), `allowed_for_bot=1` и
+`requires_manager_review=0`. Live-бот и prod-БД не меняются; включение памяти в
+живой prompt остаётся отдельным решением после M1-замера.
+
+Почему так: само изменение `allowed_for_bot` не достаточно — runtime/direct-path
+должны уметь читать rich email/telegram/wappi chunks, а M1 должен мерить именно
+этот новый слой. Unknown-brand chunks оставлены закрытыми, потому что для
+двухбрендового бота allowed-память без бренда создаёт риск смешения и ложный
+отчёт «бот видит», хотя prompt-фильтр её отбросит.
+
+Проверка на staging: первый apply был остановлен аудитом, потому что rich
+chunks открывались для части partial/conflicted identities. После фикса Э4б
+требует `customer_identities.identity_status='strong'`, нормализует ссылки
+`timeline_conflicts.entity_refs` и retract-ит ранее открытые не-openable chunks.
+Исправленный apply оставил открытыми `8 751` chunks (`7 984`
+mail_archive_stage2 + `767` telegram_history), `wappi_* = 0`, `6 328`
+unknown-brand chunks оставлены закрытыми, `5 634` ранее открытых chunks
+отозваны обратно в `allowed_for_bot=0/requires_manager_review=1`.
+`candidate_review_violations_after=0`, `opened_disallowed_identity_after=0`,
+`opened_unknown_brand_after=0`, `quick_check=ok`. Повторный apply обновил `0`
+строк и ничего не retract-ил. После повторного аудита retract/update операции
+дополнительно ограничены `tenant_id`, чтобы будущий multi-tenant запуск не
+трогал соседний tenant; регрессия покрыта тестом. M1 overlay v3 собран в
+`~/Yandex.Disk.localized/OpenClaw/mango_m1_f5_20260704/`:
+`memory_shadow_overlay_v3.sqlite`, `quick_check=ok`, `pii_scan=passed`,
+`59` chunks (`18` bot_safe_summary, `34` email_message, `7`
+channel_message). Прод/CRM/Tallanto/live writes = 0.

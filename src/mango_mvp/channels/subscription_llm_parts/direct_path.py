@@ -577,6 +577,7 @@ def _direct_path_bot_safe_context_items(
                 continue
             result.append(
                 {
+                    "source_system": source_system,
                     "chunk_type": chunk_type,
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),

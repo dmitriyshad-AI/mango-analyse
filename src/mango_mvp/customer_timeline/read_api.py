@@ -324,13 +324,16 @@ class CustomerTimelineReadApi:
         if allowed_only:
             clauses.append("allowed_for_bot = 1")
             clauses.append("requires_manager_review = 0")
+        page_limit = bounded_limit(limit, default=50, max_limit=200)
+        raw_limit = min(page_limit * 4, 500) if allowed_only else page_limit
         raw_items = self._records(
             "bot_context_chunks",
             " AND ".join(clauses),
             tuple(params),
             order_by="event_at DESC, created_at DESC, ordinal, chunk_id",
-            limit=bounded_limit(limit, default=50, max_limit=200),
+            limit=raw_limit,
         )
+        visible_items = _dedupe_bot_context_items(raw_items)[:page_limit] if allowed_only else raw_items
         total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, customer_id))
         allowed_chunks = self._count(
             "bot_context_chunks",
@@ -348,9 +351,9 @@ class CustomerTimelineReadApi:
             "tenant_id": tenant,
             "customer_id": customer_id,
             "allowed_only": allowed_only,
-            "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in raw_items],
+            "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in visible_items],
             "summary": {
-                "visible_chunks": len(raw_items),
+                "visible_chunks": len(visible_items),
                 "total_chunks": total_chunks,
                 "allowed_chunks": allowed_chunks,
                 "review_required_chunks": review_required_chunks,
@@ -956,6 +959,37 @@ def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[st
     if next_step_status:
         payload["next_step_status"] = next_step_status
     return payload
+
+
+def _dedupe_bot_context_items(items: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in items:
+        identity = _bot_context_source_identity(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(item)
+    return result
+
+
+def _bot_context_source_identity(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+    source_identity = ""
+    for key in ("message_sha256", "source_message_sha256", "source_id", "event_id"):
+        value = str(item.get(key) or metadata.get(key) or "").strip()
+        if value:
+            source_identity = f"{key}:{value}"
+            break
+    if not source_identity:
+        source_ref = str(item.get("source_ref") or "").strip()
+        source_identity = f"source_ref:{source_ref}" if source_ref else f"chunk_id:{item.get('chunk_id') or ''}"
+    return (
+        str(item.get("customer_id") or ""),
+        str(item.get("source_system") or ""),
+        str(item.get("chunk_type") or ""),
+        source_identity,
+    )
 
 
 def _project_next_step_status(item: Mapping[str, Any]) -> str:

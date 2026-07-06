@@ -1031,3 +1031,37 @@ unknown-brand chunks оставлены закрытыми, `5 634` ранее �
 `memory_shadow_overlay_v3.sqlite`, `quick_check=ok`, `pii_scan=passed`,
 `59` chunks (`18` bot_safe_summary, `34` email_message, `7`
 channel_message). Прод/CRM/Tallanto/live writes = 0.
+
+### D-057. M1 memory prompt must measure source-policy-opened chunks, not partial memory
+
+Решение: v3.1-промпт для M1 нельзя отдавать без кодового фикса. ON-ветка
+замера должна включать E4b source-policy flags для `mail_archive_stage2` и
+`telegram_history`, а runtime-reader обязан сохранять `source_system` в
+bot-safe items. Иначе direct-path видит `chunk_type=email_message`, но без
+`source_system=mail_archive_stage2`, режет весь email-контекст и precheck
+останавливается с `0` prompt-items при ненулевых expected-hits.
+
+Почему так: это measurement_bug, не проблема overlay. Данные и expected-hits
+есть, но контракт между `bot_safe_runtime_context` и direct-path терял поле
+источника. Исправление не открывает новые данные: оно применяется только к
+chunks, уже прошедшим `allowed_for_bot=1`, `requires_manager_review=0`,
+source-policy, brand и PII-фильтры.
+
+Дополнительные решения по хвостам: overlay поднимается с v3.1 до v3.2, потому
+что в `customer_identities.record_json.source_ref` найдены 4 клиентских
+телефона вида `master_contact:+...`; v3.2 чистит только identity-source-ref и
+не переписывает тексты chunks. Дубли email на чтении режутся по
+`metadata.message_sha256` до `project_bot_context()`, база не мутируется.
+Контроль писем B1 требует суженной правки judge prompt: subject можно считать
+контекстом/темой письма, но нельзя подтверждать оплату, возврат, договор,
+запись или сумму только из subject без поддержки в теле письма или структурном
+поле.
+
+Проверка: локальный pre-LLM probe на пакете OpenClaw v3.1 после source-system
+фикса дал `passed=true`, включая `memory_rich_13_foton_unknown_77b96f94`.
+Точечный набор
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+tests/test_bot_safe_runtime_context.py tests/test_bot_safe_direct_path_context.py
+tests/test_memory_measure_apparatus.py tests/test_customer_timeline_read_api.py
+tests/test_marathon2_m1_bundles.py` дал `62 passed`. Прод/CRM/Tallanto/live
+writes = 0.

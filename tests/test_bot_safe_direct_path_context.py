@@ -172,6 +172,43 @@ def test_bot_safe_context_prompt_reads_opened_telegram_history_chunks() -> None:
     assert "+79991234567" not in prompt
 
 
+def test_bot_safe_context_prompt_reads_opened_mail_stage2_chunks_with_source_system() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-mail",
+                "chunk_type": "email_message",
+                "text": "Фотон: клиент письмом просил напомнить условия группы.",
+                "event_at": "2026-06-22T12:00:00+00:00",
+                "next_step_status": "active",
+                "source_system": "mail_archive_stage2",
+                "relevance_tags": ["email", "bot_visible", "mail_archive_stage2", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+            {
+                "chunk_id": "chunk-mail-missing-source",
+                "chunk_type": "email_message",
+                "text": "Фотон: это письмо без source_system не должно пройти.",
+                "event_at": "2026-06-22T12:00:00+00:00",
+                "next_step_status": "active",
+                "relevance_tags": ["email", "bot_visible", "mail_archive_stage2", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+        ],
+    )
+
+    items = _direct_path_bot_safe_context_items(context)
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+
+    assert any(item.get("source_system") == "mail_archive_stage2" for item in items)
+    assert "клиент письмом просил напомнить условия группы" in prompt
+    assert "это письмо без source_system" not in prompt
+
+
 def test_bot_safe_context_prompt_requires_known_active_brand() -> None:
     context = _context(flag=True)
     context["active_brand"] = "unknown"

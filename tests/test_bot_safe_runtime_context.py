@@ -180,6 +180,13 @@ def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path
     assert context["found"] is True
     assert "Письмо Фотон: клиент уточнял группу по субботам" in raw
     assert "mail_archive_stage2" in raw
+    item = next(
+        item
+        for item in context["timeline_context"]["bot_context"]["items"]
+        if item.get("chunk_type") == "email_message"
+    )
+    assert item["source_system"] == "mail_archive_stage2"
+    assert item["chunk_type"] == "email_message"
 
 
 def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkeypatch) -> None:

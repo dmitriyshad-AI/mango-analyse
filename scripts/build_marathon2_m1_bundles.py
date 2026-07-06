@@ -25,7 +25,7 @@ DEFAULT_BASE_OVERLAY_DB = Path(
 SCHEMA_VERSION = "marathon2_f5_m1_bundles_v1_2026_07_03"
 BOT_CONTEXT_OVERLAY_CHUNK_TYPES = ("bot_safe_summary", "email_message", "channel_message")
 EMAIL_QUALITY_CONTROL_TARGET = 24
-MEMORY_OVERLAY_FILENAME = "memory_shadow_overlay_v3_1.sqlite"
+MEMORY_OVERLAY_FILENAME = "memory_shadow_overlay_v3_2.sqlite"
 M1_GIT_BUNDLE_BASE = "94ee1fe"
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+\s*7|8|7)?(?:[\s\u00a0()./\-–—]*\d){10}(?!\d)")
@@ -400,7 +400,7 @@ def create_memory_overlay_db(
         "chunk_type_counts": chunk_type_counts,
         "source_system_counts": source_system_counts,
         "pii_scan": "passed",
-        "overlay_version": "v3.1",
+        "overlay_version": "v3.2",
         "dedup_policy": "source_identity_only_no_text_normalization",
         "dedup_removed": dedup_removed,
         "identity_pii_redaction": identity_redactions,
@@ -502,8 +502,14 @@ def scan_overlay_for_pii(db_path: Path) -> list[str]:
                         hits.append(f"{customer_id}:identity_{field}")
                 if "record_json" in row.keys():
                     data = _loads(row["record_json"])
-                    for field in ("display_name", "primary_phone", "primary_email"):
+                    for field in ("display_name", "primary_phone", "primary_email", "source_ref"):
                         value = _text(data.get(field))
+                        if not value:
+                            continue
+                        if field == "source_ref":
+                            if PHONE_RE.search(value) or EMAIL_RE.search(value) or LONG_DIGIT_TOKEN_RE.search(value):
+                                hits.append(f"{customer_id}:identity_record_{field}")
+                            continue
                         if value:
                             hits.append(f"{customer_id}:identity_record_{field}")
     return hits
@@ -531,6 +537,11 @@ def redact_overlay_identity_pii(db_path: Path) -> Mapping[str, Any]:
                         data[field] = None
                         field_counts[f"record_json.{field}"] += 1
                         changed = True
+                source_ref = _text(data.get("source_ref"))
+                if source_ref and (PHONE_RE.search(source_ref) or EMAIL_RE.search(source_ref) or LONG_DIGIT_TOKEN_RE.search(source_ref)):
+                    data["source_ref"] = _redact_identity_source_ref(source_ref)
+                    field_counts["record_json.source_ref"] += 1
+                    changed = True
                 if changed:
                     updates["record_json"] = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
             if updates:
@@ -542,6 +553,12 @@ def redact_overlay_identity_pii(db_path: Path) -> Mapping[str, Any]:
                 )
         con.commit()
     return {"redacted_rows": redacted_rows, "redacted_fields": dict(field_counts)}
+
+
+def _redact_identity_source_ref(value: object) -> str:
+    text = _text(value)
+    prefix = text.split(":", 1)[0].strip() if ":" in text else ""
+    return f"{prefix}:<redacted>" if prefix else "<redacted>"
 
 
 def compare_overlay_v3_1_to_base(
@@ -764,15 +781,15 @@ def build_memory_shadow_bundle(
     expected_violations = list(expected_hits_micro.get("violations") or []) + list(expected_hits_full.get("violations") or [])
     if expected_violations:
         raise RuntimeError(f"memory overlay expected-hit gate failed: {expected_violations[:5]}")
-    expected_hits_micro_path = out_dir / "memory_shadow_expected_hits_micro_v3_1.json"
-    expected_hits_full_path = out_dir / "memory_shadow_expected_hits_full_v3_1.json"
+    expected_hits_micro_path = out_dir / "memory_shadow_expected_hits_micro_v3_2.json"
+    expected_hits_full_path = out_dir / "memory_shadow_expected_hits_full_v3_2.json"
     write_json(expected_hits_micro_path, expected_hits_micro)
     write_json(expected_hits_full_path, expected_hits_full)
-    diff_path = out_dir / "memory_shadow_overlay_v3_to_v3_1_diff.json"
+    diff_path = out_dir / "memory_shadow_overlay_v3_1_to_v3_2_diff.json"
     write_json(
         diff_path,
         {
-            "schema_version": "memory_shadow_overlay_v3_to_v3_1_diff_v1",
+            "schema_version": "memory_shadow_overlay_v3_1_to_v3_2_diff_v1",
             "base_overlay_db": str(base_overlay_db),
             "overlay_db": str(overlay["overlay_db"]),
             "field_level_diff": overlay["field_level_diff"],
@@ -797,12 +814,12 @@ def build_memory_shadow_bundle(
     readme_path = out_dir / "README_M1.md"
     readme_path.write_text(
         "# Mango M1 F5 bundle\n\n"
-        "- Актуальный overlay: `memory_shadow_overlay_v3_1.sqlite`.\n"
-        "- Старый overlay v3 лежит в `base_overlay_db` manifest и используется только как база diff.\n"
-        "- v3.1 не добавляет новых текстов чанков; diff см. `memory_shadow_overlay_v3_to_v3_1_diff.json`.\n"
+        "- Актуальный overlay: `memory_shadow_overlay_v3_2.sqlite`.\n"
+        "- Старый overlay v3.1 лежит в `base_overlay_db` manifest и используется только как база diff.\n"
+        "- v3.2 не добавляет новых текстов чанков; diff см. `memory_shadow_overlay_v3_1_to_v3_2_diff.json`.\n"
         f"- Git bundle для M1: `email_timeline_20260706_from{git_bundle_base}.bundle`; verify-output: `git_bundle_verify.txt`.\n"
         "- M1 запускает человек вручную командами из `memory_shadow_run_commands.sh`.\n"
-        "- Перед запуском проверь `memory_shadow_expected_hits_micro_v3_1.json` и `memory_shadow_expected_hits_full_v3_1.json`: ON должен иметь ctx>0 у строк `with_memory`, OFF должен быть без ctx.\n",
+        "- Перед запуском проверь `memory_shadow_expected_hits_micro_v3_2.json` и `memory_shadow_expected_hits_full_v3_2.json`: ON должен иметь ctx>0 у строк `with_memory`, OFF должен быть без ctx.\n",
         encoding="utf-8",
     )
     return {

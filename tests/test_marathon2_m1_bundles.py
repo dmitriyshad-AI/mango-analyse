@@ -90,7 +90,14 @@ def test_m1_overlay_pii_scan_fails_on_identity_contacts(tmp_path: Path) -> None:
                 "Иван Иванов",
                 "+7 916 123-45-67",
                 "parent@example.com",
-                json.dumps({"display_name": "Иван Иванов", "primary_phone": "+7 916 123-45-67"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "display_name": "Иван Иванов",
+                        "primary_phone": "+7 916 123-45-67",
+                        "source_ref": "master_contact:+7 916 123-45-67",
+                    },
+                    ensure_ascii=False,
+                ),
             ),
         )
 
@@ -99,6 +106,7 @@ def test_m1_overlay_pii_scan_fails_on_identity_contacts(tmp_path: Path) -> None:
     assert "customer:1:identity_display_name" in hits
     assert "customer:1:identity_primary_phone" in hits
     assert "customer:1:identity_primary_email" in hits
+    assert "customer:1:identity_record_source_ref" in hits
 
 
 def test_memory_shadow_commands_do_not_start_m1_queue(tmp_path: Path) -> None:
@@ -164,10 +172,10 @@ def test_create_git_bundle_fails_on_dirty_worktree(monkeypatch, tmp_path: Path) 
         raise AssertionError("dirty worktree must block M1 git bundle")
 
 
-def test_memory_overlay_v3_1_copies_base_chunks_without_text_rewrite_and_redacts_identity(tmp_path: Path) -> None:
+def test_memory_overlay_v3_2_copies_base_chunks_without_text_rewrite_and_redacts_identity(tmp_path: Path) -> None:
     module = _load_script_module()
     base_db = tmp_path / "base_v3.sqlite"
-    overlay_db = tmp_path / "memory_shadow_overlay_v3_1.sqlite"
+    overlay_db = tmp_path / module.MEMORY_OVERLAY_FILENAME
     with sqlite3.connect(base_db) as con:
         con.execute(
             """
@@ -200,7 +208,16 @@ def test_memory_overlay_v3_1_copies_base_chunks_without_text_rewrite_and_redacts
         )
         con.execute(
             "INSERT INTO customer_identities VALUES ('customer:1', 'foton', 'Иван Иванов', '+7 916 123-45-67', NULL, ?)",
-            (json.dumps({"display_name": "Иван Иванов", "primary_phone": "+7 916 123-45-67"}, ensure_ascii=False),),
+            (
+                json.dumps(
+                    {
+                        "display_name": "Иван Иванов",
+                        "primary_phone": "+7 916 123-45-67",
+                        "source_ref": "master_contact:+7 916 123-45-67",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         )
         rows = [
             ("c1", "customer_timeline_bot_safe_summary", "bot_safe_summary", "Фотон: безопасная сводка."),
@@ -226,8 +243,8 @@ def test_memory_overlay_v3_1_copies_base_chunks_without_text_rewrite_and_redacts
 
     report = module.create_memory_overlay_db(base_db, overlay_db, ["customer:1"], base_overlay_db=base_db)
 
-    assert overlay_db.name == "memory_shadow_overlay_v3_1.sqlite"
-    assert report["overlay_version"] == "v3.1"
+    assert overlay_db.name == "memory_shadow_overlay_v3_2.sqlite"
+    assert report["overlay_version"] == "v3.2"
     assert report["dedup_policy"] == "source_identity_only_no_text_normalization"
     assert report["bot_context_chunks"] == 4
     assert report["field_level_diff"]["chunk_field_changes"] == []
@@ -239,13 +256,15 @@ def test_memory_overlay_v3_1_copies_base_chunks_without_text_rewrite_and_redacts
     assert "контактные данные у менеджера" in raw
     assert identity[0] is None
     assert identity[1] is None
-    assert json.loads(identity[2])["display_name"] is None
+    identity_payload = json.loads(identity[2])
+    assert identity_payload["display_name"] is None
+    assert identity_payload["source_ref"] == "master_contact:<redacted>"
 
 
-def test_memory_overlay_v3_1_dedup_uses_source_identity_not_text_similarity(tmp_path: Path) -> None:
+def test_memory_overlay_v3_2_dedup_uses_source_identity_not_text_similarity(tmp_path: Path) -> None:
     module = _load_script_module()
     source_db = tmp_path / "base_v3.sqlite"
-    overlay_db = tmp_path / "memory_shadow_overlay_v3_1.sqlite"
+    overlay_db = tmp_path / module.MEMORY_OVERLAY_FILENAME
     with sqlite3.connect(source_db) as con:
         con.execute("CREATE TABLE customer_identities (customer_id TEXT PRIMARY KEY, tenant_id TEXT)")
         con.execute(
@@ -291,7 +310,7 @@ def test_memory_overlay_v3_1_dedup_uses_source_identity_not_text_similarity(tmp_
 
 def test_expected_memory_hits_counts_brand_visible_chunks(tmp_path: Path) -> None:
     module = _load_script_module()
-    overlay_db = tmp_path / "memory_shadow_overlay_v3_1.sqlite"
+    overlay_db = tmp_path / module.MEMORY_OVERLAY_FILENAME
     with sqlite3.connect(overlay_db) as con:
         con.execute(
             """
@@ -337,7 +356,7 @@ def test_expected_memory_hits_counts_brand_visible_chunks(tmp_path: Path) -> Non
 
 def test_expected_memory_hits_flags_required_memory_without_visible_chunks(tmp_path: Path) -> None:
     module = _load_script_module()
-    overlay_db = tmp_path / "memory_shadow_overlay_v3_1.sqlite"
+    overlay_db = tmp_path / module.MEMORY_OVERLAY_FILENAME
     with sqlite3.connect(overlay_db) as con:
         con.execute(
             """

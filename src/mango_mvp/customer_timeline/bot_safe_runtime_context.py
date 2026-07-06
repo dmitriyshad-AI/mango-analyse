@@ -388,6 +388,7 @@ def _safe_item_for_brand(
             return {}
         return {
             "chunk_type": MAIL_STAGE2_CHUNK_TYPE,
+            "source_system": MAIL_STAGE2_SOURCE_SYSTEM,
             "text": _truncate(text, 700),
             "event_at": _clean_text(item.get("event_at")),
             "next_step_status": status,
@@ -408,6 +409,7 @@ def _safe_item_for_brand(
             return {}
         return {
             "chunk_type": CHANNEL_HISTORY_CHUNK_TYPE,
+            "source_system": source_system,
             "text": _truncate(text, 700),
             "event_at": _clean_text(item.get("event_at")),
             "next_step_status": status,
@@ -431,6 +433,7 @@ def _safe_item_for_brand(
         return {}
     return {
         "chunk_type": BOT_SAFE_CHUNK_TYPE,
+        "source_system": source_system,
         "text": _truncate(text, 700),
         "event_at": _clean_text(item.get("event_at")),
         "next_step_status": status,

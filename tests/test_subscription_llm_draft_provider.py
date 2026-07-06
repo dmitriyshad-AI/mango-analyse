@@ -13167,6 +13167,213 @@ def test_tz110_need_shadow_logs_declaration_without_changing_selection(tmp_path:
     assert shadow["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
 
 
+def test_tz150_fact_select_read_traces_without_changing_llm_pack(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics9.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 9 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.math9.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: математика 9 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "fact_select_shadow.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        SEMANTIC_READING_CLASSES_ENV: "fact_select_read",
+    }
+    payload = {
+        "requested_product": {
+            "brand": "foton",
+            "subject": "физика",
+            "grade": "9",
+            "format": "online",
+            "program_kind": "regular",
+            "raw_text": "физика 9 класс онлайн",
+        },
+        "requested_product_confidence": 0.96,
+        "exact_ids": ["foton.math9.online.price"],
+        "adjacent_ids": ["foton.physics9.online.price"],
+    }
+    prompt_seen = ""
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal prompt_seen
+        prompt_seen = prompt
+        return payload
+
+    pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит физика 9 онлайн?", retriever_fn=retriever)
+    direct_meta = subscription_llm._direct_path_metadata(
+        attempted=True,
+        model_called=True,
+        facts=pack["facts"],
+        fact_pack=pack,
+        context=context,
+    )
+
+    assert "requested_product" not in prompt_seen
+    assert "needed_facts" not in prompt_seen
+    assert pack["exact_keys"] == ["foton.math9.online.price"]
+    assert pack["adjacent_keys"] == ["foton.physics9.online.price"]
+    assert pack["fact_select_frame"]["status"] == "shadow_only"
+    assert pack["fact_select_frame"]["reason"] == "trace_only"
+    assert direct_meta["semantic_reading_trace"][0]["class"] == "fact_select_read"
+    assert direct_meta["semantic_reading_trace"][0]["status"] == "shadow_only"
+
+
+def test_tz150_fact_select_frame_promotes_matching_adjacent_fact(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics9.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 9 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.math9.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: математика 9 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "fact_select_apply.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        subscription_llm.FACT_SELECT_FRAME_ENV: "1",
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит физика 9 онлайн?",
+        retriever_fn=lambda _: {
+            "requested_product": {
+                "brand": "foton",
+                "subject": "физика",
+                "grade": "9",
+                "format": "online",
+                "program_kind": "regular",
+                "raw_text": "физика 9 класс онлайн",
+            },
+            "requested_product_confidence": 0.97,
+            "exact_ids": ["foton.math9.online.price"],
+            "adjacent_ids": ["foton.physics9.online.price"],
+        },
+    )
+
+    assert pack["exact_keys"] == ["foton.physics9.online.price"]
+    assert pack["adjacent_keys"] == ["foton.math9.online.price"]
+    assert pack["fact_select_frame"]["status"] == "applied"
+    assert pack["semantic_reading_trace"][0]["decision"] == "frame_product_prioritized"
+
+
+def test_tz150_fact_select_frame_low_confidence_is_fail_closed(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        subscription_llm.FACT_SELECT_FRAME_ENV: "1",
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит физика 9 онлайн?",
+        retriever_fn=lambda _: {
+            "requested_product": {"brand": "foton", "subject": "физика", "format": "online"},
+            "requested_product_confidence": 0.5,
+            "exact_ids": ["foton.price.online"],
+            "adjacent_ids": ["foton.schedule"],
+        },
+    )
+
+    assert pack["exact_keys"] == ["foton.price.online"]
+    assert pack["adjacent_keys"] == ["foton.schedule"]
+    assert pack["fact_select_frame"]["status"] == "fail_closed"
+    assert pack["fact_select_frame"]["reason"] == "low_confidence"
+
+
+def test_tz150_fact_select_frame_brand_mismatch_keeps_brand_safe_pack(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        subscription_llm.FACT_SELECT_FRAME_ENV: "1",
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит?",
+        retriever_fn=lambda _: {
+            "requested_product": {"brand": "unpk", "subject": "физика", "format": "offline"},
+            "requested_product_confidence": 0.98,
+            "exact_ids": ["foton.price.online"],
+            "adjacent_ids": ["foton.schedule"],
+        },
+    )
+
+    assert set(pack["facts"]) == {"foton.price.online", "foton.schedule"}
+    assert {item["brand"] for item in pack["fact_metadata"].values()} == {"foton"}
+    assert pack["fact_select_frame"]["status"] == "fail_closed"
+    assert pack["fact_select_frame"]["reason"] == "brand_mismatch"
+
+
+def test_tz150_fact_select_frame_conflicting_product_axes_are_fail_closed(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        subscription_llm.FACT_SELECT_FRAME_ENV: "1",
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит физика онлайн?",
+        retriever_fn=lambda _: {
+            "requested_product": {
+                "brand": "foton",
+                "subject": "физика",
+                "format": "online",
+                "venue": "moscow_regular",
+                "program_kind": "regular",
+            },
+            "requested_product_confidence": 0.98,
+            "exact_ids": ["foton.price.online"],
+            "adjacent_ids": ["foton.schedule"],
+        },
+    )
+
+    assert pack["exact_keys"] == ["foton.price.online"]
+    assert pack["adjacent_keys"] == ["foton.schedule"]
+    assert pack["fact_select_frame"]["status"] == "fail_closed"
+    assert pack["fact_select_frame"]["reason"] == "conflicting_axes"
+    assert "format_venue_conflict" in pack["semantic_reading_trace"][0]["conflict_with"]
+
+
 def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_keeps_metadata(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     prompt_seen = ""
@@ -15979,6 +16186,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         subscription_llm.ANSWERABILITY_SHADOW_ENV,
         AUTONOMY_SCOPE_PRECISION_ENV,
         subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV,
+        subscription_llm.FACT_SELECT_FRAME_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -16027,9 +16235,13 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.FACT_SELECT_FRAME_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._text_hygiene_payment_fix_enabled(
         {**context, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"}
     ) is False
+    assert subscription_llm._fact_select_frame_enabled(context) is False
+    assert subscription_llm._fact_select_frame_enabled({**context, subscription_llm.FACT_SELECT_FRAME_ENV: "1"}) is True
+    assert subscription_llm._fact_select_frame_enabled({**context, subscription_llm.FACT_SELECT_FRAME_ENV: "0"}) is False
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False

@@ -41,7 +41,7 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     context = {
         SEMANTIC_READING_CLASSES_ENV: (
             "off_topic,slots_gsf,intent_actions,route_templates,rewrite_quality,post_semantics,"
-            "live_status_read,reask_read,roles_read,unknown"
+            "live_status_read,reask_read,roles_read,fact_select_read,unknown"
         )
     }
     assert enabled_classes(context) == frozenset(
@@ -55,6 +55,7 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
             "live_status_read",
             "reask_read",
             "roles_read",
+            "fact_select_read",
         }
     )
     assert reading_class_enabled(context, "off_topic") is True
@@ -66,6 +67,7 @@ def test_semantic_reading_classes_are_default_off(monkeypatch) -> None:
     assert reading_class_enabled(context, "live_status_read") is True
     assert reading_class_enabled(context, "reask_read") is True
     assert reading_class_enabled(context, "roles_read") is True
+    assert reading_class_enabled(context, "fact_select_read") is True
 
 
 def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypatch) -> None:
@@ -81,6 +83,7 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     assert reading_class_enabled(None, "live_status_read") is True
     assert reading_class_enabled(None, "reask_read") is False
     assert reading_class_enabled(None, "roles_read") is False
+    assert reading_class_enabled(None, "fact_select_read") is False
 
     assert enabled_classes({SEMANTIC_READING_CLASSES_ENV: ""}) == frozenset()
     assert reading_class_enabled({SEMANTIC_READING_CLASSES_ENV: ""}, "slots_gsf") is False

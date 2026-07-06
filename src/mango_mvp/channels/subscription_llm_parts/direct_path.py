@@ -36,6 +36,7 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     reliable_answerer_prompt_block,
     reliable_answerer_step1_active_for_turn,
 )
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import semantic_reading_trace_record
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     build_customer_memory_for_prompt,
@@ -111,6 +112,12 @@ DIRECT_SLOT_TOPIC_SHADOW_ENV = "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"
 DIRECT_P0_TEXT_HYGIENE_ENV = "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"
 
 TEXT_HYGIENE_PAYMENT_FIX_ENV = "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX"
+
+FACT_SELECT_FRAME_ENV = "TELEGRAM_FACT_SELECT_FRAME"
+
+FACT_SELECT_FRAME_SCHEMA_VERSION = "fact_select_frame_v1_2026_07_07"
+
+FACT_SELECT_FRAME_MIN_CONFIDENCE = 0.90
 
 P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
 
@@ -339,6 +346,20 @@ def _direct_slot_topic_shadow_enabled(context: Optional[Mapping[str, Any]] = Non
         aliases=("direct_slot_topic_shadow", "direct_slot_topic_shadow_enabled"),
     )
 
+def _fact_select_read_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.semantic_reading import reading_class_enabled
+    except Exception:
+        return False
+    return reading_class_enabled(context, "fact_select_read")
+
+def _fact_select_frame_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        FACT_SELECT_FRAME_ENV,
+        aliases=("fact_select_frame", "fact_select_frame_enabled"),
+    )
+
 
 def _fact_venue_scope_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return venue_scope_enabled(context)
@@ -437,7 +458,11 @@ def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any
 
 
 def _retriever_need_declaration_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _retriever_need_shadow_enabled(context) or _retriever_model_driven_enabled(context)
+    return (
+        _retriever_need_shadow_enabled(context)
+        or _retriever_model_driven_enabled(context)
+        or _fact_select_frame_enabled(context)
+    )
 
 
 def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -1051,6 +1076,358 @@ def _direct_path_fact_conflicts_slots(
         return True
     return False
 
+_FACT_SELECT_PRODUCT_KEYS = (
+    "brand",
+    "grade",
+    "subject",
+    "format",
+    "venue",
+    "program_kind",
+    "product",
+    "raw_text",
+)
+
+_FACT_SELECT_CANONICAL_BRANDS = frozenset(("foton", "unpk"))
+_FACT_SELECT_CANONICAL_FORMATS = frozenset(("online", "offline"))
+_FACT_SELECT_CANONICAL_VENUES = frozenset(("moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "online", "unspecified"))
+_FACT_SELECT_CANONICAL_PROGRAM_KINDS = frozenset(("regular", "olympiad", "camp_city", "camp_lvsh", "any"))
+
+
+def _fact_select_clean(value: Any, *, limit: int = 120) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _fact_select_brand(value: Any) -> str:
+    text = _normalize_fact_match_text(value)
+    return text if text in _FACT_SELECT_CANONICAL_BRANDS else text
+
+
+def _fact_select_confidence(payload: Mapping[str, Any], product: Mapping[str, str]) -> float:
+    for key in (
+        "requested_product_confidence",
+        "product_confidence",
+        "frame_confidence",
+        "confidence",
+    ):
+        value = payload.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        return max(0.0, min(1.0, number))
+    for key in ("confidence", "frame_confidence"):
+        value = product.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        return max(0.0, min(1.0, number))
+    return 0.0
+
+
+def _fact_select_product_from_needed_facts(needed_facts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, str], tuple[str, ...]]:
+    product: dict[str, str] = {}
+    conflicts: list[str] = []
+    for key in _FACT_SELECT_PRODUCT_KEYS:
+        values: list[str] = []
+        for item in needed_facts:
+            if not isinstance(item, Mapping):
+                continue
+            value = _fact_select_clean(item.get(key), limit=80)
+            if value and value not in values:
+                values.append(value)
+        if len(values) == 1:
+            product[key] = values[0]
+        elif len(values) > 1:
+            conflicts.append(f"{key}_conflict")
+    return product, tuple(conflicts)
+
+
+def _fact_select_product_from_payload(payload: Mapping[str, Any]) -> tuple[dict[str, str], float, tuple[str, ...], str]:
+    raw_product = payload.get("requested_product")
+    conflicts: tuple[str, ...] = ()
+    if isinstance(raw_product, Mapping):
+        product = {
+            key: _fact_select_clean(raw_product.get(key), limit=160 if key == "raw_text" else 80)
+            for key in _FACT_SELECT_PRODUCT_KEYS
+            if _fact_select_clean(raw_product.get(key), limit=160 if key == "raw_text" else 80)
+        }
+        source = "retriever_requested_product"
+    else:
+        needed = _direct_path_needed_fact_declaration(payload)
+        product, conflicts = _fact_select_product_from_needed_facts(needed)
+        source = "retriever_needed_facts"
+    return product, _fact_select_confidence(payload, product), conflicts, source
+
+
+def _fact_select_context_frame(context: Optional[Mapping[str, Any]]) -> tuple[dict[str, str], float, tuple[str, ...], str]:
+    if not isinstance(context, Mapping):
+        return {}, 0.0, (), "none"
+    containers: list[Mapping[str, Any]] = []
+    for key in ("semantic_frame", "bot_semantic_frame", "semantic_frame_shadow"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    direct = context.get("direct_path")
+    if isinstance(direct, Mapping):
+        for key in ("semantic_frame", "semantic_frame_shadow"):
+            value = direct.get(key)
+            if isinstance(value, Mapping):
+                containers.append(value)
+    for frame in containers:
+        raw_product = frame.get("requested_product")
+        if not isinstance(raw_product, Mapping):
+            continue
+        product = {
+            key: _fact_select_clean(raw_product.get(key), limit=160 if key == "raw_text" else 80)
+            for key in _FACT_SELECT_PRODUCT_KEYS
+            if _fact_select_clean(raw_product.get(key), limit=160 if key == "raw_text" else 80)
+        }
+        if product:
+            return product, _fact_select_confidence(frame, product), (), "context_semantic_frame"
+    return {}, 0.0, (), "none"
+
+
+def _fact_select_slots(product: Mapping[str, str]) -> dict[str, str]:
+    slots: dict[str, str] = {}
+    if product.get("format") in _FACT_SELECT_CANONICAL_FORMATS:
+        slots["format"] = product["format"]
+    if product.get("grade"):
+        slots["grade"] = product["grade"]
+    program = _normalize_fact_match_text(product.get("program_kind") or "")
+    if program in {"camp_city", "camp_lvsh"}:
+        slots["product"] = "camp"
+    elif program in {"regular", "olympiad"}:
+        slots["product"] = "regular_course"
+    return slots
+
+
+def _fact_select_program_matches(product: Mapping[str, str], fact: Mapping[str, Any]) -> bool:
+    requested = _normalize_fact_match_text(product.get("program_kind") or "")
+    if not requested:
+        return False
+    structured = fact_program_kind(fact)
+    return requested in _FACT_SELECT_CANONICAL_PROGRAM_KINDS and structured == requested
+
+
+def _fact_select_venue_matches(value: Any, fact: Mapping[str, Any]) -> bool:
+    requested = _normalize_fact_match_text(value)
+    if not requested:
+        return False
+    return requested in _FACT_SELECT_CANONICAL_VENUES and fact_venue(fact) == requested
+
+
+def _fact_select_format_matches(value: Any, fact: Mapping[str, Any]) -> bool:
+    requested = _normalize_fact_match_text(value)
+    if requested not in _FACT_SELECT_CANONICAL_FORMATS:
+        return False
+    venue = fact_venue(fact)
+    if requested == "online":
+        return venue == "online"
+    if requested == "offline":
+        return venue in {"moscow_regular", "dolgoprudny"}
+    return False
+
+
+def _fact_select_product_axis_conflicts(product: Mapping[str, str]) -> tuple[str, ...]:
+    conflicts: list[str] = []
+    brand = _normalize_fact_match_text(product.get("brand"))
+    format_axis = _normalize_fact_match_text(product.get("format"))
+    venue = _normalize_fact_match_text(product.get("venue"))
+    program_kind = _normalize_fact_match_text(product.get("program_kind"))
+
+    if brand and brand not in _FACT_SELECT_CANONICAL_BRANDS:
+        conflicts.append("invalid_brand")
+    if format_axis and format_axis not in _FACT_SELECT_CANONICAL_FORMATS:
+        conflicts.append("invalid_format")
+    if venue and venue not in _FACT_SELECT_CANONICAL_VENUES:
+        conflicts.append("invalid_venue")
+    if program_kind and program_kind not in _FACT_SELECT_CANONICAL_PROGRAM_KINDS:
+        conflicts.append("invalid_program_kind")
+    if format_axis == "online" and venue in {"moscow_regular", "dolgoprudny", "lvsh_mendeleevo"}:
+        conflicts.append("format_venue_conflict")
+    if format_axis == "offline" and venue == "online":
+        conflicts.append("format_venue_conflict")
+    if program_kind == "camp_lvsh" and venue and venue not in {"lvsh_mendeleevo", "unspecified"}:
+        conflicts.append("program_venue_conflict")
+    if program_kind in {"regular", "olympiad"} and venue == "lvsh_mendeleevo":
+        conflicts.append("program_venue_conflict")
+    return tuple(dict.fromkeys(conflicts))
+
+
+def _fact_select_fact_score(
+    fact: Mapping[str, Any],
+    *,
+    product: Mapping[str, str],
+    slots: Mapping[str, str],
+) -> tuple[int, tuple[str, ...]]:
+    reasons: list[str] = []
+    score = 0
+    haystack = _normalize_fact_match_text(
+        f"{_direct_path_snapshot_fact_key(fact)} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
+    )
+    if _direct_path_fact_conflicts_slots(fact, slots, use_structured_program_kind=True):
+        reasons.append("slot_conflict")
+    requested_subject = _normalize_fact_match_text(product.get("subject"))
+    if requested_subject:
+        if _direct_path_subject_matches_fact(requested_subject, haystack):
+            score += 12
+        else:
+            reasons.append("subject_not_matched")
+    if product.get("format") and _fact_select_format_matches(product.get("format"), fact):
+        score += 6
+    if product.get("grade") and _direct_path_grade_in_fact(product.get("grade") or "", haystack):
+        score += 6
+    if product.get("venue") and _fact_select_venue_matches(product.get("venue"), fact):
+        score += 5
+    if product.get("program_kind") and _fact_select_program_matches(product, fact):
+        score += 4
+    return score, tuple(reasons)
+
+
+def _fact_select_trace(
+    *,
+    enabled: bool,
+    status: str,
+    decision: str,
+    reason: str,
+    source: str,
+    confidence: float,
+    product: Mapping[str, str],
+    exact_before: Sequence[str],
+    adjacent_before: Sequence[str],
+    exact_after: Sequence[str],
+    adjacent_after: Sequence[str],
+    conflicts: Sequence[str] = (),
+    apply_enabled: bool = False,
+) -> Mapping[str, Any]:
+    return semantic_reading_trace_record(
+        reading_class="fact_select_read",
+        enabled=enabled,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=source,
+        confidence=confidence,
+        changed_fields=("exact_keys", "adjacent_keys") if list(exact_before) != list(exact_after) or list(adjacent_before) != list(adjacent_after) else (),
+        conflicts=conflicts,
+        metadata={
+            "stage": "direct_path_wide_fact_pack",
+            "schema_version": FACT_SELECT_FRAME_SCHEMA_VERSION,
+            "apply_enabled": bool(apply_enabled),
+            "min_confidence": FACT_SELECT_FRAME_MIN_CONFIDENCE,
+            "requested_product": {
+                key: str(value)
+                for key, value in product.items()
+                if key in _FACT_SELECT_PRODUCT_KEYS and str(value).strip()
+            },
+            "exact_before": list(exact_before),
+            "adjacent_before": list(adjacent_before),
+            "exact_after": list(exact_after),
+            "adjacent_after": list(adjacent_after),
+        },
+    )
+
+
+def _direct_path_apply_fact_select_frame_to_records(
+    *,
+    exact_records: Sequence[Mapping[str, Any]],
+    adjacent_records: Sequence[Mapping[str, Any]],
+    active_brand: str,
+    product: Mapping[str, str],
+    confidence: float,
+    source: str,
+    source_conflicts: Sequence[str] = (),
+    apply_enabled: bool,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], Mapping[str, Any]]:
+    exact_before = [_direct_path_snapshot_fact_key(fact) for fact in exact_records if _direct_path_snapshot_fact_key(fact)]
+    adjacent_before = [_direct_path_snapshot_fact_key(fact) for fact in adjacent_records if _direct_path_snapshot_fact_key(fact)]
+    base_trace_kwargs = {
+        "enabled": True,
+        "source": source,
+        "confidence": confidence,
+        "product": product,
+        "exact_before": exact_before,
+        "adjacent_before": adjacent_before,
+        "exact_after": exact_before,
+        "adjacent_after": adjacent_before,
+        "apply_enabled": apply_enabled,
+    }
+
+    product_brand = _fact_select_brand(product.get("brand"))
+    active = _fact_select_brand(active_brand)
+    axis_conflicts = _fact_select_product_axis_conflicts(product)
+    meaningful_axes = [
+        key for key in ("subject", "grade", "format", "venue", "program_kind") if str(product.get(key) or "").strip()
+    ]
+    if not product:
+        trace = _fact_select_trace(status="fail_closed", decision="baseline", reason="empty_product", conflicts=source_conflicts, **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "empty_product"}
+    if source_conflicts or axis_conflicts:
+        trace = _fact_select_trace(
+            status="fail_closed",
+            decision="baseline",
+            reason="conflicting_axes",
+            conflicts=tuple(dict.fromkeys([*source_conflicts, *axis_conflicts])),
+            **base_trace_kwargs,
+        )
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "conflicting_axes"}
+    if product_brand and active and product_brand != active:
+        trace = _fact_select_trace(status="fail_closed", decision="baseline", reason="brand_mismatch", conflicts=("brand_mismatch",), **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "brand_mismatch"}
+    if not meaningful_axes:
+        trace = _fact_select_trace(status="fail_closed", decision="baseline", reason="no_product_axes", conflicts=(), **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "no_product_axes"}
+    if not apply_enabled:
+        trace = _fact_select_trace(status="shadow_only", decision="would_apply_if_enabled", reason="trace_only", conflicts=(), **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "shadow_only", "reason": "trace_only"}
+    if confidence < FACT_SELECT_FRAME_MIN_CONFIDENCE:
+        trace = _fact_select_trace(status="fail_closed", decision="baseline", reason="low_confidence", conflicts=(), **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "low_confidence"}
+
+    slots = _fact_select_slots(product)
+    seen: set[str] = set()
+    merged_records: list[Mapping[str, Any]] = []
+    for fact in (*exact_records, *adjacent_records):
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged_records.append(fact)
+
+    scored: list[tuple[int, int, Mapping[str, Any]]] = []
+    conflicted: list[tuple[int, Mapping[str, Any], tuple[str, ...]]] = []
+    conflicts: list[str] = []
+    for idx, fact in enumerate(merged_records):
+        score, reasons = _fact_select_fact_score(fact, product=product, slots=slots)
+        if reasons:
+            conflicted.append((idx, fact, reasons))
+            conflicts.extend(reasons)
+        else:
+            scored.append((score, idx, fact))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    positive = [(idx, fact) for score, idx, fact in scored if score > 0]
+    neutral = [(idx, fact) for score, idx, fact in scored if score <= 0]
+    if not positive:
+        trace = _fact_select_trace(status="fail_closed", decision="baseline", reason="no_positive_match", conflicts=tuple(dict.fromkeys(conflicts)), **base_trace_kwargs)
+        return list(exact_records), list(adjacent_records), {"trace": trace, "status": "fail_closed", "reason": "no_positive_match"}
+
+    exact_after_records = [fact for _, fact in positive]
+    adjacent_after_records = [fact for _, fact in neutral] + [fact for _, fact, _ in conflicted]
+    exact_after = [_direct_path_snapshot_fact_key(fact) for fact in exact_after_records if _direct_path_snapshot_fact_key(fact)]
+    adjacent_after = [_direct_path_snapshot_fact_key(fact) for fact in adjacent_after_records if _direct_path_snapshot_fact_key(fact)]
+    trace = _fact_select_trace(
+        status="applied",
+        decision="frame_product_prioritized",
+        reason="confidence_ok",
+        conflicts=tuple(dict.fromkeys(conflicts)),
+        exact_after=exact_after,
+        adjacent_after=adjacent_after,
+        **{key: value for key, value in base_trace_kwargs.items() if key not in {"exact_after", "adjacent_after"}},
+    )
+    return exact_after_records, adjacent_after_records, {"trace": trace, "status": "applied", "reason": "confidence_ok"}
+
 def _direct_path_fact_relevance_score(
     fact: Mapping[str, Any],
     *,
@@ -1390,6 +1767,53 @@ def _direct_path_keyword_fact_pack_from_records(
         exact_records = [ordered[0]]
         adjacent_records = ordered[1:]
 
+    metadata: dict[str, Any] = dict(extra_metadata or {})
+    fact_select_meta: Optional[Mapping[str, Any]] = None
+    if _fact_select_read_enabled(context) or _fact_select_frame_enabled(context):
+        product, confidence, conflicts, source = _fact_select_context_frame(context)
+        if not product and isinstance(metadata.get("llm_retrieve"), Mapping):
+            product, confidence, conflicts, source = _fact_select_product_from_payload(metadata["llm_retrieve"])  # type: ignore[arg-type]
+        exact_records, adjacent_records, fact_select_meta = _direct_path_apply_fact_select_frame_to_records(
+            exact_records=exact_records,
+            adjacent_records=adjacent_records,
+            active_brand=active_brand,
+            product=product,
+            confidence=confidence,
+            source=source,
+            source_conflicts=conflicts,
+            apply_enabled=_fact_select_frame_enabled(context),
+        )
+        metadata["fact_select_frame"] = {
+            key: value
+            for key, value in dict(fact_select_meta).items()
+            if key != "trace"
+        }
+        trace = fact_select_meta.get("trace") if isinstance(fact_select_meta, Mapping) else None
+        if isinstance(trace, Mapping):
+            metadata["semantic_reading_trace"] = [dict(trace)]
+
+    if _fact_venue_scope_enabled(context):
+        requested_scope = "unspecified"
+        llm_meta = metadata.get("llm_retrieve")
+        if isinstance(llm_meta, Mapping):
+            venue_meta = llm_meta.get("venue_scope")
+            if isinstance(venue_meta, Mapping):
+                requested_scope = str(venue_meta.get("requested_scope") or "unspecified")
+        if requested_scope and requested_scope != "unspecified":
+            exact_records, adjacent_records, keyword_venue_meta = _direct_path_apply_venue_scope_to_records(
+                exact_records=exact_records,
+                adjacent_records=adjacent_records,
+                requested_scope=requested_scope,
+            )
+            if isinstance(llm_meta, Mapping):
+                updated_llm_meta = dict(llm_meta)
+                venue_meta = dict(updated_llm_meta.get("venue_scope") or {})
+                venue_meta.update(dict(keyword_venue_meta))
+                venue_meta["source"] = "keyword_fallback"
+                updated_llm_meta["venue_scope"] = venue_meta
+                metadata["llm_retrieve"] = updated_llm_meta
+            metadata["keyword_venue_scope"] = dict(keyword_venue_meta)
+
     return _direct_path_records_to_fact_pack(
         active_brand=active_brand,
         legacy=legacy,
@@ -1398,7 +1822,8 @@ def _direct_path_keyword_fact_pack_from_records(
         selected_category=selected_category,
         max_facts=max_facts,
         max_chars=max_chars,
-        extra_metadata=extra_metadata,
+        extra_metadata=metadata,
+        include_scope_axes=_fact_venue_scope_enabled(context),
     )
 
 def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any], *, include_scope_axes: bool = False) -> str:
@@ -1476,7 +1901,11 @@ def _direct_path_needed_fact_declaration(payload: Mapping[str, Any]) -> list[dic
         "grade",
         "subject",
         "format",
+        "venue",
+        "program_kind",
         "product",
+        "raw_text",
+        "confidence",
         "why_needed",
         "importance",
     )
@@ -1537,6 +1966,7 @@ def build_direct_path_llm_retriever_prompt(
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
     venue_scope = _fact_venue_scope_enabled(context)
+    fact_select = _fact_select_frame_enabled(context)
     plan = {}
     if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
         source_plan = context["conversation_intent_plan"]
@@ -1559,6 +1989,7 @@ def build_direct_path_llm_retriever_prompt(
     declaration_instruction = ""
     json_schema = '{"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
     requested_scope_instruction = ""
+    product_instruction = ""
     if venue_scope:
         requested_scope_instruction = (
             "\nДополнительно верни requested_scope — какую площадку/инстанс по смыслу спрашивает клиент в текущем подвопросе. "
@@ -1578,24 +2009,37 @@ def build_direct_path_llm_retriever_prompt(
             "\nДополнительно верни needed_facts — структурированную декларацию того, какие факты нужны клиенту.\n"
             f"Версия схемы декларации: {RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION}.\n"
             f"{driver_line}"
-            "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, product, "
+            "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, venue, program_kind, product, "
             "why_needed, importance. importance только required или helpful. Если нужных фактов нет, верни пустой список.\n"
         )
+        if fact_select:
+            product_instruction = (
+                "\nДополнительно верни requested_product и requested_product_confidence — какой учебный продукт "
+                "клиент реально спрашивает в текущем ходе. Это не выбор ответа, а только смысловой фильтр фактов. "
+                "requested_product_confidence — число 0..1; если не уверен в продукте/классе/формате/площадке, снизь confidence. "
+                "Поля brand, format, venue, program_kind заполняй только каноническими значениями: "
+                "brand=foton|unpk; format=online|offline; "
+                "venue=moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified; "
+                "program_kind=regular|olympiad|camp_city|camp_lvsh|any.\n"
+            )
         if venue_scope:
-            json_schema = (
-                '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified",'
-                '"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
-                '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
-                '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
-                '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
-            )
+            prefix = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified",'
         else:
-            json_schema = (
-                '{"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
-                '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
-                '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
-                '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
-            )
+            prefix = "{"
+        product_schema = (
+            '"requested_product":{"brand":"foton","subject":"физика","grade":"9","format":"online",'
+            '"venue":"online","program_kind":"regular","raw_text":"физика 9 класс онлайн"},'
+            '"requested_product_confidence":0.95,'
+            if fact_select
+            else ""
+        )
+        json_schema = (
+            f"{prefix}{product_schema}"
+            '"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
+            '"grade":"9","subject":"физика","format":"online","venue":"online","program_kind":"regular",'
+            '"product":"regular_course","why_needed":"клиент спрашивает стоимость","importance":"required"}],'
+            '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+        )
     return (
         "Ты выбираешь факты для черновика ответа учебного центра.\n"
         "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
@@ -1612,6 +2056,7 @@ def build_direct_path_llm_retriever_prompt(
         f"Кандидаты:\n{candidate_block}\n\n"
         f"{requested_scope_instruction}"
         f"{declaration_instruction}"
+        f"{product_instruction}"
         f"Верни строго JSON: {json_schema}"
     )
 
@@ -1836,6 +2281,9 @@ def _direct_path_llm_retrieve_fact_pack(
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
     venue_scope_enabled_flag = _fact_venue_scope_enabled(context)
+    fact_select_read_enabled = _fact_select_read_enabled(context)
+    fact_select_apply_enabled = _fact_select_frame_enabled(context)
+    fact_select_enabled = fact_select_read_enabled or fact_select_apply_enabled
     keyword_required_fact_keys = _direct_path_required_fact_keys(context)
     candidate_by_key = {
         _direct_path_snapshot_fact_key(fact): fact
@@ -1901,6 +2349,10 @@ def _direct_path_llm_retrieve_fact_pack(
     except Exception as exc:  # noqa: BLE001
         metadata.update({"fallback": True, "fallback_reason": "invalid_json", "error": str(exc)[:300]})
         return None, metadata
+    fact_select_product: dict[str, str] = {}
+    fact_select_confidence = 0.0
+    fact_select_conflicts: tuple[str, ...] = ()
+    fact_select_source = "disabled"
     if need_declaration:
         needed_facts = _direct_path_needed_fact_declaration(payload)
         metadata["needed_facts"] = needed_facts
@@ -1912,6 +2364,8 @@ def _direct_path_llm_retrieve_fact_pack(
         if model_driven and not needed_facts:
             metadata.update({"fallback": True, "fallback_reason": "missing_needed_facts"})
             return None, metadata
+    if fact_select_enabled:
+        fact_select_product, fact_select_confidence, fact_select_conflicts, fact_select_source = _fact_select_product_from_payload(payload)
     requested_scope = "unspecified"
     if venue_scope_enabled_flag:
         requested_scope_raw = payload.get("requested_scope") or payload.get("requested_venue") or payload.get("venue_scope")
@@ -1990,6 +2444,29 @@ def _direct_path_llm_retrieve_fact_pack(
             final_exact_ids.append(key)
         exact_records.append(fact)
         supplemented_exact.append(key)
+    fact_select_meta: Optional[Mapping[str, Any]] = None
+    if fact_select_enabled:
+        exact_records, adjacent_records, fact_select_meta = _direct_path_apply_fact_select_frame_to_records(
+            exact_records=exact_records,
+            adjacent_records=adjacent_records,
+            active_brand=active_brand,
+            product=fact_select_product,
+            confidence=fact_select_confidence,
+            source=fact_select_source,
+            source_conflicts=fact_select_conflicts,
+            apply_enabled=fact_select_apply_enabled,
+        )
+        final_exact_ids = [
+            _direct_path_snapshot_fact_key(fact) for fact in exact_records if _direct_path_snapshot_fact_key(fact)
+        ]
+        final_adjacent_ids = [
+            _direct_path_snapshot_fact_key(fact) for fact in adjacent_records if _direct_path_snapshot_fact_key(fact)
+        ]
+        metadata["fact_select_frame"] = {
+            key: value
+            for key, value in dict(fact_select_meta).items()
+            if key != "trace"
+        }
     if venue_scope_enabled_flag:
         exact_records, adjacent_records, venue_scope_meta = _direct_path_apply_venue_scope_to_records(
             exact_records=exact_records,
@@ -2016,6 +2493,16 @@ def _direct_path_llm_retrieve_fact_pack(
             "supplemented_exact_ids": supplemented_exact,
         }
     )
+    extra_metadata: dict[str, Any] = {"llm_retrieve": metadata}
+    if fact_select_meta is not None:
+        extra_metadata["fact_select_frame"] = {
+            key: value
+            for key, value in dict(fact_select_meta).items()
+            if key != "trace"
+        }
+        trace = fact_select_meta.get("trace") if isinstance(fact_select_meta, Mapping) else None
+        if isinstance(trace, Mapping):
+            extra_metadata["semantic_reading_trace"] = [dict(trace)]
     pack = _direct_path_records_to_fact_pack(
         active_brand=active_brand,
         legacy=legacy,
@@ -2024,7 +2511,7 @@ def _direct_path_llm_retrieve_fact_pack(
         selected_category="llm_retrieve",
         max_facts=max_facts,
         max_chars=max_chars,
-        extra_metadata={"llm_retrieve": metadata},
+        extra_metadata=extra_metadata,
         include_scope_axes=venue_scope_enabled_flag,
     )
     return pack, metadata
@@ -2900,6 +3387,11 @@ def _direct_path_metadata(
         ]
     if isinstance(pack.get("llm_retrieve"), Mapping):
         metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
+    if isinstance(pack.get("fact_select_frame"), Mapping):
+        metadata["fact_select_frame"] = dict(pack["fact_select_frame"])  # type: ignore[index]
+    raw_trace = pack.get("semantic_reading_trace")
+    if isinstance(raw_trace, Sequence) and not isinstance(raw_trace, (str, bytes, bytearray)):
+        metadata["semantic_reading_trace"] = [dict(item) for item in raw_trace if isinstance(item, Mapping)]
     if isinstance(pack.get("slot_topic_shadow"), Mapping):
         metadata["slot_topic_shadow"] = dict(pack["slot_topic_shadow"])  # type: ignore[index]
     if _assumed_scope_guard_enabled(context):
@@ -2940,6 +3432,14 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
     metadata["direct_path"] = direct
     if isinstance(direct_meta.get("answer_coverage_plan"), Mapping):
         metadata["answer_coverage_plan"] = dict(direct_meta["answer_coverage_plan"])  # type: ignore[index]
+    if isinstance(direct_meta.get("semantic_reading_trace"), Sequence) and not isinstance(
+        direct_meta.get("semantic_reading_trace"), (str, bytes, bytearray)
+    ):
+        metadata["semantic_reading_trace"] = [
+            dict(item)
+            for item in direct_meta.get("semantic_reading_trace", [])  # type: ignore[union-attr]
+            if isinstance(item, Mapping)
+        ]
     metadata["text_composition_source"] = direct_meta.get("text_composition_source") or "direct_path_model"
     if direct_meta.get("reason_class"):
         metadata["reason_class"] = str(direct_meta.get("reason_class") or "")

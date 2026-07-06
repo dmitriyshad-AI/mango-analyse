@@ -122,6 +122,11 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "DIRECT_SLOT_TOPIC_SHADOW_ENV", "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"),
     (
         "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "FACT_SELECT_FRAME_ENV",
+        "TELEGRAM_FACT_SELECT_FRAME",
+    ),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
         "P0_MODEL_CLASSES_V2_ENV",
         "TELEGRAM_P0_MODEL_CLASSES_V2",
     ),

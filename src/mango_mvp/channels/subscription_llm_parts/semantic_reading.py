@@ -26,6 +26,7 @@ ALLOWED_SEMANTIC_READING_CLASSES = frozenset(
         "live_status_read",
         "reask_read",
         "roles_read",
+        "fact_select_read",
     }
 )
 ALLOWED_READING_APPLY_CLASSES = frozenset(

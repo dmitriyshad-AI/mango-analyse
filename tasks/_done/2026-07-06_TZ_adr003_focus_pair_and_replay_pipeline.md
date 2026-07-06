@@ -1,3 +1,5 @@
+> DONE 2026-07-06 07:05 | ветка codex/adr003-semanticframe-migration | codex
+
 > TAKE 2026-07-06 06:44 | ветка codex/adr003-semanticframe-migration | codex
 
 Ветка: codex/adr003-semanticframe-migration

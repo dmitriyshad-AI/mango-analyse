@@ -13,7 +13,11 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     semantic_reading_trace_record,
     sense_seats_reading_decision,
 )
-from mango_mvp.channels.subscription_llm_parts.support import _explicit_truthy_setting, _normalize_fact_match_text
+from mango_mvp.channels.subscription_llm_parts.support import (
+    _explicit_truthy_setting,
+    _normalize_fact_match_text,
+    _seats_default_open_allowlisted_result,
+)
 
 RELIABLE_ANSWERER_STEP1_ENV = "TELEGRAM_RELIABLE_ANSWERER_STEP1"
 ANSWER_COVERAGE_PLAN_SCHEMA_VERSION = "answer_coverage_plan_v1_2026_06_25"
@@ -412,7 +416,11 @@ def apply_reliable_answerer_output_guard(
     current = replace(result, metadata=metadata)
     reading = SemanticReading.from_result(current, context=context)
     sense_decision = sense_seats_reading_decision(reading, client_message)
-    if trace["availability_promise_detected"] and "availability" not in covered_facets_in_text(result.draft_text, plan):
+    if (
+        trace["availability_promise_detected"]
+        and "availability" not in covered_facets_in_text(result.draft_text, plan)
+        and not _seats_default_open_allowlisted_result(current)
+    ):
         flags = tuple(dict.fromkeys([*result.safety_flags, "reliable_answerer_availability_promise_blocked"]))
         checklist = tuple(
             dict.fromkeys(

@@ -169,6 +169,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _pilot_profile_overrides,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
+    _seats_default_open_allowlisted_result,
 )
 
 from mango_mvp.channels.subscription_llm_parts.contracts import (
@@ -3290,6 +3291,20 @@ def apply_semantic_frame_manager_action_gate(
             "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
             "enabled": True,
             "status": "frame_not_posthoc",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    if _seats_default_open_allowlisted_result(result):
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "pass",
+            "reason": "seats_default_open_regular_groups_allowlist",
             "route_before": route_before,
             "route_after": route_before,
         }

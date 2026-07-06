@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _write_case(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "dialog_id": "wappi_replay_dialog",
+                "profile_id": "[profile_id:id_aaaaaaaaaaaa]",
+                "chat_id": "[chat_id:id_bbbbbbbbbbbb]",
+                "turn_id": "turn-1",
+                "brand": "foton",
+                "client_message": "Есть места?",
+                "manager_reference": "Ответ менеджера",
+                "segment": "chat_only",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_run_replay_cli_requires_exactly_one_provider_mode(tmp_path: Path) -> None:
+    cases = tmp_path / "cases.jsonl"
+    _write_case(cases)
+    result = subprocess.run(
+        [sys.executable, "scripts/run_wappi_replay_exam.py", "--set", str(cases), "--out-dir", str(tmp_path / "out")],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Choose exactly one provider mode" in result.stderr
+
+
+def test_run_replay_cli_real_provider_requires_explicit_llm_permission(tmp_path: Path) -> None:
+    cases = tmp_path / "cases.jsonl"
+    _write_case(cases)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_wappi_replay_exam.py",
+            "--set",
+            str(cases),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--real-provider",
+            "--snapshot",
+            str(snapshot),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--allow-llm-calls" in result.stderr
+
+
+def test_run_replay_cli_real_provider_rejects_cases_outside_scrubbed_root(tmp_path: Path) -> None:
+    cases = tmp_path / "cases.jsonl"
+    _write_case(cases)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_wappi_replay_exam.py",
+            "--set",
+            str(cases),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--real-provider",
+            "--allow-llm-calls",
+            "--snapshot",
+            str(snapshot),
+            "--parallel",
+            "1",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "real replay cases must stay under" in result.stderr
+
+
+def test_run_replay_cli_real_provider_rejects_outside_set_before_json_parse(tmp_path: Path) -> None:
+    cases = tmp_path / "bad_cases.jsonl"
+    cases.write_text("{not-json", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_wappi_replay_exam.py",
+            "--set",
+            str(cases),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--real-provider",
+            "--allow-llm-calls",
+            "--snapshot",
+            str(snapshot),
+            "--parallel",
+            "1",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "real replay cases must stay under" in result.stderr
+    assert "JSONDecodeError" not in result.stderr
+
+
+def test_run_replay_cli_real_provider_rejects_runtime_output_before_provider(tmp_path: Path) -> None:
+    cases = Path("~/.mango_local/replay_exam/scrubbed/pytest_missing_cases.jsonl").expanduser()
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_wappi_replay_exam.py",
+            "--set",
+            str(cases),
+            "--out-dir",
+            str(tmp_path / "stable_runtime" / "replay_out"),
+            "--real-provider",
+            "--allow-llm-calls",
+            "--snapshot",
+            str(snapshot),
+            "--parallel",
+            "1",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "stable_runtime" in result.stderr

@@ -83,6 +83,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _presale_prompt_child_name_value,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
+    SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
     _truthy_value,
 )
 
@@ -101,6 +102,8 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 
 FIX1B_AUTONOMY_VERIFIED_FACTS_ENV = "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS"
+
+SEATS_DEFAULT_OPEN_ENV = "TELEGRAM_SEATS_DEFAULT_OPEN"
 
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
@@ -3457,6 +3460,7 @@ def apply_conversation_intent_plan_guard(
             legacy_result,
             context=context,
             stage="conversation_intent_plan",
+            client_message=client_message,
         )
     if reading_class_enabled(context, "route_templates"):
         legacy_result = _route_templates_transition_trace(
@@ -3495,6 +3499,7 @@ def apply_live_status_read_plan_trace(
         context=context,
         stage="conversation_intent_plan_observer",
         trace_only=True,
+        client_message=client_message,
     )
 
 
@@ -3505,6 +3510,7 @@ def _live_status_read_transition_trace(
     context: Optional[Mapping[str, Any]] = None,
     stage: str,
     trace_only: bool = False,
+    client_message: str = "",
 ) -> SubscriptionDraftResult:
     if not trace_only and reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan"):
         return _live_status_read_transition_apply(
@@ -3512,6 +3518,7 @@ def _live_status_read_transition_trace(
             legacy_result,
             context=context,
             stage=stage,
+            client_message=client_message,
         )
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
@@ -3611,6 +3618,107 @@ def _live_status_hard_floor_reason(result: SubscriptionDraftResult) -> str:
     return ""
 
 
+def _seats_default_open_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        SEATS_DEFAULT_OPEN_ENV,
+        aliases=("seats_default_open", "seats_default_open_enabled"),
+    )
+    return bool(explicit) if explicit is not None else False
+
+
+def _seats_default_open_brand(value: Any) -> str:
+    text = _normalize_fact_match_text(value)
+    if has_any_marker(text, ("foton", "фотон", "цдпо", "cdpo")):
+        return "foton"
+    if has_any_marker(text, ("unpk", "унпк", "мфти", "mipt")):
+        return "unpk"
+    return ""
+
+
+def _seats_default_open_exclusion_reason(
+    *,
+    frame: Mapping[str, Any],
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    requested_product = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
+    active_brand = _seats_default_open_brand(_active_brand(context))
+    product_brand = _seats_default_open_brand(requested_product.get("brand") if isinstance(requested_product, Mapping) else "")
+    if active_brand not in {"foton", "unpk"}:
+        return "brand_floor"
+    if product_brand and product_brand != active_brand:
+        return "brand_floor"
+    product_text = " ".join(
+        str(requested_product.get(key) or "")
+        for key in ("brand", "subject", "grade", "format", "venue", "program_kind", "raw_text")
+    )
+    haystack = _normalize_fact_match_text(
+        " ".join(
+            [
+                client_message,
+                product_text,
+                _dialog_context_haystack(context),
+            ]
+        )
+    )
+    if (
+        re.search(r"\bсколько\s+(?:мест|человек)\b", haystack, re.I)
+        or has_any_marker(haystack, ("размер группы", "наполняемость", "сколько учеников", "сколько детей"))
+    ):
+        return "group_size_question_floor"
+    if has_any_marker(haystack, ("лвш", "лагер", "летн", "лш", "менделеево", "смен")):
+        return "camp_or_shift_floor"
+    if has_any_marker(haystack, ("индивидуал", "персональн", "репетитор", "один на один", "1 на 1")):
+        return "individual_floor"
+    if has_any_marker(haystack, ("лобня", "жуковск")):
+        return "unsupported_city_floor"
+    if has_any_marker(
+        haystack,
+        (
+            "заброниру",
+            "бронь",
+            "зафиксиру",
+            "закрепи",
+            "оставьте место",
+            "удержите место",
+            "оформить место",
+            "оформите место",
+            "подтвердите место",
+            "лист ожидания",
+        ),
+    ) or re.search(r"\bзапиш(?:ите|и|ем|ать)\s+(?:нас|меня|ребенка|ребенка|сына|дочь|его|ее|в\s+группу)\b", haystack, re.I):
+        return "booking_operation_floor"
+    return ""
+
+
+def _seats_default_open_result(result: SubscriptionDraftResult, *, context: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
+    del context
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    metadata["seats_default_open_regular_groups"] = True
+    metadata["availability_promise_allowlist"] = "seats_default_open_regular_groups"
+    direct["seats_default_open_regular_groups"] = True
+    metadata["direct_path"] = direct
+    flags = [
+        flag
+        for flag in result.safety_flags
+        if flag not in {*BASE_SAFETY_FLAGS, "conversation_intent_plan_live_availability", "semantic_frame_live_status_read_live_availability"}
+    ]
+    flags.append("seats_default_open_regular_groups")
+    return replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        draft_text=SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=(),
+        forbidden_promises_detected=tuple(
+            item for item in result.forbidden_promises_detected if item != "availability_promise"
+        ),
+        metadata=metadata,
+    )
+
+
 def _live_status_frame_guarded_result(
     result: SubscriptionDraftResult,
     *,
@@ -3646,6 +3754,7 @@ def _live_status_read_transition_apply(
     *,
     context: Optional[Mapping[str, Any]] = None,
     stage: str,
+    client_message: str = "",
 ) -> SubscriptionDraftResult:
     reading = SemanticReading.from_result(original, context=context)
     frame = semantic_frame_from_metadata(original.metadata)
@@ -3663,14 +3772,27 @@ def _live_status_read_transition_apply(
         decision = "legacy_more_conservative"
         reason = fail_reason
     elif frame_action == "check_availability":
-        chosen = legacy_result if legacy_live_status else _live_status_frame_guarded_result(
-            original,
-            context=context,
-            topic_id=str(legacy_result.topic_id or ""),
+        default_open_exclusion = (
+            _seats_default_open_exclusion_reason(frame=frame, client_message=client_message, context=context)
+            if _seats_default_open_enabled(context)
+            else "seats_default_open_off"
         )
-        status = "applied"
-        decision = "frame_check_availability"
-        reason = "frame_live_availability"
+        if not default_open_exclusion:
+            chosen = _seats_default_open_result(original, context=context)
+            status = "applied"
+            decision = "frame_check_availability_default_open"
+            reason = "seats_default_open_regular_groups"
+        else:
+            chosen = legacy_result if legacy_live_status else _live_status_frame_guarded_result(
+                original,
+                context=context,
+                topic_id=str(legacy_result.topic_id or ""),
+            )
+            status = "applied"
+            decision = "frame_check_availability"
+            reason = "frame_live_availability"
+            if default_open_exclusion != "seats_default_open_off":
+                reason = f"frame_live_availability:{default_open_exclusion}"
     else:
         chosen = original
         status = "applied"
@@ -4199,8 +4321,12 @@ def _apply_intent_actions_transition_guard(
     reason = "no_matching_frame_action"
 
     if requested_action == "check_availability":
-        frame_result = _intent_actions_live_availability_result(base_result, frame=frame)
-        reason = "frame_check_availability"
+        if _truthy_value((base_result.metadata if isinstance(base_result.metadata, Mapping) else {}).get("seats_default_open_regular_groups")):
+            frame_result = base_result
+            reason = "seats_default_open_regular_groups"
+        else:
+            frame_result = _intent_actions_live_availability_result(base_result, frame=frame)
+            reason = "frame_check_availability"
 
     if frame_result is None:
         return _intent_actions_trace(

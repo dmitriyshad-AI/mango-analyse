@@ -120,6 +120,11 @@ DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 
+SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT = (
+    "Места в регулярных группах есть — идёт набор на 2026/27. "
+    "Помогу записаться: подскажите класс, предмет и формат."
+)
+
 
 DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_ENV,
@@ -405,6 +410,22 @@ def _truthy_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
+
+
+def _seats_default_open_allowlisted_result(result: Any) -> bool:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return False
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    flags = {str(flag or "") for flag in getattr(result, "safety_flags", ())}
+    return (
+        str(getattr(result, "route", "") or "") == "bot_answer_self_for_pilot"
+        and str(getattr(result, "draft_text", "") or "") == SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+        and "seats_default_open_regular_groups" in flags
+        and bool(metadata.get("seats_default_open_regular_groups"))
+        and str(metadata.get("availability_promise_allowlist") or "") == "seats_default_open_regular_groups"
+        and bool(direct.get("seats_default_open_regular_groups"))
+    )
 
 
 def _explicit_truthy_setting(

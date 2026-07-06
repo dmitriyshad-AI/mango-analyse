@@ -64,6 +64,7 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "route": result.route,
                 "bot_text": result.bot_text,
                 "safety_flags": list(result.safety_flags),
+                "provider_metadata": dict(result.metadata),
                 "machine_gate": {"passed": gate.passed, "flags": list(gate.flags), "new_numbers": list(gate.new_numbers)},
                 "llm_calls_client": 0,
             }

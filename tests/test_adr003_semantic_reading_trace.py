@@ -6,6 +6,8 @@ from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraf
 from mango_mvp.channels.answer_quality_rewriter import apply_answer_quality_rewriter
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
+    SEATS_DEFAULT_OPEN_ENV,
+    SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
     _conversation_intent_plan_with_model_led,
     _route_templates_transition_trace,
     apply_conversation_intent_plan_guard,
@@ -14,6 +16,7 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     apply_live_status_read_plan_trace,
 )
 from mango_mvp.channels.subscription_llm_parts.post_layers import apply_humanity_guards
+from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_frame_manager_action_gate
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_reading_trace_finalize
 from mango_mvp.channels.subscription_llm_parts.provider import SubscriptionLlmDraftProvider
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
@@ -316,6 +319,7 @@ def _live_status_frame_result(
     confidence: float = 0.95,
     risk_class: str = "safe",
     must_handoff: bool = False,
+    product: dict[str, str] | None = None,
 ) -> SubscriptionDraftResult:
     return SubscriptionDraftResult(
         route=route,
@@ -329,7 +333,7 @@ def _live_status_frame_result(
                 "must_handoff": must_handoff,
                 "risk_class": risk_class,
                 "confidence": confidence,
-                "requested_product": {"grade": "8", "subject": "математика", "format": "очно"},
+                "requested_product": product or {"grade": "8", "subject": "математика", "format": "очно"},
             }
         },
     )
@@ -376,6 +380,132 @@ def test_live_status_apply_allows_manager_action_availability_frame() -> None:
     assert trace["decision"] == "frame_check_availability"
 
 
+def test_live_status_default_open_regular_group_answers_self_when_flag_enabled() -> None:
+    result = apply_conversation_intent_plan_guard(
+        _live_status_frame_result("check_availability", risk_class="manager_action", must_handoff=True),
+        client_message="Есть ли места в группе 9 класса по математике?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read,intent_actions",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            SEATS_DEFAULT_OPEN_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "pricing", "topic_id": "theme:001_pricing"},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+    assert "seats_default_open_regular_groups" in result.safety_flags
+    traces = result.metadata["semantic_reading_trace"]
+    assert traces[0]["decision"] == "frame_check_availability_default_open"
+    assert traces[-1]["reason"] == "seats_default_open_regular_groups"
+
+
+@pytest.mark.parametrize(
+    ("client_message", "product", "expected_reason"),
+    [
+        (
+            "Есть места в ЛВШ?",
+            {"grade": "8", "subject": "физика", "format": "очно", "program_kind": "camp", "raw_text": "ЛВШ Менделеево"},
+            "camp_or_shift_floor",
+        ),
+        (
+            "Забронируйте место в группе.",
+            {"grade": "8", "subject": "математика", "format": "очно", "program_kind": "regular", "raw_text": "регулярная группа"},
+            "booking_operation_floor",
+        ),
+        (
+            "Есть места на индивидуальные занятия?",
+            {"grade": "8", "subject": "математика", "format": "очно", "program_kind": "individual", "raw_text": "индивидуальные занятия"},
+            "individual_floor",
+        ),
+    ],
+)
+def test_live_status_default_open_keeps_exception_floors(
+    client_message: str,
+    product: dict[str, str],
+    expected_reason: str,
+) -> None:
+    result = apply_conversation_intent_plan_guard(
+        _live_status_frame_result("check_availability", risk_class="manager_action", must_handoff=True, product=product),
+        client_message=client_message,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            SEATS_DEFAULT_OPEN_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "pricing", "topic_id": "theme:001_pricing"},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text != SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+    assert "seats_default_open_regular_groups" not in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["decision"] == "frame_check_availability"
+    assert trace["reason"] == f"frame_live_availability:{expected_reason}"
+
+
+@pytest.mark.parametrize(
+    ("context_extra", "expected_reason"),
+    [
+        ({}, "brand_floor"),
+        ({"active_brand": "foton"}, "brand_floor"),
+    ],
+)
+def test_live_status_default_open_requires_active_brand_and_product_brand_match(
+    context_extra: dict[str, str],
+    expected_reason: str,
+) -> None:
+    product = {"grade": "8", "subject": "математика", "format": "очно", "brand": "УНПК"}
+    result = apply_conversation_intent_plan_guard(
+        _live_status_frame_result("check_availability", risk_class="manager_action", must_handoff=True, product=product),
+        client_message="Есть места в группе?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            SEATS_DEFAULT_OPEN_ENV: "1",
+            "conversation_intent_plan": {"primary_intent": "pricing", "topic_id": "theme:001_pricing"},
+            **context_extra,
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text != SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["reason"] == f"frame_live_availability:{expected_reason}"
+
+
+@pytest.mark.parametrize(
+    ("client_message", "expected_reason"),
+    [
+        ("Оформить место в группе можно?", "booking_operation_floor"),
+        ("Запишите нас в группу", "booking_operation_floor"),
+        ("Сколько мест в группе обычно?", "group_size_question_floor"),
+    ],
+)
+def test_live_status_default_open_blocks_operations_and_group_size_questions(
+    client_message: str,
+    expected_reason: str,
+) -> None:
+    result = apply_conversation_intent_plan_guard(
+        _live_status_frame_result("check_availability", risk_class="manager_action", must_handoff=True),
+        client_message=client_message,
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            SEATS_DEFAULT_OPEN_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "pricing", "topic_id": "theme:001_pricing"},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text != SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["reason"] == f"frame_live_availability:{expected_reason}"
+
+
 def test_live_status_apply_preserves_legacy_when_both_see_availability() -> None:
     result = apply_conversation_intent_plan_guard(
         _live_status_frame_result("check_availability"),
@@ -418,6 +548,35 @@ def test_live_status_apply_keeps_paid_floor_even_when_frame_is_availability() ->
 
     assert result.route == "manager_only"
     assert "high_risk_manager_only" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "hard_route_floor"
+
+
+def test_live_status_default_open_does_not_bypass_paid_floor() -> None:
+    paid = _live_status_frame_result("check_availability", route="manager_only")
+    paid = SubscriptionDraftResult(
+        route=paid.route,
+        topic_id=paid.topic_id,
+        draft_text=paid.draft_text,
+        safety_flags=("direct_path_model_p0_paid_operation_context", "high_risk_manager_only"),
+        metadata=paid.metadata,
+    )
+
+    result = apply_conversation_intent_plan_guard(
+        paid,
+        client_message="Оплатили заранее, подтверждения места нет.",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            READING_APPLY_CLASSES_ENV: "live_status_read/conversation_intent_plan",
+            SEATS_DEFAULT_OPEN_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "live_availability", "topic_id": "theme:003_payment_status"},
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text != SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
     trace = result.metadata["semantic_reading_trace"][0]
     assert trace["status"] == "fail_closed"
     assert trace["reason"] == "hard_route_floor"
@@ -908,6 +1067,113 @@ def test_live_status_read_records_reliable_answerer_facets_and_keeps_floor() -> 
     assert trace["decision"] == "legacy_availability_promise_blocked"
     assert trace["metadata"]["stage"] == "reliable_answerer_output_guard"
     assert trace["metadata"]["availability_promise_detected"] is True
+
+
+def test_reliable_answerer_allows_only_marked_seats_default_open_template() -> None:
+    result = apply_reliable_answerer_output_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
+            safety_flags=("seats_default_open_regular_groups",),
+            metadata={
+                "seats_default_open_regular_groups": True,
+                "availability_promise_allowlist": "seats_default_open_regular_groups",
+                "direct_path": {"seats_default_open_regular_groups": True},
+            },
+        ),
+        client_message="Есть места?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            RELIABLE_ANSWERER_STEP1_ENV: "1",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "reliable_answerer_availability_promise_blocked" not in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "no_op"
+
+
+def test_reliable_answerer_blocks_forged_seats_default_open_metadata_with_unsafe_text() -> None:
+    result = apply_reliable_answerer_output_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, места есть, запишем вас в группу.",
+            safety_flags=("seats_default_open_regular_groups",),
+            metadata={
+                "seats_default_open_regular_groups": True,
+                "availability_promise_allowlist": "seats_default_open_regular_groups",
+                "direct_path": {"seats_default_open_regular_groups": True},
+            },
+        ),
+        client_message="Есть места?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "live_status_read",
+            RELIABLE_ANSWERER_STEP1_ENV: "1",
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "reliable_answerer_availability_promise_blocked" in result.safety_flags
+
+
+def test_semantic_frame_manager_action_gate_allows_marked_seats_default_open_template() -> None:
+    result = apply_semantic_frame_manager_action_gate(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
+            safety_flags=("seats_default_open_regular_groups",),
+            metadata={
+                "seats_default_open_regular_groups": True,
+                "availability_promise_allowlist": "seats_default_open_regular_groups",
+                "direct_path": {"seats_default_open_regular_groups": True},
+                "semantic_frame_posthoc_shadow": {"status": "ok"},
+                "semantic_frame": {
+                    "source": "posthoc",
+                    "requested_action": "check_availability",
+                    "risk_class": "manager_action",
+                    "answerability": "manager_only",
+                    "must_handoff": True,
+                    "confidence": 0.95,
+                },
+            },
+        ),
+        context={"TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE": "1"},
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    trace = result.metadata["semantic_frame_manager_action_gate"]
+    assert trace["status"] == "pass"
+    assert trace["reason"] == "seats_default_open_regular_groups_allowlist"
+
+
+def test_semantic_frame_manager_action_gate_blocks_forged_seats_default_open_metadata() -> None:
+    result = apply_semantic_frame_manager_action_gate(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, места есть, запишем вас в группу.",
+            safety_flags=("seats_default_open_regular_groups",),
+            metadata={
+                "seats_default_open_regular_groups": True,
+                "availability_promise_allowlist": "seats_default_open_regular_groups",
+                "direct_path": {"seats_default_open_regular_groups": True},
+                "semantic_frame_posthoc_shadow": {"status": "ok"},
+                "semantic_frame": {
+                    "source": "posthoc",
+                    "requested_action": "check_availability",
+                    "risk_class": "manager_action",
+                    "answerability": "manager_only",
+                    "must_handoff": True,
+                    "deal_stage": "closing",
+                    "confidence": 0.95,
+                },
+            },
+        ),
+        context={"TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE": "1"},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.metadata["semantic_frame_manager_action_gate"]["status"] == "promoted_to_draft_for_manager"
 
 
 def test_rewrite_quality_class_records_rewriter_shadow_without_route_change() -> None:

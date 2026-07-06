@@ -10,8 +10,8 @@ def test_export_wappi_replay_dialogs_refuses_without_live_read_flag(tmp_path: Pa
         [
             sys.executable,
             "scripts/export_wappi_replay_dialogs.py",
-            "--raw-out",
-            str(Path.home() / ".mango_local/replay_exam/raw/test.json"),
+            "--raw-root",
+            str(Path.home() / ".mango_local/replay_exam/raw"),
         ],
         cwd=Path.cwd(),
         capture_output=True,

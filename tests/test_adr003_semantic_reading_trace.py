@@ -1266,6 +1266,10 @@ def test_intent_actions_missing_frame_with_legacy_live_floor_signal_fails_closed
             "conversation_intent_plan": {
                 "primary_intent": "camp",
                 "topic_id": "theme:026_camp_general",
+            },
+            "conversation_intent_plan_internal": {
+                "primary_intent": "camp",
+                "topic_id": "theme:026_camp_general",
                 "legacy_live_availability_floor_signal": True,
             },
         },

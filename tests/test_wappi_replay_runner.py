@@ -40,10 +40,22 @@ def test_load_cases_reads_scrubbed_jsonl(tmp_path: Path) -> None:
                 "brand": "foton",
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
+                "prefix_messages": [
+                    {
+                        "profile_id": "p",
+                        "chat_id": "c",
+                        "message_id": "m0",
+                        "text": "Ранний ход",
+                        "timestamp": 1,
+                        "from_me": False,
+                    }
+                ],
             },
             ensure_ascii=False,
         )
         + "\n",
         encoding="utf-8",
     )
-    assert load_cases(path)[0].turn_id == "d#1"
+    case = load_cases(path)[0]
+    assert case.turn_id == "d#1"
+    assert case.prefix_messages[0].text == "Ранний ход"

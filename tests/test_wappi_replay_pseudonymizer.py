@@ -27,3 +27,27 @@ def test_pseudonymizer_uses_stable_fake_name_per_dialog() -> None:
     one = pseudonymizer.text("Анна Петрова написала")
     two = pseudonymizer.text("Анна Петрова ответила")
     assert one.split()[0] == two.split()[0]
+
+
+def test_pseudonymizer_replaces_wappi_and_amo_ids_recursively() -> None:
+    pseudonymizer = ReplayPseudonymizer(dialog_salt="ids")
+    payload = {
+        "profile_id": "ec2eed50-b55f",
+        "chat_id": "79001234567",
+        "message_id": "msg-real-1",
+        "raw": {
+            "lead_id": "123456",
+            "contact_id": "654321",
+            "events": [{"talk_id": "talk-77", "thread_id": "thread-88"}],
+        },
+    }
+
+    scrubbed = pseudonymizer.object(payload)
+    text = repr(scrubbed)
+
+    assert "ec2eed50-b55f" not in text
+    assert "79001234567" not in text
+    assert "msg-real-1" not in text
+    assert "123456" not in text
+    assert "654321" not in text
+    assert pii_signals(scrubbed) == []

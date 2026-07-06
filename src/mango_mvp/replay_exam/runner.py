@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from .machine_gate import run_machine_gate
-from .models import BotReplayResult, ReplayCase
+from .models import BotReplayResult, ReplayCase, ReplayMessage
 
 
 Provider = Callable[[ReplayCase, Mapping[str, object]], BotReplayResult]
@@ -18,6 +18,20 @@ def load_cases(path: Path) -> list[ReplayCase]:
         if not line.strip():
             continue
         obj = json.loads(line)
+        prefix_messages = tuple(
+            ReplayMessage(
+                profile_id=str(item.get("profile_id") or ""),
+                chat_id=str(item.get("chat_id") or ""),
+                message_id=str(item.get("message_id") or ""),
+                text=str(item.get("text") or ""),
+                timestamp=int(item.get("timestamp") or 0),
+                from_me=bool(item.get("from_me")),
+                sender_name=str(item.get("sender_name") or ""),
+                raw=dict(item.get("raw") or {}),
+            )
+            for item in (obj.get("prefix_messages") or ())
+            if isinstance(item, Mapping)
+        )
         cases.append(
             ReplayCase(
                 dialog_id=str(obj["dialog_id"]),
@@ -27,6 +41,7 @@ def load_cases(path: Path) -> list[ReplayCase]:
                 brand=str(obj["brand"]),
                 client_message=str(obj["client_message"]),
                 manager_reference=str(obj.get("manager_reference") or ""),
+                prefix_messages=prefix_messages,
                 segment=str(obj.get("segment") or "chat_only"),
                 expected_p0=bool(obj.get("expected_p0")),
                 metadata=dict(obj.get("metadata") or {}),

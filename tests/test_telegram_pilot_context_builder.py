@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mango_mvp.channels.dialogue_memory import MEMORY_CHILD_IDENTITY_MODEL_ENV, MEMORY_PROVENANCE_ENV
+from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
 from mango_mvp.channels.pilot_context import MEMORY_PROVENANCE_COMPACT_ENV
 from mango_mvp.channels.telegram_pilot_context_builder import (
     NO_KNOWLEDGE_SNAPSHOT_VERSION,
@@ -185,6 +186,24 @@ def test_builder_adds_conversation_intent_plan_to_prompt_context() -> None:
     assert plan["topic_id"] == "theme:026_camp_general"
     assert plan["answer_policy"] == "answer_safe_parts_then_manager_live_check"
     assert "availability.current" in plan["required_fact_keys"]
+
+
+def test_builder_keeps_legacy_live_availability_floor_out_of_prompt_text() -> None:
+    message = "Можно закрепить место на ЛВШ для 8 класса?"
+    context = build_telegram_pilot_context(
+        message,
+        active_brand="foton",
+        recent_messages=["Клиент: интересует лагерь в Менделеево", "Ответ: Подберём смену."],
+        kc_snapshot={"schema_version": "kc_knowledge_snapshot_v1", "run_id": "empty", "facts": [], "chunks": []},
+    )
+    payload = context.to_prompt_context()
+
+    assert "legacy_live_availability_floor_signal" not in payload["conversation_intent_plan"]
+    assert payload["conversation_intent_plan_internal"]["legacy_live_availability_floor_signal"] is True
+
+    prompt = build_draft_prompt(message, context=payload)
+    assert "conversation_intent_plan_internal" not in prompt
+    assert "legacy_live_availability_floor_signal" not in prompt
 
 
 def test_builder_uses_intent_plan_to_retrieve_foton_online_price_not_offline_or_camp() -> None:

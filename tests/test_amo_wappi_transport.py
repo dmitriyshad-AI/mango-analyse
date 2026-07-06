@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, TransportDenied
+from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy, TransportDenied
 
 
 def test_transport_allows_only_declared_read_and_note_paths() -> None:
@@ -36,6 +36,8 @@ def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
     with pytest.raises(TransportDenied):
         transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=true")
     with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p&show_all=true")
+    with pytest.raises(TransportDenied):
         transport(method="POST", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p")
     with pytest.raises(TransportDenied):
         transport(method="DELETE", url="https://educent.amocrm.ru/api/v4/leads/49832125")
@@ -54,3 +56,12 @@ def test_transport_denies_unknown_host() -> None:
 
     with pytest.raises(TransportDenied):
         transport(method="GET", url="https://example.com/api/v4/contacts")
+
+
+def test_wappi_read_only_policy_denies_amo_and_ai_office_even_when_general_policy_allows_notes() -> None:
+    transport = DefaultDenyTransport(lambda **kwargs: {"should": "not happen"}, policy=SafeTransportPolicy.wappi_read_only())
+
+    with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://educent.amocrm.ru/api/v4/contacts?query=test")
+    with pytest.raises(TransportDenied):
+        transport(method="POST", url="https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes")

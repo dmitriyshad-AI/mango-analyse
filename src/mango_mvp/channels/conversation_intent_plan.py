@@ -140,9 +140,18 @@ class ConversationIntentPlan:
             "next_step_hint": self.next_step_hint,
             "fact_query_text": self.fact_query_text,
             "selling": dict(self.selling),
-            "decision_notes": list(self.decision_notes),
-            "legacy_live_availability_floor_signal": self.legacy_live_availability_floor_signal,
+            "decision_notes": [
+                note for note in self.decision_notes if note != "legacy_live_availability_floor_signal"
+            ],
         }
+
+    def to_internal_view(self) -> Mapping[str, Any]:
+        """Return guard-only fields that must not be treated as model meaning."""
+
+        payload = dict(self.to_prompt_view())
+        payload["decision_notes"] = list(self.decision_notes)
+        payload["legacy_live_availability_floor_signal"] = self.legacy_live_availability_floor_signal
+        return payload
 
 
 def build_conversation_intent_plan(

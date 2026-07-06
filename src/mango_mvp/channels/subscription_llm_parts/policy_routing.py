@@ -4148,8 +4148,12 @@ def _conversation_plan_live_availability_floor_result(
     context: Optional[Mapping[str, Any]],
 ) -> Optional[SubscriptionDraftResult]:
     plan = _conversation_intent_plan(context)
+    internal_plan = _conversation_intent_plan_internal(context)
     primary_intent = str(plan.get("primary_intent") or "").strip()
-    legacy_floor = _truthy_value(plan.get("legacy_live_availability_floor_signal"))
+    legacy_floor = _truthy_value(
+        internal_plan.get("legacy_live_availability_floor_signal")
+        or plan.get("legacy_live_availability_floor_signal")
+    )
     if primary_intent != "live_availability" and not legacy_floor:
         return None
     return _intent_actions_live_availability_result(result, frame={})
@@ -4242,6 +4246,12 @@ def _conversation_intent_plan(context: Optional[Mapping[str, Any]]) -> Mapping[s
     if not isinstance(context, Mapping):
         return {}
     plan = context.get("conversation_intent_plan")
+    return plan if isinstance(plan, Mapping) else {}
+
+def _conversation_intent_plan_internal(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    plan = context.get("conversation_intent_plan_internal")
     return plan if isinstance(plan, Mapping) else {}
 
 def _answer_contract(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:

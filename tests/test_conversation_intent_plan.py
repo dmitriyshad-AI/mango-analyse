@@ -16,7 +16,8 @@ def test_intent_plan_keeps_place_booking_only_as_legacy_floor_signal_not_primary
     assert plan.route_bias == "bot_answer_self_for_pilot"
     assert "availability.current" not in plan.required_fact_keys
     assert plan.legacy_live_availability_floor_signal is True
-    assert plan.to_prompt_view()["legacy_live_availability_floor_signal"] is True
+    assert "legacy_live_availability_floor_signal" not in plan.to_prompt_view()
+    assert plan.to_internal_view()["legacy_live_availability_floor_signal"] is True
     assert "legacy_live_availability_floor_signal" in plan.decision_notes
     assert "seat_or_booking_words_do_not_mean_price_fix" not in plan.decision_notes
 

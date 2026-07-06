@@ -161,6 +161,7 @@ def build_telegram_pilot_context(
     memory = replace(memory, held_state=held_state)
     memory_view = memory.to_prompt_view()
     intent_view = intent_plan.to_prompt_view()
+    intent_internal_view = intent_plan.to_internal_view()
     safety_decision = classify_answer_safety(
         client_message=current_message,
         context={"conversation_intent_plan": intent_view, "dialogue_memory_view": memory_view, "recent_messages": recent_messages},
@@ -267,6 +268,7 @@ def build_telegram_pilot_context(
         dialogue_memory_view=memory_view,
         dialogue_memory_state=memory.to_json_dict(),
         conversation_intent_plan=intent_view,
+        conversation_intent_plan_internal=intent_internal_view,
         answer_contract=answer_contract.to_prompt_view(),
         gold_answers_v3=gold_answers_v3,
         gold_answer_context=gold_answer_context,

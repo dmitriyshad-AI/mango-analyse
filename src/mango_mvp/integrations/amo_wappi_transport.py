@@ -24,6 +24,10 @@ class SafeTransportPolicy:
     amo_read_hosts: frozenset[str] = field(default_factory=lambda: frozenset({"educent.amocrm.ru"}))
     ai_office_hosts: frozenset[str] = field(default_factory=lambda: frozenset({"api.fotonai.online"}))
 
+    @classmethod
+    def wappi_read_only(cls) -> "SafeTransportPolicy":
+        return cls(amo_read_hosts=frozenset(), ai_office_hosts=frozenset())
+
     def assert_allowed(self, *, method: str, url: str) -> None:
         parsed = url_parse.urlparse(str(url or ""))
         host = str(parsed.netloc or "").casefold()
@@ -46,9 +50,15 @@ class SafeTransportPolicy:
         if path in {
             "/tapi/profile/all/get",
             "/maxapi/profile/all/get",
+        }:
+            return
+        if path in {
             "/tapi/sync/chats/get",
             "/maxapi/sync/chats/get",
         }:
+            show_all_values = [str(item).casefold() for item in query.get("show_all", []) if str(item).strip()]
+            if any(value not in {"0", "false", "no", "off"} for value in show_all_values):
+                raise TransportDenied("Wappi HTTP denied: show_all must be false or omitted.")
             return
         if path in {"/tapi/sync/messages/get", "/maxapi/sync/messages/get"}:
             mark_values = [str(item).casefold() for item in query.get("mark_all", []) if str(item).strip()]

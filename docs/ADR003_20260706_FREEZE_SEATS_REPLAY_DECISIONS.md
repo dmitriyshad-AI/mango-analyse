@@ -79,3 +79,17 @@ Reason: the first implementation trusted two metadata fields and could be forged
 Decision: the default-open path requires active brand `foton|unpk`; if `requested_product.brand` is present it must match active brand. Booking/enroll operation phrasing, individual lessons, unsupported cities, camp/shift contexts, and group-size questions stay on the manager/fact path.
 
 Reason: “места есть” is a business default for regular groups, not a license to answer cross-brand, booking, paid, individual, camp, or “сколько человек в группе” questions.
+
+## D-014. Replay pilot-10 is accepted as adapter smoke, not as final quality exam
+
+Decision: local real-provider replay pilot completed on scrubbed v2 set: 31 evaluated turns, 8 evaluated dialogs, `real_subscription_llm` provider on all rows, no live-write process left running after completion. Machine gate improved from 7 failures to 4 after scrubber/gate fixes. Remaining failures are `new_number_unverified` on KB-backed prices/dates/schedules.
+
+Reason: this proves the real-provider adapter can run end-to-end over scrubbed data with raw trace and no live writes. It does not prove final quality of the bot and does not replace the later M1 replay exam.
+
+Follow-up: before the big replay exam, pass retrieved/client-safe fact numbers into `run_machine_gate`; otherwise correct KB-backed numbers will be noisy false positives.
+
+## D-015. Replay scrubber must handle mixed-case names and generic contract words
+
+Decision: pseudonymizer now masks mixed-case Russian name/surname pairs like `Сашу кибирева`. PII detector no longer treats generic “договорные документы” as contract ID; it still detects actual contract-like IDs such as `договор ABC-42`.
+
+Reason: replay pilot v1 exposed two measurement/data issues: a partially scrubbed child name and false `pii_in_bot_text` signals on normal contract wording. Both are measurement issues for replay, not live bot object bugs, and both now have regression tests.

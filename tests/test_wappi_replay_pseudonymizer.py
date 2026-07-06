@@ -22,6 +22,20 @@ def test_pseudonymizer_masks_contacts_and_names_recursively() -> None:
     assert pii_signals(scrubbed) == []
 
 
+def test_pseudonymizer_masks_mixed_case_child_name_from_pilot() -> None:
+    pseudonymizer = ReplayPseudonymizer(dialog_salt="pilot")
+
+    scrubbed = pseudonymizer.text("Записала Сашу кибирева в лагерь.")
+
+    assert "Сашу кибирева" not in scrubbed
+    assert pii_signals(scrubbed) == []
+
+
+def test_pii_signals_do_not_treat_generic_contract_words_as_contract_ids() -> None:
+    assert pii_signals("договорные документы и договор на лагерь") == []
+    assert pii_signals("договор ABC-42") == ["contract"]
+
+
 def test_pseudonymizer_uses_stable_fake_name_per_dialog() -> None:
     pseudonymizer = ReplayPseudonymizer(dialog_salt="same")
     one = pseudonymizer.text("Анна Петрова написала")

@@ -9,8 +9,14 @@ from typing import Any
 PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)[\s\-()]*(?:\d[\s\-()]*){10}(?!\d)")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.I)
-CONTRACT_RE = re.compile(r"\b(?:договор|контракт)\s*№?\s*[A-Za-zА-Яа-я0-9/_-]{3,}\b", re.I)
+CONTRACT_RE = re.compile(
+    r"\b(?:договор|контракт)\b\s*№?\s*(?=[A-Za-zА-Яа-я0-9/_-]{3,}\b)(?=[A-Za-zА-Яа-я0-9/_-]*\d)[A-Za-zА-Яа-я0-9/_-]+\b",
+    re.I,
+)
 RU_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,})?\b")
+RU_MIXED_CASE_SURNAME_RE = re.compile(
+    r"\b[А-ЯЁ][а-яё]{2,}\s+[а-яё]{3,}(?:ова|ева|ёва|ина|ская|цкая|ский|цкий|ов|ев|ёв|ин)\b"
+)
 SENSITIVE_ID_KEY_RE = re.compile(
     r"(^|_)(?:profile|chat|message|lead|contact|talk|dialog|thread|event|source|dedupe)_?id$|"
     r"^(?:profile_id|chat_id|message_id|lead_id|contact_id|talk_id|dialog_id|thread_id)$",
@@ -45,7 +51,8 @@ class ReplayPseudonymizer:
         text = EMAIL_RE.sub("[email]", text)
         text = URL_RE.sub("[url]", text)
         text = CONTRACT_RE.sub("договор [contract]", text)
-        return RU_NAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
+        text = RU_NAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
+        return RU_MIXED_CASE_SURNAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
 
     def id_value(self, key: str, value: Any) -> str:
         raw = str(value or "").strip()

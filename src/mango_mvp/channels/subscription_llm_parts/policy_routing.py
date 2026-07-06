@@ -4138,7 +4138,9 @@ def _conversation_plan_live_availability_floor_result(
     context: Optional[Mapping[str, Any]],
 ) -> Optional[SubscriptionDraftResult]:
     plan = _conversation_intent_plan(context)
-    if str(plan.get("primary_intent") or "").strip() != "live_availability":
+    primary_intent = str(plan.get("primary_intent") or "").strip()
+    legacy_floor = _truthy_value(plan.get("legacy_live_availability_floor_signal"))
+    if primary_intent != "live_availability" and not legacy_floor:
         return None
     return _intent_actions_live_availability_result(result, frame={})
 

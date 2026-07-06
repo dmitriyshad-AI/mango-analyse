@@ -72,13 +72,13 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
     monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
 
-    assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic", "intent_actions"})
+    assert enabled_classes({}) == frozenset({"sense_seats", "slots_gsf", "off_topic", "intent_actions", "live_status_read"})
     assert reading_class_enabled(None, "slots_gsf") is True
     assert reading_class_enabled(None, "intent_actions") is True
     assert reading_class_enabled(None, "route_templates") is False
     assert reading_class_enabled(None, "rewrite_quality") is False
     assert reading_class_enabled(None, "post_semantics") is False
-    assert reading_class_enabled(None, "live_status_read") is False
+    assert reading_class_enabled(None, "live_status_read") is True
     assert reading_class_enabled(None, "reask_read") is False
     assert reading_class_enabled(None, "roles_read") is False
 
@@ -93,9 +93,15 @@ def test_semantic_reading_classes_profile_default_and_explicit_override(monkeypa
 def test_semantic_reading_apply_classes_are_default_off_and_require_enabled_class(monkeypatch) -> None:
     monkeypatch.delenv(READING_APPLY_CLASSES_ENV, raising=False)
     monkeypatch.delenv(SEMANTIC_READING_CLASSES_ENV, raising=False)
-    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
 
     assert apply_classes({}) == frozenset()
+    assert reading_apply_class_enabled({}, "route_templates/autonomy_matrix") is False
+    assert reading_apply_class_enabled({}, "live_status_read/conversation_intent_plan") is False
+
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+
+    assert apply_classes({}) == frozenset({"live_status_read/conversation_intent_plan"})
+    assert reading_apply_class_enabled(None, "live_status_read/conversation_intent_plan") is True
     assert reading_apply_class_enabled({}, "route_templates/autonomy_matrix") is False
     assert (
         reading_apply_class_enabled(
@@ -104,6 +110,11 @@ def test_semantic_reading_apply_classes_are_default_off_and_require_enabled_clas
         )
         is False
     )
+    assert apply_classes({READING_APPLY_CLASSES_ENV: ""}) == frozenset()
+    assert reading_apply_class_enabled(
+        {READING_APPLY_CLASSES_ENV: ""},
+        "live_status_read/conversation_intent_plan",
+    ) is False
     context = {
         SEMANTIC_READING_CLASSES_ENV: "route_templates,live_status_read",
         READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix,roles_read/refund_tax,unknown",

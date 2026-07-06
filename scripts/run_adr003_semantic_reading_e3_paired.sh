@@ -39,11 +39,24 @@ cd "$ROOT"
 REV_LABEL="${REV_LABEL:-e3_$(git rev-parse --short HEAD)}"
 SCEN="${SCEN:-product_data/telegram_dynamic_test_sets/adr003_semantic_reading_paket1_e2_20260703.jsonl}"
 SNAPSHOT="${SNAPSHOT:-product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json}"
-BASE_READING_CLASSES="${READING_CLASSES:-sense_seats,off_topic,slots_gsf,intent_actions}"
+PROFILE_READING_CLASSES="$(
+  PYTHONPATH="$ROOT/src" python3 - <<'PY'
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import PILOT_PROFILE_DEFAULT_READING_CLASSES
+print(PILOT_PROFILE_DEFAULT_READING_CLASSES)
+PY
+)"
+PROFILE_APPLY_CLASSES="$(
+  PYTHONPATH="$ROOT/src" python3 - <<'PY'
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import PILOT_PROFILE_DEFAULT_APPLY_CLASSES
+print(PILOT_PROFILE_DEFAULT_APPLY_CLASSES)
+PY
+)"
+BASE_READING_CLASSES="${READING_CLASSES:-$PROFILE_READING_CLASSES}"
+BASE_APPLY_CLASSES="${READING_APPLY_CLASSES:-$PROFILE_APPLY_CLASSES}"
 TARGET_READING_CLASS="${TARGET_READING_CLASS:-}"
 TARGET_READING_CLASSES="${TARGET_READING_CLASSES:-$TARGET_READING_CLASS}"
-TARGET_READING_CLASSES="$(
-  python3 - "$TARGET_READING_CLASSES" <<'PY'
+normalize_csv() {
+  python3 - "$1" <<'PY'
 import sys
 seen = set()
 items = []
@@ -54,27 +67,30 @@ for raw in str(sys.argv[1] or "").split(","):
         items.append(item)
 print(",".join(items))
 PY
-)"
+}
+merge_csv() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+seen = set()
+items = []
+for arg in sys.argv[1:]:
+    for raw in str(arg or "").split(","):
+        item = raw.strip()
+        if item and item not in seen:
+            seen.add(item)
+            items.append(item)
+print(",".join(items))
+PY
+}
+TARGET_READING_CLASSES="$(normalize_csv "$TARGET_READING_CLASSES")"
 TARGET_APPLY_CLASSES="${TARGET_APPLY_CLASSES:-}"
-TARGET_APPLY_CLASSES="$(
-  python3 - "$TARGET_APPLY_CLASSES" <<'PY'
-import sys
-seen = set()
-items = []
-for raw in str(sys.argv[1] or "").split(","):
-    item = raw.strip()
-    if item and item not in seen:
-        seen.add(item)
-        items.append(item)
-print(",".join(items))
-PY
-)"
+TARGET_APPLY_CLASSES="$(normalize_csv "$TARGET_APPLY_CLASSES")"
 RUN_ORDER="${RUN_ORDER:-B_FIRST}"
 if [[ "$RUN_ORDER" != "B_FIRST" && "$RUN_ORDER" != "ON_FIRST" ]]; then
   echo "RUN_ORDER must be B_FIRST or ON_FIRST, got: $RUN_ORDER" >&2
   exit 2
 fi
-READING_CLASSES="$BASE_READING_CLASSES"
+READING_CLASSES="$(normalize_csv "$BASE_READING_CLASSES")"
 if [[ -n "$TARGET_READING_CLASSES" ]]; then
   IFS=',' read -r -a target_reading_class_items <<< "$TARGET_READING_CLASSES"
   for target_reading_class in "${target_reading_class_items[@]}"; do
@@ -86,6 +102,11 @@ if [[ -n "$TARGET_READING_CLASSES" ]]; then
       *) READING_CLASSES="${READING_CLASSES},${target_reading_class}" ;;
     esac
   done
+fi
+APPLY_CLASSES="$(merge_csv "$BASE_APPLY_CLASSES" "$TARGET_APPLY_CLASSES")"
+USE_ON_READING_ENV=0
+if [[ -n "$TARGET_READING_CLASSES" || -n "$TARGET_APPLY_CLASSES" ]]; then
+  USE_ON_READING_ENV=1
 fi
 if [[ "$DRY_CHECK" == "1" ]]; then
   OUT="${OUT:-runs/adr003_semantic_reading_e3_dry_check_${REV_LABEL}}"
@@ -155,7 +176,7 @@ validate_leg() {
 }
 
 write_sha_manifest() {
-  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASSES" "$TARGET_APPLY_CLASSES" "$RUN_ORDER" "$ROOT" <<'PY'
+  python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_semantic_reading_e3_paired.sh" "$READING_CLASSES" "$TARGET_READING_CLASSES" "$APPLY_CLASSES" "$TARGET_APPLY_CLASSES" "$USE_ON_READING_ENV" "$RUN_ORDER" "$ROOT" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -164,7 +185,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
-root = Path(sys.argv[9]).resolve()
+root = Path(sys.argv[11]).resolve()
 paths = {
     "scenario": Path(sys.argv[2]),
     "snapshot": Path(sys.argv[3]),
@@ -172,8 +193,10 @@ paths = {
 }
 reading_classes = sys.argv[5]
 target_reading_classes = sys.argv[6]
-target_apply_classes = sys.argv[7]
-run_order = sys.argv[8]
+apply_classes = sys.argv[7]
+target_apply_classes = sys.argv[8]
+use_on_reading_env = sys.argv[9] == "1"
+run_order = sys.argv[10]
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -226,9 +249,10 @@ manifest = {
         "TELEGRAM_LLM_RETRIEVE": "1",
         "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
         "TELEGRAM_RELIABLE_ANSWERER_STEP1": "1",
-        "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes,
-        "TELEGRAM_READING_APPLY_CLASSES": target_apply_classes,
+        "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes if use_on_reading_env else "(profile default; env unset)",
+        "TELEGRAM_READING_APPLY_CLASSES": apply_classes if use_on_reading_env else "(profile default; env unset)",
         "TARGET_READING_CLASSES": target_reading_classes,
+        "TARGET_APPLY_CLASSES": target_apply_classes,
         "RUN_ORDER": run_order,
     },
 }
@@ -243,13 +267,20 @@ PY
 
 run_on_leg() {
   echo "== ON: B + semantic reading classes =="
-  "${base_env[@]}" \
-    TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
-    TELEGRAM_READING_APPLY_CLASSES="$TARGET_APPLY_CLASSES" \
-    python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
+  if [[ "$USE_ON_READING_ENV" == "1" ]]; then
+    "${base_env[@]}" \
+      TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES" \
+      TELEGRAM_READING_APPLY_CLASSES="$APPLY_CLASSES" \
+      python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
+        --out-dir "$OUT/ON" \
+        --progress-json "$OUT/ON/progress.json" \
+        --progress-leg ON
+  else
+    "${base_env[@]}" python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
       --out-dir "$OUT/ON" \
       --progress-json "$OUT/ON/progress.json" \
       --progress-leg ON
+  fi
   validate_leg ON 1
 }
 
@@ -300,7 +331,9 @@ if [[ -n "$RESUME_ON_REPORT" ]]; then
   echo "snapshot=$SNAPSHOT"
   echo "reading_classes=$READING_CLASSES"
   echo "target_reading_classes=$TARGET_READING_CLASSES"
+  echo "apply_classes=$APPLY_CLASSES"
   echo "target_apply_classes=$TARGET_APPLY_CLASSES"
+  echo "use_on_reading_env=$USE_ON_READING_ENV"
   echo "run_order=$RUN_ORDER"
   echo "out=$OUT"
   echo "mode=resume-on-report"
@@ -320,7 +353,9 @@ echo "scenarios=$SCEN"
 echo "snapshot=$SNAPSHOT"
 echo "reading_classes=$READING_CLASSES"
 echo "target_reading_classes=$TARGET_READING_CLASSES"
+echo "apply_classes=$APPLY_CLASSES"
 echo "target_apply_classes=$TARGET_APPLY_CLASSES"
+echo "use_on_reading_env=$USE_ON_READING_ENV"
 echo "run_order=$RUN_ORDER"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then

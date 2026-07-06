@@ -11640,9 +11640,10 @@ def test_direct_path_intent_actions_runs_without_intent_model_led() -> None:
     assert result.route == "draft_for_manager"
     assert "conversation_intent_plan_live_availability" in result.safety_flags
     assert provider.calls == 1
-    trace = result.metadata["semantic_reading_trace"][0]
-    assert trace["class"] == "intent_actions"
-    assert trace["decision"] == "frame_check_availability"
+    traces = result.metadata["semantic_reading_trace"]
+    assert [trace["class"] for trace in traces[:2]] == ["live_status_read", "intent_actions"]
+    assert traces[0]["decision"] == "frame_check_availability"
+    assert traces[1]["decision"] == "frame_check_availability"
 
 
 def test_direct_path_route_templates_apply_runs_without_intent_model_led() -> None:

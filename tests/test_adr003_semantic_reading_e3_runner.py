@@ -58,11 +58,11 @@ def test_adr003_e3_runner_can_append_target_reading_class_on_top_of_profile_defa
     base_section = text[
         text.index('BASE_READING_CLASSES="${READING_CLASSES:-') : text.index("TARGET_READING_CLASS=", text.index("BASE_READING_CLASSES="))
     ]
-    assert "intent_actions" in base_section
+    assert "PROFILE_READING_CLASSES" in base_section
+    assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" in text
     assert "already in profile/base READING_CLASSES" in text
     assert 'READING_CLASSES="${READING_CLASSES},${target_reading_class}"' in text
     assert '"TARGET_READING_CLASSES": target_reading_classes' in text
-    assert "PILOT_PROFILE_DEFAULT_READING_CLASSES" not in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
 
 
@@ -72,10 +72,13 @@ def test_adr003_e3_runner_supports_target_class_list_and_on_apply_only() -> None
     on_section = text[text.index("== ON:") : text.index("validate_leg ON 1", text.index("== ON:"))]
 
     assert 'TARGET_APPLY_CLASSES="${TARGET_APPLY_CLASSES:-}"' in text
+    assert 'BASE_APPLY_CLASSES="${READING_APPLY_CLASSES:-$PROFILE_APPLY_CLASSES}"' in text
+    assert 'APPLY_CLASSES="$(merge_csv "$BASE_APPLY_CLASSES" "$TARGET_APPLY_CLASSES")"' in text
     assert "-u TELEGRAM_READING_APPLY_CLASSES" in text
     assert "TELEGRAM_READING_APPLY_CLASSES=" not in baseline_section
-    assert 'TELEGRAM_READING_APPLY_CLASSES="$TARGET_APPLY_CLASSES"' in on_section
+    assert 'TELEGRAM_READING_APPLY_CLASSES="$APPLY_CLASSES"' in on_section
     assert "target_apply_classes=$TARGET_APPLY_CLASSES" in text
+    assert "apply_classes=$APPLY_CLASSES" in text
 
 
 def test_adr003_e3_runner_supports_on_first_order() -> None:

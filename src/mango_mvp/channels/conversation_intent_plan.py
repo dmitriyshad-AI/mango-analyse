@@ -102,6 +102,7 @@ class ConversationIntentPlan:
     fact_query_text: str = ""
     selling: Mapping[str, Any] = field(default_factory=dict)
     decision_notes: tuple[str, ...] = ()
+    legacy_live_availability_floor_signal: bool = False
 
     def to_prompt_view(self) -> Mapping[str, Any]:
         return {
@@ -140,6 +141,7 @@ class ConversationIntentPlan:
             "fact_query_text": self.fact_query_text,
             "selling": dict(self.selling),
             "decision_notes": list(self.decision_notes),
+            "legacy_live_availability_floor_signal": self.legacy_live_availability_floor_signal,
         }
 
 
@@ -192,6 +194,11 @@ def build_conversation_intent_plan(
     if _is_camp_followup_from_held(normalized, held_fact_scope=held_fact_scope, held_active_topics=held_active_topics):
         product_family = "camp"
         product_scope = _camp_product_scope_from_fact_scope(held_fact_scope) or product_scope
+    legacy_live_availability_floor_signal = _asks_live_availability(
+        normalized,
+        previous_product_family=previous_product_family,
+        product_family=product_family,
+    )
     primary_intent = _primary_intent(
         normalized,
         keyword_signals=keyword_signals,
@@ -200,6 +207,7 @@ def build_conversation_intent_plan(
         previous_product_family=previous_product_family,
         product_family=product_family,
         roles=roles,
+        legacy_live_availability_floor_signal=legacy_live_availability_floor_signal,
         held_fact_scope=held_fact_scope,
         held_active_topics=held_active_topics,
     )
@@ -244,6 +252,7 @@ def build_conversation_intent_plan(
         switch_decision=switch_decision,
         previous_product_family=previous_product_family,
         product_family=product_family,
+        legacy_live_availability_floor_signal=legacy_live_availability_floor_signal,
     ) + scope_notes + tuple(answer_plan.notes)
     fact_query = _fact_query_text(
         text,
@@ -294,6 +303,7 @@ def build_conversation_intent_plan(
         fact_query_text=fact_query,
         selling=selling,
         decision_notes=notes,
+        legacy_live_availability_floor_signal=legacy_live_availability_floor_signal,
     )
 
 
@@ -351,6 +361,7 @@ def _primary_intent(
     previous_product_family: str,
     product_family: str,
     roles: MessageRoles,
+    legacy_live_availability_floor_signal: bool = False,
     held_fact_scope: str = "",
     held_active_topics: Sequence[str] = (),
 ) -> str:
@@ -364,8 +375,6 @@ def _primary_intent(
         return "complaint"
     if "payment_dispute" in risk_signals:
         return "payment_dispute"
-    if _asks_live_availability(text, previous_product_family=previous_product_family, product_family=product_family):
-        return "live_availability"
     if _is_camp_followup_from_held(text, held_fact_scope=held_fact_scope, held_active_topics=held_active_topics):
         return "camp"
     if _asks_price_fix(text):
@@ -416,6 +425,8 @@ def _primary_intent(
     for signal, intent in priority:
         if signal in roles.topics or signal in keyword_signals:
             return intent
+    if legacy_live_availability_floor_signal and product_family == "camp":
+        return "camp"
     if previous_question_kind in {"price", "price_fix"} and _is_followup(text):
         return "price_fix" if previous_question_kind == "price_fix" else "pricing"
     if previous_question_kind:
@@ -867,6 +878,7 @@ def _decision_notes(
     switch_decision: str,
     previous_product_family: str,
     product_family: str,
+    legacy_live_availability_floor_signal: bool = False,
 ) -> tuple[str, ...]:
     notes = ["keyword_as_signal_context_as_decision"]
     if keyword_signals:
@@ -877,6 +889,8 @@ def _decision_notes(
         notes.append(f"weak_topic_switch:{previous_product_family}->{product_family}")
     if primary_intent == "live_availability":
         notes.append("seat_or_booking_words_do_not_mean_price_fix")
+    elif legacy_live_availability_floor_signal:
+        notes.append("legacy_live_availability_floor_signal")
     return tuple(notes)
 
 

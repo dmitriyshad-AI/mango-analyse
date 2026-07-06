@@ -1251,6 +1251,34 @@ def test_intent_actions_missing_frame_with_live_plan_fails_closed_to_manager() -
     assert "route" in trace["changed_fields"]
 
 
+def test_intent_actions_missing_frame_with_legacy_live_floor_signal_fails_closed_to_manager() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        draft_text="Да, можно записаться.",
+        metadata={},
+    )
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Можно закрепить место на ЛВШ для 8 класса?",
+        context={
+            SEMANTIC_READING_CLASSES_ENV: "intent_actions",
+            "conversation_intent_plan": {
+                "primary_intent": "camp",
+                "topic_id": "theme:026_camp_general",
+                "legacy_live_availability_floor_signal": True,
+            },
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "no_frame"
+    assert trace["decision"] == "conversation_plan_live_availability_floor"
+
+
 def test_intent_actions_invalid_frame_with_live_plan_fails_closed_to_manager() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

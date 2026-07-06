@@ -866,16 +866,17 @@ def render_memory_shadow_commands(
         "set -euo pipefail",
         "# Ф5: человек запускает на M1 вручную. Этот файл сам не ставит задачи в очередь.",
         "# Флаги фактической постановки в очередь намеренно не включены.",
+        "PKG_DIR=\"${MANGO_M1_F5_PKG:-$HOME/Yandex.Disk.localized/OpenClaw/mango_m1_f5_20260704}\"",
         "",
     ]
     for label, scenarios in (("micro", micro_path), ("full", full_path)):
         lines.append(f"# Подготовить OFF/ON команды для {label}")
         lines.append(
             "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_memory_measure_off_on.py "
-            f"--scenarios {scenarios} "
+            f"--scenarios \"$PKG_DIR/{scenarios.name}\" "
             f"--snapshot {snapshot_path} "
-            f"--timeline-db {overlay_db} "
-            f"--out-root {out_dir / ('memory_shadow_' + label)} "
+            f"--timeline-db \"$PKG_DIR/{overlay_db.name}\" "
+            f"--out-root \"$PKG_DIR/memory_shadow_{label}\" "
             f"--parallel {parallel} "
             "--judge-prompt-version v9.1"
         )

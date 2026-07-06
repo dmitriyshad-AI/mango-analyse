@@ -2382,6 +2382,10 @@ def apply_high_risk_content_guards(
         else {code for code in safety_decision.risk_codes if code in HARD_P0_CODES}
     )
     markers = set(_p0_model_led_filter_high_risk_codes(tuple(markers), client_message=client_message, context=context))
+    prefer_payment_dispute_template = _prefer_payment_dispute_template_over_refund(
+        safety_decision.risk_codes,
+        client_message=client_message,
+    )
     model_p0_meta = result.metadata.get("direct_path_model_p0") if isinstance(result.metadata, Mapping) else {}
     model_p0_complaint = bool(
         isinstance(model_p0_meta, Mapping)
@@ -2638,6 +2642,7 @@ def apply_high_risk_content_guards(
         and not metadata.get("presale_refund_policy_manager_check")
         and not (semantic_non_p0 and safety_decision.primary_risk == "refund")
         and not (semantic_non_p0 and "refund" not in markers)
+        and not prefer_payment_dispute_template
         and _is_refund_case(result, markers=markers)
     ):
         route = "manager_only"
@@ -2748,7 +2753,7 @@ def apply_high_risk_content_guards(
         and not safety_decision.semantic_non_p0
         and not metadata.get("presale_refund_policy_manager_check")
     ):
-        primary_risk = safety_decision.primary_risk
+        primary_risk = "payment_dispute" if prefer_payment_dispute_template and safety_decision.primary_risk == "refund" else safety_decision.primary_risk
         route = "manager_only"
         if primary_risk == "legal":
             topic = "theme:029_legal_question"
@@ -5136,6 +5141,12 @@ def _answer_quality_was_rewritten(result: SubscriptionDraftResult) -> bool:
 
 def _is_refund_case(result: SubscriptionDraftResult, *, markers: set[str]) -> bool:
     return result.topic_id == "theme:009_refund" or "refund" in markers
+
+def _prefer_payment_dispute_template_over_refund(risk_codes: Sequence[str], *, client_message: str = "") -> bool:
+    codes = {str(code) for code in risk_codes}
+    if not {"refund", "payment_dispute"}.issubset(codes):
+        return False
+    return not any(code == "refund" for code in codes_from_text(str(client_message or "")))
 
 def _is_legal_threat_case(result: SubscriptionDraftResult, *, markers: set[str]) -> bool:
     return result.topic_id == "theme:029_legal_question" or "legal" in markers

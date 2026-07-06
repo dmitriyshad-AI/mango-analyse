@@ -1312,6 +1312,69 @@ def test_p0_latch_keeps_safe_followup_manager_only_after_dispute() -> None:
     assert "final_p0_text_override" in result.safety_flags
 
 
+def test_mixed_refund_payment_latch_uses_payment_text_for_non_refund_followup() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Расписание появится после подтверждения оплаты.",'
+        '"message_type":"question","topic_id":"theme:013_schedule","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Оплатила вчера, расписание появится?",
+        context={
+            "active_brand": "foton",
+            "conversation_intent_plan": {
+                "primary_intent": "schedule",
+                "risk_signals": [],
+                "route_bias": "bot_answer_self_for_pilot",
+            },
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["refund", "payment_dispute"],
+                    "primary_risk": "refund",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.topic_id == "theme:003_payment_status"
+    assert result.draft_text == PAYMENT_DISPUTE_SAFE_TEXT
+    assert "возврат" not in result.draft_text.casefold()
+    assert "payment_dispute_manager_only" in result.safety_flags
+    assert "zero_collect_refund_guarded" not in result.safety_flags
+
+
+def test_mixed_refund_payment_latch_keeps_refund_text_for_active_refund_request() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Проверю оплату.",'
+        '"message_type":"question","topic_id":"theme:003_payment_status","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Я уже оплатила, хочу возврат.",
+        context={
+            "active_brand": "foton",
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["refund", "payment_dispute"],
+                    "primary_risk": "refund",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.topic_id == "theme:009_refund"
+    assert "zero_collect_refund_guarded" in result.safety_flags
+    assert result.draft_text != PAYMENT_DISPUTE_SAFE_TEXT
+
+
 def test_answer_contract_prevents_green_installment_fallback_lock_in() -> None:
     base = parse_llm_json(
         '{"route":"bot_answer_self_for_pilot","draft_text":"В УНПК можно платить помесячно, за семестр или за год.",'

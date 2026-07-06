@@ -4606,8 +4606,7 @@ def _roles_read_tax_non_refund_plan(plan: Mapping[str, Any]) -> bool:
 
 def _roles_read_refund_false_positive_result(result: SubscriptionDraftResult) -> bool:
     return (
-        result.route == "manager_only"
-        or result.topic_id == "theme:009_refund"
+        result.topic_id == "theme:009_refund"
         or bool(_roles_read_refund_related_safety_flags(result.safety_flags))
     )
 

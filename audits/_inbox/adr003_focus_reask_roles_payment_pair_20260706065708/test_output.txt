@@ -1,0 +1,7 @@
+bash -n scripts/run_adr003_semantic_reading_e3_paired.sh: OK
+pytest roles_read_apply subset: 3 passed
+pytest semantic_reading/e3_runner/moratorium/report: 94 passed
+pytest --collect-only: 4150 tests collected
+dry-check: runs/adr003_semantic_reading_e3_dry_check_focus_reask_roles_payment_local_1af697aa
+VALID_E3_ON: dialogs=2 turns=4 eligible_frame_rate=1.0000 hard_gate_failures=0
+VALID_E3_B: dialogs=2 turns=4 eligible_frame_rate=1.0000 hard_gate_failures=0

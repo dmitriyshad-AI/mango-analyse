@@ -12140,6 +12140,46 @@ def test_direct_path_roles_read_apply_repairs_tax_refund_false_positive() -> Non
     assert "tax_vs_refund" in trace["conflict_with"]
 
 
+def test_direct_path_roles_read_apply_does_not_clear_unrelated_manager_only() -> None:
+    result = apply_roles_read_trace(
+        SubscriptionDraftResult(
+            route="manager_only",
+            topic_id="theme:003_payment_status",
+            draft_text="Передам менеджеру вопрос по оплате.",
+            safety_flags=("payment_dispute", "manager_approval_required", "no_auto_send"),
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "handoff_manager",
+                    "payment_readiness": "paid",
+                    "risk_class": "payment_dispute",
+                    "confidence": 0.96,
+                }
+            },
+        ),
+        context={
+            "active_brand": "foton",
+            SEMANTIC_READING_CLASSES_ENV: "roles_read",
+            READING_APPLY_CLASSES_ENV: "roles_read/refund_tax",
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.topic_id == "theme:003_payment_status"
+    assert "payment_dispute" in result.safety_flags
+    assert "tax_deduction_safe_template_applied" not in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "shadow_only"
+    assert trace["metadata"]["apply_enabled"] is True
+    assert trace["metadata"]["payment_source"] == "tax_deduction"
+
+
 def test_direct_path_roles_read_apply_keeps_real_refund_manager_only() -> None:
     result = apply_roles_read_trace(
         SubscriptionDraftResult(

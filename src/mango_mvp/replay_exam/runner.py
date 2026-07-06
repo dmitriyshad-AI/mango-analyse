@@ -1,15 +1,99 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .machine_gate import run_machine_gate
+from .machine_gate import number_index, run_machine_gate
 from .models import BotReplayResult, ReplayCase, ReplayMessage
 
 
 Provider = Callable[[ReplayCase, Mapping[str, object]], BotReplayResult]
+
+_CURRENT_TURN_FACT_CONTAINERS = frozenset(
+    {
+        "retrieved_facts",
+        "client_safe_facts",
+        "bot_confirmed_facts",
+        "confirmed_facts_for_judge",
+    }
+)
+_CURRENT_TURN_FACT_ROOTS = frozenset({"direct_path", "dialogue_contract_pipeline"})
+_CLIENT_SAFE_TEXT_KEYS = frozenset({"client_safe_text", "client_text", "safe_text", "text"})
+_BLOCKED_FACT_TEXT_KEYS = frozenset({"internal_only_text", "manager_only_text", "manager_text"})
+_BLOCKED_METADATA_KEYS = frozenset(
+    {
+        "manager_reference",
+        "raw_response",
+        "replay_raw_response",
+        "older_summary",
+        "history",
+        "recent_messages",
+        "prefix_messages",
+        "raw",
+        "blob",
+    }
+)
+
+
+def _fact_payload_texts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        texts: list[str] = []
+        for key, nested in value.items():
+            key_s = str(key)
+            key_l = key_s.casefold()
+            if key_l in _BLOCKED_FACT_TEXT_KEYS:
+                continue
+            if key_s in _CLIENT_SAFE_TEXT_KEYS and isinstance(nested, str):
+                texts.append(nested)
+            elif key_s in _BLOCKED_METADATA_KEYS:
+                continue
+            elif isinstance(nested, str):
+                texts.append(nested)
+            elif isinstance(nested, (Mapping, list, tuple)):
+                texts.extend(_fact_payload_texts(nested))
+        return tuple(texts)
+    if isinstance(value, (list, tuple)):
+        texts: list[str] = []
+        for item in value:
+            texts.extend(_fact_payload_texts(item))
+        return tuple(texts)
+    return ()
+
+
+def _current_turn_client_safe_fact_texts(metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    texts: list[str] = []
+
+    def walk(value: object, *, key: str = "", inside_current_root: bool = False) -> None:
+        key_s = key.casefold()
+        if key_s in _BLOCKED_METADATA_KEYS:
+            return
+        next_inside_current_root = inside_current_root or key_s in _CURRENT_TURN_FACT_ROOTS
+        if next_inside_current_root and key_s in _CURRENT_TURN_FACT_CONTAINERS:
+            texts.extend(_fact_payload_texts(value))
+            return
+        if isinstance(value, Mapping):
+            for nested_key, nested_value in value.items():
+                walk(nested_value, key=str(nested_key), inside_current_root=next_inside_current_root)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, (Mapping, list, tuple)):
+                    walk(item, inside_current_root=next_inside_current_root)
+
+    walk(metadata)
+    return tuple(text for text in texts if str(text or "").strip())
+
+
+def _current_turn_client_safe_numbers(metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    texts = _current_turn_client_safe_fact_texts(metadata)
+    numbers = set(number_index(texts))
+    for text in texts:
+        numbers.update(re.findall(r"\d+", str(text or "")))
+    return tuple(sorted(numbers))
 
 
 def load_cases(path: Path) -> list[ReplayCase]:
@@ -55,7 +139,8 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
     rows: list[dict[str, object]] = []
     for case in dialog_cases:
         result = provider(case, {"older_summary": older_summary, "sends_client_replies": False, "crm_context": {}})
-        gate = run_machine_gate(case, result)
+        client_safe_numbers = _current_turn_client_safe_numbers(result.metadata)
+        gate = run_machine_gate(case, result, client_safe_numbers=client_safe_numbers)
         rows.append(
             {
                 "dialog_id": case.dialog_id,
@@ -65,7 +150,12 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "bot_text": result.bot_text,
                 "safety_flags": list(result.safety_flags),
                 "provider_metadata": dict(result.metadata),
-                "machine_gate": {"passed": gate.passed, "flags": list(gate.flags), "new_numbers": list(gate.new_numbers)},
+                "machine_gate": {
+                    "passed": gate.passed,
+                    "flags": list(gate.flags),
+                    "new_numbers": list(gate.new_numbers),
+                    "client_safe_numbers_count": len(client_safe_numbers),
+                },
                 "llm_calls_client": 0,
             }
         )

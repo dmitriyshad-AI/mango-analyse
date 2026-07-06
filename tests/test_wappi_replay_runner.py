@@ -28,6 +28,141 @@ def test_replay_runner_parallelizes_by_dialog_and_reports_zero_client_llm(tmp_pa
     assert (tmp_path / "replay_results.jsonl").exists()
 
 
+def test_replay_runner_allows_numbers_from_current_turn_retrieved_facts() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Сколько стоит?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Стоимость курса — 12 345 ₽.",
+            metadata={
+                "dialogue_contract_pipeline": {
+                    "retrieved_facts": {
+                        "price.current": {"client_safe_text": "Стоимость курса — 12 345 ₽."}
+                    }
+                }
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is True
+    assert rows[0]["machine_gate"]["new_numbers"] == []
+    assert rows[0]["machine_gate"]["client_safe_numbers_count"] >= 1
+
+
+def test_replay_runner_allows_numbers_from_retrieved_fact_string_values() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "unpk", "Когда старт?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Старт группы — 13.09.2026.",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "schedule.group_start": "УНПК: старт группы — 13.09.2026."
+                    }
+                }
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is True
+    assert rows[0]["machine_gate"]["new_numbers"] == []
+
+
+def test_replay_runner_allows_time_range_components_from_retrieved_fact() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "unpk", "Когда занятие?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Занятие идёт 14:30–16:30.",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "schedule.group_time": "УНПК: олимпиадная группа — суббота 14:30–16:30."
+                    }
+                }
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is True
+    assert rows[0]["machine_gate"]["new_numbers"] == []
+
+
+def test_replay_runner_does_not_allow_numbers_from_internal_only_fact_text() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "unpk", "Сколько стоит?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Внутренняя цена — 12 345 ₽.",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "price.internal": {"internal_only_text": "Внутренняя цена — 12 345 ₽."}
+                    }
+                }
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is False
+    assert rows[0]["machine_gate"]["new_numbers"] == ["12345"]
+
+
+def test_replay_runner_does_not_allow_numbers_from_manager_reference_or_raw_response() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Сколько стоит?", "Менеджер: 12 345 ₽.")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Стоимость курса — 12 345 ₽.",
+            metadata={
+                "replay_raw_response": "Стоимость курса — 12 345 ₽.",
+                "manager_reference": "Менеджер: 12 345 ₽.",
+                "dialogue_contract_pipeline": {"retrieved_facts": {}},
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is False
+    assert "new_number_unverified" in rows[0]["machine_gate"]["flags"]
+    assert rows[0]["machine_gate"]["new_numbers"] == ["12345"]
+    assert rows[0]["machine_gate"]["client_safe_numbers_count"] == 0
+
+
+def test_replay_runner_does_not_allow_numbers_from_previous_turn_retrieved_facts() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#2", "foton", "А сейчас сколько?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Стоимость сейчас — 12 345 ₽.",
+            metadata={
+                "previous_turn": {
+                    "retrieved_facts": {
+                        "old.price": {"client_safe_text": "Стоимость в прошлом ответе — 12 345 ₽."}
+                    }
+                },
+                "direct_path": {"retrieved_facts": {}},
+            },
+        )
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["machine_gate"]["passed"] is False
+    assert rows[0]["machine_gate"]["new_numbers"] == ["12345"]
+    assert rows[0]["machine_gate"]["client_safe_numbers_count"] == 0
+
+
 def test_load_cases_reads_scrubbed_jsonl(tmp_path: Path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(

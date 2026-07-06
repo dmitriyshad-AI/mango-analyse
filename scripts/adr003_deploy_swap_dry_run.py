@@ -19,15 +19,26 @@ def _repo(path: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Print ADR-003 deploy swap/rollback checklist.")
     parser.add_argument("--candidate-worktree", default="/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff")
+    parser.add_argument(
+        "--live-worktree",
+        help="Current live process cwd used only for freeze heartbeat/rev-parse checks.",
+    )
     parser.add_argument("--previous-worktree", required=True)
     parser.add_argument("--previous-head", required=True)
     parser.add_argument("--previous-screen", required=True)
+    parser.add_argument(
+        "--previous-launch-command",
+        default="scripts/run_telegram_public_pilot_bots.py --env-file /dev/null --mode poll --brand all",
+    )
+    parser.add_argument("--previous-profile", default="pilot_gold_v1")
+    parser.add_argument("--previous-snapshot", default="v6.7 staging r4.1")
     parser.add_argument("--allow-same-worktree", action="store_true")
     parser.add_argument("--live-pid", default="60227")
     parser.add_argument("--heartbeat", default=".codex_local/telegram_pilot_bots/runtime/public_pilot_bots_heartbeat.json")
     args = parser.parse_args()
 
     candidate = str(Path(args.candidate_worktree).expanduser())
+    live = str(Path(args.live_worktree or args.candidate_worktree).expanduser())
     previous = str(Path(args.previous_worktree).expanduser())
     heartbeat = str(Path(args.heartbeat))
     if candidate == previous and not args.allow_same_worktree:
@@ -43,14 +54,14 @@ def main() -> int:
     print("# This script is print-only. It performs no live action.")
     print()
     print("## 1. Fresh freeze checks")
-    print(f"{_repo(candidate)} status --short --branch")
-    print(f"{_repo(candidate)} rev-parse HEAD")
+    print(f"{_repo(live)} status --short --branch")
+    print(f"{_repo(live)} rev-parse HEAD")
     print(f"ps -p {args.live_pid} -o pid=,ppid=,stat=,lstart=,command=")
     print(f"lsof -a -p {args.live_pid} -d cwd")
     print(
         "python3 - <<'PY'\n"
         "import json\n"
-        f"p='{candidate}/{heartbeat}'\n"
+        f"p='{live}/{heartbeat}'\n"
         "data=json.load(open(p))\n"
         "summary=data.get('summary') if isinstance(data.get('summary'), dict) else {}\n"
         "def pick(*keys):\n"
@@ -92,6 +103,10 @@ def main() -> int:
     print(f'test "$candidate_head" != "{args.previous_head}"')
     print(f"# expected previous HEAD: {args.previous_head}")
     print(f"# previous screen: {args.previous_screen}")
+    print(f"# previous launch command: {args.previous_launch_command}")
+    print(f"# previous profile: {args.previous_profile}")
+    print(f"# previous snapshot: {args.previous_snapshot}")
+    print(f"# previous heartbeat path: {heartbeat}")
     print("# start previous known-good command/screen recorded in freeze")
     print("# verify heartbeat pid/cwd/profile/snapshot after rollback")
     return 0

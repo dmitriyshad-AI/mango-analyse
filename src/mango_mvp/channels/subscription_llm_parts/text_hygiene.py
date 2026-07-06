@@ -125,6 +125,15 @@ _SEMANTIC_FRAME_TAX_ACTIONS = frozenset({"answer_question", "send_document"})
 _SEMANTIC_FRAME_REFUND_ACTIONS = frozenset({"refund_or_cancel"})
 _SEMANTIC_FRAME_PAYMENT_RISK_CLASSES = frozenset({"payment_dispute"})
 _SEMANTIC_FRAME_PAYMENT_READINESS = frozenset({"dispute"})
+_SEMANTIC_FRAME_PAID_SERVICE_READINESS = frozenset(
+    {
+        "paid",
+        "paid_transfer",
+        "paid_context",
+        "payment_done",
+        "payment_completed",
+    }
+)
 _SEMANTIC_FRAME_STRUCTURED_ACTIONS = frozenset(
     {
         "answer_question",
@@ -163,10 +172,19 @@ def scrub_direct_path_p0_text(
         legacy_kind=legacy_kind,
         chosen_kind=kind,
     )
-    if not _direct_path_p0_text_needs_scrub(result.draft_text) and not semantic_guard.get("force_scrub"):
+    if (
+        not _direct_path_p0_text_needs_scrub(result.draft_text)
+        and not _direct_path_p0_text_kind_mismatch_needs_scrub(result.draft_text, kind)
+        and not semantic_guard.get("force_scrub")
+    ):
         return result
 
     safe_text = _direct_path_p0_safe_text(kind, context=context)
+    force_manager_route = bool(
+        semantic_guard.get("force_scrub")
+        and kind != "forward_payment"
+        and result.route == "bot_answer_self_for_pilot"
+    )
     metadata = dict(result.metadata)
     hygiene_metadata = {
         "applied": True,
@@ -181,7 +199,7 @@ def scrub_direct_path_p0_text(
         direct["semantic_frame_text_meaning_guard"] = dict(semantic_guard)
         metadata["direct_path"] = direct
         changed_fields = ("draft_text",)
-        if semantic_guard.get("conflict") and result.route == "bot_answer_self_for_pilot":
+        if force_manager_route:
             changed_fields = ("draft_text", "route")
         metadata = append_reading_trace_record(
             metadata,
@@ -201,7 +219,7 @@ def scrub_direct_path_p0_text(
     metadata["direct_p0_text_hygiene"] = hygiene_metadata
     metadata["final_p0_text_override"] = True
     extra_flags = ["direct_p0_text_hygiene"]
-    if semantic_guard.get("conflict"):
+    if semantic_guard.get("conflict") or force_manager_route:
         extra_flags.append("correct_route_wrong_p0_text")
     flags = tuple(dict.fromkeys([*result.safety_flags, *extra_flags]))
     checklist = tuple(
@@ -213,7 +231,7 @@ def scrub_direct_path_p0_text(
         )
     )
     route = result.route
-    if semantic_guard.get("conflict") and kind != "forward_payment" and route == "bot_answer_self_for_pilot":
+    if force_manager_route:
         route = "manager_only"
     return replace(
         result,
@@ -343,6 +361,12 @@ def _direct_path_p0_hygiene_kind_legacy(
             return kind
     if _semantic_frame_payment_class(result, context=context) == "forward_payment":
         return "forward_payment"
+    if _text_hygiene_payment_fix_enabled(context) and not _client_message_has_refund_meaning(client_message):
+        frame = _semantic_frame_from_result_metadata(result)
+        if _semantic_frame_paid_service_issue(frame):
+            return "payment_dispute"
+        if _context_p0_latch_has_payment_dispute(context):
+            return "payment_dispute"
     text = str(client_message or "").casefold().replace("ё", "е")
     if re.search(r"\b(?:списал|платеж|платежн|чек|квитанц|оплата\s+прошла|деньги\s+списал)\b", text):
         return "payment_dispute"
@@ -511,10 +535,11 @@ def _semantic_frame_text_meaning_guard(
             semantic_kind = "neutral_manager"
         else:
             return {}
-    if legacy not in _SEMANTIC_CLIENT_TEMPLATE_KINDS and semantic_kind == "neutral_manager":
+    neutral_p0_frame = semantic_kind == "neutral_manager" and _semantic_frame_requires_neutral_p0_text(frame)
+    if legacy not in _SEMANTIC_CLIENT_TEMPLATE_KINDS and semantic_kind == "neutral_manager" and not neutral_p0_frame:
         return {}
     conflict = bool(legacy and legacy != semantic_kind and legacy in _SEMANTIC_CLIENT_TEMPLATE_KINDS)
-    if not conflict and str(chosen_kind or "") == semantic_kind:
+    if not conflict and str(chosen_kind or "") == semantic_kind and not neutral_p0_frame:
         return {}
     return {
         "schema_version": "semantic_frame_text_meaning_guard_v1_2026_07_06",
@@ -582,9 +607,13 @@ def _semantic_frame_client_text_kind(
         return "refund"
     if risk in _SEMANTIC_FRAME_PAYMENT_RISK_CLASSES or readiness in _SEMANTIC_FRAME_PAYMENT_READINESS:
         return "payment_dispute"
+    if _semantic_frame_paid_service_issue(frame):
+        return "payment_dispute"
     plan = _conversation_plan_for_text_meaning(context, result=result)
     if _conversation_plan_is_tax(plan) and action in _SEMANTIC_FRAME_TAX_ACTIONS:
         return "tax"
+    if _semantic_frame_requires_neutral_p0_text(frame):
+        return "neutral_manager"
     if (
         legacy_kind in _SEMANTIC_CLIENT_TEMPLATE_KINDS
         and must_handoff is True
@@ -611,6 +640,57 @@ def _conversation_plan_for_text_meaning(
         if isinstance(value, Mapping):
             return value
     return {}
+
+
+def _semantic_frame_paid_service_issue(frame: Mapping[str, Any]) -> bool:
+    if not frame:
+        return False
+    if not _semantic_frame_text_meaning_frame_is_valid(frame):
+        return False
+    if _semantic_frame_confidence(frame) < _SEMANTIC_FRAME_TEXT_MEANING_CONFIDENCE:
+        return False
+    action = _semantic_frame_enum_value(frame.get("requested_action"))
+    if action in _SEMANTIC_FRAME_REFUND_ACTIONS:
+        return False
+    readiness = _semantic_frame_enum_value(frame.get("payment_readiness"))
+    if readiness not in _SEMANTIC_FRAME_PAID_SERVICE_READINESS:
+        return False
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    answerability = _semantic_frame_enum_value(frame.get("answerability"))
+    if action != "handoff_manager" and must_handoff is not True:
+        return False
+    if answerability and answerability not in {"manager_only", "uncertain"}:
+        return False
+    return True
+
+
+def _semantic_frame_requires_neutral_p0_text(frame: Mapping[str, Any]) -> bool:
+    risk = _semantic_frame_enum_value(frame.get("risk_class"))
+    action = _semantic_frame_enum_value(frame.get("requested_action"))
+    answerability = _semantic_frame_enum_value(frame.get("answerability"))
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    return risk == "p0" and action == "handoff_manager" and must_handoff is True and answerability == "manager_only"
+
+
+def _context_p0_latch_has_payment_dispute(context: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, Mapping):
+        return False
+    latch = memory.get("p0_latch")
+    if not isinstance(latch, Mapping) or not bool(latch.get("active")):
+        return False
+    raw_codes = latch.get("codes")
+    if isinstance(raw_codes, str):
+        codes = {raw_codes}
+    elif isinstance(raw_codes, (list, tuple, set, frozenset)):
+        codes = {str(code or "") for code in raw_codes}
+    else:
+        codes = set()
+    normalized = {code.strip().casefold() for code in codes}
+    normalized.add(str(latch.get("primary_risk") or "").strip().casefold())
+    return "payment_dispute" in normalized
 
 
 def _conversation_plan_is_tax(plan: Mapping[str, Any]) -> bool:
@@ -653,6 +733,16 @@ def _direct_path_p0_text_needs_scrub(text: str) -> bool:
     )
 
 
+def _direct_path_p0_text_kind_mismatch_needs_scrub(text: str, kind: str) -> bool:
+    value = str(text or "").casefold()
+    normalized_kind = str(kind or "").strip()
+    if normalized_kind in {"payment_dispute", "tax", "neutral_manager"} and "возврат" in value:
+        return True
+    if normalized_kind == "refund" and "по оплате нужно сверить данные" in value:
+        return True
+    return False
+
+
 def _direct_path_p0_safe_text(kind: str, *, context: Optional[Mapping[str, Any]] = None) -> str:
     if kind == "forward_payment":
         return PAYMENT_LINK_SAFE_TEXT
@@ -665,7 +755,7 @@ def _direct_path_p0_safe_text(kind: str, *, context: Optional[Mapping[str, Any]]
     if kind in {"complaint", "legal_threat", "legal"}:
         return "Такой вопрос нужно проверить вручную. Передам его менеджеру, чтобы он сверил документы и ответил по точным данным."
     if kind == "neutral_manager":
-        return "Такой вопрос нужно проверить вручную. Передам его менеджеру, чтобы он сверил ситуацию и ответил по точным данным."
+        return "Понимаю, это важно. Передам вопрос менеджеру, чтобы он сверил ситуацию и ответил по точным данным."
     if _payment_refund_dispute_split_enabled(context):
         return "Такой вопрос нужно проверить вручную. Передам его менеджеру, чтобы он сверил ситуацию и ответил по точным данным."
     return (

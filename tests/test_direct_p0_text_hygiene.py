@@ -344,10 +344,192 @@ def test_correct_route_wrong_p0_text_semantic_frame_paid_access_overrides_refund
     lowered = scrubbed.draft_text.casefold()
     assert scrubbed.route == "manager_only"
     assert "возврат" not in lowered
-    assert "проверить вручную" in lowered
+    assert "по оплате нужно сверить данные" in lowered
     assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+    assert scrubbed.metadata["semantic_frame_text_meaning_guard"]["frame_kind"] == "payment_dispute"
+
+
+@pytest.mark.parametrize(
+    "client_message",
+    [
+        "Оплатили курс, ссылка не пришла.",
+        "Оплатили, а занятие не назначили.",
+        "Оплата прошла, чек не зачёлся.",
+    ],
+)
+def test_text_hygiene_payment_fix_paid_service_issue_uses_payment_dispute_template(client_message: str) -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Возможность возврата, сумму и порядок действий должен подтвердить менеджер.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="platform_access",
+                risk_class="manager_action",
+                payment_readiness="paid",
+                requested_action="handoff_manager",
+                answerability="manager_only",
+                must_handoff=True,
+                confidence=0.94,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(result, context=_profile_context(), client_message=client_message)
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "возврат" not in lowered
+    assert "по оплате нужно сверить данные" in lowered
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+
+
+def test_text_hygiene_payment_fix_payment_dispute_latch_covers_short_access_followup() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Возможность возврата, сумму и порядок действий должен подтвердить менеджер.",
+        risk_level="high",
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["payment_dispute"],
+                    "primary_risk": "payment_dispute",
+                }
+            },
+        },
+        client_message="Ссылка так и не пришла.",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "возврат" not in lowered
+    assert "по оплате нужно сверить данные" in lowered
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+
+
+def test_text_hygiene_payment_fix_real_refund_after_access_problem_stays_refund() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Оформим возврат и передадим менеджеру.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="refund_claim",
+                risk_class="payment_dispute",
+                payment_readiness="dispute",
+                requested_action="refund_or_cancel",
+                confidence=0.96,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Оплатили, доступа нет, верните деньги.",
+    )
+
+    assert scrubbed.route == "manager_only"
+    assert "возможность возврата" in scrubbed.draft_text.casefold()
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+def test_semantic_frame_p0_manager_only_gets_neutral_text_without_advice_or_detail_collection() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=(
+            "Понимаю, ситуация неприятная. Нужно подключить менеджера и проверить, что произошло: "
+            "о каком дне и группе речь, кто был на площадке. По очным занятиям посещаемость отслеживают."
+        ),
+        risk_level="high",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "complaint",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="complaint_child_supervision",
+                risk_class="p0",
+                payment_readiness="unknown",
+                requested_action="handoff_manager",
+                answerability="manager_only",
+                must_handoff=True,
+                confidence=0.94,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Ребёнок один остался после занятия, никто не подошёл и не следил.",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "менеджер" in lowered
+    assert "о каком дне" not in lowered
+    assert "группе" not in lowered
+    assert "посещаемость" not in lowered
+    assert "возврат" not in lowered
     assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "neutral_manager"
-    assert scrubbed.metadata["semantic_frame_text_meaning_guard"]["frame_kind"] == "neutral_manager"
+    guard = scrubbed.metadata["direct_p0_text_hygiene"]["semantic_frame_text_meaning_guard"]
+    assert guard["frame_kind"] == "neutral_manager"
+    assert guard["force_scrub"] is True
+
+
+def test_semantic_frame_p0_manager_only_forces_route_even_without_legacy_p0_metadata() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По очным занятиям посещаемость отслеживают, поэтому обычно всё под контролем.",
+        risk_level="low",
+        safety_flags=("direct_path_model",),
+        metadata={
+            "semantic_frame": _semantic_frame(
+                intent="complaint_child_supervision",
+                risk_class="p0",
+                payment_readiness="unknown",
+                requested_action="handoff_manager",
+                answerability="manager_only",
+                must_handoff=True,
+                confidence=0.95,
+            )
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Ребёнок один остался после занятия, никто не подошёл и не следил.",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "посещаемость" not in lowered
+    assert "менеджер" in lowered
+    assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
+    trace = next(item for item in scrubbed.metadata["semantic_reading_trace"] if item["class"] == "p0_text_meaning")
+    assert "route" in trace["changed_fields"]
 
 
 def test_semantic_frame_text_meaning_keeps_real_refund_as_refund() -> None:

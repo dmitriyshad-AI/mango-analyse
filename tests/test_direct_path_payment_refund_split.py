@@ -85,7 +85,8 @@ def test_forward_payment_uses_payment_link_text_only_when_split_flag_on() -> Non
     )
 
     assert off.draft_text != PAYMENT_LINK_SAFE_TEXT
-    assert "По возврату точную сумму" in off.draft_text
+    assert "возврат" in off.draft_text.casefold()
+    assert off.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
     assert on.draft_text == PAYMENT_LINK_SAFE_TEXT
     assert "возврат" not in on.draft_text.casefold()
     assert on.metadata["direct_p0_text_hygiene"]["kind"] == "forward_payment"

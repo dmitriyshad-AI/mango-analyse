@@ -8,6 +8,14 @@
     "symbol": "has_any_marker"
   },
   {
+    "args_preview": "(\"foton\", \"фотон\", \"цдпо\", \"cdpo\")",
+    "args_sha256": "307d507372347c19de9ddbc3cdc722582f23a97abbe700c550d55ce26c00c8f6",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_brand",
+    "symbol": "has_any_marker"
+  },
+  {
     "args_preview": "(\"offline\", \"очно\", \"офлайн\")",
     "args_sha256": "b625cf44971bc05d8df5c4ec843cdd74a2e90b2568b1870d5bd6e59c8cc7ac85",
     "node_kind": "marker_helper_call",
@@ -21,6 +29,14 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
     "qualname": "_normalize_known_format",
+    "symbol": "has_any_marker"
+  },
+  {
+    "args_preview": "(\"unpk\", \"унпк\", \"мфти\", \"mipt\")",
+    "args_sha256": "796775f3adaa6a481e55697ba63062e42652632dc1f1fb3f4f4606639fe436f7",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_brand",
     "symbol": "has_any_marker"
   },
   {
@@ -344,6 +360,14 @@
     "symbol": "has_any_marker"
   },
   {
+    "args_preview": "(\"индивидуал\", \"персональн\", \"репетитор\", \"один на один\", \"1 на 1\")",
+    "args_sha256": "1da78ab624948073d3e495fdcbc7e2bf5d7282a0a29ce3752daf9d96bcfac756",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_exclusion_reason",
+    "symbol": "has_any_marker"
+  },
+  {
     "args_preview": "(\"как можно закреп\", \"как закреп\", \"как заброн\", \"как оформить место\")",
     "args_sha256": "dbabf326ac6de55f33626fb5033b3cfdb4f5fc33eb6fe281808c66187bfa595a",
     "node_kind": "marker_helper_call",
@@ -456,6 +480,14 @@
     "symbol": "_has_any_marker"
   },
   {
+    "args_preview": "(\"лвш\", \"лагер\", \"летн\", \"лш\", \"менделеево\", \"смен\")",
+    "args_sha256": "8825e38315c620da57700d7955bab30441223a0f7ba71b5828dac980e9dd7b76",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_exclusion_reason",
+    "symbol": "has_any_marker"
+  },
+  {
     "args_preview": "(\"лвш\", \"лагер\", \"смен\", \"менделеево\")",
     "args_sha256": "0e97525f09b51f6d6eb6c85e70defa690284a5829fe88c4e3089e017b9ebe1bc",
     "node_kind": "marker_helper_call",
@@ -533,6 +565,14 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_informational_fact_matches_question",
+    "symbol": "has_any_marker"
+  },
+  {
+    "args_preview": "(\"лобня\", \"жуковск\")",
+    "args_sha256": "ab4910dd698dad3ad6ce9824168a1ca314c91762765f9625f30eef5d7c8c5b0f",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_exclusion_reason",
     "symbol": "has_any_marker"
   },
   {
@@ -1224,6 +1264,14 @@
     "symbol": "has_any_marker"
   },
   {
+    "args_preview": "(\"размер группы\", \"наполняемость\", \"сколько учеников\", \"сколько детей\")",
+    "args_sha256": "90e20f59abf91bb5eb0995d0c32a59ef709e75cebf40ba8da4255070a7044ba2",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_exclusion_reason",
+    "symbol": "has_any_marker"
+  },
+  {
     "args_preview": "(\"распис\", \"время\", \"дни\", \"во сколько\", \"когда\")",
     "args_sha256": "fca41ac56ce72fd8f586ab66cb86420c9e2a00d83eb5fb2dde53dd13f880a2b5",
     "node_kind": "marker_helper_call",
@@ -1749,6 +1797,14 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "qualname": "is_negated_refund_topic",
+    "symbol": "has_any_marker"
+  },
+  {
+    "args_preview": "(\n            \"заброниру\",\n            \"бронь\",\n            \"зафиксиру\",\n            \"закрепи\",\n            \"оставьте место\",\n            \"удержите место\",\n            \"оформить место\",\n            \"оформите место\",\n            \"подтвердите",
+    "args_sha256": "037f7cf482001a0bcd7e6a15ba396fe1b6e0240e8516d3c9b2d3a37a541c3e63",
+    "node_kind": "marker_helper_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "qualname": "_seats_default_open_exclusion_reason",
     "symbol": "has_any_marker"
   },
   {
@@ -2608,6 +2664,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"payment_dispute\" in normalized",
+    "expression_sha256": "8a1eed4995a39426b38b5a5aea691f73d8377d3f875c3dd3b975c7245ae2ab9d",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "_context_p0_latch_has_payment_dispute",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"payment_dispute\" in text",
     "expression_sha256": "a0e4ca116c773b24731b2f916247ce2469bac326961511306b7a017907651a1e",
     "node_kind": "string_contains",
@@ -2837,6 +2901,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_risk_flags_from_safety",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"возврат\" in value",
+    "expression_sha256": "b67c9aa2857910e9bc8b93fd5e5d40fc1e4a23b5fb560b74d8f1a31e302283e3",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "_direct_path_p0_text_kind_mismatch_needs_scrub",
     "symbol": "In"
   },
   {
@@ -3901,6 +3973,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_terminal_safe_template",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"по оплате нужно сверить данные\" in value",
+    "expression_sha256": "b53a8953474462e724bca5c75816cd29de23d2cb65f166d3cbde2488c3069051",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "_direct_path_p0_text_kind_mismatch_needs_scrub",
     "symbol": "In"
   },
   {
@@ -5658,6 +5738,26 @@
     "pattern_preview": "\\bformat\\b|формат|онлайн\\s+или\\s+очно|очно\\s+или\\s+онлайн",
     "pattern_sha256": "0f9c87822dbbf38d1cfe16a0eba731eaa09e99e1f4d767ba6d36f0a53da032aa",
     "qualname": "_migrated_rule_intent_from_dialogue_contract",
+    "symbol": "re.search",
+    "target": ""
+  },
+  {
+    "flags": "haystack",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "pattern_preview": "\\bзапиш(?:ите|и|ем|ать)\\s+(?:нас|меня|ребенка|ребенка|сына|дочь|его|ее|в\\s+группу)\\b",
+    "pattern_sha256": "fadd0dc1c3f210182ccddef48e409d6b6d6aaf98f2804b9397a6914272106484",
+    "qualname": "_seats_default_open_exclusion_reason",
+    "symbol": "re.search",
+    "target": ""
+  },
+  {
+    "flags": "haystack",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
+    "pattern_preview": "\\bсколько\\s+(?:мест|человек)\\b",
+    "pattern_sha256": "d9a97fb0c18cea5db59ab03fd83c707c9e6673af49ddb7d8b5b4fd7183afeeb2",
+    "qualname": "_seats_default_open_exclusion_reason",
     "symbol": "re.search",
     "target": ""
   },
@@ -8907,7 +9007,7 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
     "pattern_preview": "\\b(?:списал|платеж|платежн|чек|квитанц|оплата\\s+прошла|деньги\\s+списал)\\b",
     "pattern_sha256": "8320dd43add420e65d5909cd88586cf6d2b565aa43aaa3003225ebc8122c5d33",
-    "qualname": "_direct_path_p0_hygiene_kind",
+    "qualname": "_direct_path_p0_hygiene_kind_legacy",
     "symbol": "re.search",
     "target": ""
   },
@@ -9718,6 +9818,16 @@
     "pattern_preview": "(?iu)\\b(?:до\\s+оплат\\w*|перед\\s+оплат\\w*|ещ[её]\\s+до\\s+оплат\\w*|до\\s+запис[ииь]|заранее)\\b",
     "pattern_sha256": "0b4bc1efbcb53f4f501ed176ad8f600b734d111ad068e33c9c69c1d89a76d69a",
     "qualname": "_is_benign_presale_refund_question",
+    "symbol": "re.search",
+    "target": ""
+  },
+  {
+    "flags": "value",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "pattern_preview": "(?iu)\\b(?:по\\s+возврату|обращени[ея]\\s+по\\s+возврату|вопрос\\s+по\\s+возврату)\\b",
+    "pattern_sha256": "528d1a2215119c9bbf8ebcb5e5e1588710e36411a1de0e270491017bb0db2dc4",
+    "qualname": "_direct_path_p0_text_needs_scrub",
     "symbol": "re.search",
     "target": ""
   },
@@ -10852,6 +10962,30 @@
     "symbol": "NUMBER_GATE_SCOPE_AWARE_ENV",
     "value_preview": "\"TELEGRAM_NUMBER_GATE_SCOPE_AWARE\"",
     "value_sha256": "5b249d52fa2efd37b614a8cdcda5d148d7f333036a075bac81f9d39201a918b9"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_REFUND_ACTIONS",
+    "value_preview": "frozenset({\"refund_or_cancel\"})",
+    "value_sha256": "467c60bec2ff44765fa2c3afdcc9991757f905760de4348b746b37323bbfd73e"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_STRUCTURED_ACTIONS",
+    "value_preview": "frozenset(\n    {\n        \"answer_question\",\n        \"check_availability\",\n        \"enroll\",\n        \"send_materials\",\n        \"send_payment_link\",\n        \"send_document\",\n        \"refund_or_cancel\",\n        \"handoff_manager\",\n        \"unkn",
+    "value_sha256": "ae0e7c000b95a94823c06ce04eda80257e6da15c9978f1ec25de52e982566248"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_TAX_ACTIONS",
+    "value_preview": "frozenset({\"answer_question\", \"send_document\"})",
+    "value_sha256": "1730f6757295ccd873a73e4f78fd9c09eb7348fb18e283a63d5c8ffc16ae9923"
   },
   {
     "node_kind": "text_table",

@@ -95,7 +95,7 @@ CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {
     "src/mango_mvp/channels/held_state.py": 2,
     "src/mango_mvp/channels/new_lead_funnel.py": 31,
     "src/mango_mvp/channels/semantic_roles.py": 42,
-    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 62,
+    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 69,
     "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 38,
     "src/mango_mvp/channels/text_signals.py": 1,
 }

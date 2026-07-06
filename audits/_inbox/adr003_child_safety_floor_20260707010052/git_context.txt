@@ -1,0 +1,10 @@
+branch: codex/adr003-semanticframe-migration
+rev: edf298cd
+
+ M docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md
+ M src/mango_mvp/channels/p0_recall_spec.py
+ M src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
+ M src/mango_mvp/channels/subscription_llm_parts/support.py
+ M tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
+ M tests/fixtures/adr003_runtime_channel_regex_snapshot.json
+ M tests/test_subscription_llm_draft_provider.py

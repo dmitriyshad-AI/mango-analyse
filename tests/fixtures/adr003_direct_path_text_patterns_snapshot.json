@@ -4566,7 +4566,7 @@
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
     "pattern_preview": "(?iu)(?:\\bжалоб\\w*|безобрази\\w*|отвратительн\\w*|накричал\\w*\\s+на\\s+реб[её]нк\\w*|(?:унизил\\w*|оскорбил\\w*|высмеял\\w*|издевал\\w*)\\s+.*?реб[её]нк\\w*|реб[её]нок\\s+о",
-    "pattern_sha256": "cbaf22bbd3dc6d08ee81347005610196756d4cb247aea7705aadd9d430fbb493",
+    "pattern_sha256": "a3055727d93b8dac33472986ba1bb628d4f4e3cd8ee0d318a056140ff6a84dc8",
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "_P0_MODEL_LED_COMPLAINT_BACKSTOP_RE"
@@ -6965,8 +6965,8 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/p0_recall_spec.py",
-    "pattern_preview": "rf\"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\n]{{0,120}}\"\n    r\"(?:остал\\w*\\s+один|никто\\s+не\\s+следил|без\\s+(?:присмотр\\w*|надзор\\w*)|потерял\\w*)\"\n    rf\"|(?:остал\\w*\\s",
-    "pattern_sha256": "67b50a90fd0409296054e7b545de43ee5f1c16006a0f95568ecf6f887aa5ea70",
+    "pattern_preview": "rf\"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\\n]{{0,120}}\"\n    rf\"{_CHILD_SAFETY_RISK_PATTERN}\"\n    rf\"|{_CHILD_SAFETY_RISK_PATTERN}\"\n    rf\"[^.!?\\n]{{0,120}}{_CHILD_CONT",
+    "pattern_sha256": "2341e6a81cf5f909b4d00273b18a6feb109c3f406cf332664b32c9aa14528b8c",
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "CHILD_SAFETY_COMPLAINT_RE"
@@ -10194,6 +10194,14 @@
     "symbol": "_CHILD_INCIDENT_PATTERN",
     "value_preview": "r\"(?:униз\\w*|оскорб\\w*|накрич\\w*|высмея\\w*|издева\\w*|\"\n    r\"дов[её]л\\w*\\s+до\\s+сл[её]з|довели\\s+до\\s+сл[её]з)\"",
     "value_sha256": "ea64409914c3b18ea872d8c6897d47fb0f0171a31db5151552132abab005fb12"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/p0_recall_spec.py",
+    "qualname": "<module>",
+    "symbol": "_CHILD_SAFETY_RISK_PATTERN",
+    "value_preview": "r\"(?:остал\\w*\\s+один|один\\s+остал\\w*|оставил\\w*\\s+одн\\w*|\"\n    r\"без\\s+(?:присмотр\\w*|надзор\\w*)|потерял\\w*|\"\n    r\"никто\\s+не\\s+(?:следил|встретил\\w*|подош[её]л\\w*|забрал\\w*))\"",
+    "value_sha256": "27ee08c6ebd5c34d3c6f247a11db5fbb1f9ebe1f1ee27134bd76b6a39441c895"
   },
   {
     "node_kind": "text_table",

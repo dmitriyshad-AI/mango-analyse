@@ -14285,6 +14285,8 @@ def test_p0_model_led_confusion_is_not_direct_preblock() -> None:
         "Жалоба: преподаватель оскорбил ребенка на занятии.",
         "Это безобразие, как накричали на ребёнка.",
         "Ребёнок один остался, никто не подошёл.",
+        "Ребёнок один остался после занятия, никто не подошёл и не следил.",
+        "После занятия ребёнка никто не встретил.",
         "Напишу везде какие вы, если не решите ситуацию.",
     ),
 )
@@ -14307,6 +14309,70 @@ def test_p0_model_led_literal_complaints_stay_direct_preblock(message: str) -> N
     assert result.metadata["direct_path"]["preblocked"] is True
     assert result.metadata["direct_path"]["reason_evidence"]["p0_kind"] == "complaint"
     assert "complaint_apology_guarded" in result.safety_flags
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Ребёнок один остался после занятия, никто не подошёл и не следил.",
+        "После занятия ребёнка никто не встретил.",
+        "После занятия оставили одного, никто не подошёл.",
+    ),
+)
+def test_child_safety_floor_preblocks_without_detail_collection(message: str) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+
+    result = provider.build_draft(
+        message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+        },
+    )
+
+    lowered = result.draft_text.casefold()
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.draft_text == COMPLAINT_SAFE_TEXT
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["reason_evidence"]["p0_kind"] == "complaint"
+    assert "direct_path_preblocked_p0" in result.safety_flags
+    assert "complaint_apology_guarded" in result.safety_flags
+    assert "о каком дне" not in lowered
+    assert "посещаемость" not in lowered
+    assert "расписан" not in lowered
+    assert "пришлите" not in lowered
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Сколько стоит расписание для ребёнка?",
+        "Как выбрать преподавателя? Ребёнок стесняется.",
+        "Ребёнка кто-то должен встречать у кабинета или он сам проходит?",
+    ),
+)
+def test_child_safety_floor_does_not_preblock_benign_schedule_questions(message: str) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Ответ по безопасному вопросу.")
+    )
+
+    result = provider.build_draft(
+        message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["direct_path"]["preblocked"] is False
+    assert "direct_path_preblocked_p0" not in result.safety_flags
 
 
 @pytest.mark.parametrize(

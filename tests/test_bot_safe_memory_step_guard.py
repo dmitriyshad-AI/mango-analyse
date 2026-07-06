@@ -39,6 +39,90 @@ def test_bot_safe_memory_step_guard_downgrades_empty_step_from_context_items() -
     assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
 
 
+def test_bot_safe_memory_step_guard_reads_nested_next_step_metadata() -> None:
+    result = _result(
+        "Место закреплено за вами, запись оформлена.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, nested_statuses=["empty"]))
+
+    assert guarded.route == "draft_for_manager"
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_reads_result_next_step_metadata() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Место закреплено за вами, запись оформлена.",
+        metadata={"next_step": {"status": "empty"}},
+        safety_flags=(),
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded.route == "draft_for_manager"
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_treats_missing_item_status_as_empty() -> None:
+    result = _result(
+        "Место закреплено за вами, запись оформлена.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statusless_items=True))
+
+    assert guarded.route == "draft_for_manager"
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_rewrites_soft_next_step_without_manager_handoff() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика, чтобы подобрать группу.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in guarded.draft_text.casefold()
+    assert "Уточните, пожалуйста, класс ученика" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_rewrites_soft_pick_or_check_step() -> None:
+    result = _result(
+        "Следующий шаг — подобрать вариант и проверить формат занятий.",
+        route="bot_answer_self_for_pilot",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in guarded.draft_text.casefold()
+    assert "Уточните, пожалуйста" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_keeps_soft_next_step_when_active() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика, чтобы подобрать группу.",
+        route="bot_answer_self_for_pilot",
+        statuses=["active"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded == result
+
+
 def test_bot_safe_memory_step_guard_keeps_active_confirmed_step() -> None:
     result = _result(
         "Да, место уже забронировано, заявка подтверждена.",
@@ -126,7 +210,48 @@ def _result(
     )
 
 
-def _context(*, flag: bool, statuses: list[str] | None = None) -> dict:
+def _context(
+    *,
+    flag: bool,
+    statuses: list[str] | None = None,
+    nested_statuses: list[str] | None = None,
+    statusless_items: bool = False,
+) -> dict:
+    items = [
+        {
+            "chunk_id": f"chunk-foton-{idx}",
+            "chunk_type": "bot_safe_summary",
+            "text": "Фотон: клиент обсуждал следующий шаг.",
+            "next_step_status": status,
+            "relevance_tags": ["bot_safe", "structured", "foton"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }
+        for idx, status in enumerate(statuses or [], 1)
+    ]
+    items.extend(
+        {
+            "chunk_id": f"chunk-foton-nested-{idx}",
+            "chunk_type": "bot_safe_summary",
+            "text": "Фотон: клиент обсуждал следующий шаг.",
+            "metadata": {"next_step": {"status": status}},
+            "relevance_tags": ["bot_safe", "structured", "foton"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }
+        for idx, status in enumerate(nested_statuses or [], 1)
+    )
+    if statusless_items:
+        items.append(
+            {
+                "chunk_id": "chunk-foton-statusless",
+                "chunk_type": "bot_safe_summary",
+                "text": "Фотон: клиент обсуждал следующий шаг.",
+                "relevance_tags": ["bot_safe", "structured", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            }
+        )
     return {
         BOT_SAFE_CRM_CONTEXT_ENV: flag,
         "active_brand": "foton",
@@ -135,18 +260,7 @@ def _context(*, flag: bool, statuses: list[str] | None = None) -> dict:
             "found": True,
             "bot_context": {
                 "allowed_only": True,
-                "items": [
-                    {
-                        "chunk_id": "chunk-foton",
-                        "chunk_type": "bot_safe_summary",
-                        "text": "Фотон: клиент обсуждал следующий шаг.",
-                        "next_step_status": status,
-                        "relevance_tags": ["bot_safe", "structured", "foton"],
-                        "allowed_for_bot": True,
-                        "requires_manager_review": False,
-                    }
-                    for status in (statuses or [])
-                ],
+                "items": items,
             },
         },
     }

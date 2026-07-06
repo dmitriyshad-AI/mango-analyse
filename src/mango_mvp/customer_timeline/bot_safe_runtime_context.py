@@ -51,6 +51,20 @@ _EXACT_DETAIL_RE = re.compile(
     r")",
     re.I,
 )
+_UNCONFIRMED_NEXT_STEP_TEXT_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s))"
+    r"Следующ(?:ий|им)\s+шаг(?:ом)?\s*[:—-]\s*"
+    r"(?:активн(?:ый|ого)\s+)?(?:следующ(?:ий|его)\s+шаг(?:а)?\s+)?"
+    r"(?:не\s+найден(?:о)?|не\s+определ[её]н[ао]?|отсутствует)"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
+_NEXT_STEP_SENTENCE_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s))"
+    r"Следующ(?:ий|им)\s+шаг(?:ом)?\s*[:—-]\s*"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
 _PII_PLACEHOLDER = "[контактные данные у менеджера]"
 _EMAIL_FROM_NAME_RE = re.compile(
     r"(\bот\s+)[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}(\s*<)",
@@ -365,14 +379,18 @@ def _safe_item_for_brand(
     if source_system == MAIL_STAGE2_SOURCE_SYSTEM and chunk_type == MAIL_STAGE2_CHUNK_TYPE:
         if not _mail_stage2_item_visible_for_active_brand(tags, active_brand=active_brand):
             return {}
-        text = _sanitize_mail_stage2_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary")))
+        status = _next_step_status(item)
+        text = strip_unconfirmed_next_step_text_for_bot(
+            _sanitize_mail_stage2_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary"))),
+            next_step_status=status,
+        )
         if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
             return {}
         return {
             "chunk_type": MAIL_STAGE2_CHUNK_TYPE,
             "text": _truncate(text, 700),
             "event_at": _clean_text(item.get("event_at")),
-            "next_step_status": _next_step_status(item),
+            "next_step_status": status,
             "freshness_score": item.get("freshness_score"),
             "relevance_tags": [tag for tag in tags if tag in {"email", "bot_visible", MAIL_STAGE2_SOURCE_SYSTEM, active_brand}],
             "allowed_for_bot": True,
@@ -381,14 +399,18 @@ def _safe_item_for_brand(
     if source_system in CHANNEL_HISTORY_SOURCE_SYSTEMS and chunk_type == CHANNEL_HISTORY_CHUNK_TYPE:
         if not _channel_history_item_visible_for_active_brand(tags, source_system=source_system, active_brand=active_brand):
             return {}
-        text = _sanitize_channel_history_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary")))
+        status = _next_step_status(item)
+        text = strip_unconfirmed_next_step_text_for_bot(
+            _sanitize_channel_history_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary"))),
+            next_step_status=status,
+        )
         if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
             return {}
         return {
             "chunk_type": CHANNEL_HISTORY_CHUNK_TYPE,
             "text": _truncate(text, 700),
             "event_at": _clean_text(item.get("event_at")),
-            "next_step_status": _next_step_status(item),
+            "next_step_status": status,
             "freshness_score": item.get("freshness_score"),
             "relevance_tags": [
                 tag for tag in tags if tag in {"channel", "bot_visible", source_system, active_brand}
@@ -400,14 +422,18 @@ def _safe_item_for_brand(
         return {}
     if not _item_visible_for_active_brand(tags, active_brand=active_brand):
         return {}
-    text = _clean_text(item.get("summary")) or _clean_text(item.get("text"))
+    status = _next_step_status(item)
+    text = strip_unconfirmed_next_step_text_for_bot(
+        _clean_text(item.get("summary")) or _clean_text(item.get("text")),
+        next_step_status=status,
+    )
     if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
         return {}
     return {
         "chunk_type": BOT_SAFE_CHUNK_TYPE,
         "text": _truncate(text, 700),
         "event_at": _clean_text(item.get("event_at")),
-        "next_step_status": _next_step_status(item),
+        "next_step_status": status,
         "freshness_score": item.get("freshness_score"),
         "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
         "allowed_for_bot": True,
@@ -424,6 +450,19 @@ def _next_step_status(item: Mapping[str, Any]) -> str:
             if isinstance(next_step, Mapping):
                 status = _clean_text(next_step.get("status")).casefold()
     return status if status in {"active", "needs_manager_review", "empty"} else ""
+
+
+def strip_unconfirmed_next_step_text_for_bot(value: object, *, next_step_status: str = "") -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    cleaned = _UNCONFIRMED_NEXT_STEP_TEXT_RE.sub(" ", text)
+    status = _clean_text(next_step_status).casefold()
+    if status != "active":
+        cleaned = _NEXT_STEP_SENTENCE_RE.sub(" ", cleaned)
+    if cleaned != text:
+        cleaned = re.sub(r"\s+([.!?,;:])", r"\1", cleaned)
+    return _clean_text(cleaned)
 
 
 def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) -> bool:

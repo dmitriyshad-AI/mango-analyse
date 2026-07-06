@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 
 from mango_mvp.customer_timeline import CustomerIdentity, CustomerTimelineSQLiteStore, IdentityLink
 from mango_mvp.customer_timeline.contracts import TimelineEvent, TimelineEventType
+import scripts.run_marathon2_mail_summary_enrich as enrich_module
 from scripts.run_marathon2_mail_summary_enrich import (
     EnrichConfig,
     PROMPT_VERSION,
@@ -18,6 +20,7 @@ from scripts.run_marathon2_mail_summary_enrich import (
     _load_review_customer_ids,
     _load_target_mail_rows,
     _prepare_rows_with_summaries,
+    _sanitize_summary_payload_for_stage2,
     _text_hash,
 )
 
@@ -180,7 +183,7 @@ def test_marathon2_mail_summary_cache_uses_email_brand_not_customer_brand(tmp_pa
     assert repeat_stats["llm_calls_total"] == 0
 
 
-def test_marathon2_mail_summary_cache_migrates_legacy_brand_hash(tmp_path: Path) -> None:
+def test_marathon2_mail_summary_cache_accepts_legacy_brand_hash_without_writeback(tmp_path: Path) -> None:
     db = _seed_staging(tmp_path)
     config = _config(tmp_path, db)
     with sqlite3.connect(db) as con:
@@ -242,7 +245,7 @@ def test_marathon2_mail_summary_cache_migrates_legacy_brand_hash(tmp_path: Path)
             ),
         )
         prepared, stats = _prepare_rows_with_summaries(con, [row], config=config)
-        new_hash = con.execute(
+        stored_hash = con.execute(
             "SELECT text_sha256 FROM email_summary_cache_v1 WHERE message_sha256='sha-target'"
         ).fetchone()[0]
 
@@ -250,7 +253,7 @@ def test_marathon2_mail_summary_cache_migrates_legacy_brand_hash(tmp_path: Path)
     assert stats["cache_hits"] == 1
     assert stats["llm_calls_total"] == 0
     assert prepared[0]["summary_payload"]["summary"] == "Старый кэш"
-    assert new_hash == _text_hash(row)
+    assert stored_hash == legacy_hash
 
 
 def test_marathon2_mail_summary_cache_does_not_hide_changed_text(tmp_path: Path) -> None:
@@ -293,7 +296,7 @@ def test_marathon2_mail_summary_cache_does_not_hide_changed_text(tmp_path: Path)
     assert repeat_stats["missing_long_requires_summary"] == 1
 
 
-def test_marathon2_mail_summary_sanitized_payload_is_written_back_to_cache(tmp_path: Path) -> None:
+def test_marathon2_mail_summary_sanitizes_cached_payload_in_memory_without_writeback(tmp_path: Path) -> None:
     db = _seed_staging(tmp_path)
     config = _config(tmp_path, db)
     with sqlite3.connect(db) as con:
@@ -363,8 +366,8 @@ def test_marathon2_mail_summary_sanitized_payload_is_written_back_to_cache(tmp_p
     assert stats["cache_hits"] == 1
     assert stats["sanitized_payloads"] == 1
     assert prepared[0]["summary_payload"]["amount_rub"] is None
-    assert cached["amount_rub"] is None
-    assert "2 000 000" not in cached["summary"]
+    assert cached["amount_rub"] == 2_000_000
+    assert "2 000 000" in cached["summary"]
 
 
 def test_marathon2_mail_summary_missing_full_text_is_review_not_prefix_summary(tmp_path: Path) -> None:
@@ -396,6 +399,61 @@ def test_marathon2_mail_summary_missing_full_text_is_review_not_prefix_summary(t
     assert stats["llm_calls_total"] == 0
 
 
+def test_marathon2_mail_summary_internal_payload_key_becomes_review_before_sanitize(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = _seed_staging(tmp_path)
+    config = _config(tmp_path, db)
+    config = EnrichConfig(
+        **{
+            **config.__dict__,
+            "summarize": True,
+            "batch_size": 10,
+            "max_llm_calls": 1,
+        }
+    )
+
+    def fake_summarize_items(*args, **kwargs):
+        return SimpleNamespace(
+            summaries={
+                "sha-target": {
+                    "message_sha256": "sha-target",
+                    "summary": "Клиент просит расписание.",
+                    "topic": "Расписание",
+                    "next_step": None,
+                    "confidence": 0.9,
+                    "extraction_source": "model",
+                    "event_type": "other",
+                    "money_direction": "none",
+                    "brand_source": "content",
+                }
+            },
+            llm_calls_total=1,
+        )
+
+    monkeypatch.setattr(enrich_module, "summarize_items", fake_summarize_items)
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        _ensure_cache_table(con)
+        con.execute(
+            """
+            UPDATE timeline_events
+            SET record_json = json_set(record_json, '$.record.full_clean_text', ?)
+            WHERE source_id = 'sha-target'
+            """,
+            ("Длинное письмо про расписание. " * 40,),
+        )
+        row = _load_target_mail_rows(con, tenant_id="foton", customer_ids=["customer:target"])[0]
+        prepared, stats = _prepare_rows_with_summaries(con, [row], config=config)
+
+    payload = prepared[0]["summary_payload"]
+    assert stats["summary_review_needed"] == 1
+    assert "internal_marker_leak" in payload["summary_review_reasons"]
+    assert "brand_source" not in payload
+
+
 def test_marathon2_mail_summary_out_dir_must_stay_under_local_staging(tmp_path: Path) -> None:
     _ensure_local_staging_out_dir(tmp_path / ".codex_local" / "staging" / "ok", allowed_root=tmp_path)
 
@@ -422,6 +480,138 @@ def test_marathon2_mail_summary_hallucination_gate_blocks_new_money() -> None:
     reasons = _anti_hallucination_reasons(row, payload)
 
     assert "amount_rub_not_in_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_missing_business_specifics() -> None:
+    row = {
+        "subject_full": "Расписание и стоимость",
+        "full_clean_text": "Занятия по воскресеньям 10:50-12:30. Стоимость 126 000 руб. Нужно заполнить форму.",
+    }
+    payload = {
+        "summary": "Клиент спрашивает про занятия и оформление.",
+        "topic": "Занятия",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "missing_business_specifics" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_one_missing_amount_even_if_time_kept() -> None:
+    row = {
+        "subject_full": "Расписание и стоимость",
+        "full_clean_text": "Занятия по воскресеньям 10:50-12:30. Стоимость 126 000 руб. Нужно заполнить форму.",
+    }
+    payload = {
+        "summary": "Занятия проходят по воскресеньям 10:50-12:30, клиенту нужно заполнить форму.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "missing_business_specifics" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_does_not_block_subject_only_date() -> None:
+    row = {
+        "subject_full": "Расписание 10.07",
+        "full_clean_text": "Клиент просит расписание занятий.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание занятий.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "missing_business_specifics" not in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_internal_marker_text() -> None:
+    row = {
+        "subject_full": "Письмо",
+        "full_clean_text": "Клиент просит расписание.",
+    }
+    payload = {
+        "summary": "brand_source=content, клиент просит расписание.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "internal_marker_leak" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_false_hidden_claim() -> None:
+    row = {
+        "subject_full": "Письмо",
+        "full_clean_text": "Клиент просит расписание.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание, контактные данные скрыты.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "false_hidden_marker" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_hidden_claim_from_mask_token_source() -> None:
+    row = {
+        "subject_full": "Письмо",
+        "full_clean_text": "Телефон клиента [phone], просит расписание.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание, телефон замаскирован.",
+        "topic": "Расписание",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "false_hidden_marker" in reasons
+
+
+def test_marathon2_mail_summary_sanitizer_drops_internal_payload_keys() -> None:
+    payload = {
+        "message_sha256": "sha",
+        "summary": "Клиент просит расписание.",
+        "brand_source": "content",
+        "brand_mixing_detected": True,
+        "memory_status": "usable_memory",
+        "event_type": "other",
+    }
+
+    sanitized = _sanitize_summary_payload_for_stage2(payload)
+
+    assert "brand_source" not in sanitized
+    assert "brand_mixing_detected" not in sanitized
+    assert "memory_status" not in sanitized
+    assert sanitized["summary"] == "Клиент просит расписание."
 
 
 def test_marathon2_mail_summary_hallucination_gate_blocks_new_model_facts() -> None:
@@ -489,6 +679,25 @@ def test_marathon2_mail_summary_hallucination_gate_blocks_unsupported_next_step(
     assert "next_step_not_supported_by_source" in reasons
 
 
+def test_marathon2_mail_summary_hallucination_gate_blocks_subject_only_next_step() -> None:
+    row = {
+        "subject_full": "Договор на обучение",
+        "full_clean_text": "Здравствуйте, пришлите расписание занятий.",
+    }
+    payload = {
+        "summary": "Клиент просит расписание занятий.",
+        "topic": "Договор",
+        "next_step": "Подготовить договор на обучение.",
+        "extraction_source": "model",
+        "event_type": "other",
+        "money_direction": "none",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "next_step_not_supported_by_source" in reasons
+
+
 def test_marathon2_mail_summary_hallucination_gate_allows_supported_next_step() -> None:
     row = {
         "subject_full": "Расписание",
@@ -525,6 +734,27 @@ def test_marathon2_mail_summary_hallucination_gate_blocks_free_text_payment() ->
     reasons = _anti_hallucination_reasons(row, payload)
 
     assert "payment_text_not_supported_by_source" in reasons
+
+
+def test_marathon2_mail_summary_hallucination_gate_blocks_subject_only_payment() -> None:
+    row = {
+        "subject_full": "Оплата курса",
+        "full_clean_text": "Здравствуйте, отправьте расписание занятий.",
+    }
+    payload = {
+        "summary": "Клиент оплатил курс и просит расписание.",
+        "topic": "Оплата курса",
+        "next_step": None,
+        "extraction_source": "model",
+        "event_type": "payment",
+        "money_direction": "in",
+        "amount_kind": "actual_payment",
+    }
+
+    reasons = _anti_hallucination_reasons(row, payload)
+
+    assert "payment_text_not_supported_by_source" in reasons
+    assert "actual_payment_not_supported_by_source" in reasons
 
 
 def test_marathon2_mail_summary_hallucination_gate_blocks_new_plain_number() -> None:

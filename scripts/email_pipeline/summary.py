@@ -356,16 +356,7 @@ def _humanize_mask_tokens(text: str) -> str:
 def build_summary_prompt(items: list[SummaryItem]) -> str:
     records = []
     for item in items:
-        records.append(
-            {
-                "message_sha256": item.message_sha256,
-                "direction": item.direction,
-                "brand": item.brand,
-                "brand_source": item.brand_source,
-                "subject": mask_pii(item.subject, mask_names=False, mask_requisites=False)[:800],
-                "body": mask_pii(clean_body(item.body, limit=6000), mask_names=False, mask_requisites=False),
-            }
-        )
+        records.append(_summary_prompt_record(item))
     return (
         "Ты строишь manager-only сводки e-mail для учебного центра. "
         "Верни строго JSON object с ключом summaries. Не используй markdown. "
@@ -378,6 +369,10 @@ def build_summary_prompt(items: list[SummaryItem]) -> str:
         "Если в письме есть 'Воскресенье 10:50-12:30', '2025-2026 уч.г.', '126 000 руб.', '8 класс' или название группы, "
         "перенеси эту конкретику в summary/next_step, если она относится к сути письма. "
         "ПДн во входе уже скрыты маркерами, не восстанавливай и не выдумывай их; не уничтожай учебные числа, даты, время, цены и группы. "
+        "Не описывай маркеры [phone]/[email]/[handle]/[id] как факт письма: не пиши 'данные скрыты', 'контакт замаскирован', "
+        "'телефон не указан', если клиент не писал этого сам. "
+        "Тема письма (`subject`) — вспомогательный источник: можно использовать её для topic и осторожного контекста, но нельзя только по теме "
+        "делать вывод об оплате, возврате, договоре, записи или действии, если этого нет в body. "
         "Имена учеников и родителей во входе НЕ скрыты: различай роли. Ребёнка клади в student_name, взрослого/плательщика в payer_name/contact_name; "
         "не клади первого попавшегося взрослого в student_name. "
         "Дополнительно извлеки закрытые поля: event_type один из payment/refund/application/scheduling/assessment/contract/tax/medical/broadcast/other; "
@@ -397,6 +392,16 @@ def build_summary_prompt(items: list[SummaryItem]) -> str:
         "next_step: конкретный следующий шаг или null; confidence: 0..1.\n\n"
         + json.dumps({"emails": records}, ensure_ascii=False)
     )
+
+
+def _summary_prompt_record(item: SummaryItem) -> dict[str, str]:
+    return {
+        "message_sha256": item.message_sha256,
+        "direction": item.direction,
+        "brand": item.brand,
+        "subject": mask_pii(item.subject, mask_names=False, mask_requisites=False)[:800],
+        "body": mask_pii(clean_body(item.body, limit=6000), mask_names=False, mask_requisites=False),
+    }
 
 
 def _call_openai_json(prompt: str, *, model: str, reasoning: str, timeout_sec: int) -> dict[str, Any]:

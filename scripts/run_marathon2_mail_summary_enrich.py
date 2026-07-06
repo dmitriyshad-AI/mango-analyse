@@ -30,7 +30,7 @@ except ModuleNotFoundError:
     from scripts.email_pipeline.summary import SummaryItem, split_thread_context, summarize_items
 
 
-PROMPT_VERSION = "email_summary_v1_20260703"
+PROMPT_VERSION = "email_summary_v2_20260706"
 SHORT_TEXT_LIMIT = 600
 SOURCE_SYSTEM = "mail_archive_stage2"
 PROTECTED_TERM_RE = re.compile(
@@ -39,6 +39,13 @@ PROTECTED_TERM_RE = re.compile(
     r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|"
     r"\b\d{1,2}[:.]\d{2}\b|"
     r"\b(?:фотон|унпк|мфти|физтех|cdpofoton|kmipt)\b",
+    re.I,
+)
+BUSINESS_SPECIFIC_TERM_RE = re.compile(
+    r"(?<!\d)(?:\d{1,3}(?:[\s\u00a0]\d{3})+|\d+)\s*(?:руб\.?|₽|р\.)|"
+    r"\b(?:20\d{2}|19\d{2})[/-]\d{1,2}[/-]\d{1,2}\b|"
+    r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|"
+    r"\b\d{1,2}[:.]\d{2}\b",
     re.I,
 )
 NUMERIC_TOKEN_RE = re.compile(r"(?<!\w)\d[\d\s\u00a0.,:/\\-]{0,32}\d|\b\d\b")
@@ -53,6 +60,14 @@ REFUND_FACT_RE = re.compile(r"\b(?:возврат\w*|верн\w+\s+деньг\w*
 FORBIDDEN_SUMMARY_RE = re.compile(
     r"\b(?:паспорт\w*|снилс|инн|кпп|бик|р/?с|расч[её]тн\w+\s+сч[её]т|"
     r"корр[её]спондентск\w+\s+сч[её]т|банк\w+\s+реквизит\w*)\b",
+    re.I,
+)
+INTERNAL_SUMMARY_KEY_RE = re.compile(r"\b(?:brand_source|[a-zа-яё]+_detected|[a-zа-яё]+_status)\b", re.I)
+FALSE_HIDDEN_MARKER_RE = re.compile(r"\b(?:скрыт\w*|замаскир\w*|hidden|masked|не\s+указан[аоы]?)\b", re.I)
+MASK_TOKEN_RE = re.compile(r"\[(?:phone|email|name|handle|id|number)\]", re.I)
+BUSINESS_ACTION_RE = re.compile(
+    r"\b(?:договор\w*|документ\w*|справк\w*|форма\w*|анкет\w*|заявк\w*|"
+    r"расписани\w*|ссылк\w*|чек\w*|квитанц\w*|пришл\w*|отправ\w*|заполн\w*|подпис\w*)\b",
     re.I,
 )
 MODEL_FACT_FIELDS = (
@@ -434,6 +449,7 @@ def _prepare_rows_with_summaries(
         cached = _cache_get(con, row, text_hash=text_hash, config=config)
         if cached is not None:
             row["summary_payload"] = cached
+            row["_summary_cache_hit"] = True
             stats["cache_hits"] += 1
             continue
         if int(row.get("full_clean_text_chars") or 0) < SHORT_TEXT_LIMIT:
@@ -487,12 +503,14 @@ def _prepare_rows_with_summaries(
                 if not payload:
                     raise RuntimeError(f"summary provider did not return message {row['message_sha256']}")
                 review_reasons = _anti_hallucination_reasons(row, payload)
+                sanitized_payload = _sanitize_summary_payload_for_stage2(payload)
                 if review_reasons:
                     stats["summary_review_needed"] += 1
                     stats["hallucination_suspect"] += 1
                     _increment_review_reason_counts(stats, review_reasons)
                     payload = _summary_review_needed_payload(row, reasons=review_reasons, original_payload=payload)
                 else:
+                    payload = sanitized_payload
                     stats["llm_ok"] += 1
                 row["summary_payload"] = payload
                 _cache_put(
@@ -508,7 +526,8 @@ def _prepare_rows_with_summaries(
         sanitized = sanitize_summary_payload_for_quality(dict(row.get("summary_payload") or {}), quality)
         if sanitized != row.get("summary_payload"):
             row["summary_payload"] = sanitized
-            _cache_put(con, row, text_hash=_text_hash(row), config=config, source_kind="sanitized")
+            if not row.get("_summary_cache_hit"):
+                _cache_put(con, row, text_hash=_text_hash(row), config=config, source_kind="sanitized")
             stats["sanitized_payloads"] += 1
             quality = evaluate_quality(row)
         if _is_summary_review_needed_payload(row.get("summary_payload")):
@@ -518,8 +537,10 @@ def _prepare_rows_with_summaries(
             quality_dict["quality_flags"] = list(dict.fromkeys(flags))
             quality_dict["memory_status"] = "summary_review_needed"
             row["quality"] = quality_dict
+            row.pop("_summary_cache_hit", None)
             continue
         row["quality"] = quality_to_dict(quality)
+        row.pop("_summary_cache_hit", None)
     return prepared, stats
 
 
@@ -560,20 +581,11 @@ def _cache_get(
             return None
         if str(cached["text_sha256"]) != _legacy_brand_text_hash(row):
             return None
-        con.execute(
-            """
-            UPDATE email_summary_cache_v1
-            SET text_sha256 = ?
-            WHERE message_sha256 = ?
-              AND prompt_version = ?
-              AND provider = ?
-              AND model = ?
-              AND reasoning = ?
-            """,
-            (text_hash, row["message_sha256"], PROMPT_VERSION, config.provider, config.model, config.reasoning),
-        )
     payload = json.loads(str(cached["summary_payload_json"]))
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    sanitized = _sanitize_summary_payload_for_stage2(payload)
+    return sanitized
 
 
 def _cache_put(
@@ -584,7 +596,7 @@ def _cache_put(
     config: EnrichConfig,
     source_kind: str,
 ) -> None:
-    payload = dict(row.get("summary_payload") or {})
+    payload = _sanitize_summary_payload_for_stage2(row.get("summary_payload") or {})
     con.execute(
         """
         INSERT INTO email_summary_cache_v1 (
@@ -650,7 +662,9 @@ def _short_summary_payload(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, Any]) -> list[str]:
     raw_source = "\n".join([str(row.get("subject_full") or ""), str(row.get("full_clean_text") or "")])
+    body_source = str(row.get("full_clean_text") or "")
     source_digits = re.sub(r"\D", "", raw_source)
+    body_digits = re.sub(r"\D", "", body_source)
     source = _normalized_guard_text(
         "\n".join(
             [
@@ -663,6 +677,14 @@ def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, An
         "\n".join(_payload_text_values(payload))
     )
     reasons: list[str] = []
+    if INTERNAL_SUMMARY_KEY_RE.search(summary_text) or _payload_has_internal_keys(payload):
+        reasons.append("internal_marker_leak")
+    if FALSE_HIDDEN_MARKER_RE.search(summary_text) and (
+        MASK_TOKEN_RE.search(raw_source) or not FALSE_HIDDEN_MARKER_RE.search(raw_source)
+    ):
+        reasons.append("false_hidden_marker")
+    if _missing_business_specifics(str(row.get("full_clean_text") or ""), summary_text):
+        reasons.append("missing_business_specifics")
     if str(payload.get("extraction_source") or "").strip() != "model":
         reasons.append("extraction_source_not_model")
     if not str(payload.get("summary") or "").strip():
@@ -690,19 +712,21 @@ def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, An
         reasons.append("forbidden_requisite_or_document_term")
     event_type = str(payload.get("event_type") or "").strip()
     amount_kind = str(payload.get("amount_kind") or "").strip()
-    if PAYMENT_FACT_RE.search(summary_text) and not PAYMENT_FACT_RE.search(raw_source):
+    if PAYMENT_FACT_RE.search(summary_text) and not PAYMENT_FACT_RE.search(body_source):
         reasons.append("payment_text_not_supported_by_source")
-    if REFUND_FACT_RE.search(summary_text) and not REFUND_FACT_RE.search(raw_source):
+    if REFUND_FACT_RE.search(summary_text) and not REFUND_FACT_RE.search(body_source):
         reasons.append("refund_text_not_supported_by_source")
-    if (event_type == "payment" or amount_kind == "actual_payment") and not PAYMENT_FACT_RE.search(raw_source):
+    if (event_type == "payment" or amount_kind == "actual_payment") and not PAYMENT_FACT_RE.search(body_source):
         reasons.append("actual_payment_not_supported_by_source")
-    if (event_type == "refund" or amount_kind == "refund") and not REFUND_FACT_RE.search(raw_source):
+    if (event_type == "refund" or amount_kind == "refund") and not REFUND_FACT_RE.search(body_source):
         reasons.append("refund_not_supported_by_source")
     if _next_step_not_supported(row, payload):
         reasons.append("next_step_not_supported_by_source")
     amount = payload.get("amount_rub")
     if amount not in (None, "") and str(amount) not in source_digits:
         reasons.append("amount_rub_not_in_source")
+    if (event_type == "payment" or amount_kind == "actual_payment") and amount not in (None, "") and str(amount) not in body_digits:
+        reasons.append("actual_payment_amount_not_supported_by_body")
     for item in payload.get("amount_items") or []:
         if not isinstance(item, Mapping):
             continue
@@ -710,6 +734,84 @@ def _anti_hallucination_reasons(row: Mapping[str, Any], payload: Mapping[str, An
         if item_amount not in (None, "") and str(item_amount) not in source_digits:
             reasons.append("amount_item_not_in_source")
     return list(dict.fromkeys(reasons))
+
+
+def _sanitize_summary_payload_for_stage2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "message_sha256",
+        "summary",
+        "topic",
+        "next_step",
+        "confidence",
+        "extraction_source",
+        "event_type",
+        "money_direction",
+        "student_name",
+        "payer_name",
+        "contact_name",
+        "grade",
+        "subject_area",
+        "amount_rub",
+        "amount_kind",
+        "amount_is_total",
+        "amount_items",
+        "amount_uncertain",
+        "deadline_date",
+        "contract_no",
+        "document_no",
+        "requisites",
+        "has_attachment",
+        "is_plain_acknowledgement",
+        "summary_review_needed",
+        "summary_review_reasons",
+        "rejected_summary_payload_sha256",
+    }
+    return {
+        str(key): value
+        for key, value in dict(payload).items()
+        if str(key) in allowed_keys and not INTERNAL_SUMMARY_KEY_RE.fullmatch(str(key))
+    }
+
+
+def _payload_has_internal_keys(payload: Mapping[str, Any]) -> bool:
+    for key, value in payload.items():
+        if INTERNAL_SUMMARY_KEY_RE.fullmatch(str(key)):
+            return True
+        if isinstance(value, Mapping) and _payload_has_internal_keys(value):
+            return True
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, Mapping) and _payload_has_internal_keys(item):
+                    return True
+    return False
+
+
+def _missing_business_specifics(raw_source: str, summary_text: str) -> bool:
+    source = _normalized_guard_text(raw_source)
+    if not source:
+        return False
+    protected_terms = [
+        _normalized_guard_text(term)
+        for term in BUSINESS_SPECIFIC_TERM_RE.findall(raw_source)
+        if _normalized_guard_text(term)
+    ]
+    missing_terms = [term for term in dict.fromkeys(protected_terms) if _business_specific_term_missing(term, summary_text)]
+    if missing_terms:
+        return True
+    if BUSINESS_ACTION_RE.search(raw_source) and not BUSINESS_ACTION_RE.search(summary_text):
+        return True
+    return False
+
+
+def _business_specific_term_missing(term: str, summary_text: str) -> bool:
+    if not term:
+        return False
+    if term in summary_text:
+        return False
+    digits = re.sub(r"\D", "", term)
+    if digits and digits in re.sub(r"\D", "", summary_text):
+        return False
+    return True
 
 
 def _summary_review_needed_payload(
@@ -770,7 +872,7 @@ def _next_step_not_supported(row: Mapping[str, Any], payload: Mapping[str, Any])
     next_step = str(payload.get("next_step") or "").strip()
     if not next_step:
         return False
-    source = _normalized_guard_text("\n".join([str(row.get("subject_full") or ""), str(row.get("full_clean_text") or "")]))
+    source = _normalized_guard_text(str(row.get("full_clean_text") or ""))
     if not source:
         return True
     meaningful = [

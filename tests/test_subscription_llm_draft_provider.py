@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
+import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     AUTONOMY_SCOPE_PRECISION_ENV,
@@ -11283,6 +11284,60 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
+def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Подскажите, пожалуйста, класс ученика.",
+            metadata={"direct_path": {"model_response": "raw"}},
+            safety_flags=(),
+        )
+    )
+
+    def late_soft_step(result: SubscriptionDraftResult, *, client_message: str, context: Mapping[str, object] | None = None) -> SubscriptionDraftResult:
+        return replace(result, draft_text=result.draft_text + " Следующий шаг — уточнить класс ученика.")
+
+    monkeypatch.setattr(subscription_provider, "apply_tone_close_detect_layer", late_soft_step)
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Фотон: клиент обсуждал запись.",
+                            "next_step_status": "empty",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста, класс ученика" in result.draft_text
+    assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
+
+
 def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -12222,7 +12277,7 @@ def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selecti
     assert pack["llm_retrieve"]["scope_demoted_ids"] == ["foton.physics9.online.price"]
 
 
-def test_tz119_unconfirmed_crm_grade_is_soft_scope_not_hard_demotion(tmp_path: Path) -> None:
+def test_tz119_unconfirmed_context_grade_is_soft_scope_not_hard_demotion(tmp_path: Path) -> None:
     snapshot = {
         "facts": [
             {
@@ -12271,7 +12326,7 @@ def test_tz119_unconfirmed_crm_grade_is_soft_scope_not_hard_demotion(tmp_path: P
         LLM_RETRIEVE_ENV: "1",
         RETRIEVER_NEED_SHADOW_ENV: "1",
         ASSUMED_SCOPE_GUARD_ENV: "1",
-        "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "subject": "физика"}},
+        "dialogue_memory_view": {"known_slots": {"grade": "4", "subject": "физика"}},
     }
 
     pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
@@ -12337,7 +12392,7 @@ def test_tz119_confirmed_grade_still_scope_demotes_wrong_fact(tmp_path: Path) ->
     assert subscription_llm._direct_path_slot_provenance(context)["grade"]["source"] == "memory_provenance"
 
 
-def test_tz119_assumed_scope_guard_reasks_without_manager_handoff() -> None:
+def test_tz119_assumed_context_scope_guard_reasks_without_manager_handoff() -> None:
     result = subscription_llm.apply_assumed_scope_guard(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -12345,7 +12400,7 @@ def test_tz119_assumed_scope_guard_reasks_without_manager_handoff() -> None:
         ),
         context={
             ASSUMED_SCOPE_GUARD_ENV: "1",
-            "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "format": "онлайн"}},
+            "dialogue_memory_view": {"known_slots": {"grade": "4", "format": "онлайн"}},
         },
     )
 

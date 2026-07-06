@@ -1051,6 +1051,13 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r")",
     re.I,
 )
+BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE = re.compile(
+    r"\bследующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[:—-]|\b(?:будет|это)\b)\s*"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:уточн\w*|спрос\w*|узна\w*|выясн\w*|подтверд\w*|подбер\w*|подобр\w*|провер\w*|напиш\w*|сообщ\w*)\b"
+    r"[^.!?\n]{0,120}(?:[.!?]|$)",
+    re.I,
+)
 UNSAFE_FUTURE_COMMITMENT_RE = re.compile(
     r"(?:"
     r"\b(?:верн(?:[её]м|у)|возврат(?:им|у)|оформ(?:им|лю)\s+возврат|перевед(?:[её]м|у)|компенсир(?:уем|ую))\b"
@@ -4541,7 +4548,9 @@ def apply_bot_safe_memory_step_guard(
     if not review_statuses:
         return result
     guard_context = _context_with_dialogue_contract_retrieved_facts(context, result)
-    claims = find_bot_safe_memory_disputed_step_claims(result.draft_text, context=guard_context)
+    hard_claims = _bot_safe_memory_hard_step_claims(result.draft_text, context=guard_context)
+    soft_claims = _bot_safe_memory_soft_step_claims(result.draft_text, context=guard_context)
+    claims = tuple(dict.fromkeys([*hard_claims, *soft_claims]))
     if not claims:
         return result
     metadata = dict(result.metadata)
@@ -4552,6 +4561,24 @@ def apply_bot_safe_memory_step_guard(
         "claims": list(claims),
         "source": "deterministic_output_guard",
     }
+    if soft_claims and not hard_claims:
+        rewritten_text = _rewrite_bot_safe_memory_soft_step_frame(result.draft_text)
+        if rewritten_text and rewritten_text != result.draft_text:
+            return replace(
+                result,
+                draft_text=rewritten_text,
+                forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+                safety_flags=tuple(dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG])),
+                manager_checklist=tuple(
+                    dict.fromkeys(
+                        [
+                            *result.manager_checklist,
+                            "Не называть уточняющий вопрос «следующим шагом» без active next_step.",
+                        ]
+                    )
+                ),
+                metadata=metadata,
+            )
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     return replace(
         result,
@@ -4578,7 +4605,46 @@ def find_bot_safe_memory_disputed_step_claims(
     *,
     context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [
+                *_bot_safe_memory_hard_step_claims(draft_text, context=context),
+                *_bot_safe_memory_soft_step_claims(draft_text, context=context),
+            ]
+        )
+    )
+
+
+def _bot_safe_memory_hard_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
     return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_CONCRETE_STEP_RE, context=context)
+
+
+def _bot_safe_memory_soft_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE, context=context)
+
+
+def _rewrite_bot_safe_memory_soft_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        claim = " ".join(match.group(0).split()).casefold()
+        details: list[str] = []
+        if "класс" in claim or "клас" in claim:
+            details.append("класс ученика")
+        if "предмет" in claim:
+            details.append("предмет")
+        if "формат" in claim or "очно" in claim or "онлайн" in claim:
+            details.append("формат")
+        target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
+        return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+
+    return " ".join(BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
 
 
 def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) -> bool:
@@ -4619,6 +4685,10 @@ def _bot_safe_memory_next_step_statuses(
 
 def _bot_safe_memory_add_statuses_from_metadata(metadata: Mapping[str, Any], add: Callable[[Any], None]) -> None:
     direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    next_step = metadata.get("next_step") if isinstance(metadata.get("next_step"), Mapping) else {}
+    add(next_step.get("status"))
+    direct_next_step = direct_path.get("next_step") if isinstance(direct_path.get("next_step"), Mapping) else {}
+    add(direct_next_step.get("status"))
     for container in (
         metadata.get("bot_safe_crm_context"),
         direct_path.get("bot_safe_crm_context"),
@@ -4667,7 +4737,26 @@ def _bot_safe_memory_add_statuses_from_bot_context(bot_context: Any, add: Callab
             continue
         if item.get("requires_manager_review") is True:
             continue
-        add(item.get("next_step_status"))
+        add(_bot_safe_memory_item_next_step_status(item) or "empty")
+
+
+def _bot_safe_memory_item_next_step_status(item: Mapping[str, Any]) -> str:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_bot_safe_next_step_status
+
+        status = _direct_path_bot_safe_next_step_status(item)
+        if status:
+            return status
+    except Exception:
+        pass
+    status = str(item.get("next_step_status") or "").strip().casefold()
+    if not status:
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            next_step = metadata.get("next_step")
+            if isinstance(next_step, Mapping):
+                status = str(next_step.get("status") or "").strip().casefold()
+    return status if status in BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES else ""
 
 
 def apply_humanity_guards(

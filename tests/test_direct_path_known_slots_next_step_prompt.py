@@ -8,6 +8,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_bot_safe_context_items,
     _direct_path_bot_safe_context_prompt_block,
     _direct_path_known_slots_next_step_prompt_enabled,
+    _direct_path_slot_provenance,
     _direct_path_select_gold_real_examples,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
@@ -58,6 +59,7 @@ def test_known_slots_prompt_passes_planner_known_and_do_not_reask_without_pii() 
         DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
         BOT_GOLD_REAL_ENV: "1",
         "known_slots": {"client_name": "Ирина", "phone": "+7 999 123-45-67"},
+        "client_confirmed_slots": {"grade": "6", "subject": "программирование"},
         "conversation_intent_plan": {
             "known_slots": {"grade": "6", "subject": "программирование"},
             "do_not_reask_slots": ["grade", "subject", "phone"],
@@ -110,6 +112,35 @@ def test_active_next_step_priority_is_above_gold_and_uses_bot_safe_context() -> 
     assert "Следующий шаг: отправить расписание" in prompt
     assert "статус следующего шага: active" in prompt
     assert prompt.index("Приоритет уже известного контекста") < prompt.index("Живые образцы менеджерского стиля")
+
+
+def test_unconfirmed_empty_next_step_text_is_stripped_from_bot_safe_prompt() -> None:
+    context = _bot_safe_context(
+        flag_value="1",
+        summary="Бренд: Фотон. Стадия: не определена. Интерес: математика. Следующий шаг: Активный следующий шаг не найден.",
+    )
+    context["timeline_context"]["bot_context"]["items"][0]["next_step_status"] = "empty"  # type: ignore[index]
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт."})
+
+    assert "Безопасная выжимка клиента" in prompt
+    assert "Интерес: математика" in prompt
+    assert "Активный следующий шаг не найден" not in prompt
+    assert "статус следующего шага: empty" in prompt
+
+
+def test_specific_next_step_with_empty_status_is_stripped_before_prompt() -> None:
+    context = _bot_safe_context(
+        flag_value="1",
+        summary="Бренд: Фотон. Интерес: математика. Следующий шаг: уточнить класс и формат.",
+    )
+    context["timeline_context"]["bot_context"]["items"][0]["next_step_status"] = "empty"  # type: ignore[index]
+
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт."})
+
+    assert "Интерес: математика" in prompt
+    assert "уточнить класс и формат" not in prompt
+    assert "статус следующего шага: empty" in prompt
 
 
 def test_pilot_gold_keeps_memory_off_without_extra_context_flag() -> None:
@@ -180,6 +211,7 @@ def test_questionnaire_gold_is_suppressed_when_qualification_slots_known() -> No
             "active_brand": "unpk",
             BOT_GOLD_REAL_ENV: "1",
             DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+            "client_confirmed_slots": {"grade": "6", "subject": "программирование", "format": "очно"},
             "conversation_intent_plan": {
                 "known_slots": {"grade": "6", "subject": "программирование", "format": "очно"},
                 "do_not_reask_slots": ["grade", "subject", "format"],
@@ -216,6 +248,53 @@ def test_bot_safe_context_prompt_is_default_off_even_when_context_present() -> N
     assert _direct_path_bot_safe_context_prompt_block(context) == ""
     assert "Безопасная выжимка клиента" not in prompt
     assert "Следующий шаг: отправить расписание" not in prompt
+
+
+def test_unconfirmed_do_not_reask_slots_do_not_block_qualification_question() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+        "conversation_intent_plan": {
+            "known_slots": {"format": "очно"},
+            "do_not_reask_slots": ["format"],
+        },
+    }
+
+    prompt = _build_direct_path_prompt("Хочу подобрать курс.", context=context)
+
+    assert "эти параметры клиент уже назвал" not in prompt
+    assert "Если класс/предмет/формат действительно неизвестны" in prompt
+
+
+def test_confirmed_do_not_reask_slots_still_block_repeat_question() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+        "client_confirmed_slots": {"grade": "8", "subject": "математика", "format": "очно"},
+        "conversation_intent_plan": {
+            "known_slots": {"grade": "8", "subject": "математика", "format": "очно"},
+            "do_not_reask_slots": ["grade", "subject", "format"],
+        },
+    }
+
+    prompt = _build_direct_path_prompt("Хочу подобрать курс.", context=context)
+
+    assert "эти параметры клиент уже назвал — НЕ переспрашивай: класс: 8; предмет: математика; формат: очно." in prompt
+    assert "Если класс/предмет/формат действительно неизвестны" not in prompt
+
+
+def test_crm_known_slots_are_confirmed_by_crm_not_client() -> None:
+    provenance = _direct_path_slot_provenance(
+        {
+            "active_brand": "foton",
+            "crm_known_slots": {"grade": "8", "subject": "математика"},
+        }
+    )
+
+    assert provenance["grade"]["confirmed"] is True
+    assert provenance["grade"]["source"] == "crm_known_slots"
+    assert provenance["grade"]["status"] == "confirmed_by_crm"
+    assert provenance["grade"]["status"] != "confirmed_by_client"
 
 
 def _bot_safe_context(

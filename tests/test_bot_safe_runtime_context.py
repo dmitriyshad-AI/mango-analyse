@@ -14,6 +14,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     build_bot_safe_crm_context,
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
+    strip_unconfirmed_next_step_text_for_bot,
 )
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
@@ -88,6 +89,46 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     assert {item["text"]: item["next_step_status"] for item in items} == {
         "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.": "active",
     }
+
+
+def test_bot_safe_crm_context_strips_empty_next_step_sentence_on_read(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_id="chunk-empty-next-step",
+                chunk_type="bot_safe_summary",
+                text="Фотон: клиент обсуждал математику. Следующий шаг: Активный следующий шаг не найден.",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref="botsafe:empty-next-step",
+                event_at=NOW,
+                relevance_tags=("bot_safe", "structured", "foton"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"next_step": {"status": "empty"}},
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert "клиент обсуждал математику" in raw
+    assert "Активный следующий шаг не найден" not in raw
+
+
+def test_bot_safe_crm_context_strips_specific_next_step_when_status_not_active() -> None:
+    text = "Фотон: клиент интересовался математикой. Следующий шаг: уточнить класс и формат."
+
+    assert strip_unconfirmed_next_step_text_for_bot(text, next_step_status="empty") == "Фотон: клиент интересовался математикой."
+    assert strip_unconfirmed_next_step_text_for_bot(text) == "Фотон: клиент интересовался математикой."
+    assert "уточнить класс" in strip_unconfirmed_next_step_text_for_bot(text, next_step_status="active")
 
 
 def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(tmp_path: Path) -> None:

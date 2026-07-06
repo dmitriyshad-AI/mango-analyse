@@ -165,7 +165,8 @@ def build_conversation_intent_plan(
     text = str(current_message or "").strip()
     normalized = normalize_text(text)
     memory = dict(dialogue_memory_view or {})
-    roles = _roles_from_memory_view(memory) or tag_message_roles(normalized, context=_held_tagger_context(memory))
+    roles_from_memory = _roles_from_memory_view(memory)
+    roles = roles_from_memory or tag_message_roles(normalized, context=_held_tagger_context(memory))
     previous_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), Mapping) else {}
     memory_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
     slots = _merge_slots(known_slots or {}, memory_slots, _extract_slots(text, roles=roles))
@@ -179,6 +180,8 @@ def build_conversation_intent_plan(
     held_active_topics = _held_active_topics(memory)
 
     risk_signals = _risk_signals(normalized)
+    if roles_from_memory is not None and roles.payment_source == "tax_deduction" and roles.refund_frame == "none":
+        risk_signals = tuple(signal for signal in risk_signals if signal != "refund")
     keyword_signals = _keyword_signals(normalized)
     if roles.payment_method == "invoice_monthly":
         keyword_signals = tuple(

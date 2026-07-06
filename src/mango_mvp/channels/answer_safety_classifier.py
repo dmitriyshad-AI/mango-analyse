@@ -312,7 +312,6 @@ def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> b
         "general_consultation",
     }
 
-
 def _risk_code_from_plan_primary(primary: str) -> str:
     return {
         "refund": "refund",

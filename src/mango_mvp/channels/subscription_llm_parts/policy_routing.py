@@ -287,6 +287,11 @@ TAX_ONLINE_FORM_SAFE_TEXT = (
 
 TAX_FNS_REVIEW_SAFE_TEXT = "ФНС рассматривает заявление и принимает решение. Справка помогает подтвердить обучение, а менеджер подскажет порядок оформления."
 
+TAX_DEDUCTION_PROCESS_SAFE_TEXT = (
+    "Налоговый вычет оформляется через налоговую: решение и выплату принимает ФНС. "
+    "Со своей стороны поможем подготовить документы для вычета; справку готовим до 10 рабочих дней."
+)
+
 TAX_AMOUNT_SAFE_TEXT = (
     "Да, налоговый вычет оформить можно: у нас есть лицензия. "
     "За обучение ребёнка можно вернуть до 14 300 ₽ в год — это 13% с расходов до 110 000 ₽. "
@@ -4542,18 +4547,34 @@ def apply_roles_read_trace(
         return result
     plan = _conversation_intent_plan(context)
     frame = semantic_frame_from_metadata(result.metadata)
+    apply_enabled = reading_apply_class_enabled(context, "roles_read/refund_tax")
+    guarded = result
+    changed_fields: list[str] = []
+    if apply_enabled and _roles_read_tax_non_refund_plan(plan) and _roles_read_refund_false_positive_result(result):
+        guarded = _roles_read_tax_non_refund_result(result)
+        if guarded.route != result.route:
+            changed_fields.append("route")
+        if guarded.topic_id != result.topic_id:
+            changed_fields.append("topic_id")
+        if guarded.draft_text != result.draft_text:
+            changed_fields.append("draft_text")
+        if guarded.safety_flags != result.safety_flags:
+            changed_fields.append("safety_flags")
+        if guarded.manager_checklist != result.manager_checklist:
+            changed_fields.append("manager_checklist")
     record = semantic_reading_trace_record(
         reading_class="roles_read",
         enabled=True,
-        status="shadow_only",
-        decision="roles_observed",
+        status="applied" if changed_fields else "shadow_only",
+        decision="tax_non_refund_template" if changed_fields else "roles_observed",
         reason="direct_path_final_roles_observer",
         source=str(frame.get("source") or "context"),
         confidence=frame.get("confidence", 0.0) if frame else 0.0,
-        changed_fields=(),
-        conflicts=(),
+        changed_fields=tuple(changed_fields),
+        conflicts=("tax_vs_refund",) if changed_fields else (),
         metadata={
             "stage": "direct_path_final_roles",
+            "apply_enabled": apply_enabled,
             "final_route": result.route,
             "final_topic_id": result.topic_id,
             "plan_primary_intent": str(plan.get("primary_intent") or ""),
@@ -4567,7 +4588,58 @@ def apply_roles_read_trace(
             "frame_risk_class": str(frame.get("risk_class") or ""),
         },
     )
-    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
+
+
+def _roles_read_tax_non_refund_plan(plan: Mapping[str, Any]) -> bool:
+    return (
+        str(plan.get("primary_intent") or "").strip() == "tax"
+        and str(plan.get("payment_source") or "").strip() == "tax_deduction"
+        and str(plan.get("refund_frame") or "") == "none"
+    )
+
+
+def _roles_read_refund_false_positive_result(result: SubscriptionDraftResult) -> bool:
+    return (
+        result.route == "manager_only"
+        or result.topic_id == "theme:009_refund"
+        or bool(_roles_read_refund_related_safety_flags(result.safety_flags))
+    )
+
+
+def _roles_read_refund_related_safety_flags(flags: Sequence[str]) -> tuple[str, ...]:
+    refund_related_flags = {
+        "zero_collect_refund_guarded",
+        "presale_refund_policy_manager_check",
+        "presale_refund_policy_non_p0",
+    }
+    return tuple(flag for flag in flags if str(flag or "") in refund_related_flags)
+
+
+def _roles_read_tax_non_refund_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    refund_related_flags = set(_roles_read_refund_related_safety_flags(result.safety_flags))
+    stripped_flags = tuple(
+        flag
+        for flag in result.safety_flags
+        if flag
+        not in {
+            "conversation_intent_plan_p0",
+            "high_risk_manager_only",
+            "zero_collect_refund_guarded",
+            "manager_approval_required",
+            "no_auto_send",
+        }
+        and flag not in refund_related_flags
+    )
+    return replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:008_tax_deduction",
+        draft_text=TAX_DEDUCTION_PROCESS_SAFE_TEXT,
+        safety_flags=tuple(dict.fromkeys([*stripped_flags, "tax_deduction_safe_template_applied"])),
+        manager_checklist=(),
+        metadata={**dict(result.metadata), "roles_read_tax_non_refund_repaired": True},
+    )
 
 
 def _semantic_hidden_slot_names(context: Optional[Mapping[str, Any]]) -> set[str]:
@@ -4742,8 +4814,6 @@ def find_redundant_questions_for_known_context(
 
 
 def _legitimate_enrollment_student_name_request(text: str, *, context: Optional[Mapping[str, Any]]) -> bool:
-    if not re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text):
-        return False
     plan = _conversation_intent_plan(context)
     primary_intent = str(plan.get("primary_intent") or "").strip()
     topic_id = str(plan.get("topic_id") or "").strip()
@@ -4752,7 +4822,7 @@ def _legitimate_enrollment_student_name_request(text: str, *, context: Optional[
         return False
     if enrollment_vs_recording == "enroll" or primary_intent in {"enroll", "enrollment"} or topic_id == "theme:020_enrollment":
         return True
-    return bool(re.search(r"(для\s+запис|записаться|оформить\s+заявк|оформления\s+заявк)", text))
+    return False
 
 def apply_unstated_subject_guard(
     result: SubscriptionDraftResult,

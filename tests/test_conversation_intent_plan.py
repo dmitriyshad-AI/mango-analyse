@@ -229,6 +229,27 @@ def test_intent_plan_treats_certificate_request_as_documents_not_address() -> No
     assert "matkap_process" in plan.blocked_neighbor_scopes
 
 
+def test_intent_plan_treats_ndfl_return_as_tax_not_refund() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Возврат НДФЛ оформляете?",
+        active_brand="foton",
+        dialogue_memory_view={
+            "current_message_roles": {
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+                "topics": ["tax"],
+            }
+        },
+    )
+
+    assert plan.primary_intent == "tax"
+    assert plan.topic_id == "theme:008_tax_deduction"
+    assert plan.payment_source == "tax_deduction"
+    assert plan.refund_frame == "none"
+    assert "refund" not in plan.risk_signals
+    assert plan.route_bias == "bot_answer_self_for_pilot"
+
+
 def test_intent_plan_treats_plain_document_request_as_documents() -> None:
     plan = build_conversation_intent_plan(
         current_message="Где запросить справку об обучении?",

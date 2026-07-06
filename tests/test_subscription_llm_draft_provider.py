@@ -12031,6 +12031,91 @@ def test_direct_path_roles_read_traces_refund_dispute_without_downgrade() -> Non
     assert trace["metadata"]["frame_requested_action"] == "refund_or_cancel"
 
 
+def test_direct_path_roles_read_apply_repairs_tax_refund_false_positive() -> None:
+    result = apply_roles_read_trace(
+        SubscriptionDraftResult(
+            route="manager_only",
+            topic_id="theme:009_refund",
+            draft_text="Вопрос по возврату зафиксирован. Ответственный сотрудник вернётся с ответом.",
+            safety_flags=("conversation_intent_plan_p0", "high_risk_manager_only", "zero_collect_refund_guarded", "no_auto_send"),
+            manager_checklist=("План диалога распознал P0/high-risk тему: автономный ответ запрещён.",),
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "payment_readiness": "none",
+                    "risk_class": "safe",
+                    "confidence": 0.96,
+                }
+            },
+        ),
+        context={
+            "active_brand": "foton",
+            SEMANTIC_READING_CLASSES_ENV: "roles_read",
+            READING_APPLY_CLASSES_ENV: "roles_read/refund_tax",
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.topic_id == "theme:008_tax_deduction"
+    assert "налоговый вычет" in result.draft_text.casefold()
+    assert "фнс" in result.draft_text.casefold()
+    assert "возврату зафиксирован" not in result.draft_text.casefold()
+    assert "high_risk_manager_only" not in result.safety_flags
+    assert "tax_deduction_safe_template_applied" in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "roles_read"
+    assert trace["status"] == "applied"
+    assert trace["decision"] == "tax_non_refund_template"
+    assert trace["metadata"]["apply_enabled"] is True
+    assert "tax_vs_refund" in trace["conflict_with"]
+
+
+def test_direct_path_roles_read_apply_keeps_real_refund_manager_only() -> None:
+    result = apply_roles_read_trace(
+        SubscriptionDraftResult(
+            route="manager_only",
+            topic_id="theme:009_refund",
+            draft_text="Передам ответственному сотруднику вопрос по возврату.",
+            safety_flags=("payment_dispute", "manager_approval_required", "no_auto_send"),
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "refund_or_cancel",
+                    "payment_readiness": "dispute",
+                    "risk_class": "payment_dispute",
+                    "confidence": 0.96,
+                }
+            },
+        ),
+        context={
+            "active_brand": "foton",
+            SEMANTIC_READING_CLASSES_ENV: "roles_read",
+            READING_APPLY_CLASSES_ENV: "roles_read/refund_tax",
+            "conversation_intent_plan": {
+                "primary_intent": "refund",
+                "topic_id": "theme:009_refund",
+                "payment_source": "course_payment",
+                "refund_frame": "dispute",
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert "payment_dispute" in result.safety_flags
+    assert "tax_deduction_safe_template_applied" not in result.safety_flags
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["status"] == "shadow_only"
+    assert trace["metadata"]["apply_enabled"] is True
+    assert trace["metadata"]["refund_frame"] == "dispute"
+
+
 def test_tz137_slot_topic_shadow_default_off_does_not_call_runner() -> None:
     provider = _DirectPathShadowProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Подскажите класс ученика."),

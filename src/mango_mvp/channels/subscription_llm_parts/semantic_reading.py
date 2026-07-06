@@ -33,6 +33,7 @@ ALLOWED_READING_APPLY_CLASSES = frozenset(
         "route_templates/autonomy_matrix",
         "live_status_read/conversation_intent_plan",
         "reask_read/final_text",
+        "roles_read/refund_tax",
     }
 )
 ALLOWED_SEMANTIC_READING_SOURCES = frozenset({"inline", "posthoc"})

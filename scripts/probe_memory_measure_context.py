@@ -41,17 +41,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--limit", type=int, default=3)
     parser.add_argument("--include-dual", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--all-personas", action="store_true", help="Probe every persona row instead of a small smoke subset.")
+    parser.add_argument(
+        "--min-on-visible-personas",
+        type=int,
+        default=None,
+        help="Allow safety-dropped ON rows, but require at least this many personas with visible ON context.",
+    )
     args = parser.parse_args(argv)
 
     loaded = load_dynamic_sim_input(args.scenarios)
-    personas = _select_probe_personas(loaded.personas, limit=args.limit, include_dual=args.include_dual)
+    personas = list(loaded.personas) if args.all_personas else _select_probe_personas(
+        loaded.personas,
+        limit=args.limit,
+        include_dual=args.include_dual,
+    )
     rows = [probe_persona(persona, timeline_db=args.timeline_db) for persona in personas]
+    off_clear = all(row["off_visible_items"] == 0 for row in rows)
+    other_brand_clear = not any(row["other_brand_marker_in_on_prompt"] for row in rows)
+    on_visible_personas = sum(1 for row in rows if row["on_visible_items"] > 0)
+    if args.min_on_visible_personas is None:
+        on_visibility_ok = all(row["on_visible_items"] > 0 for row in rows)
+    else:
+        on_visibility_ok = on_visible_personas >= max(0, int(args.min_on_visible_personas))
     report = {
         "schema_version": "memory_measure_context_probe_v1",
         "scenarios": str(args.scenarios),
         "timeline_db": str(args.timeline_db),
         "examples": rows,
-        "passed": all(row["off_visible_items"] == 0 and row["on_visible_items"] > 0 for row in rows),
+        "summary": {
+            "personas": len(rows),
+            "off_clear": off_clear,
+            "on_visible_personas": on_visible_personas,
+            "on_zero_dialog_ids": [row["dialog_id"] for row in rows if row["on_visible_items"] <= 0],
+            "other_brand_clear": other_brand_clear,
+            "min_on_visible_personas": args.min_on_visible_personas,
+        },
+        "passed": off_clear and other_brand_clear and on_visibility_ok,
         "note": "Probe builds the same read_only_customer_context consumed by direct_path; it does not call LLM or run M1.",
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

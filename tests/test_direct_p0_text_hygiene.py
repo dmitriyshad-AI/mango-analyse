@@ -91,7 +91,7 @@ def test_tone_close_detect_keeps_pending_after_recent_manager_handoff() -> None:
                     {
                         "role": "bot",
                         "text": (
-                            "По возврату точную сумму и порядок действий должен подтвердить менеджер. "
+                            "Возможность возврата, сумму и порядок действий должен подтвердить менеджер. "
                             "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
                         ),
                     }
@@ -177,6 +177,24 @@ def _paid_operation_context_result() -> SubscriptionDraftResult:
     )
 
 
+def _semantic_frame(**overrides: object) -> dict[str, object]:
+    frame: dict[str, object] = {
+        "schema_version": "semantic_frame_v1_2026_07_01",
+        "source": "inline",
+        "intent": "payment_status",
+        "risk_class": "manager_action",
+        "deal_stage": "service",
+        "payment_readiness": "paid",
+        "requested_action": "handoff_manager",
+        "answerability": "manager_only",
+        "must_handoff": True,
+        "evidence": ["non-personal short reason"],
+        "confidence": 0.92,
+    }
+    frame.update(overrides)
+    return frame
+
+
 def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_payment_without_refund() -> None:
     result = _paid_operation_context_result()
     profile = _profile_context()
@@ -202,7 +220,7 @@ def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_paymen
         client_message="Оплату ещё не вносил, доступ не появился.",
     )
 
-    assert "по возврату" in off.draft_text.casefold()
+    assert "возможность возврата" in off.draft_text.casefold()
     assert off.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
     assert "возврат" not in profile_on.draft_text.casefold()
     assert "по оплате нужно сверить данные" in profile_on.draft_text.casefold()
@@ -223,7 +241,7 @@ def test_text_hygiene_payment_fix_keeps_real_refund_as_refund() -> None:
             client_message=message,
         )
 
-        assert "по возврату" in scrubbed.draft_text.casefold()
+        assert "возможность возврата" in scrubbed.draft_text.casefold()
         assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
 
 
@@ -240,6 +258,375 @@ def test_text_hygiene_payment_fix_keeps_receipt_question_out_of_refund_template(
     assert "возврат" not in lowered
     assert "по оплате нужно сверить данные" in lowered
     assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+
+
+def test_correct_route_wrong_p0_text_semantic_frame_tax_overrides_refund_template() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение по возврату, менеджер проверит сумму и порядок действий.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="tax_deduction",
+                risk_class="manager_action",
+                payment_readiness="not_payment",
+                requested_action="send_document",
+                evidence=["клиент спрашивает: Возврат НДФЛ оформляете?"],
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+        client_message="Возврат НДФЛ оформляете?",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "возврат" not in lowered
+    assert "налоговый вычет" in lowered
+    assert "фнс" in lowered
+    assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
+    hygiene = scrubbed.metadata["direct_p0_text_hygiene"]
+    assert hygiene["kind"] == "tax"
+    guard = hygiene["semantic_frame_text_meaning_guard"]
+    assert guard["legacy_kind"] == "refund"
+    assert guard["frame_kind"] == "tax"
+    assert guard["conflict"] is True
+    trace = next(item for item in scrubbed.metadata["semantic_reading_trace"] if item["class"] == "p0_text_meaning")
+    assert trace["decision"] == "tax"
+    assert trace["source"] == "inline"
+
+
+def test_correct_route_wrong_p0_text_semantic_frame_paid_access_overrides_refund_template() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="По возврату менеджер проверит сумму по данным записи и оплаты.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="platform_access",
+                risk_class="manager_action",
+                payment_readiness="paid",
+                requested_action="handoff_manager",
+                evidence=["non-refund manager action"],
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Оплатили курс, ссылка не пришла.",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed.route == "manager_only"
+    assert "возврат" not in lowered
+    assert "проверить вручную" in lowered
+    assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "neutral_manager"
+    assert scrubbed.metadata["semantic_frame_text_meaning_guard"]["frame_kind"] == "neutral_manager"
+
+
+def test_semantic_frame_text_meaning_keeps_real_refund_as_refund() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Оформим возврат и передадим менеджеру.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="refund_claim",
+                risk_class="payment_dispute",
+                payment_readiness="dispute",
+                requested_action="refund_or_cancel",
+                evidence=["refund claim"],
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Верните деньги за курс.",
+    )
+
+    assert "оформим возврат" not in scrubbed.draft_text.casefold()
+    assert "возможность возврата" in scrubbed.draft_text.casefold()
+    assert "correct_route_wrong_p0_text" not in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+def test_semantic_frame_text_meaning_payment_dispute_beats_stale_tax_plan() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение по возврату, менеджер проверит сумму.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="payment_problem",
+                risk_class="payment_dispute",
+                payment_readiness="dispute",
+                requested_action="handoff_manager",
+                confidence=0.96,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+        client_message="Оплатили, доступа нет, это спор по оплате.",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert "налоговый вычет" not in lowered
+    assert "по оплате нужно сверить данные" in lowered
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
+
+
+def test_semantic_frame_text_meaning_requires_strict_tax_plan() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение по возврату, менеджер проверит сумму.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="tax_deduction",
+                risk_class="manager_action",
+                payment_readiness="none",
+                requested_action="send_document",
+                confidence=0.96,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "payment_source": "tax_deduction",
+            },
+        },
+        client_message="Возврат НДФЛ оформляете?",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert "налоговый вычет" not in lowered
+    assert "возврат" not in lowered
+    assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "neutral_manager"
+
+
+def test_semantic_frame_text_meaning_trace_marks_route_change() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По возврату менеджер проверит сумму по данным записи и оплаты.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="platform_access",
+                risk_class="manager_action",
+                payment_readiness="paid",
+                requested_action="handoff_manager",
+                confidence=0.94,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context=_profile_context(),
+        client_message="Оплатили курс, ссылка не пришла.",
+    )
+
+    trace = next(item for item in scrubbed.metadata["semantic_reading_trace"] if item["class"] == "p0_text_meaning")
+    assert scrubbed.route == "manager_only"
+    assert "route" in trace["changed_fields"]
+    assert "draft_text" in trace["changed_fields"]
+
+
+def test_semantic_frame_text_meaning_low_confidence_keeps_legacy_fail_closed() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="По возврату менеджер проверит сумму по данным записи и оплаты.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                intent="tax_deduction",
+                requested_action="send_document",
+                confidence=0.89,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+        client_message="Возврат НДФЛ оформляете?",
+    )
+
+    assert "возможность возврата" in scrubbed.draft_text.casefold()
+    assert "налоговый вычет" not in scrubbed.draft_text.casefold()
+    assert "correct_route_wrong_p0_text" not in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+@pytest.mark.parametrize(
+    ("source", "schema_version"),
+    [
+        ("posthoc", "semantic_frame_v1_2026_07_01"),
+        ("", "semantic_frame_v1_2026_07_01"),
+        ("inline", ""),
+    ],
+)
+def test_semantic_frame_text_meaning_requires_inline_source_and_schema(source: str, schema_version: str) -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение по возврату, менеджер проверит сумму.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                source=source,
+                schema_version=schema_version,
+                requested_action="send_document",
+                payment_readiness="none",
+                risk_class="manager_action",
+                confidence=0.99,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+        client_message="Возврат НДФЛ оформляете?",
+    )
+
+    assert "налоговый вычет" not in scrubbed.draft_text.casefold()
+    assert "correct_route_wrong_p0_text" not in scrubbed.safety_flags
+    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+def test_semantic_frame_text_meaning_applies_at_high_confidence_threshold() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение по возврату, менеджер проверит сумму.",
+        risk_level="high",
+        safety_flags=("refund",),
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "refund",
+            },
+            "semantic_frame": _semantic_frame(
+                requested_action="send_document",
+                payment_readiness="none",
+                risk_class="manager_action",
+                confidence=0.90,
+            ),
+        },
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={
+            **_profile_context(),
+            "conversation_intent_plan": {
+                "primary_intent": "tax",
+                "topic_id": "theme:008_tax_deduction",
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+            },
+        },
+        client_message="Возврат НДФЛ оформляете?",
+    )
+
+    assert "налоговый вычет" in scrubbed.draft_text.casefold()
+    assert "correct_route_wrong_p0_text" in scrubbed.safety_flags
 
 
 def test_direct_p0_text_hygiene_payment_dispute_keeps_route_and_removes_sales_text() -> None:
@@ -468,7 +855,7 @@ def test_direct_p0_text_hygiene_replaces_false_postpayment_handoff_on_presale_re
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text=(
-            "По возврату точную сумму и порядок действий должен подтвердить менеджер. "
+            "Возможность возврата, сумму и порядок действий должен подтвердить менеджер. "
             "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
         ),
     )

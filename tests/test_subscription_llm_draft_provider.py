@@ -11803,6 +11803,109 @@ def test_direct_path_reask_read_traces_known_slot_reask_without_changing_text() 
     assert trace["metadata"]["known_slot_keys"] == ["active_brand", "grade"]
 
 
+def test_direct_path_reask_read_apply_repairs_known_slot_reask() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:001_pricing",
+            draft_text="Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "answer_question",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "reask_read",
+            READING_APPLY_CLASSES_ENV: "reask_read/final_text",
+            "dialogue_memory_view": {"known_slots": {"grade": "8 класс"}},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == KNOWN_CONTEXT_REPAIR_TEXT
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "reask_read"
+    assert trace["status"] == "applied"
+    assert trace["decision"] == "known_slot_reask_applied"
+    assert trace["metadata"]["apply_enabled"] is True
+    assert trace["metadata"]["repeated_slot_keys"] == ["grade"]
+    assert "route" in trace["changed_fields"]
+    assert "draft_text" in trace["changed_fields"]
+
+
+def test_direct_path_reask_read_does_not_treat_enrollment_fio_request_as_reask() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:020_enrollment",
+            draft_text="Для записи пришлите, пожалуйста, ФИО ученика.",
+            metadata={
+                "semantic_frame": {
+                    "source": "inline",
+                    "requested_action": "enroll",
+                    "answerability": "answer_self",
+                    "must_handoff": False,
+                    "risk_class": "safe",
+                    "confidence": 0.95,
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Хочу записаться",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_READING_CLASSES_ENV: "reask_read",
+            READING_APPLY_CLASSES_ENV: "reask_read/final_text",
+            "dialogue_memory_view": {"known_slots": {"student_name": "Артём"}},
+            "conversation_intent_plan": {
+                "primary_intent": "enrollment",
+                "topic_id": "theme:020_enrollment",
+                "enrollment_vs_recording": "enroll",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Для записи пришлите, пожалуйста, ФИО ученика."
+    trace = result.metadata["semantic_reading_trace"][0]
+    assert trace["class"] == "reask_read"
+    assert trace["status"] == "shadow_only"
+    assert trace["decision"] == "no_reask_detected"
+    assert trace["metadata"]["apply_enabled"] is True
+    assert trace["metadata"]["repeated_slot_keys"] == []
+
+
+def test_redundant_question_detector_keeps_recording_fio_reask_as_reask() -> None:
+    repeated = find_redundant_questions_for_known_context(
+        "Пришлите ФИО ученика, чтобы найти запись урока.",
+        context={
+            "dialogue_memory_view": {"known_slots": {"student_name": "Артём"}},
+            "conversation_intent_plan": {
+                "primary_intent": "recording",
+                "topic_id": "theme:018_materials_homework",
+                "enrollment_vs_recording": "recording",
+            },
+        },
+    )
+
+    assert repeated == ("student_name",)
+
+
 def test_direct_path_reask_read_does_not_leak_hidden_slot_values() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

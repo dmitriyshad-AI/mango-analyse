@@ -439,6 +439,30 @@ def test_memory_provenance_extracts_only_client_slots_with_quote(monkeypatch) ->
     assert view["slot_provenance"]["grade"]["turn_index"] == 1
 
 
+def test_memory_provenance_does_not_treat_zapisi_as_child_name(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Что нужно для Записи на курс?",
+        active_brand="foton",
+        session_id="s-provenance-zapisi",
+    )
+
+    assert "child_name" not in memory.to_prompt_view()["known_slots"]
+
+
+def test_memory_provenance_keeps_real_child_name_after_for_marker(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Для Артёма нужна физика, 7 класс.",
+        active_brand="foton",
+        session_id="s-provenance-real-child-name",
+    )
+
+    assert memory.to_prompt_view()["known_slots"]["child_name"] == "Артёма"
+
+
 def test_memory_provenance_hides_quote_less_slot_from_prompt(monkeypatch) -> None:
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
 

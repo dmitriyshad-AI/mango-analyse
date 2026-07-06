@@ -1134,6 +1134,23 @@ _CHILD_NAME_MARKER_RE = re.compile(
     r"|\b(?:зовут|фио|для)\s*[:\-]?\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\b",
     re.I,
 )
+_CHILD_NAME_STOPWORDS = frozenset(
+    {
+        "запись",
+        "записи",
+        "заявка",
+        "заявки",
+        "курс",
+        "курса",
+        "урок",
+        "урока",
+        "занятие",
+        "занятия",
+        "обучение",
+        "оплата",
+        "оплаты",
+    }
+)
 _NAME_GRADE_RE = re.compile(r"\b(?P<name>[А-ЯЁ][а-яё]{2,20})\s+в\s+(?:[1-9]|1[01])\s*(?:класс|кл\.?)\b", re.I)
 _CHILD_GRADE_RE = re.compile(
     r"\b(?P<marker>сыну?|дочк[аеуы]|дочь|младш\w*|старш\w*)\s+в\s+(?P<grade>[1-9]|1[01])\s*(?:класс\w*|кл\.?)\b",
@@ -1256,7 +1273,9 @@ def _extract_provenance_slots_from_client_text(
     name_match = _CHILD_NAME_MARKER_RE.search(text) or _NAME_GRADE_RE.search(text)
     if name_match:
         name = name_match.groupdict().get("name") or name_match.groupdict().get("name2") or ""
-        result["child_name"] = _provenance_slot("child_name", _normalize_child_name(name), name_match.group(0), turn_index, message_id, child_key)
+        normalized_name = _normalize_child_name(name)
+        if _valid_child_name_from_client_text(normalized_name):
+            result["child_name"] = _provenance_slot("child_name", normalized_name, name_match.group(0), turn_index, message_id, child_key)
     return result
 
 
@@ -1353,6 +1372,14 @@ def _normalize_child_name(name: str) -> str:
     if not text:
         return ""
     return text[:1].upper() + text[1:].lower()
+
+
+def _valid_child_name_from_client_text(name: str) -> bool:
+    value = _clean(name).strip(".,:;!?")
+    if not value:
+        return False
+    normalized = value.casefold().replace("ё", "е")
+    return normalized not in _CHILD_NAME_STOPWORDS
 
 
 def _extract_slots_from_turns(turns: Sequence[DialogueTurn]) -> Mapping[str, Any]:

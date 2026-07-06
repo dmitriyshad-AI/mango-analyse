@@ -993,7 +993,7 @@ class SubscriptionLlmDraftProvider:
             manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
             self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
             decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
-            reask_traced = apply_reask_read_trace(decision_shadowed, context=context)
+            reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
             roles_traced = apply_roles_read_trace(reask_traced, context=context)
             return apply_semantic_reading_trace_finalize(roles_traced, context=context)
         if dialogue_contract_pipeline_enabled(context):

@@ -117,14 +117,21 @@ def test_semantic_reading_apply_classes_are_default_off_and_require_enabled_clas
     ) is False
     context = {
         SEMANTIC_READING_CLASSES_ENV: "route_templates,live_status_read",
-        READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix,roles_read/refund_tax,unknown",
+        READING_APPLY_CLASSES_ENV: "route_templates/autonomy_matrix,roles_read/refund_tax,reask_read/final_text,unknown",
     }
 
-    assert apply_classes(context) == frozenset({"route_templates/autonomy_matrix"})
+    assert apply_classes(context) == frozenset({"route_templates/autonomy_matrix", "reask_read/final_text"})
     assert reading_apply_class_enabled(context, "route_templates/autonomy_matrix") is True
     assert reading_apply_class_enabled(context, "route_templates") is False
     assert reading_apply_class_enabled(context, "live_status_read") is False
+    assert reading_apply_class_enabled(context, "reask_read/final_text") is False
     assert reading_apply_class_enabled(context, "roles_read/refund_tax") is False
+    context = {
+        SEMANTIC_READING_CLASSES_ENV: "reask_read",
+        READING_APPLY_CLASSES_ENV: "reask_read/final_text",
+    }
+    assert apply_classes(context) == frozenset({"reask_read/final_text"})
+    assert reading_apply_class_enabled(context, "reask_read/final_text") is True
 
 
 def test_semantic_reading_reads_inline_frame_without_exposing_p0_fields() -> None:

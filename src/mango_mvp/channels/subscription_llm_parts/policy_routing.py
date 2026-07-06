@@ -4488,26 +4488,41 @@ def apply_known_context_redundant_question_guard(
 def apply_reask_read_trace(
     result: SubscriptionDraftResult,
     *,
+    client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     if not reading_class_enabled(context, "reask_read"):
         return result
     repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
+    apply_enabled = reading_apply_class_enabled(context, "reask_read/final_text")
+    guarded = result
+    changed_fields: list[str] = []
+    if repeated and apply_enabled:
+        guarded = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
+        if guarded.route != result.route:
+            changed_fields.append("route")
+        if guarded.draft_text != result.draft_text:
+            changed_fields.append("draft_text")
+        if guarded.safety_flags != result.safety_flags:
+            changed_fields.append("safety_flags")
+        if guarded.manager_checklist != result.manager_checklist:
+            changed_fields.append("manager_checklist")
     known = known_context_fields(context)
     hidden_slots = _semantic_hidden_slot_names(context)
     do_not_reask = _do_not_reask_slot_names_from_context(context)
     record = semantic_reading_trace_record(
         reading_class="reask_read",
         enabled=True,
-        status="would_flag" if repeated else "shadow_only",
-        decision="known_slot_reask" if repeated else "no_reask_detected",
+        status="applied" if changed_fields else ("would_flag" if repeated else "shadow_only"),
+        decision="known_slot_reask_applied" if changed_fields else ("known_slot_reask" if repeated else "no_reask_detected"),
         reason="direct_path_final_text_reask_observer",
         source="deterministic_observer",
         confidence=1.0,
-        changed_fields=(),
+        changed_fields=tuple(changed_fields),
         conflicts=("known_slot_reask",) if repeated else (),
         metadata={
             "stage": "direct_path_final_text",
+            "apply_enabled": apply_enabled,
             "repeated_slot_keys": list(repeated),
             "known_slot_keys": sorted(key for key in known if key in {"grade", "subject", "format", "active_brand"}),
             "do_not_reask_slots": sorted(do_not_reask),
@@ -4515,7 +4530,7 @@ def apply_reask_read_trace(
             "hidden_slots_are_client_confirmed": False,
         },
     )
-    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
 
 
 def apply_roles_read_trace(
@@ -4705,7 +4720,11 @@ def find_redundant_questions_for_known_context(
         return ()
     text = str(draft_text or "").casefold().replace("ё", "е")
     repeated: list[str] = []
-    if known.get("student_name") and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text):
+    if (
+        known.get("student_name")
+        and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text)
+        and not _legitimate_enrollment_student_name_request(text, context=context)
+    ):
         repeated.append("student_name")
     if known.get("parent_name") and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", text):
         repeated.append("parent_name")
@@ -4720,6 +4739,20 @@ def find_redundant_questions_for_known_context(
     if known.get("active_brand") and re.search(r"(фотон\s+или\s+унпк|какой\s+центр|какой\s+учебн\w+\s+центр)", text):
         repeated.append("active_brand")
     return tuple(dict.fromkeys(repeated))
+
+
+def _legitimate_enrollment_student_name_request(text: str, *, context: Optional[Mapping[str, Any]]) -> bool:
+    if not re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text):
+        return False
+    plan = _conversation_intent_plan(context)
+    primary_intent = str(plan.get("primary_intent") or "").strip()
+    topic_id = str(plan.get("topic_id") or "").strip()
+    enrollment_vs_recording = str(plan.get("enrollment_vs_recording") or "").strip()
+    if enrollment_vs_recording == "recording":
+        return False
+    if enrollment_vs_recording == "enroll" or primary_intent in {"enroll", "enrollment"} or topic_id == "theme:020_enrollment":
+        return True
+    return bool(re.search(r"(для\s+запис|записаться|оформить\s+заявк|оформления\s+заявк)", text))
 
 def apply_unstated_subject_guard(
     result: SubscriptionDraftResult,

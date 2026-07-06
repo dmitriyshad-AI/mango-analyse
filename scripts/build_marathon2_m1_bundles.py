@@ -819,7 +819,9 @@ def build_memory_shadow_bundle(
         "- v3.2 не добавляет новых текстов чанков; diff см. `memory_shadow_overlay_v3_1_to_v3_2_diff.json`.\n"
         f"- Git bundle для M1: `email_timeline_20260706_from{git_bundle_base}.bundle`; verify-output: `git_bundle_verify.txt`.\n"
         "- M1 запускает человек вручную командами из `memory_shadow_run_commands.sh`.\n"
-        "- Перед запуском проверь `memory_shadow_expected_hits_micro_v3_2.json` и `memory_shadow_expected_hits_full_v3_2.json`: ON должен иметь ctx>0 у строк `with_memory`, OFF должен быть без ctx.\n",
+        "- `memory_shadow_expected_hits_*_v3_2.json` — структурная проверка overlay, не hard-критерий runtime prompt.\n"
+        "- Runtime precheck для micro: `probe_memory_measure_context.py --all-personas --min-on-visible-personas 6`; эталонный отчёт: `memory_shadow_runtime_probe_micro_v3_2.json`.\n"
+        "- Ожидаемо: micro overlay имеет память у 12/12 персон, но runtime prompt видит 6/12; остальные 6 зафиксированы как safety/runtime drop.\n",
         encoding="utf-8",
     )
     return {

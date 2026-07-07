@@ -63,6 +63,20 @@ def test_replay_runner_exports_memory_snapshots_for_full_tests() -> None:
     assert set(rows[1]["memory_snapshot"]) == {"schema_version", "known_slots", "do_not_reask", "p0_latch"}
 
 
+def test_replay_memory_snapshot_scrubs_runtime_latch_ids() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Верните деньги", "Ответ", turn_index=1)]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        del case, context
+        return BotReplayResult(route="manager_only", bot_text="Передам менеджеру.", safety_flags=("refund_dispute",))
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    latch = rows[0]["memory_snapshot_after"]["p0_latch"]
+    assert "trigger_turn_id" not in latch
+    assert "release_event_id" not in latch
+
+
 def test_replay_runner_allows_numbers_from_current_turn_retrieved_facts() -> None:
     cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Сколько стоит?", "")]
 

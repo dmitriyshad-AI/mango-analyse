@@ -21,7 +21,7 @@ from mango_mvp.replay_exam.provider_adapter import (
 )
 from mango_mvp.replay_exam.pseudonymizer import kb_contact_allowlist
 from mango_mvp.replay_exam.pii_scan import scan_paths
-from mango_mvp.replay_exam.runner import load_cases, run_replay_exam, write_replay_outputs
+from mango_mvp.replay_exam.runner import load_cases, run_replay_exam, sanitize_replay_rows, write_replay_outputs
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
@@ -124,8 +124,12 @@ def main() -> int:
         _write_progress(progress_path, total_cases=len(cases), completed_ids=completed_ids, max_bot_calls=args.max_bot_calls)
 
     new_rows = run_replay_exam(pending_cases, provider, parallel_dialogs=parallel, progress_callback=progress_callback)
-    rows = [*existing_rows, *new_rows]
+    rows = sanitize_replay_rows([*existing_rows, *new_rows])
     write_replay_outputs(out_dir, rows)
+    partial_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
     judge_requests = []
     if args.run_judge:
         judge_requests = build_replay_judge_requests(

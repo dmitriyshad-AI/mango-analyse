@@ -54,8 +54,39 @@ def replay_memory_snapshot(memory: Optional[Mapping[str, Any]]) -> dict[str, Any
         "do_not_reask": [str(item) for item in do_not_reask if str(item).strip()]
         if isinstance(do_not_reask, (list, tuple, set))
         else [],
-        "p0_latch": dict(p0_latch),
+        "p0_latch": _scrub_replay_p0_latch(p0_latch),
     }
+
+
+def _scrub_replay_p0_latch(p0_latch: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep latch state useful for review without leaking runtime turn ids."""
+
+    return {
+        key: value
+        for key, value in dict(p0_latch).items()
+        if key not in {"trigger_turn_id", "release_event_id"}
+    }
+
+
+def _scrub_replay_memory_snapshot(snapshot: object) -> object:
+    if not isinstance(snapshot, Mapping):
+        return snapshot
+    result = dict(snapshot)
+    p0_latch = result.get("p0_latch")
+    if isinstance(p0_latch, Mapping):
+        result["p0_latch"] = _scrub_replay_p0_latch(p0_latch)
+    return result
+
+
+def sanitize_replay_row(row: Mapping[str, object]) -> dict[str, object]:
+    result = dict(row)
+    for key in ("memory_snapshot", "memory_snapshot_after"):
+        result[key] = _scrub_replay_memory_snapshot(result.get(key))
+    return result
+
+
+def sanitize_replay_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    return [sanitize_replay_row(row) for row in rows]
 
 
 def _brand_from_payload(obj: Mapping[str, Any]) -> str:
@@ -288,15 +319,16 @@ def run_replay_exam(
 
 def write_replay_outputs(out_dir: Path, rows: Sequence[Mapping[str, object]]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    clean_rows = sanitize_replay_rows(rows)
     (out_dir / "replay_results.jsonl").write_text(
-        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in clean_rows),
         encoding="utf-8",
     )
     summary = {
         "schema_version": "wappi_replay_exam_summary_v1",
         "metric": "chat_only_replay",
-        "turns": len(rows),
-        "machine_gate_failures": sum(1 for row in rows if not (row.get("machine_gate") or {}).get("passed")),
-        "llm_calls": {"client": sum(int(row.get("llm_calls_client") or 0) for row in rows)},
+        "turns": len(clean_rows),
+        "machine_gate_failures": sum(1 for row in clean_rows if not (row.get("machine_gate") or {}).get("passed")),
+        "llm_calls": {"client": sum(int(row.get("llm_calls_client") or 0) for row in clean_rows)},
     }
     (out_dir / "replay_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -1352,3 +1352,25 @@ E2E через Telegram не выполнялся, потому что отпр�
 process/screen presence, prod DB lsof/sha/quick_check. В логах public bot после
 старта виден `getUpdates Conflict`; это операционный риск Telegram-поллера, но
 не откатывает опубликованный Customer Timeline snapshot.
+
+### D-070. Wappi draft-loop wrote first 5 AMO manager draft notes after snapshot #1
+
+Решение владельца от 2026-07-07 выполнено: после публикации snapshot #1
+записаны 5 Wappi→AMO заметок-черновиков в карточки AMO через AI Office notes
+endpoint. Run ID: `wappi_live_notes_20260707_1717`.
+
+Границы прогона: `DRAFT_LOOP_AUTO_RESOLVER=0`, основной
+`~/.mango_secrets/draft_loop_pairs.json` не менялся; использованы временные
+pairs/profiles only for five selected chats. Wappi calls были только GET с
+`mark_all=false`; Wappi/client sends=0. После AMO-write повторный Wappi readback
+показал, что во всех 5 чатах последняя реплика всё ещё входящая.
+
+AMO readback подтвердил текущие note_id: `471856971`, `471856973`, `471856975`,
+`471856977`, `471856979`. Все заметки содержат маркер
+`ЧЕРНОВИК БОТА, не отправлено`, brand, timestamp, run-id и safety flags.
+
+Ограничение: для выбранных пяти старых unanswered Wappi-чата
+`memory_hits=0` при включённом `TELEGRAM_TIMELINE_MEMORY_IN_PROMPT=1`; в
+опубликованной DB для этих lead_id не нашлось bot-visible контекста. Поэтому
+этот проход доказывает безопасный AMO note write и client=0, но не доказывает
+пользу памяти. Семантический статус отчёта: `PASS_WITH_NOTES`.

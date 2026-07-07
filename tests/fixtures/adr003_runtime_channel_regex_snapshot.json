@@ -34,6 +34,22 @@
   {
     "flags": "",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "(?P<prefix>(?i:\\b(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зов",
+    "pattern_sha256": "9ba7028736f656cb77b082570400a17b51077eb3a0d463a3249865c980221324",
+    "qualname": "<module>",
+    "target": "_CLIENT_CHILD_IDENTITY_PROMPT_RE"
+  },
+  {
+    "flags": "",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "(?P<prefix>(?i:\\b(?:родител[ья]|мама|папа|меня\\s+зовут|я)\\s*[:—-]?\\s*))(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){0,2})",
+    "pattern_sha256": "7527226deb48bc9a25061bf38a714797c83725bb2e382395e83c7772cc3312b1",
+    "qualname": "<module>",
+    "target": "_CLIENT_PARENT_IDENTITY_PROMPT_RE"
+  },
+  {
+    "flags": "",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "(?i)(?:ignore\\s+(?:all\\s+)?previous|system\\s*:|developer\\s*:|assistant\\s*:|ты\\s+теперь|игнорируй(?:те)?\\s+(?:предыдущ|все|инструкц)|забудь(?:те)?\\s+инструкц)",
     "pattern_sha256": "d78aa0f42adc143e5383aee700f50a4967ec4b0faaf6d6de62faf24b0b3d2d41",
     "qualname": "<module>",
@@ -934,22 +950,6 @@
     "pattern_sha256": "ef387657c30bf9ab0ac8e4888ccaaae86dd78edb3ff1279ac52463600e3a38c5",
     "qualname": "<module>",
     "target": "_PARTIAL_PHONE_CONTEXT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "(?P<prefix>\\b(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|и",
-    "pattern_sha256": "7239f2fc2255e5924c27d6917f048b966cbd2e080b193ec5343d89b9713bc4dd",
-    "qualname": "<module>",
-    "target": "_CLIENT_CHILD_IDENTITY_PROMPT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "(?P<prefix>\\b(?:родител[ья]|мама|папа|меня\\s+зовут|я)\\s*[:—-]?\\s*)(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){0,2})",
-    "pattern_sha256": "00d3019560a55acb0afa6f82adaac983c627826fcf78f6a5ceb97e1dfae9f6cd",
-    "qualname": "<module>",
-    "target": "_CLIENT_PARENT_IDENTITY_PROMPT_RE"
   },
   {
     "flags": "re.I",

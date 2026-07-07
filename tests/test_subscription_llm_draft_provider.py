@@ -15785,6 +15785,27 @@ def test_pii_relation_stopwords_flag_still_masks_unmentioned_name(monkeypatch) -
     assert "client_name_echo" in reasons
 
 
+def test_presale_prompt_identity_masker_does_not_mask_lowercase_verbs() -> None:
+    sanitized = subscription_llm._presale_prompt_safe_dialogue_text(
+        "я оплатила курс, я хочу узнать расписание, я звоню по поводу группы."
+    )
+
+    assert "я оплатила курс" in sanitized
+    assert "я хочу узнать расписание" in sanitized
+    assert "я звоню по поводу группы" in sanitized
+    assert "[данные у менеджера]" not in sanitized
+
+
+def test_presale_prompt_identity_masker_keeps_case_sensitive_name_masking() -> None:
+    sanitized = subscription_llm._presale_prompt_safe_dialogue_text(
+        "Меня зовут Иван Петров. Записываю Петра Иванова."
+    )
+
+    assert "Меня зовут [данные у менеджера]" in sanitized
+    assert "Записываю Петра." in sanitized
+    assert "Иванова" not in sanitized
+
+
 def test_pii_sanitizer_keeps_address_toponyms(monkeypatch) -> None:
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
 

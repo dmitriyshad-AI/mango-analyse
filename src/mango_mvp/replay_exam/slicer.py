@@ -2,12 +2,34 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from mango_mvp.channels.p0_recall_spec import codes_from_text
+
 from .models import ReplayCase, ReplayMessage
+
+
+def mask_replay_timestamp(timestamp: int, *, base_timestamp: int = 0) -> str:
+    delta = max(0, int(timestamp or 0) - int(base_timestamp or 0))
+    return f"masked+{delta:06d}s"
 
 
 def _segment_for_reference(reference: str) -> str:
     lowered = reference.casefold()
-    if any(marker in lowered for marker in ("позвон", "crm", "амосрм", "талланто", "tallanto", "проверю в системе")):
+    if any(
+        marker in lowered
+        for marker in (
+            "позвон",
+            "по телефону",
+            "crm",
+            "амосрм",
+            "талланто",
+            "tallanto",
+            "проверю в системе",
+            "договаривались",
+            "отправила на почту",
+            "оплата прошла",
+            "вы записаны",
+        )
+    ):
         return "external_context"
     if any(marker in lowered for marker in ("ошиб", "неправильно", "лучше так", "менеджер")):
         return "manager_issue_private"
@@ -23,6 +45,7 @@ def slice_teacher_forcing_cases(
     burst_seconds: int = 120,
 ) -> list[ReplayCase]:
     ordered = sorted(messages, key=lambda item: (item.timestamp, item.message_id))
+    first_ts = ordered[0].timestamp if ordered else 0
     cases: list[ReplayCase] = []
     index = 0
     turn_no = 0
@@ -67,9 +90,17 @@ def slice_teacher_forcing_cases(
                     brand=brand,
                     client_message=client_message,
                     manager_reference=manager_reference,
+                    turn_index=turn_no,
+                    contour=brand,
+                    dialog_key_masked=dialog_id,
                     prefix_messages=prefix,
                     segment=_segment_for_reference(manager_reference),
-                    metadata={"burst_size": len(burst), "manager_reference_count": len(manager_refs)},
+                    expected_p0=bool(codes_from_text(client_message)),
+                    metadata={
+                        "burst_size": len(burst),
+                        "manager_reference_count": len(manager_refs),
+                        "ts_masked": mask_replay_timestamp(current.timestamp, base_timestamp=first_ts),
+                    },
                 )
             )
         index = cursor

@@ -28,6 +28,24 @@ def test_replay_runner_parallelizes_by_dialog_and_reports_zero_client_llm(tmp_pa
     assert (tmp_path / "replay_results.jsonl").exists()
 
 
+def test_replay_runner_threads_dialogue_memory_between_turns() -> None:
+    cases = [
+        ReplayCase("d", "p", "c", "d#1", "foton", "Нужна физика", "Ответ", turn_index=1),
+        ReplayCase("d", "p", "c", "d#2", "foton", "А расписание?", "Ответ", turn_index=2),
+    ]
+    memory_turn_counts: list[int] = []
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        memory = context.get("dialogue_memory") if isinstance(context.get("dialogue_memory"), dict) else {}
+        memory_turn_counts.append(len(memory.get("turns") or ()))
+        return BotReplayResult(route="bot_answer_self_for_pilot", bot_text=f"Ответ: {case.client_message}")
+
+    run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert memory_turn_counts[0] == 0
+    assert memory_turn_counts[1] >= 1
+
+
 def test_replay_runner_allows_numbers_from_current_turn_retrieved_facts() -> None:
     cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Сколько стоит?", "")]
 
@@ -176,14 +194,7 @@ def test_load_cases_reads_scrubbed_jsonl(tmp_path: Path) -> None:
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
                 "prefix_messages": [
-                    {
-                        "profile_id": "p",
-                        "chat_id": "c",
-                        "message_id": "m0",
-                        "text": "Ранний ход",
-                        "timestamp": 1,
-                        "from_me": False,
-                    }
+                    {"from_me": False, "text": "Ранний ход", "ts_masked": "masked+000000s"}
                 ],
             },
             ensure_ascii=False,
@@ -194,3 +205,109 @@ def test_load_cases_reads_scrubbed_jsonl(tmp_path: Path) -> None:
     case = load_cases(path)[0]
     assert case.turn_id == "d#1"
     assert case.prefix_messages[0].text == "Ранний ход"
+
+
+def test_load_cases_reads_v4_whitelist_prefix_messages(tmp_path: Path) -> None:
+    path = tmp_path / "cases_v4.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "wappi_replay_case_v4",
+                "exam_id": "exam-1",
+                "contour": "foton-main",
+                "dialog_key_masked": "dialog-mask",
+                "turn_index": 2,
+                "client_message": "Вопрос",
+                "manager_reference": "Ответ",
+                "prefix_messages": [
+                    {"from_me": False, "text": "Первый клиент", "ts_masked": "masked+000000s"},
+                    {"from_me": True, "text": "Первый ответ", "ts_masked": "masked+000030s"},
+                ],
+                "segment": "chat_only",
+                "meta": {"ts_masked": "masked+000060s"},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    case = load_cases(path)[0]
+
+    assert case.dialog_id == "dialog-mask"
+    assert case.turn_id == "exam-1"
+    assert case.turn_index == 2
+    assert case.contour == "foton-main"
+    assert case.brand == "foton"
+    assert [message.from_me for message in case.prefix_messages] == [False, True]
+    assert [message.text for message in case.prefix_messages] == ["Первый клиент", "Первый ответ"]
+    assert [message.ts_masked for message in case.prefix_messages] == ["masked+000000s", "masked+000030s"]
+    assert all(message.raw == {} for message in case.prefix_messages)
+
+
+def test_load_cases_rejects_prefix_messages_outside_v4_whitelist(tmp_path: Path) -> None:
+    path = tmp_path / "bad_cases.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "wappi_replay_case_v4",
+                "dialog_key_masked": "dialog-mask",
+                "turn_index": 1,
+                "brand": "foton",
+                "client_message": "Вопрос",
+                "manager_reference": "Ответ",
+                "prefix_messages": [{"from_me": False, "text": "Ранний ход", "ts_masked": "masked+000000s", "raw": {"phone": "79001234567"}}],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="exact keys"):
+        load_cases(path)
+
+
+def test_load_cases_rejects_missing_from_me_in_prefix_message(tmp_path: Path) -> None:
+    path = tmp_path / "bad_cases.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "wappi_replay_case_v4",
+                "dialog_key_masked": "dialog-mask",
+                "turn_index": 1,
+                "brand": "foton",
+                "client_message": "Вопрос",
+                "manager_reference": "Ответ",
+                "prefix_messages": [{"text": "Ранний ход", "ts_masked": "masked+000000s"}],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="exact keys"):
+        load_cases(path)
+
+
+def test_replay_runner_sorts_cases_by_numeric_turn_index() -> None:
+    calls: list[str] = []
+    cases = [
+        ReplayCase("d", "p", "c", "d#10", "foton", "Десятый", "Ответ", turn_index=10),
+        ReplayCase("d", "p", "c", "d#2", "foton", "Второй", "Ответ", turn_index=2),
+        ReplayCase("d", "p", "c", "d#1", "foton", "Первый", "Ответ", turn_index=1),
+    ]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        calls.append(case.turn_id)
+        return BotReplayResult(route="draft_for_manager", bot_text=f"Ответ: {case.client_message}")
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert calls == ["d#1", "d#2", "d#10"]
+    assert [row["turn_id"] for row in rows] == ["d#1", "d#2", "d#10"]

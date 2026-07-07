@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
+
 from .machine_gate import number_index, run_machine_gate
 from .models import BotReplayResult, ReplayCase, ReplayMessage
 
@@ -36,6 +38,53 @@ _BLOCKED_METADATA_KEYS = frozenset(
         "blob",
     }
 )
+_PREFIX_MESSAGE_KEYS_V4 = frozenset({"from_me", "text", "ts_masked"})
+_FORBIDDEN_CASE_KEYS = frozenset({"raw", "from", "to", "phone", "chatId", "contact_name", "username", "wappi_bot_id", "task_id", "stanzaId"})
+
+
+def _brand_from_payload(obj: Mapping[str, Any]) -> str:
+    raw = str(obj.get("brand") or "").strip().casefold()
+    if raw:
+        return raw
+    contour = str(obj.get("contour") or "").strip().casefold()
+    if "foton" in contour or "фотон" in contour:
+        return "foton"
+    if "unpk" in contour or "унпк" in contour or "лвш" in contour:
+        return "unpk"
+    raise ValueError("replay case must include brand or a contour that resolves to foton/unpk")
+
+
+def _validate_case_payload(obj: Mapping[str, Any], *, line_no: int) -> None:
+    forbidden = sorted(key for key in obj if str(key) in _FORBIDDEN_CASE_KEYS)
+    if forbidden:
+        raise ValueError(f"unsafe replay case keys at line {line_no}: {forbidden}")
+    for index, item in enumerate(obj.get("prefix_messages") or ()):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"prefix_messages[{index}] at line {line_no} must be an object")
+        keys = {str(key) for key in item}
+        if keys != _PREFIX_MESSAGE_KEYS_V4:
+            raise ValueError(
+                f"prefix_messages[{index}] at line {line_no} must use exact keys "
+                f"{sorted(_PREFIX_MESSAGE_KEYS_V4)}, got {sorted(keys)}"
+            )
+        if not isinstance(item.get("from_me"), bool):
+            raise ValueError(f"prefix_messages[{index}].from_me at line {line_no} must be boolean")
+        if not isinstance(item.get("text"), str):
+            raise ValueError(f"prefix_messages[{index}].text at line {line_no} must be string")
+        if not isinstance(item.get("ts_masked"), str):
+            raise ValueError(f"prefix_messages[{index}].ts_masked at line {line_no} must be string")
+
+
+def _turn_index_from_payload(obj: Mapping[str, Any]) -> int:
+    raw = obj.get("turn_index")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+    turn_id = str(obj.get("turn_id") or obj.get("exam_id") or "")
+    match = re.search(r"#(\d+)$", turn_id)
+    return int(match.group(1)) if match else 0
 
 
 def _fact_payload_texts(value: object) -> tuple[str, ...]:
@@ -98,37 +147,49 @@ def _current_turn_client_safe_numbers(metadata: Mapping[str, Any]) -> tuple[str,
 
 def load_cases(path: Path) -> list[ReplayCase]:
     cases: list[ReplayCase] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         obj = json.loads(line)
+        if not isinstance(obj, Mapping):
+            raise ValueError(f"replay case at line {line_no} must be an object")
+        _validate_case_payload(obj, line_no=line_no)
+        dialog_id = str(obj.get("dialog_id") or obj.get("dialog_key_masked") or "")
+        turn_index = _turn_index_from_payload(obj)
+        turn_id = str(obj.get("turn_id") or obj.get("exam_id") or (f"{dialog_id}#{turn_index}" if dialog_id else ""))
+        prefix_items = [item for item in (obj.get("prefix_messages") or ()) if isinstance(item, Mapping)]
+        brand = _brand_from_payload(obj)
         prefix_messages = tuple(
             ReplayMessage(
-                profile_id=str(item.get("profile_id") or ""),
-                chat_id=str(item.get("chat_id") or ""),
-                message_id=str(item.get("message_id") or ""),
-                text=str(item.get("text") or ""),
-                timestamp=int(item.get("timestamp") or 0),
-                from_me=bool(item.get("from_me")),
-                sender_name=str(item.get("sender_name") or ""),
-                raw=dict(item.get("raw") or {}),
-            )
-            for item in (obj.get("prefix_messages") or ())
-            if isinstance(item, Mapping)
-        )
-        cases.append(
-            ReplayCase(
-                dialog_id=str(obj["dialog_id"]),
                 profile_id=str(obj.get("profile_id") or ""),
                 chat_id=str(obj.get("chat_id") or ""),
-                turn_id=str(obj["turn_id"]),
-                brand=str(obj["brand"]),
+                message_id="",
+                text=str(item.get("text") or ""),
+                timestamp=int(item.get("timestamp") or index + 1),
+                from_me=bool(item["from_me"]),
+                ts_masked=str(item.get("ts_masked") or ""),
+                sender_name="",
+                raw={},
+            )
+            for index, item in enumerate(prefix_items)
+        )
+        metadata = dict(obj.get("meta") or obj.get("metadata") or {})
+        cases.append(
+            ReplayCase(
+                dialog_id=dialog_id,
+                profile_id=str(obj.get("profile_id") or ""),
+                chat_id=str(obj.get("chat_id") or ""),
+                turn_id=turn_id,
+                brand=brand,
                 client_message=str(obj["client_message"]),
                 manager_reference=str(obj.get("manager_reference") or ""),
+                turn_index=turn_index,
+                contour=str(obj.get("contour") or brand),
+                dialog_key_masked=str(obj.get("dialog_key_masked") or dialog_id),
                 prefix_messages=prefix_messages,
                 segment=str(obj.get("segment") or "chat_only"),
                 expected_p0=bool(obj.get("expected_p0")),
-                metadata=dict(obj.get("metadata") or {}),
+                metadata=metadata,
             )
         )
     return cases
@@ -136,15 +197,25 @@ def load_cases(path: Path) -> list[ReplayCase]:
 
 def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) -> list[dict[str, object]]:
     older_summary = ""
+    dialogue_memory: Mapping[str, Any] = {}
     rows: list[dict[str, object]] = []
     for case in dialog_cases:
-        result = provider(case, {"older_summary": older_summary, "sends_client_replies": False, "crm_context": {}})
+        result = provider(
+            case,
+            {
+                "older_summary": older_summary,
+                "dialogue_memory": dialogue_memory,
+                "sends_client_replies": False,
+                "crm_context": {},
+            },
+        )
         client_safe_numbers = _current_turn_client_safe_numbers(result.metadata)
         gate = run_machine_gate(case, result, client_safe_numbers=client_safe_numbers)
         rows.append(
             {
                 "dialog_id": case.dialog_id,
                 "turn_id": case.turn_id,
+                "turn_index": case.turn_index,
                 "segment": case.segment,
                 "route": result.route,
                 "bot_text": result.bot_text,
@@ -159,22 +230,39 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "llm_calls_client": 0,
             }
         )
+        dialogue_memory = update_dialogue_memory_after_answer(
+            dialogue_memory,
+            answer_text=result.bot_text,
+            route=result.route,
+            safety_flags=result.safety_flags,
+            memory_llm_fn=None,
+            context={"replay_exam": True, "turn_id": case.turn_id},
+        ).to_json_dict()
         older_summary = (older_summary + "\n" + f"client: {case.client_message}\nbot: {result.bot_text}").strip()[-4000:]
     return rows
 
 
-def run_replay_exam(cases: Iterable[ReplayCase], provider: Provider, *, parallel_dialogs: int = 4) -> list[dict[str, object]]:
+def run_replay_exam(
+    cases: Iterable[ReplayCase],
+    provider: Provider,
+    *,
+    parallel_dialogs: int = 4,
+    progress_callback: Callable[[Sequence[Mapping[str, object]]], None] | None = None,
+) -> list[dict[str, object]]:
     by_dialog: dict[str, list[ReplayCase]] = {}
     for case in cases:
         by_dialog.setdefault(case.dialog_id, []).append(case)
     for dialog_cases in by_dialog.values():
-        dialog_cases.sort(key=lambda item: item.turn_id)
+        dialog_cases.sort(key=lambda item: (item.turn_index, item.turn_id))
     rows: list[dict[str, object]] = []
     with ThreadPoolExecutor(max_workers=max(1, parallel_dialogs)) as pool:
         futures = [pool.submit(_run_dialog_cases, tuple(dialog_cases), provider) for dialog_cases in by_dialog.values()]
         for future in as_completed(futures):
-            rows.extend(future.result())
-    rows.sort(key=lambda item: (str(item["dialog_id"]), str(item["turn_id"])))
+            dialog_rows = future.result()
+            rows.extend(dialog_rows)
+            if progress_callback is not None:
+                progress_callback(tuple(dialog_rows))
+    rows.sort(key=lambda item: (str(item["dialog_id"]), int(item.get("turn_index") or 0), str(item["turn_id"])))
     return rows
 
 

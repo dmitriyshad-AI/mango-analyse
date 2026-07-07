@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -176,10 +177,38 @@ def fetch_messages_paginated(
     return messages
 
 
-def qualifies_for_replay(messages: Sequence[ReplayMessage], *, min_client_messages: int = 2, min_manager_messages: int = 1) -> bool:
+def _timestamp_seconds(value: int) -> int:
+    raw = int(value or 0)
+    return raw // 1000 if raw > 10_000_000_000 else raw
+
+
+def _looks_like_internal_test(messages: Sequence[ReplayMessage]) -> bool:
+    text = "\n".join(item.text for item in messages).casefold()
+    return any(marker in text for marker in ("тестовый диалог", "test dialog", "codex test", "тест codex", "проверка бота"))
+
+
+def qualifies_for_replay(
+    messages: Sequence[ReplayMessage],
+    *,
+    min_client_messages: int = 2,
+    min_manager_messages: int = 1,
+    min_manager_reference_chars: int = 30,
+    max_age_days: int = 90,
+) -> bool:
     client_messages = sum(1 for item in messages if item.is_client)
     manager_messages = sum(1 for item in messages if item.is_manager)
-    return client_messages >= min_client_messages and manager_messages >= min_manager_messages
+    if client_messages < min_client_messages or manager_messages < min_manager_messages:
+        return False
+    if _looks_like_internal_test(messages):
+        return False
+    manager_chars = sum(len(item.text.strip()) for item in messages if item.is_manager)
+    if manager_chars < min_manager_reference_chars:
+        return False
+    if max_age_days > 0 and messages:
+        latest = max(_timestamp_seconds(item.timestamp) for item in messages)
+        if latest > 1_500_000_000 and time.time() - latest > max_age_days * 24 * 60 * 60:
+            return False
+    return True
 
 
 def write_raw_dialog_dump(path: Path, *, profile_id: str, chat_id: str, messages: Sequence[ReplayMessage]) -> Path:

@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from mango_mvp.replay_exam.exporter import RAW_ROOT, assert_raw_output_path
 from mango_mvp.replay_exam.models import ReplayMessage
 from mango_mvp.replay_exam.pseudonymizer import ReplayPseudonymizer, pii_signals
-from mango_mvp.replay_exam.slicer import slice_teacher_forcing_cases
+from mango_mvp.replay_exam.slicer import mask_replay_timestamp, slice_teacher_forcing_cases
 
 
 SCRUBBED_ROOT = Path("~/.mango_local/replay_exam/scrubbed").expanduser()
@@ -39,26 +39,30 @@ def _message_from_scrubbed(raw: Mapping[str, Any]) -> ReplayMessage:
         text=str(raw.get("text") or ""),
         timestamp=int(raw.get("timestamp") or 0),
         from_me=bool(raw.get("from_me")),
+        ts_masked=str(raw.get("ts_masked") or ""),
         sender_name=str(raw.get("sender_name") or ""),
-        raw=dict(raw.get("raw") or {}),
+        raw={},
     )
 
 
-def _message_to_json(message: ReplayMessage) -> Mapping[str, Any]:
+def _message_to_json(message: ReplayMessage, *, base_timestamp: int = 0) -> Mapping[str, Any]:
     return {
-        "profile_id": message.profile_id,
-        "chat_id": message.chat_id,
-        "message_id": message.message_id,
-        "text": message.text,
-        "timestamp": message.timestamp,
         "from_me": message.from_me,
-        "sender_name": message.sender_name,
-        "raw": dict(message.raw),
+        "text": message.text,
+        "ts_masked": message.ts_masked or mask_replay_timestamp(message.timestamp, base_timestamp=base_timestamp),
     }
 
 
 def _case_to_json(case) -> Mapping[str, Any]:  # type: ignore[no-untyped-def]
+    first_ts = case.prefix_messages[0].timestamp if case.prefix_messages else 0
+    meta = dict(case.metadata)
+    meta.setdefault("ts_masked", str(meta.get("ts_masked") or ""))
     return {
+        "schema_version": "wappi_replay_case_v4",
+        "exam_id": case.turn_id,
+        "contour": case.contour or case.brand,
+        "dialog_key_masked": case.dialog_key_masked or case.dialog_id,
+        "turn_index": int(case.turn_index or 0),
         "dialog_id": case.dialog_id,
         "profile_id": case.profile_id,
         "chat_id": case.chat_id,
@@ -66,10 +70,11 @@ def _case_to_json(case) -> Mapping[str, Any]:  # type: ignore[no-untyped-def]
         "brand": case.brand,
         "client_message": case.client_message,
         "manager_reference": case.manager_reference,
-        "prefix_messages": [_message_to_json(item) for item in case.prefix_messages],
+        "prefix_messages": [_message_to_json(item, base_timestamp=first_ts) for item in case.prefix_messages],
         "segment": case.segment,
         "expected_p0": case.expected_p0,
-        "metadata": dict(case.metadata),
+        "meta": meta,
+        "metadata": meta,
     }
 
 
@@ -130,8 +135,17 @@ def build_cases_from_raw_manifest(
         messages = [_message_from_scrubbed(item) for item in scrubbed_payload.get("messages", ()) if isinstance(item, Mapping)]
         brand = str(row.get("brand") or "unknown")
         dialog_cases = slice_teacher_forcing_cases(messages, dialog_id=dialog_id, brand=brand)
+        if not dialog_cases:
+            continue
         dialog_path = dialogs_dir / f"{dialog_id}.json"
-        dialog_path.write_text(json.dumps(scrubbed_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        base_ts = messages[0].timestamp if messages else 0
+        safe_dialog_payload = {
+            "schema_version": "wappi_replay_scrubbed_dialog_v2",
+            "dialog_id": dialog_id,
+            "brand": brand,
+            "messages": [_message_to_json(message, base_timestamp=base_ts) for message in messages],
+        }
+        dialog_path.write_text(json.dumps(safe_dialog_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         for message in messages:
             if len(sample_messages) < 20:
                 sample_messages.append(
@@ -139,7 +153,7 @@ def build_cases_from_raw_manifest(
                         "dialog_id": dialog_id,
                         "from_me": message.from_me,
                         "text": message.text,
-                        "timestamp": message.timestamp,
+                        "ts_masked": message.ts_masked or mask_replay_timestamp(message.timestamp, base_timestamp=base_ts),
                     }
                 )
         for case in dialog_cases:

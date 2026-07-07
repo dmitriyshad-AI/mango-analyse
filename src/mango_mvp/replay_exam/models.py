@@ -12,6 +12,7 @@ class ReplayMessage:
     text: str
     timestamp: int
     from_me: bool
+    ts_masked: str = ""
     sender_name: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict)
 
@@ -33,6 +34,9 @@ class ReplayCase:
     brand: str
     client_message: str
     manager_reference: str
+    turn_index: int = 0
+    contour: str = ""
+    dialog_key_masked: str = ""
     prefix_messages: tuple[ReplayMessage, ...] = ()
     segment: str = "chat_only"
     expected_p0: bool = False

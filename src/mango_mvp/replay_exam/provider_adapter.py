@@ -10,7 +10,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
 )
-from mango_mvp.pilot_context_assembly import build_pilot_context_payload
+from mango_mvp.pilot_context_assembly import WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX, build_pilot_context_payload
 
 from .models import BotReplayResult, ReplayCase, ReplayMessage
 from .pseudonymizer import pii_signals
@@ -81,7 +81,7 @@ def replay_recent_messages(case: ReplayCase, *, older_summary: str = "") -> tupl
     messages = [_history_line(message) for message in case.prefix_messages]
     messages = [message for message in messages if message]
     if older_summary.strip():
-        messages.insert(0, f"Сводка ранней части диалога: {' '.join(older_summary.split())[:1200]}")
+        messages.insert(0, f"{WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX} {' '.join(older_summary.split())[:1200]}")
     return tuple(messages[-12:])
 
 
@@ -92,12 +92,13 @@ def build_replay_provider_context(
     snapshot_path: Path,
 ) -> Mapping[str, Any]:
     older_summary = str(runner_context.get("older_summary") or "")
+    dialogue_memory = runner_context.get("dialogue_memory") if isinstance(runner_context.get("dialogue_memory"), Mapping) else {}
     context = build_pilot_context_payload(
         current_text=case.client_message,
         snapshot_path=snapshot_path,
         active_brand=case.brand.casefold(),
         recent_messages=replay_recent_messages(case, older_summary=older_summary),
-        dialogue_memory={},
+        dialogue_memory=dialogue_memory,
         session_id=f"wappi_replay:{case.brand.casefold()}:{case.dialog_id}",
         channel="wappi_replay",
         channel_thread_id=f"{case.profile_id}:{case.chat_id}",

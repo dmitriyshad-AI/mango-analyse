@@ -36,3 +36,16 @@ def test_slicer_marks_external_context_segment() -> None:
         brand="unpk",
     )
     assert cases[0].segment == "external_context"
+
+
+def test_slicer_marks_expected_p0_from_client_text() -> None:
+    cases = slice_teacher_forcing_cases(
+        [
+            _msg("1", "Верните деньги за курс", 10, from_me=False),
+            _msg("2", "Передам менеджеру", 20, from_me=True),
+        ],
+        dialog_id="d",
+        brand="foton",
+    )
+
+    assert cases[0].expected_p0 is True

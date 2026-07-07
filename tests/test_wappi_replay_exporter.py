@@ -11,7 +11,9 @@ from mango_mvp.replay_exam.exporter import (
     export_recent_dialogs,
     fetch_chats_paginated,
     fetch_messages_paginated,
+    qualifies_for_replay,
 )
+from mango_mvp.replay_exam.models import ReplayMessage
 
 
 class FakeWappiClient:
@@ -40,7 +42,14 @@ class FakeWappiClient:
             return {"messages": [{"id": "m-only", "chatId": "chat-2", "type": "text", "body": "Один", "time": 1, "fromMe": False}]}
         pages = {
             0: [
-                {"id": "m2", "chatId": "c1", "type": "text", "body": "Второе", "time": 20, "fromMe": True},
+                {
+                    "id": "m2",
+                    "chatId": "c1",
+                    "type": "text",
+                    "body": "Добрый день, подскажу по занятиям и условиям подробно.",
+                    "time": 20,
+                    "fromMe": True,
+                },
                 {"id": "m1", "chatId": "c1", "type": "text", "body": "Первое", "time": 10, "fromMe": False},
             ],
             2: [
@@ -99,3 +108,29 @@ def test_export_recent_dialogs_writes_only_qualified_dialogs_under_raw_root(tmp_
 def test_raw_output_path_must_stay_under_local_replay_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         assert_raw_output_path(tmp_path / "raw.json")
+
+
+def test_qualifies_for_replay_rejects_short_manager_reference_and_internal_tests() -> None:
+    base = [
+        ReplayMessage("p", "c", "m1", "Здравствуйте", 10, False),
+        ReplayMessage("p", "c", "m2", "Нужна физика", 20, False),
+    ]
+    assert qualifies_for_replay([*base, ReplayMessage("p", "c", "m3", "Ок", 30, True)]) is False
+    assert (
+        qualifies_for_replay(
+            [
+                *base,
+                ReplayMessage("p", "c", "m3", "Это тестовый диалог, проверка бота для разработчика", 30, True),
+            ]
+        )
+        is False
+    )
+    assert (
+        qualifies_for_replay(
+            [
+                *base,
+                ReplayMessage("p", "c", "m3", "Добрый день, подскажу по занятиям и условиям подробно.", 30, True),
+            ]
+        )
+        is True
+    )

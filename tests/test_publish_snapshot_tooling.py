@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.publish_snapshot import build_snapshot, preflight, reader_smoke
-from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified
+from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified, run_command
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
@@ -142,3 +142,11 @@ def test_backup_plan_allows_same_disk_with_verified_async_copy(tmp_path: Path) -
     assert report["policy"] == "same_disk_verified_backup_plus_yandex_async_copy"
     assert first["source_sha256"] == first["target_sha256"]
     assert second["source_sha256"] == second["target_sha256"]
+
+
+def test_run_command_reports_timeout_instead_of_raising() -> None:
+    result = run_command(["python3", "-c", "import time; time.sleep(1)"], timeout=0.01)
+
+    assert result["rc"] == 124
+    assert result["timed_out"] is True
+    assert result["timeout_seconds"] == 0.01

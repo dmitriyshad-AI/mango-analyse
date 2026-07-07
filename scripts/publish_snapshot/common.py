@@ -242,14 +242,31 @@ def run_command(
     rendered = [str(item) for item in command]
     if not execute:
         return {"command": rendered, "cwd": str(cwd) if cwd else None, "skipped": True, "rc": None}
-    proc = subprocess.run(
-        rendered,
-        cwd=str(cwd) if cwd else None,
-        env={**os.environ, **dict(env or {})},
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            rendered,
+            cwd=str(cwd) if cwd else None,
+            env={**os.environ, **dict(env or {})},
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        return {
+            "command": rendered,
+            "cwd": str(cwd) if cwd else None,
+            "rc": 124,
+            "stdout": str(stdout)[-4000:],
+            "stderr": str(stderr)[-4000:],
+            "timeout_seconds": timeout,
+            "timed_out": True,
+        }
     return {
         "command": rendered,
         "cwd": str(cwd) if cwd else None,

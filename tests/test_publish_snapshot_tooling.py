@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.publish_snapshot import build_snapshot, preflight, reader_smoke
+from scripts.publish_snapshot.common import classify_publish_worktree_status
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
@@ -85,3 +86,38 @@ def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:
 
     assert ok is False
     assert report["readers"][0]["git_status_clean"] is False
+
+
+def test_publish_worktree_status_allows_data_untracked() -> None:
+    status = (
+        "?? product_data/telegram_dynamic_test_sets/sample.jsonl\n"
+        "?? tasks/_running/task.md\n"
+        "?? README.local.md\n"
+    )
+
+    report = classify_publish_worktree_status(status)
+
+    assert report["clean_for_publish"] is True
+    assert report["tracked_blockers"] == []
+    assert report["untracked_code_blockers"] == []
+    assert report["untracked_allowed"] == [
+        "?? product_data/telegram_dynamic_test_sets/sample.jsonl",
+        "?? tasks/_running/task.md",
+        "?? README.local.md",
+    ]
+
+
+def test_publish_worktree_status_blocks_code_untracked_and_tracked_changes() -> None:
+    status = (
+        " M docs/DECISIONS_LOG.md\n"
+        "?? src/mango_mvp/new_module.py\n"
+        "?? scripts/new_tool.py\n"
+        "?? product_data/telegram_dynamic_test_sets/sample.jsonl\n"
+    )
+
+    report = classify_publish_worktree_status(status)
+
+    assert report["clean_for_publish"] is False
+    assert report["tracked_blockers"] == [" M docs/DECISIONS_LOG.md"]
+    assert report["untracked_code_blockers"] == ["?? src/mango_mvp/new_module.py", "?? scripts/new_tool.py"]
+    assert report["untracked_allowed"] == ["?? product_data/telegram_dynamic_test_sets/sample.jsonl"]

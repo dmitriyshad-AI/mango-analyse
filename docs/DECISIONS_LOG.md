@@ -1292,3 +1292,20 @@ flip и e2e-пробы дело не дошло.
 (`events_total`, `bot_context_chunks_total`, `allowed_chunks`,
 `review_required_chunks`, `derived_signals_total`), а не только `found=true`.
 Prod DB не подменялась, live bot не останавливался.
+
+### D-067. Publish preflight allows data-only untracked files, but blocks without off-disk rollback backup
+
+Решение владельца: для публикации snapshot live-reader worktree не обязан быть
+абсолютно пустым. Блокируют только modified/staged tracked-файлы и untracked в
+кодовых путях `src/`/`scripts/`. Untracked в data/service paths
+(`product_data/telegram_dynamic_test_sets/`, `tasks/`, README и т.п.) не
+блокируют; они фиксируются в preflight-отчёте и в `build_manifest.json` как
+`live_worktree_untracked`.
+
+Повтор preflight 2026-07-07 подтвердил: текущие три untracked файла в
+`/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff` являются data/service
+untracked и больше не блокируют публикацию. Новый hard stop: обязательный
+rollback backup на другом filesystem не настроен (`backup_root_missing`), а на
+машине сейчас виден только основной пользовательский filesystem
+`/System/Volumes/Data`; `/Volumes` содержит только ссылку `Macintosh HD -> /`.
+Поэтому `build_snapshot`, stop live bot, `flip` и e2e-проба не запускались.

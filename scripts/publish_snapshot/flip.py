@@ -21,6 +21,7 @@ from scripts.publish_snapshot.common import (
     render_command,
     report_base,
     run_command,
+    separate_filesystem_report,
     sha256_file,
 )
 
@@ -34,6 +35,9 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     if not execute:
         report["status"] = "dry_run"
         return report, True
+    backup_check = separate_filesystem_report(prod_db, cfg.backup_root, required_bytes=prod_db.stat().st_size)
+    if not backup_check["ok"]:
+        return {**report, "status": "blocked_backup_not_separate_filesystem", "backup": backup_check}, False
 
     stop_results = []
     for reader in cfg.readers:
@@ -47,7 +51,10 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     if holders:
         return {**report, "status": "blocked_lsof", "stop_results": stop_results, "holders": holders}, False
 
-    backup_dir = cfg.snapshot_root / ("pre_flip_backup_" + report["generated_at"].replace(":", "").replace("+", "Z"))
+    backup_root = cfg.backup_root
+    if backup_root is None:
+        return {**report, "status": "blocked_backup_root_missing", "backup": backup_check}, False
+    backup_dir = backup_root / ("pre_flip_backup_" + report["generated_at"].replace(":", "").replace("+", "Z"))
     backup_dir.mkdir(parents=True, exist_ok=False)
     backup_db = backup_dir / prod_db.name
     shutil.copy2(prod_db, backup_db)

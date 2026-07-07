@@ -16,9 +16,11 @@ from scripts.publish_snapshot.common import (
     foreign_key_check,
     git_head,
     git_status_short,
+    classify_publish_worktree_status,
     load_config,
     quick_check,
     report_base,
+    separate_filesystem_report,
     schema_diff,
     table_counts,
 )
@@ -36,23 +38,29 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
     for reader in cfg.readers:
         worktree = Path(str(reader.get("worktree") or "")).expanduser().resolve(strict=False)
         status = git_status_short(worktree) if str(worktree) else None
+        classified_status = classify_publish_worktree_status(status)
         reader_report = {
             "name": reader.get("name"),
             "worktree": str(worktree) if str(worktree) else "",
             "git_head": git_head(worktree) if str(worktree) else None,
             "git_status_clean": status == "",
+            "clean_for_publish": classified_status["clean_for_publish"],
             "git_status_short": status,
+            "tracked_blockers": classified_status["tracked_blockers"],
+            "untracked_code_blockers": classified_status["untracked_code_blockers"],
+            "untracked_allowed": classified_status["untracked_allowed"],
             "has_stop_command": bool(reader.get("stop_command")),
             "has_start_command": bool(reader.get("start_command")),
             "has_smoke_command_or_internal": bool(reader.get("smoke_command")) or bool(cfg.control_customers),
         }
-        if not reader_report["git_status_clean"]:
+        if not reader_report["clean_for_publish"]:
             ok = False
         if not reader_report["has_stop_command"] or not reader_report["has_start_command"]:
             ok = False
         readers.append(reader_report)
     diff = schema_diff(prod, staging)
     disk = disk_report(snapshot_root.parent if snapshot_root.parent.exists() else Path.cwd(), required)
+    backup = separate_filesystem_report(prod, cfg.backup_root, required_bytes=prod.stat().st_size if prod.exists() else 0)
     report.update(
         {
             "staging_db": str(staging),
@@ -63,10 +71,12 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
             "schema_diff": diff,
             "counts": {"prod": table_counts(prod, cfg.count_tables), "staging": table_counts(staging, cfg.count_tables)},
             "disk": disk,
+            "backup": backup,
             "readers": readers,
         }
     )
     ok = ok and disk["ok"] and report["quick_check"]["prod"] == "ok" and report["quick_check"]["staging"] == "ok"
+    ok = ok and bool(backup["ok"])
     ok = ok and report["foreign_key_check"]["prod_rows"] == 0 and report["foreign_key_check"]["staging_rows"] == 0
     return report, bool(ok)
 

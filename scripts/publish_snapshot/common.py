@@ -55,6 +55,13 @@ class PublishConfig:
         return Path(str(self.raw["snapshot_root"])).expanduser().resolve(strict=False)
 
     @property
+    def backup_root(self) -> Path | None:
+        raw = self.raw.get("backup_root")
+        if not raw:
+            return None
+        return Path(str(raw)).expanduser().resolve(strict=False)
+
+    @property
     def tenant_id(self) -> str:
         return str(self.raw.get("tenant_id") or "foton")
 
@@ -274,6 +281,84 @@ def git_status_short(worktree: Path) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def classify_publish_worktree_status(status: str | None) -> Mapping[str, Any]:
+    if status is None:
+        return {
+            "clean_for_publish": False,
+            "tracked_blockers": ["git_status_unavailable"],
+            "untracked_code_blockers": [],
+            "untracked_allowed": [],
+        }
+    tracked_blockers: list[str] = []
+    untracked_code_blockers: list[str] = []
+    untracked_allowed: list[str] = []
+    for raw_line in status.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        marker = line[:2]
+        path = line[3:].strip() if len(line) > 3 else ""
+        if marker == "??":
+            if path.startswith(("src/", "scripts/")):
+                untracked_code_blockers.append(line)
+            else:
+                untracked_allowed.append(line)
+            continue
+        tracked_blockers.append(line)
+    return {
+        "clean_for_publish": not tracked_blockers and not untracked_code_blockers,
+        "tracked_blockers": tracked_blockers,
+        "untracked_code_blockers": untracked_code_blockers,
+        "untracked_allowed": untracked_allowed,
+    }
+
+
+def live_worktree_untracked(readers: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    for reader in readers:
+        worktree = Path(str(reader.get("worktree") or "")).expanduser().resolve(strict=False)
+        if not str(worktree):
+            continue
+        status = git_status_short(worktree)
+        classified = classify_publish_worktree_status(status)
+        result.append(
+            {
+                "name": reader.get("name"),
+                "worktree": str(worktree),
+                "untracked_allowed": classified["untracked_allowed"],
+                "untracked_code_blockers": classified["untracked_code_blockers"],
+            }
+        )
+    return result
+
+
+def separate_filesystem_report(source: Path, backup_root: Path | None, *, required_bytes: int) -> Mapping[str, Any]:
+    if backup_root is None:
+        return {
+            "configured": False,
+            "ok": False,
+            "reason": "backup_root_missing",
+            "required_bytes": required_bytes,
+        }
+    target = backup_root.expanduser().resolve(strict=False)
+    existing = target if target.exists() else next((parent for parent in target.parents if parent.exists()), target.parent)
+    source_dev = source.resolve(strict=False).parent.stat().st_dev
+    target_dev = existing.stat().st_dev
+    disk = disk_report(existing, required_bytes)
+    return {
+        "configured": True,
+        "path": str(target),
+        "existing_path": str(existing),
+        "source_dev": source_dev,
+        "backup_dev": target_dev,
+        "separate_filesystem": source_dev != target_dev,
+        "required_bytes": required_bytes,
+        "free_bytes": disk["free_bytes"],
+        "disk_ok": disk["ok"],
+        "ok": source_dev != target_dev and bool(disk["ok"]),
+    }
+
+
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -301,4 +386,3 @@ def finish_cli(report: Mapping[str, Any], out: Path | None, *, ok: bool) -> int:
         write_json(out, report)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if ok else 1
-

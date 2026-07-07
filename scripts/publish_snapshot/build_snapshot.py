@@ -15,6 +15,7 @@ from scripts.publish_snapshot.common import (
     foreign_key_check,
     git_head,
     load_config,
+    live_worktree_untracked,
     quick_check,
     report_base,
     sha256_file,
@@ -52,6 +53,7 @@ def build_snapshot(config_path: Path, *, execute: bool, snapshot_name: str | Non
         "user_version": user_version(snapshot_db),
         "counts": table_counts(snapshot_db, cfg.count_tables),
         "control_customers": list(cfg.control_customers),
+        "live_worktree_untracked": live_worktree_untracked(cfg.readers),
         "wal_checkpoint": checkpoint,
     }
     write_json(snapshot_dir / "build_manifest.json", manifest)

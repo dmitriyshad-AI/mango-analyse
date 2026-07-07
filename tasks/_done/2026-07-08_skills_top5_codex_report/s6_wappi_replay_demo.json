@@ -1,0 +1,29 @@
+{
+  "status": "FAIL",
+  "checks": [
+    {
+      "code": "stop_file_guard",
+      "status": "PASS",
+      "detail": "stop_file=present: tasks/_done/2026-07-08_skills_top5_codex_report/STOP_DRAFT_LOOP_DEMO"
+    },
+    {
+      "code": "chat_to_card_mapping",
+      "status": "FAIL",
+      "detail": "unmatched=25"
+    },
+    {
+      "code": "brand_mismatch_guard",
+      "status": "PASS",
+      "detail": "brand_mismatch=0"
+    },
+    {
+      "code": "allowlist_guard",
+      "status": "PASS",
+      "detail": "blocked_rows_observed=0; replay is read-only"
+    }
+  ],
+  "counts": {
+    "telegram": 15,
+    "max": 10
+  }
+}

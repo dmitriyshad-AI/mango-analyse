@@ -1324,3 +1324,23 @@ Yandex/OpenClaw считается второй точкой.
 обновлён: `preflight` проверяет оба backup-root и свободное место, `flip`
 создаёт и sha-проверяет обе копии до удаления sidecar-файлов и атомарной
 подмены prod DB.
+
+### D-069. Codex workflow skills are mandatory gates for repeated failure classes
+
+Решение: добавлены read-only skill-скрипты в `scripts/skills/`, чтобы закрыть
+повторяющиеся ошибки процесса без новых live-write путей.
+
+- `tz_lint.py` запускается при взятии любого ТЗ; первая строка ревью должна
+  содержать PASS/FAIL линта.
+- `inventory_before_build.py` прикладывается к ревью каждого ТЗ, где предлагается
+  «построить X», чтобы сначала проверить уже существующие символы/скрипты/историю.
+- `fail_raw_export.py` обязателен при любом FAIL в прогоне: без сырья по ходам,
+  rationale, fact/number audit и контексту вердикт не принимается.
+- `wappi_draft_loop_replay.py` обязателен перед изменениями Wappi draft-loop.
+- `live_truth.py` запускается перед публикацией, включением флагов и в daily
+  сводке, чтобы фиксировать фактический PID/worktree/HEAD/env/DB-path.
+
+Все скрипты переиспользуют существующие источники истины: парсер шапки из
+`scripts/preflight.py`, маску ПДн из `scripts/make_audit_pack.py`, инвентарь
+`build_project_inventory.py`, Graphify query и Wappi ops. Второй парсер,
+сканер или маскер для этих задач не вводится.

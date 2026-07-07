@@ -65,6 +65,21 @@ Setup guide:
 
 - `docs/GIT_CICD_AUTODEPLOY.md`
 
+## Codex workflow skills
+
+Read-only helper scripts for Codex/Claude workflow checks live in `scripts/skills/`.
+They do not write to AMO, Tallanto, CRM, live bots, or clients.
+
+- TZ lint before taking work: `python3 scripts/skills/tz_lint.py <TZ.md>`.
+- Inventory before building a feature: `python3 scripts/skills/inventory_before_build.py --keywords "..." --symbols "..."`.
+- Live truth before deploy/flag changes: `python3 scripts/skills/live_truth.py`.
+- Raw evidence for every failed run: `python3 scripts/skills/fail_raw_export.py <run_dir>`.
+- Wappi draft-loop replay gate: `python3 scripts/skills/wappi_draft_loop_replay.py --replay <jsonl>`.
+
+Pipeline rule: no review verdict for a failed bot run without `fail_raw_export`;
+no new feature review without an inventory check; no Wappi draft-loop change
+without replay; and every TZ starts with `tz_lint`.
+
 ## Run pipeline
 
 ### Step-by-step

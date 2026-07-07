@@ -1,0 +1,7 @@
+Targeted:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_skills_top5_tools.py tests/test_preflight.py tests/test_audit_pack_pii.py tests/test_wappi_draft_loop_ops.py tests/test_project_inventory.py
+22 passed in 0.62s
+
+Full:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest tests/ -q
+4128 passed, 5 skipped, 2 warnings in 81.60s (0:01:21)

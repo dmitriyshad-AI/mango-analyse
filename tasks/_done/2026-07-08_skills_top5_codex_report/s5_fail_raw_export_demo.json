@@ -1,0 +1,6 @@
+{
+  "status": "PASS",
+  "fail_count": 1,
+  "jsonl": "tasks/_done/2026-07-08_skills_top5_codex_report/s5_fail_raw_export/fail_raw_evidence.jsonl",
+  "md": "tasks/_done/2026-07-08_skills_top5_codex_report/s5_fail_raw_export/fail_raw_evidence.md"
+}

@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-07-07T21:26:28",
+  "processes": [
+    {
+      "command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python scripts/run_telegram_public_pilot_bots.py --env-file /dev/null --mode poll --brand all",
+      "db_paths": [
+        "/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff/.codex_local/telegram_pilot/telegram_pilot.sqlite"
+      ],
+      "env": {
+        "TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1",
+        "TELEGRAM_PUBLIC_PARSE_MODE_HTML": "1"
+      },
+      "head": "927b16ed",
+      "kind": "run_telegram_public_pilot_bots.py",
+      "pid": 42671,
+      "warnings": [],
+      "worktree": "/Users/dmitrijfabarisov/Projects/Mango_skills_top5_tools"
+    }
+  ],
+  "repo": {
+    "head": "927b16ed",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango_skills_top5_tools"
+  },
+  "schema_version": "live_truth_sentinel_v1_2026_07_08",
+  "status": "PASS"
+}

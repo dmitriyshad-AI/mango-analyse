@@ -1,0 +1,80 @@
+{
+  "status": "FOUND",
+  "candidates": [
+    {
+      "source": "git_log_S",
+      "query": "memory step guard",
+      "status": "history_hit",
+      "evidence": "30604240 fix(adr003): make srez1a baseline profile-accurate"
+    },
+    {
+      "source": "git_log_S",
+      "query": "memory step guard",
+      "status": "history_hit",
+      "evidence": "33ebcc55 Calibrate bot-safe next-step conflict guard"
+    },
+    {
+      "source": "git_log_S",
+      "query": "apply_bot_safe_memory_step_guard",
+      "status": "history_hit",
+      "evidence": "1a03f445 Harden memory and email M1 gates"
+    },
+    {
+      "source": "git_log_S",
+      "query": "apply_bot_safe_memory_step_guard",
+      "status": "history_hit",
+      "evidence": "33ebcc55 Calibrate bot-safe next-step conflict guard"
+    },
+    {
+      "source": "git_log_S",
+      "query": "apply_bot_safe_memory_step_guard",
+      "status": "history_hit",
+      "evidence": "308fb415 docs: report memory chain consolidation"
+    },
+    {
+      "source": "git_log_S",
+      "query": "apply_bot_safe_memory_step_guard",
+      "status": "history_hit",
+      "evidence": "5e1cd660 consolidation: keep memory strict off under pilot profile"
+    },
+    {
+      "source": "git_log_S",
+      "query": "apply_bot_safe_memory_step_guard",
+      "status": "history_hit",
+      "evidence": "b5db2489 Add bot-safe memory step output guard"
+    },
+    {
+      "source": "graphify",
+      "query": "memory step guard apply_bot_safe_memory_step_guard",
+      "status": "candidate",
+      "evidence": "NODE post_layers.py [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/post_layers.py loc=L1 community=]\nNODE policy_routing.py [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/policy_routing.py loc=L1 community=]\nNODE Any [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/policy_routing.py loc=L638 community=]\nNODE Any [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/post_layers.py loc=L984 community=]\nNODE SubscriptionDraftResult [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/policy_routing.py loc=L638 community=]\nNODE SubscriptionDraftResult [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/post_layers.py loc=L1005 community=]\nNODE Any [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/provider.py loc=L891 community=]\nNODE SubscriptionDraftResult [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/provider.py loc=L891 community=]\nNODE .build_draft() [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/provider.py loc=L964 community=]\nNODE SubscriptionLlmDraftProvider [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/provider.py loc=L917 community=]\nNODE ._build_direct_path_draft() [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/provider.py loc=L1106 community=]\nNODE _build_direct_path_prompt() [src=/Users/dmitrijfabarisov/Projects/_mango_graphify_current/source_code_only/src/mango_mvp/channels/subscription_llm_parts/direct_path.py loc=L3107 community=]"
+    },
+    {
+      "source": "build_project_inventory",
+      "query": "project",
+      "status": "summary",
+      "evidence": "db_files=0 archive_candidate_rows=0"
+    }
+  ],
+  "inventory_summary": {
+    "generated_at": "2026-07-07T18:26:27+00:00",
+    "mode": "read_only_inventory",
+    "project_root": "/Users/dmitrijfabarisov/Projects/Mango_skills_top5_tools",
+    "replacement_artifact": "canonical_master_db_and_manifest",
+    "project_size_bytes": 759336960,
+    "top_level_entries": 55,
+    "stable_runtime_entries": 2,
+    "db_files": 0,
+    "db_total_size_bytes": 0,
+    "archive_candidate_rows": 0,
+    "archive_candidate_size_bytes": 0,
+    "outputs": {
+      "summary_json": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/summary.json",
+      "top_level_sizes_tsv": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/top_level_sizes.tsv",
+      "stable_runtime_sizes_tsv": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/stable_runtime_sizes.tsv",
+      "db_inventory_tsv": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/db_inventory.tsv",
+      "archive_candidates_dry_run_tsv": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/archive_candidates_dry_run.tsv",
+      "README_md": "/var/folders/t9/f8vgc1712rx427hqkypyc2qh0000gn/T/mango_inventory_before_build_1az4zd8k/README.md"
+    }
+  }
+}

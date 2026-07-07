@@ -395,6 +395,8 @@ def test_live_status_default_open_regular_group_answers_self_when_flag_enabled()
 
     assert result.route == "bot_answer_self_for_pilot"
     assert result.draft_text == SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+    assert "места есть" not in result.draft_text.casefold()
+    assert "идёт набор" in result.draft_text.casefold()
     assert "seats_default_open_regular_groups" in result.safety_flags
     traces = result.metadata["semantic_reading_trace"]
     assert traces[0]["decision"] == "frame_check_availability_default_open"

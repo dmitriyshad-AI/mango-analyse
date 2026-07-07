@@ -3628,7 +3628,7 @@ def _seats_default_open_enabled(context: Optional[Mapping[str, Any]] = None) -> 
         SEATS_DEFAULT_OPEN_ENV,
         aliases=("seats_default_open", "seats_default_open_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, SEATS_DEFAULT_OPEN_ENV)
 
 
 def _seats_default_open_brand(value: Any) -> str:
@@ -4761,27 +4761,15 @@ def _roles_read_refund_related_safety_flags(flags: Sequence[str]) -> tuple[str, 
 
 
 def _roles_read_tax_non_refund_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
-    refund_related_flags = set(_roles_read_refund_related_safety_flags(result.safety_flags))
-    stripped_flags = tuple(
-        flag
-        for flag in result.safety_flags
-        if flag
-        not in {
-            "conversation_intent_plan_p0",
-            "high_risk_manager_only",
-            "zero_collect_refund_guarded",
-            "manager_approval_required",
-            "no_auto_send",
-        }
-        and flag not in refund_related_flags
-    )
+    # The frame owns the customer-facing meaning, but legacy/P0 floors still own
+    # route hardening. A false "refund" text becomes a tax text; manager_only
+    # stays manager_only when an upstream safety floor already required review.
+    flags = tuple(dict.fromkeys([*result.safety_flags, "tax_deduction_safe_template_applied"]))
     return replace(
         result,
-        route="bot_answer_self_for_pilot",
         topic_id="theme:008_tax_deduction",
         draft_text=TAX_DEDUCTION_PROCESS_SAFE_TEXT,
-        safety_flags=tuple(dict.fromkeys([*stripped_flags, "tax_deduction_safe_template_applied"])),
-        manager_checklist=(),
+        safety_flags=flags,
         metadata={**dict(result.metadata), "roles_read_tax_non_refund_repaired": True},
     )
 

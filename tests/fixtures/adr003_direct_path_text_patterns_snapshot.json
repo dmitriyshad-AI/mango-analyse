@@ -3544,6 +3544,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"нет претенз\" in normalized",
+    "expression_sha256": "3b1cf10199a0f70c06b672f59e4c0903ea3bb845152497a3fb604dac3082687b",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/dialogue_memory.py",
+    "qualname": "_safe_frame_negates_current_false_complaint",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"обещал\" in client_haystack",
     "expression_sha256": "0768d55d8e10718ab7ae94d1d878d270a6143d7575149e345e393e3f0aee52a7",
     "node_kind": "string_contains",
@@ -10402,14 +10410,6 @@
     "symbol": "DIRECT_PATH_CATEGORY_ALIASES",
     "value_preview": "{\n    \"pricing\": (\"pricing\", \"price\", \"стоим\", \"цен\", \"дорог\", \"оплат\", \"рассроч\", \"долями\", \"скидк\", \"помесяч\"),\n    \"schedule\": (\"schedule\", \"распис\", \"дни\", \"время\", \"когда\", \"старт\", \"начал\", \"будни\", \"выходн\"),\n    \"camp\": (\"camp\", \"ла",
     "value_sha256": "bfa09b988775226e5a71431e423a1bb32320a52e27f50cb0bd226917c8af8bd7"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "qualname": "<module>",
-    "symbol": "DIRECT_PATH_GOLD_TOPIC_KEYWORDS",
-    "value_preview": "{\n    \"camp\": (\"лагер\", \"лш\", \"лвш\", \"смен\", \"летн\"),\n    \"close\": (\"спасибо\", \"подума\", \"понятно\", \"вернем\", \"вернём\"),\n    \"course_pick\": (\"курс\", \"заняти\", \"групп\", \"подготов\", \"услов\"),\n    \"docs\": (\"договор\", \"документ\", \"справк\"),\n   ",
-    "value_sha256": "5117f7938ea7c624702a96cec1619c10adbf4688791358f4d0681b9cd524ae30"
   },
   {
     "node_kind": "text_table",

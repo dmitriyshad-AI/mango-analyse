@@ -14,6 +14,7 @@ from mango_mvp.channels.dialogue_memory import (
     MEMORY_CHILD_IDENTITY_MODEL_ENV,
     P0_LATCH_AUTORELEASE_V2_ENV,
     _dialog_summary_rolling_enabled,
+    _p0_latch_autorelease_v2_enabled,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
@@ -23,6 +24,16 @@ from mango_mvp.channels.pilot_context import MEMORY_PROVENANCE_COMPACT_ENV, comp
 
 def _trace_rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_p0_latch_autorelease_v2_profile_default_on_and_explicit_override() -> None:
+    context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert P0_LATCH_AUTORELEASE_V2_ENV in MEMORY_PROFILE_DEFAULT_ON_FLAGS
+    assert _p0_latch_autorelease_v2_enabled({}) is False
+    assert _p0_latch_autorelease_v2_enabled(context) is True
+    assert _p0_latch_autorelease_v2_enabled({**context, P0_LATCH_AUTORELEASE_V2_ENV: "0"}) is False
+    assert _p0_latch_autorelease_v2_enabled({P0_LATCH_AUTORELEASE_V2_ENV: "1"}) is True
 
 
 def test_dialogue_memory_extracts_slots_and_open_question_from_multiturn_context() -> None:

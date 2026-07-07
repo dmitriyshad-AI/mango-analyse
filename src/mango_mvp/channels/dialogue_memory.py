@@ -38,6 +38,7 @@ MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     DIALOG_SUMMARY_ROLLING_ENV,
+    P0_LATCH_AUTORELEASE_V2_ENV,
 )
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
@@ -1982,7 +1983,9 @@ def _p0_latch_autorelease_v2_enabled(context: Mapping[str, Any] | None = None) -
         value = context.get(P0_LATCH_AUTORELEASE_V2_ENV)
     if value is None:
         value = os.getenv(P0_LATCH_AUTORELEASE_V2_ENV)
-    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+    if value is not None:
+        return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+    return _memory_profile_flag_enabled(P0_LATCH_AUTORELEASE_V2_ENV, context)
 
 
 def _p0_latch_autorelease_v2_frame(context: Mapping[str, Any] | None) -> Mapping[str, Any]:

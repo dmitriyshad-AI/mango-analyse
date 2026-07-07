@@ -5721,7 +5721,7 @@ def test_direct_path_applies_tone_close_detect_to_self_route_product_facts() -> 
 
 
 def test_direct_path_tone_close_frame_veto_is_default_off_for_hot_lead() -> None:
-    assert TONE_CLOSE_FRAME_VETO_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert TONE_CLOSE_FRAME_VETO_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
 
     original_text = "Да, записать можем. Подскажите, пожалуйста, класс и формат."
     provider = _DirectPathProvider(
@@ -5789,6 +5789,41 @@ def test_direct_path_tone_close_frame_veto_blocks_hot_lead_close_when_enabled() 
     assert "tone_close_frame_veto" in result.safety_flags
     assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
     assert "close_detect" not in result.metadata
+
+
+def test_direct_path_tone_close_frame_veto_profile_default_blocks_hot_lead_close() -> None:
+    original_text = "Да, записать можем. Подскажите, пожалуйста, класс и формат."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=original_text,
+            topic_id="theme:enroll",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "safe",
+                    "must_handoff": False,
+                    "deal_stage": "ready_to_enroll",
+                    "payment_readiness": "ready_to_pay",
+                    "requested_action": "enroll",
+                    "answerability": "answer_self",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, записывайте нас.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+            subscription_llm.DEAL_ACTION_DECISION_ENV: "0",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == original_text
+    assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
 
 
 def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_question() -> None:
@@ -11816,9 +11851,14 @@ def test_direct_path_intent_actions_runs_without_intent_model_led() -> None:
     assert "conversation_intent_plan_live_availability" in result.safety_flags
     assert provider.calls == 1
     traces = result.metadata["semantic_reading_trace"]
-    assert [trace["class"] for trace in traces[:2]] == ["live_status_read", "intent_actions"]
-    assert traces[0]["decision"] == "frame_check_availability"
-    assert traces[1]["decision"] == "frame_check_availability"
+    assert any(
+        trace["class"] == "live_status_read" and trace["decision"] == "frame_check_availability"
+        for trace in traces
+    )
+    assert any(
+        trace["class"] == "intent_actions" and trace["decision"] == "frame_check_availability"
+        for trace in traces
+    )
 
 
 def test_direct_path_route_templates_apply_runs_without_intent_model_led() -> None:
@@ -12237,12 +12277,13 @@ def test_direct_path_roles_read_apply_repairs_tax_refund_false_positive() -> Non
         },
     )
 
-    assert result.route == "bot_answer_self_for_pilot"
+    assert result.route == "manager_only"
     assert result.topic_id == "theme:008_tax_deduction"
     assert "налоговый вычет" in result.draft_text.casefold()
     assert "фнс" in result.draft_text.casefold()
     assert "возврату зафиксирован" not in result.draft_text.casefold()
-    assert "high_risk_manager_only" not in result.safety_flags
+    assert "high_risk_manager_only" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
     assert "tax_deduction_safe_template_applied" in result.safety_flags
     trace = result.metadata["semantic_reading_trace"][0]
     assert trace["class"] == "roles_read"
@@ -16250,9 +16291,8 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     )
 
     assert "Живые образцы менеджерского стиля" in provider_with_gold.last_prompt
-    assert "Стоимость за один предмет" in provider_with_gold.last_prompt
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
-    assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+    assert result.metadata["direct_path"]["gold_real_example_ids"]
 
 
 def test_direct_path_real_manager_gold_pack_env_overrides_examples(monkeypatch) -> None:
@@ -16329,6 +16369,11 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         AUTONOMY_SCOPE_PRECISION_ENV,
         subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV,
         subscription_llm.FACT_SELECT_FRAME_ENV,
+        subscription_llm.TONE_CLOSE_FRAME_VETO_ENV,
+        subscription_llm.P0_MODEL_LED_ENV,
+        subscription_llm.PROSE_MODEL_LED_ENV,
+        subscription_llm.PAYMENT_REFUND_DISPUTE_SPLIT_ENV,
+        subscription_llm.SEATS_DEFAULT_OPEN_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -16373,17 +16418,31 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.P0_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.P0_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.FACT_SELECT_FRAME_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.TONE_CLOSE_FRAME_VETO_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.PROSE_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.FACT_SELECT_FRAME_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.PAYMENT_REFUND_DISPUTE_SPLIT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.SEATS_DEFAULT_OPEN_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._text_hygiene_payment_fix_enabled(
         {**context, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"}
     ) is False
-    assert subscription_llm._fact_select_frame_enabled(context) is False
+    assert subscription_llm._p0_model_led_enabled(context) is True
+    assert subscription_llm._prose_model_led_enabled(context) is True
+    assert subscription_llm._fact_select_frame_enabled(context) is True
+    assert subscription_llm._payment_refund_dispute_split_enabled(context) is True
+    assert subscription_llm._seats_default_open_enabled(context) is True
+    assert subscription_llm._p0_model_led_enabled({**context, subscription_llm.P0_MODEL_LED_ENV: "0"}) is False
+    assert subscription_llm._prose_model_led_enabled({**context, subscription_llm.PROSE_MODEL_LED_ENV: "0"}) is False
     assert subscription_llm._fact_select_frame_enabled({**context, subscription_llm.FACT_SELECT_FRAME_ENV: "1"}) is True
     assert subscription_llm._fact_select_frame_enabled({**context, subscription_llm.FACT_SELECT_FRAME_ENV: "0"}) is False
+    assert subscription_llm._payment_refund_dispute_split_enabled(
+        {**context, subscription_llm.PAYMENT_REFUND_DISPUTE_SPLIT_ENV: "0"}
+    ) is False
+    assert subscription_llm._seats_default_open_enabled({**context, subscription_llm.SEATS_DEFAULT_OPEN_ENV: "0"}) is False
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False
@@ -16398,7 +16457,17 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "0"}) is False
     assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"}) is True
-    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}) is False
+    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}) is True
+    assert (
+        subscription_llm._direct_path_model_p0_enabled(
+            {
+                **context,
+                subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0",
+                subscription_llm.P0_MODEL_LED_ENV: "0",
+            }
+        )
+        is False
+    )
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:
@@ -16609,9 +16678,10 @@ def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:
     assert result.metadata["direct_path"]["gold_real_enabled"] is False
 
 
-def test_prose_model_led_default_off_and_not_in_pilot_profile() -> None:
-    assert PROSE_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+def test_prose_model_led_profile_default_on_and_explicit_override() -> None:
+    assert PROSE_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._prose_model_led_enabled({}) is False
+    assert subscription_llm._prose_model_led_enabled({DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}) is True
     assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "1"}) is True
     assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "0"}) is False
 

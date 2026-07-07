@@ -192,3 +192,23 @@ Inline text health gate получил узкую верификацию адр�
 Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлены намеренно. Бюджет regex не повышался: в этом заходе изменены существующие PII-masker regex без добавления новых `re.compile`.
 
 Добавлен default-OFF флаг `TELEGRAM_P0_LATCH_AUTORELEASE_V2`: он не классифицирует новый смысл regex-ами, а только снимает уже активный P0-latch после трёх клиентских ходов без реальных latchable-кодов и валидного inline `SemanticFrame` (`risk_class=safe`, `must_handoff=false`, confidence >= 0.90); `legal_threat` и свежие refund/payment-dispute сигналы не отпускаются.
+
+## Разрешенное обновление 2026-07-07: профильное раскрытие готовых LLM-блоков
+
+По владельческому решению раскрыты в `pilot_gold_v1` уже реализованные LLM/semantic-reading блоки:
+
+- `TELEGRAM_FACT_SELECT_FRAME` + `fact_select_read` — выбор фактов по уже готовому SemanticFrame, с fail-closed при низкой уверенности;
+- `TELEGRAM_TONE_CLOSE_FRAME_VETO` — запрет ложного закрытия горячего лида по уже готовому SemanticFrame;
+- `TELEGRAM_P0_LATCH_AUTORELEASE_V2` — снятие ложного P0-латча только после безопасного inline-frame и трёх нейтральных ходов;
+- `roles_read/refund_tax`, `reask_read/final_text`, `route_templates/autonomy_matrix` — применение уже существующих trace/apply-классов;
+- `TELEGRAM_P0_MODEL_LED`, `TELEGRAM_PROSE_MODEL_LED`, `TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT`, `TELEGRAM_SEATS_DEFAULT_OPEN`.
+
+Это не добавляет новых regex/keyword-правил понимания клиента. Наоборот, профиль переводит смысловые решения на SemanticFrame/LLM-блоки, а детерминированные слои остаются полами безопасности: ПДн, бренды, числа, P0, обещания живых мест и fail-closed. Явный `ENV=0` сохраняется как откат для каждого нового профильного флага.
+
+`TELEGRAM_SEATS_DEFAULT_OPEN` использует безопасную формулировку «на регулярные группы сейчас идёт набор», а не «места есть»: live-seat обещания, брони, paid-контекст, ЛВШ/смены и индивидуальные занятия остаются manager/floor-контролями.
+
+Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлён намеренно, чтобы зафиксировать уже введённую fail-closed проверку `P0_LATCH_AUTORELEASE_V2` (`"нет претенз" in normalized`) в `dialogue_memory.py`. Это не новый маршрутный классификатор, а ограничитель снятия старого P0-латча только при явном нейтральном ходе клиента и безопасном frame.
+
+Дополнение того же захода: `roles_read/refund_tax` теперь исправляет клиентский смысл текста при ложном “возврате НДФЛ”, но не снимает уже поставленный `manager_only`/`no_auto_send` safety-floor. Инвариант: `SemanticFrame` владеет смыслом клиентского шаблона, legacy/P0 слой может только ужесточать маршрут.
+
+Удалён `DIRECT_PATH_GOLD_TOPIC_KEYWORDS` как keyword-подборщик few-shot gold-примеров. Это не safety-floor и не route-логика: после удаления примеры выбираются по уже рассчитанному контексту/плану, без нового чтения сырого текста клиента регулярками.

@@ -52,16 +52,19 @@ def _forward_payment_metadata() -> dict[str, object]:
     }
 
 
-def test_payment_refund_dispute_split_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_payment_refund_dispute_split_flag_is_profile_on_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(PAYMENT_REFUND_DISPUTE_SPLIT_ENV, raising=False)
     profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
 
     assert subscription_llm._payment_refund_dispute_split_enabled({}) is False
-    assert subscription_llm._payment_refund_dispute_split_enabled(profile_context) is False
-    assert PAYMENT_REFUND_DISPUTE_SPLIT_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._payment_refund_dispute_split_enabled(profile_context) is True
+    assert PAYMENT_REFUND_DISPUTE_SPLIT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._payment_refund_dispute_split_enabled({PAYMENT_REFUND_DISPUTE_SPLIT_ENV: "1"}) is True
     assert subscription_llm._payment_refund_dispute_split_enabled({"payment_refund_dispute_split": "1"}) is True
     assert subscription_llm._payment_refund_dispute_split_enabled({PAYMENT_REFUND_DISPUTE_SPLIT_ENV: "0"}) is False
+    assert subscription_llm._payment_refund_dispute_split_enabled(
+        {**profile_context, PAYMENT_REFUND_DISPUTE_SPLIT_ENV: "0"}
+    ) is False
 
 
 def test_forward_payment_uses_payment_link_text_only_when_split_flag_on() -> None:

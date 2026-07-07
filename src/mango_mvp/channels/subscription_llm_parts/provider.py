@@ -221,7 +221,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     PRESALE_PROMPT_CHILD_NAME_KEY_RE,
     PRESALE_PROMPT_PARENT_NAME_KEY_RE,
     DIRECT_PATH_CATEGORY_ALIASES,
-    DIRECT_PATH_GOLD_TOPIC_KEYWORDS,
     _PARTIAL_PHONE_CONTEXT_RE,
     _CLIENT_CHILD_IDENTITY_PROMPT_RE,
     _CLIENT_PARENT_IDENTITY_PROMPT_RE,
@@ -2755,13 +2754,12 @@ def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
 
 
 def _tone_close_frame_veto_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return bool(
-        _explicit_truthy_setting(
-            context,
-            TONE_CLOSE_FRAME_VETO_ENV,
-            aliases=("tone_close_frame_veto", "tone_close_frame_veto_enabled"),
-        )
+    explicit = _explicit_truthy_setting(
+        context,
+        TONE_CLOSE_FRAME_VETO_ENV,
+        aliases=("tone_close_frame_veto", "tone_close_frame_veto_enabled"),
     )
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, TONE_CLOSE_FRAME_VETO_ENV)
 
 
 def _apply_tone_close_frame_veto(

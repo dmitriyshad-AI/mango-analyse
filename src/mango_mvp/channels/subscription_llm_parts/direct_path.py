@@ -354,7 +354,7 @@ def _fact_select_read_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
     return reading_class_enabled(context, "fact_select_read")
 
 def _fact_select_frame_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         FACT_SELECT_FRAME_ENV,
         aliases=("fact_select_frame", "fact_select_frame_enabled"),
@@ -436,7 +436,7 @@ def _semantic_frame_proof_reconciliation_shadow_enabled(context: Optional[Mappin
     )
 
 def _payment_refund_dispute_split_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         PAYMENT_REFUND_DISPUTE_SPLIT_ENV,
         aliases=("payment_refund_dispute_split", "payment_refund_dispute_split_enabled"),
@@ -2956,19 +2956,6 @@ def _direct_path_known_slots_next_step_prompt_trace(context: Optional[Mapping[st
         "questionnaire_gold_suppressed": _direct_path_suppress_questionnaire_gold(context),
     }
 
-DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
-    "camp": ("лагер", "лш", "лвш", "смен", "летн"),
-    "close": ("спасибо", "подума", "понятно", "вернем", "вернём"),
-    "course_pick": ("курс", "заняти", "групп", "подготов", "услов"),
-    "docs": ("договор", "документ", "справк"),
-    "enrollment": ("запис", "брон", "оформ"),
-    "format": ("онлайн", "очно", "формат", "платформ", "программирован"),
-    "join_mid": ("присоедин", "войти", "середин", "идет", "идёт"),
-    "payment_flex": ("част", "доплат", "внес", "остаток", "сегодня"),
-    "price": ("стоим", "цен", "рассроч", "оплат", "дорог"),
-    "value": ("школ", "институт", "ценност", "уров", "польз"),
-}
-
 def _direct_path_gold_real_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if isinstance(context, Mapping):
         for key in (BOT_GOLD_REAL_ENV, "bot_gold_real", "direct_path_gold_real"):
@@ -3021,10 +3008,6 @@ def _direct_path_topic_hints(client_message: str, context: Optional[Mapping[str,
             required = container.get("required_fact_keys")
             if isinstance(required, Sequence) and not isinstance(required, (str, bytes, bytearray)):
                 hints.update(str(item or "").casefold() for item in required if str(item or "").strip())
-    lowered = str(client_message or "").casefold()
-    for topic, markers in DIRECT_PATH_GOLD_TOPIC_KEYWORDS.items():
-        if any(marker in lowered for marker in markers):
-            hints.add(topic)
     return hints
 
 def _direct_path_select_gold_real_examples(

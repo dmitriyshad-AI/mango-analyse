@@ -202,7 +202,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     PRESALE_PROMPT_CHILD_NAME_KEY_RE,
     PRESALE_PROMPT_PARENT_NAME_KEY_RE,
     DIRECT_PATH_CATEGORY_ALIASES,
-    DIRECT_PATH_GOLD_TOPIC_KEYWORDS,
     _PARTIAL_PHONE_CONTEXT_RE,
     _CLIENT_CHILD_IDENTITY_PROMPT_RE,
     _CLIENT_PARENT_IDENTITY_PROMPT_RE,
@@ -868,7 +867,6 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     safe_fallback_draft,
     subscription_llm_safety_contract,
 )
-
 
 
 

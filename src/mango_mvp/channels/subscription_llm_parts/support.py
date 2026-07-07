@@ -124,7 +124,7 @@ DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 
 SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT = (
-    "Места в регулярных группах есть — идёт набор на 2026/27. "
+    "На регулярные группы сейчас идёт набор на 2026/27. "
     "Помогу записаться: подскажите класс, предмет и формат."
 )
 
@@ -137,8 +137,14 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_MODEL_P0_ENV,
     INTENT_MODEL_LED_ENV,
     P0_MODEL_CLASSES_V2_ENV,
+    P0_MODEL_LED_ENV,
     DIRECT_P0_TEXT_HYGIENE_ENV,
     "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX",
+    TONE_CLOSE_FRAME_VETO_ENV,
+    PROSE_MODEL_LED_ENV,
+    "TELEGRAM_FACT_SELECT_FRAME",
+    "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT",
+    "TELEGRAM_SEATS_DEFAULT_OPEN",
     "TELEGRAM_SEMANTIC_FRAME_SHADOW",
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
@@ -512,7 +518,7 @@ def _p0_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
         P0_MODEL_LED_ENV,
         aliases=("p0_model_led", "p0_model_led_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, P0_MODEL_LED_ENV)
 
 
 def _intent_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -532,7 +538,7 @@ def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> boo
         PROSE_MODEL_LED_ENV,
         aliases=("prose_model_led", "prose_model_led_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, PROSE_MODEL_LED_ENV)
 
 
 _P0_MODEL_LED_NON_COMPLAINT_HARD_CODES = frozenset({"refund", "legal", "payment_dispute"})

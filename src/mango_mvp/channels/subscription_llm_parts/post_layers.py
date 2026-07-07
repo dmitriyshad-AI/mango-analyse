@@ -216,7 +216,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     PRESALE_PROMPT_CHILD_NAME_KEY_RE,
     PRESALE_PROMPT_PARENT_NAME_KEY_RE,
     DIRECT_PATH_CATEGORY_ALIASES,
-    DIRECT_PATH_GOLD_TOPIC_KEYWORDS,
     _PARTIAL_PHONE_CONTEXT_RE,
     _CLIENT_CHILD_IDENTITY_PROMPT_RE,
     _CLIENT_PARENT_IDENTITY_PROMPT_RE,
@@ -3235,13 +3234,12 @@ def _sanitize_client_pii_echo(
             continue
         replacement = safe_child_replacements.get(name)
         if replacement is None:
-            replacement = (
-                "[данные у менеджера]"
-                if " " in name or _client_name_allowed(name, parent_names)
-                else "данные ребёнка"
-                if not _client_name_allowed(name, child_first_names)
-                else name
-            )
+            if " " in name or _client_name_allowed(name, parent_names):
+                replacement = "[данные у менеджера]"
+            elif _looks_like_proper_person_name(name):
+                replacement = "данные ребёнка"
+            else:
+                replacement = "[данные у менеджера]"
         value = re.sub(_flexible_name_pattern(name), replacement, value, flags=re.I)
     return value, tuple(reasons)
 
@@ -3457,27 +3455,82 @@ def _client_dialogue_allowed_names(client_message: str) -> tuple[str, ...]:
 
 def _client_dialogue_child_first_names(client_message: str) -> tuple[str, ...]:
     result: list[str] = []
-    for match in _CLIENT_CHILD_IDENTITY_PROMPT_RE.finditer(" ".join(str(client_message or "").split())):
-        first = _presale_prompt_child_name_value(match.group("name"))
-        if first and first not in result:
-            result.append(first)
-    for match in _CLIENT_NAME_MARKER_RE.finditer(" ".join(str(client_message or "").split())):
-        first = _presale_prompt_child_name_value(match.group("name"))
-        if first and first not in result:
-            result.append(first)
+    for line in _client_pii_context_lines(client_message):
+        for match in _CLIENT_CHILD_IDENTITY_PROMPT_RE.finditer(line):
+            if not _child_identity_match_has_child_context(line, match):
+                continue
+            first = _presale_prompt_child_name_value(match.group("name"))
+            if first and first not in result:
+                result.append(first)
+        for match in _CLIENT_NAME_MARKER_RE.finditer(line):
+            if not _child_identity_match_has_child_context(line, match):
+                continue
+            first = _presale_prompt_child_name_value(match.group("name"))
+            if first and first not in result:
+                result.append(first)
     return tuple(result)
 
 
 def _client_dialogue_parent_names(client_message: str) -> tuple[str, ...]:
     result: list[str] = []
-    client = " ".join(str(client_message or "").split())
-    for pattern in (_CLIENT_PARENT_IDENTITY_PROMPT_RE, _CLIENT_SELF_NAME_MARKER_RE):
-        for match in pattern.finditer(client):
-            name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
-            for part in ([name] + [item for item in name.split() if item]):
-                if part and part not in result:
-                    result.append(part)
+    for client in _client_pii_context_lines(client_message):
+        for pattern in (_CLIENT_PARENT_IDENTITY_PROMPT_RE, _CLIENT_SELF_NAME_MARKER_RE):
+            for match in pattern.finditer(client):
+                name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+                for part in ([name] + [item for item in name.split() if item]):
+                    if part and _looks_like_proper_person_name(part) and part not in result:
+                        result.append(part)
     return tuple(result)
+
+
+_child_identity_context_markers = (
+    "записыва",
+    "запиш",
+    "ребен",
+    "сын",
+    "доч",
+    "ученик",
+    "ученица",
+    "справк",
+)
+
+
+def _client_pii_context_lines(client_message: str) -> tuple[str, ...]:
+    return tuple(
+        line
+        for line in (" ".join(raw.split()).strip() for raw in str(client_message or "").splitlines())
+        if line
+    )
+
+
+def _child_identity_match_has_child_context(line: str, match: re.Match[str]) -> bool:
+    matched = str(match.group(0) or "")
+    name = str(match.group("name") or "")
+    prefix = matched[: max(0, len(matched) - len(name))]
+    if _has_child_identity_context_marker(prefix):
+        return True
+    before = str(line or "")[max(0, match.start() - 32) : match.start()]
+    return _has_child_identity_context_marker(before)
+
+
+def _has_child_identity_context_marker(value: str) -> bool:
+    normalized = str(value or "").casefold().replace("ё", "е")
+    return any(marker in normalized for marker in _child_identity_context_markers)
+
+
+def _looks_like_proper_person_name(value: str) -> bool:
+    words = [word for word in str(value or "").split() if word]
+    return bool(words) and all(_looks_like_capitalized_cyrillic_word(word) for word in words)
+
+
+def _looks_like_capitalized_cyrillic_word(value: str) -> bool:
+    word = str(value or "")
+    if len(word) < 3:
+        return False
+    first, rest = word[0], word[1:]
+    return first in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ" and all(
+        char in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя" for char in rest
+    )
 
 
 def _client_name_allowed(name: str, allowed_names: Sequence[str]) -> bool:

@@ -115,6 +115,7 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
     ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "QUALITY_CLARIFY_SCOPE_ENV", "TELEGRAM_Q_CLARIFY_SCOPE"),
     ("src/mango_mvp/channels/dialogue_memory.py", "MEMORY_CHILD_IDENTITY_MODEL_ENV", "TELEGRAM_CHILD_IDENTITY_MODEL"),
+    ("src/mango_mvp/channels/dialogue_memory.py", "P0_LATCH_AUTORELEASE_V2_ENV", "TELEGRAM_P0_LATCH_AUTORELEASE_V2"),
     ("src/mango_mvp/channels/fact_venue_scope.py", "FACT_VENUE_SCOPE_ENV", "TELEGRAM_FACT_VENUE_SCOPE"),
     ("src/mango_mvp/channels/semantic_roles.py", "INTENT_STATE_REPAIR_ENV", "TELEGRAM_INTENT_STATE_REPAIR"),
     ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "ASSUMED_SCOPE_GUARD_ENV", "TELEGRAM_ASSUMED_SCOPE_GUARD"),

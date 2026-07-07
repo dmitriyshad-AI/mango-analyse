@@ -8,8 +8,14 @@ from typing import Any, Mapping, Optional, Sequence
 
 SEMANTIC_READING_CLASSES_ENV = "TELEGRAM_SEMANTIC_READING_CLASSES"
 READING_APPLY_CLASSES_ENV = "TELEGRAM_READING_APPLY_CLASSES"
-PILOT_PROFILE_DEFAULT_READING_CLASSES = "sense_seats,slots_gsf,off_topic,intent_actions,live_status_read"
-PILOT_PROFILE_DEFAULT_APPLY_CLASSES = "live_status_read/conversation_intent_plan"
+PILOT_PROFILE_DEFAULT_READING_CLASSES = (
+    "sense_seats,slots_gsf,off_topic,intent_actions,live_status_read,"
+    "fact_select_read,route_templates,reask_read,roles_read"
+)
+PILOT_PROFILE_DEFAULT_APPLY_CLASSES = (
+    "live_status_read/conversation_intent_plan,"
+    "route_templates/autonomy_matrix,reask_read/final_text,roles_read/refund_tax"
+)
 SEMANTIC_READING_SCHEMA_VERSION = "semantic_reading_v1_2026_07_03"
 SEMANTIC_READING_TRACE_SCHEMA_VERSION = "semantic_reading_trace_v1_2026_07_03"
 SEMANTIC_READING_SLOT_SOURCE = "semantic_reading_llm"

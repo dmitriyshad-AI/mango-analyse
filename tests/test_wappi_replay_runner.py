@@ -46,6 +46,23 @@ def test_replay_runner_threads_dialogue_memory_between_turns() -> None:
     assert memory_turn_counts[1] >= 1
 
 
+def test_replay_runner_exports_memory_snapshots_for_full_tests() -> None:
+    cases = [
+        ReplayCase("d", "p", "c", "d#1", "foton", "Нужна физика", "Ответ", turn_index=1),
+        ReplayCase("d", "p", "c", "d#2", "foton", "А расписание?", "Ответ", turn_index=2),
+    ]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        return BotReplayResult(route="bot_answer_self_for_pilot", bot_text=f"Ответ: {case.client_message}")
+
+    rows = run_replay_exam(cases, provider, parallel_dialogs=1)
+
+    assert rows[0]["memory_snapshot"]["known_slots"] == {}
+    assert rows[0]["memory_snapshot_after"]["schema_version"] == "wappi_replay_memory_snapshot_v1"
+    assert rows[1]["memory_snapshot"]["schema_version"] == "wappi_replay_memory_snapshot_v1"
+    assert set(rows[1]["memory_snapshot"]) == {"schema_version", "known_slots", "do_not_reask", "p0_latch"}
+
+
 def test_replay_runner_allows_numbers_from_current_turn_retrieved_facts() -> None:
     cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Сколько стоит?", "")]
 

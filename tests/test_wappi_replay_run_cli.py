@@ -66,6 +66,29 @@ def test_run_replay_cli_real_provider_requires_explicit_llm_permission(tmp_path:
     assert "--allow-llm-calls" in result.stderr
 
 
+def test_run_replay_cli_judge_requires_explicit_llm_permission_and_budget(tmp_path: Path) -> None:
+    cases = tmp_path / "cases.jsonl"
+    _write_case(cases)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_wappi_replay_exam.py",
+            "--set",
+            str(cases),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--fake-provider",
+            "--run-judge",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--allow-judge-llm-calls" in result.stderr
+
+
 def test_run_replay_cli_real_provider_rejects_cases_outside_scrubbed_root(tmp_path: Path) -> None:
     cases = tmp_path / "cases.jsonl"
     _write_case(cases)

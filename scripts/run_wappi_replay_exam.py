@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from mango_mvp.replay_exam.models import BotReplayResult, ReplayCase
+from mango_mvp.replay_exam.judge_executor import (
+    CodexReplayJudgeRunner,
+    build_replay_judge_requests,
+    execute_replay_judge_requests,
+    write_replay_judge_payloads,
+)
 from mango_mvp.replay_exam.provider_adapter import (
     RealReplayDraftProvider,
     assert_real_replay_cases_safe,
@@ -66,9 +72,20 @@ def main() -> int:
     parser.add_argument("--allow-non-chat-only", action="store_true", help="Allow non-chat_only segments in real-provider replay.")
     parser.add_argument("--resume", action="store_true", help="Resume from replay_results.partial.jsonl in --out-dir.")
     parser.add_argument("--max-bot-calls", type=int, help="Stop after at most this many pending replay cases.")
+    parser.add_argument("--run-judge", action="store_true", help="Run replay_judge_v1 after machine gate.")
+    parser.add_argument("--allow-judge-llm-calls", action="store_true", help="Required with --run-judge; confirms judge model calls are allowed.")
+    parser.add_argument("--max-judge-calls", type=int, help="Stop judge after at most this many clean chat_only cases.")
+    parser.add_argument("--judge-seed", default="replay_judge_v1")
+    parser.add_argument("--judge-model", default="gpt-5.5")
+    parser.add_argument("--judge-reasoning", default="medium")
     args = parser.parse_args()
     if args.fake_provider == args.real_provider:
         raise SystemExit("Choose exactly one provider mode: --fake-provider or --real-provider.")
+    if args.run_judge:
+        if not args.allow_judge_llm_calls:
+            raise SystemExit("--run-judge requires explicit --allow-judge-llm-calls.")
+        if args.max_judge_calls is None or args.max_judge_calls < 1:
+            raise SystemExit("--run-judge requires positive --max-judge-calls.")
     if args.real_provider:
         if not args.allow_llm_calls:
             raise SystemExit("--real-provider requires explicit --allow-llm-calls.")
@@ -109,6 +126,15 @@ def main() -> int:
     new_rows = run_replay_exam(pending_cases, provider, parallel_dialogs=parallel, progress_callback=progress_callback)
     rows = [*existing_rows, *new_rows]
     write_replay_outputs(out_dir, rows)
+    judge_requests = []
+    if args.run_judge:
+        judge_requests = build_replay_judge_requests(
+            cases,
+            rows,
+            seed=args.judge_seed,
+            max_judge_calls=args.max_judge_calls,
+        )
+        write_replay_judge_payloads(out_dir, judge_requests)
     allowlist: tuple[str, ...] = ()
     if args.snapshot is not None:
         allowlist = kb_contact_allowlist(args.snapshot)
@@ -120,8 +146,21 @@ def main() -> int:
     )
     if pii_findings:
         raise SystemExit(f"PII scan failed: {len(pii_findings)} findings; see {out_dir / 'pii_scan_v2.json'}")
+    if args.run_judge:
+        from mango_mvp.channels.subscription_llm_parts.codex_exec import CodexExecConfig
+
+        judge_runner = CodexReplayJudgeRunner(
+            config=CodexExecConfig(model=args.judge_model, reasoning_effort=args.judge_reasoning),
+        )
+        execute_replay_judge_requests(out_dir, judge_requests, runner=judge_runner)
+        post_judge_findings = scan_paths([out_dir / "judge_results.jsonl"], allowlist=allowlist)
+        if post_judge_findings:
+            raise SystemExit(f"PII scan failed after judge: {len(post_judge_findings)} findings; see {out_dir / 'judge_results.jsonl'}")
     print(f"replay_results={out_dir / 'replay_results.jsonl'}")
     print(f"replay_summary={out_dir / 'replay_summary.json'}")
+    if args.run_judge:
+        print(f"judge_results={out_dir / 'judge_results.jsonl'}")
+        print(f"judge_key={out_dir / 'judge_key.jsonl'}")
     print(f"progress={progress_path}")
     print(f"pii_scan={out_dir / 'pii_scan_v2.json'}")
     return 0

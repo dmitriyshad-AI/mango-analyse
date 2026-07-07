@@ -4,7 +4,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
 
@@ -40,6 +40,22 @@ _BLOCKED_METADATA_KEYS = frozenset(
 )
 _PREFIX_MESSAGE_KEYS_V4 = frozenset({"from_me", "text", "ts_masked"})
 _FORBIDDEN_CASE_KEYS = frozenset({"raw", "from", "to", "phone", "chatId", "contact_name", "username", "wappi_bot_id", "task_id", "stanzaId"})
+
+
+def replay_memory_snapshot(memory: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    if not isinstance(memory, Mapping):
+        memory = {}
+    known_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
+    p0_latch = memory.get("p0_latch") if isinstance(memory.get("p0_latch"), Mapping) else {}
+    do_not_reask = memory.get("do_not_reask_slots") or memory.get("do_not_ask_again") or ()
+    return {
+        "schema_version": "wappi_replay_memory_snapshot_v1",
+        "known_slots": dict(known_slots),
+        "do_not_reask": [str(item) for item in do_not_reask if str(item).strip()]
+        if isinstance(do_not_reask, (list, tuple, set))
+        else [],
+        "p0_latch": dict(p0_latch),
+    }
 
 
 def _brand_from_payload(obj: Mapping[str, Any]) -> str:
@@ -200,6 +216,7 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
     dialogue_memory: Mapping[str, Any] = {}
     rows: list[dict[str, object]] = []
     for case in dialog_cases:
+        memory_before = replay_memory_snapshot(dialogue_memory)
         result = provider(
             case,
             {
@@ -211,6 +228,14 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
         )
         client_safe_numbers = _current_turn_client_safe_numbers(result.metadata)
         gate = run_machine_gate(case, result, client_safe_numbers=client_safe_numbers)
+        next_memory = update_dialogue_memory_after_answer(
+            dialogue_memory,
+            answer_text=result.bot_text,
+            route=result.route,
+            safety_flags=result.safety_flags,
+            memory_llm_fn=None,
+            context={"replay_exam": True, "turn_id": case.turn_id},
+        ).to_json_dict()
         rows.append(
             {
                 "dialog_id": case.dialog_id,
@@ -221,6 +246,8 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "bot_text": result.bot_text,
                 "safety_flags": list(result.safety_flags),
                 "provider_metadata": dict(result.metadata),
+                "memory_snapshot": memory_before,
+                "memory_snapshot_after": replay_memory_snapshot(next_memory),
                 "machine_gate": {
                     "passed": gate.passed,
                     "flags": list(gate.flags),
@@ -230,14 +257,7 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "llm_calls_client": 0,
             }
         )
-        dialogue_memory = update_dialogue_memory_after_answer(
-            dialogue_memory,
-            answer_text=result.bot_text,
-            route=result.route,
-            safety_flags=result.safety_flags,
-            memory_llm_fn=None,
-            context={"replay_exam": True, "turn_id": case.turn_id},
-        ).to_json_dict()
+        dialogue_memory = next_memory
         older_summary = (older_summary + "\n" + f"client: {case.client_message}\nbot: {result.bot_text}").strip()[-4000:]
     return rows
 

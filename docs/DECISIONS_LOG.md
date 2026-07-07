@@ -1374,3 +1374,36 @@ AMO readback подтвердил текущие note_id: `471856971`, `47185697
 опубликованной DB для этих lead_id не нашлось bot-visible контекста. Поэтому
 этот проход доказывает безопасный AMO note write и client=0, но не доказывает
 пользу памяти. Семантический статус отчёта: `PASS_WITH_NOTES`.
+
+### D-071. Wappi memory-positive draft notes confirm runtime memory path, with retro caveat
+
+Диагноз первой пятёрки из D-070 уточнён SQL и runtime-проверкой: у lead_id
+`48679534`, `49972887`, `48668212` есть по одному raw allowed
+`bot_safe_summary`, но они не попали в prompt, потому что runtime builder
+отфильтровал их по brand-scope/`unknown`; у `49258173`, `49398199` нет
+allowed chunks. Поэтому `memory_hits=0` был fail-closed поведением, а не
+поломкой контура.
+
+После этого записана вторая пятёрка Wappi→AMO заметок-черновиков, выбранная по
+строгому runtime-критерию `build_bot_safe_crm_context(...).found=true` и
+`timeline_context.bot_context.items>0`. AMO note_id: `471858683`,
+`471858687`, `471858693`, `471858695`, `471858701`; по ним
+`memory_hits`: `1`, `1`, `1`, `7`, `1`. Один кейс содержит email + telegram
+memory (`mail_archive_stage2:email_message` ×6,
+`telegram_history:channel_message` ×1), остальные — `bot_safe_summary`.
+
+Границы: `DRAFT_LOOP_AUTO_RESOLVER=0`, основные Wappi pairs/profiles не
+менялись, клиентам `0` отправок (`client_sends_delta=0`), AMO write только
+draft notes с маркером `ЧЕРНОВИК БОТА, не отправлено`. Ограничение: строгих
+свежих чатов, где последний Wappi message inbound и runtime-память >0, в
+снимке не найдено; 4/5 записей второй пятёрки — ретро-проверка памяти по
+чатам, на которые менеджер уже отвечал позже. Семантический статус:
+`PASS_WITH_NOTES`.
+
+Операционный риск `getUpdates Conflict` проверен: локально найден только один
+public Telegram poller — PID `42671` в screen
+`mango_public_pilot_bots_main_a23dede6_clean_20260707`, heartbeat свежий
+(`status=polling`, `effective_profile=pilot_gold_v1`). Второй локальный
+poller не найден, поэтому рабочий live-процесс не гасился. Yandex/OpenClaw
+rollback backup повторно подтверждён sha256
+`ef9ef249b4192b768cd1eb826f6df20514994539a3911f9aeee19bbc295d03c8`.

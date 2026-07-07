@@ -226,6 +226,43 @@ def test_fact_venue_scope_keyword_fallback_removes_foreign_exact_when_target_pre
     assert pack["llm_retrieve"]["venue_scope"]["source"] == "keyword_fallback"
 
 
+def test_successful_llm_retriever_does_not_add_keyword_category_facts(tmp_path: Path) -> None:
+    snapshot = _write_snapshot(
+        tmp_path,
+        [
+            _fact(
+                "unpk.regular.price",
+                "УНПК МФТИ: стоимость регулярного курса зависит от класса и формата.",
+                fact_type="price",
+            ),
+            _fact(
+                "unpk.regular.schedule",
+                "УНПК МФТИ: расписание регулярных групп публикуется после подбора группы.",
+                fact_type="schedule",
+            ),
+        ],
+    )
+
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "unpk",
+            "snapshot_path": str(snapshot),
+            LLM_RETRIEVE_ENV: "1",
+            "conversation_intent_plan": {"primary_intent": "price", "answer_topics": ["price"]},
+        },
+        client_message="Когда проходят занятия?",
+        retriever_fn=lambda _prompt: {
+            "exact_ids": ["unpk.regular.schedule"],
+            "adjacent_ids": [],
+        },
+    )
+
+    assert pack["selected_category"] == "llm_retrieve"
+    assert pack["exact_keys"] == ["unpk.regular.schedule"]
+    assert "unpk.regular.price" not in pack["facts"]
+    assert pack["llm_retrieve"]["fallback"] is False
+
+
 def test_fact_venue_scope_keyword_fallback_demotes_foreign_when_no_target_present(tmp_path: Path) -> None:
     snapshot = _write_snapshot(
         tmp_path,

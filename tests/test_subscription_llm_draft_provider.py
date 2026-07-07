@@ -767,6 +767,47 @@ def test_conversation_intent_plan_guard_uses_profile_intent_actions_replacement(
     assert "conversation_intent_plan_topic_applied" not in guarded.safety_flags
 
 
+def test_intent_actions_frame_below_090_does_not_override_keywords() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        topic_confidence=0.84,
+        draft_text="Стоимость зависит от формата.",
+        metadata={
+            "semantic_frame": {
+                "source": "inline",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "risk_class": "manager_action",
+                "confidence": 0.89,
+            }
+        },
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Сколько стоит курс?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+            "conversation_intent_plan": {
+                "primary_intent": "price",
+                "topic_id": "theme:001_pricing",
+                "answer_policy": "answer_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+            },
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "semantic_frame_intent_actions_live_availability" not in guarded.safety_flags
+    trace = guarded.metadata["semantic_reading_trace"][-1]
+    assert trace["class"] == "intent_actions"
+    assert trace["status"] == "fail_closed"
+    assert trace["reason"] == "low_confidence"
+
+
 def test_followup_deadline_guard_catches_absolute_datetime_with_vernutsya() -> None:
     claims = find_unsupported_followup_deadline_claims(
         "Менеджер должен вернуться с конкретикой до 25 мая 2026, 14:46 по Москве.",

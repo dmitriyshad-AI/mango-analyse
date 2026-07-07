@@ -20,7 +20,7 @@ from scripts.publish_snapshot.common import (
     load_config,
     quick_check,
     report_base,
-    separate_filesystem_report,
+    backup_plan_report,
     schema_diff,
     table_counts,
 )
@@ -60,7 +60,12 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
         readers.append(reader_report)
     diff = schema_diff(prod, staging)
     disk = disk_report(snapshot_root.parent if snapshot_root.parent.exists() else Path.cwd(), required)
-    backup = separate_filesystem_report(prod, cfg.backup_root, required_bytes=prod.stat().st_size if prod.exists() else 0)
+    backup = backup_plan_report(
+        prod,
+        cfg.backup_root,
+        cfg.backup_async_copy_root,
+        required_bytes=prod.stat().st_size if prod.exists() else 0,
+    )
     report.update(
         {
             "staging_db": str(staging),

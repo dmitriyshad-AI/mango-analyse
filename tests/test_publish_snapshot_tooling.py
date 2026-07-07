@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.publish_snapshot import build_snapshot, preflight, reader_smoke
-from scripts.publish_snapshot.common import classify_publish_worktree_status
+from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
@@ -16,6 +16,8 @@ def _config(tmp_path: Path, prod: Path, staging: Path) -> Path:
         "staging_db": str(staging),
         "prod_db": str(prod),
         "snapshot_root": str(tmp_path / "snapshots"),
+        "backup_root": str(tmp_path / "prod_backups"),
+        "backup_async_copy_root": str(tmp_path / "openclaw_backups"),
         "required_free_copies": 1,
         "count_tables": ["customer_identities", "timeline_events", "bot_context_chunks"],
         "control_customers": [{"customer_id": "customer:0", "expected_found": True}],
@@ -121,3 +123,22 @@ def test_publish_worktree_status_blocks_code_untracked_and_tracked_changes() -> 
     assert report["tracked_blockers"] == [" M docs/DECISIONS_LOG.md"]
     assert report["untracked_code_blockers"] == ["?? src/mango_mvp/new_module.py", "?? scripts/new_tool.py"]
     assert report["untracked_allowed"] == ["?? product_data/telegram_dynamic_test_sets/sample.jsonl"]
+
+
+def test_backup_plan_allows_same_disk_with_verified_async_copy(tmp_path: Path) -> None:
+    source = tmp_path / "prod.sqlite"
+    source.write_text("backup-source", encoding="utf-8")
+
+    report = backup_plan_report(
+        source,
+        tmp_path / "prod_backups",
+        tmp_path / "openclaw_backups",
+        required_bytes=source.stat().st_size,
+    )
+    first = copy_verified(source, tmp_path / "prod_backups" / "copy.sqlite")
+    second = copy_verified(Path(first["target"]), tmp_path / "openclaw_backups" / "copy.sqlite")
+
+    assert report["ok"] is True
+    assert report["policy"] == "same_disk_verified_backup_plus_yandex_async_copy"
+    assert first["source_sha256"] == first["target_sha256"]
+    assert second["source_sha256"] == second["target_sha256"]

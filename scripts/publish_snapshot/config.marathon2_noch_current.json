@@ -5,6 +5,8 @@
   "staging_db": "/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/customer_timeline_staging.sqlite",
   "prod_db": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite",
   "snapshot_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/prod_snapshots",
+  "backup_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/prod_backups",
+  "backup_async_copy_root": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/prod_backups",
   "required_free_copies": 3,
   "count_tables": [
     "customer_identities",

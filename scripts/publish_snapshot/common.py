@@ -62,6 +62,13 @@ class PublishConfig:
         return Path(str(raw)).expanduser().resolve(strict=False)
 
     @property
+    def backup_async_copy_root(self) -> Path | None:
+        raw = self.raw.get("backup_async_copy_root")
+        if not raw:
+            return None
+        return Path(str(raw)).expanduser().resolve(strict=False)
+
+    @property
     def tenant_id(self) -> str:
         return str(self.raw.get("tenant_id") or "foton")
 
@@ -332,7 +339,13 @@ def live_worktree_untracked(readers: Sequence[Mapping[str, Any]]) -> list[Mappin
     return result
 
 
-def separate_filesystem_report(source: Path, backup_root: Path | None, *, required_bytes: int) -> Mapping[str, Any]:
+def backup_plan_report(
+    source: Path,
+    backup_root: Path | None,
+    async_copy_root: Path | None,
+    *,
+    required_bytes: int,
+) -> Mapping[str, Any]:
     if backup_root is None:
         return {
             "configured": False,
@@ -340,22 +353,56 @@ def separate_filesystem_report(source: Path, backup_root: Path | None, *, requir
             "reason": "backup_root_missing",
             "required_bytes": required_bytes,
         }
+    if async_copy_root is None:
+        return {
+            "configured": False,
+            "ok": False,
+            "reason": "backup_async_copy_root_missing",
+            "required_bytes": required_bytes,
+            "backup_root": str(backup_root),
+        }
     target = backup_root.expanduser().resolve(strict=False)
+    async_target = async_copy_root.expanduser().resolve(strict=False)
     existing = target if target.exists() else next((parent for parent in target.parents if parent.exists()), target.parent)
-    source_dev = source.resolve(strict=False).parent.stat().st_dev
-    target_dev = existing.stat().st_dev
+    async_existing = (
+        async_target
+        if async_target.exists()
+        else next((parent for parent in async_target.parents if parent.exists()), async_target.parent)
+    )
     disk = disk_report(existing, required_bytes)
+    async_disk = disk_report(async_existing, required_bytes)
     return {
         "configured": True,
-        "path": str(target),
-        "existing_path": str(existing),
-        "source_dev": source_dev,
-        "backup_dev": target_dev,
-        "separate_filesystem": source_dev != target_dev,
+        "policy": "same_disk_verified_backup_plus_yandex_async_copy",
+        "owner_decision": "2026-07-07 backup on same disk is accepted with sha256 verification and Yandex/OpenClaw copy",
+        "backup_root": str(target),
+        "backup_existing_path": str(existing),
+        "async_copy_root": str(async_target),
+        "async_existing_path": str(async_existing),
         "required_bytes": required_bytes,
-        "free_bytes": disk["free_bytes"],
-        "disk_ok": disk["ok"],
-        "ok": source_dev != target_dev and bool(disk["ok"]),
+        "backup_free_bytes": disk["free_bytes"],
+        "async_free_bytes": async_disk["free_bytes"],
+        "backup_disk_ok": disk["ok"],
+        "async_disk_ok": async_disk["ok"],
+        "ok": bool(disk["ok"]) and bool(async_disk["ok"]),
+    }
+
+
+def copy_verified(source: Path, target: Path) -> Mapping[str, Any]:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    source_sha = sha256_file(source)
+    target_sha = sha256_file(target)
+    ok = source_sha == target_sha
+    if not ok:
+        raise PublishSnapshotError(f"backup sha mismatch: source={source_sha}, target={target_sha}, target={target}")
+    return {
+        "source": str(source),
+        "target": str(target),
+        "source_sha256": source_sha,
+        "target_sha256": target_sha,
+        "size_bytes": target.stat().st_size,
+        "ok": True,
     }
 
 

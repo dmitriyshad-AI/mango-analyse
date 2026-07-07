@@ -1309,3 +1309,18 @@ rollback backup на другом filesystem не настроен (`backup_root
 машине сейчас виден только основной пользовательский filesystem
 `/System/Volumes/Data`; `/Volumes` содержит только ссылку `Macintosh HD -> /`.
 Поэтому `build_snapshot`, stop live bot, `flip` и e2e-проба не запускались.
+
+### D-068. Owner removes separate-filesystem backup requirement for snapshot flip
+
+Письменное решение владельца от 2026-07-07: требование «backup на отдельный
+filesystem» снято. Для первой публикации snapshot достаточно локального бэкапа
+в `prod_backups/` на том же диске с обязательной sha256-верификацией после
+копирования, плюс локальная копия этого бэкапа в
+`~/Yandex.Disk.localized/OpenClaw/prod_backups/`; облачная синхронизация
+Yandex/OpenClaw считается второй точкой.
+
+Новый hard stop по публикации: запись в prod запрещена без проверенного
+локального backup sha. Отправка клиенту остаётся абсолютным стопом. Tooling
+обновлён: `preflight` проверяет оба backup-root и свободное место, `flip`
+создаёт и sha-проверяет обе копии до удаления sidecar-файлов и атомарной
+подмены prod DB.

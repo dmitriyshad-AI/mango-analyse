@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
 
 from scripts.publish_snapshot.common import (
     add_common_args,
+    backup_plan_report,
+    copy_verified,
     finish_cli,
     lsof_holders,
     load_config,
@@ -21,7 +23,6 @@ from scripts.publish_snapshot.common import (
     render_command,
     report_base,
     run_command,
-    separate_filesystem_report,
     sha256_file,
 )
 
@@ -35,9 +36,14 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     if not execute:
         report["status"] = "dry_run"
         return report, True
-    backup_check = separate_filesystem_report(prod_db, cfg.backup_root, required_bytes=prod_db.stat().st_size)
+    backup_check = backup_plan_report(
+        prod_db,
+        cfg.backup_root,
+        cfg.backup_async_copy_root,
+        required_bytes=prod_db.stat().st_size,
+    )
     if not backup_check["ok"]:
-        return {**report, "status": "blocked_backup_not_separate_filesystem", "backup": backup_check}, False
+        return {**report, "status": "blocked_backup_preflight", "backup": backup_check}, False
 
     stop_results = []
     for reader in cfg.readers:
@@ -54,11 +60,17 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     backup_root = cfg.backup_root
     if backup_root is None:
         return {**report, "status": "blocked_backup_root_missing", "backup": backup_check}, False
+    async_root = cfg.backup_async_copy_root
+    if async_root is None:
+        return {**report, "status": "blocked_backup_async_copy_root_missing", "backup": backup_check}, False
     backup_dir = backup_root / ("pre_flip_backup_" + report["generated_at"].replace(":", "").replace("+", "Z"))
     backup_dir.mkdir(parents=True, exist_ok=False)
     backup_db = backup_dir / prod_db.name
-    shutil.copy2(prod_db, backup_db)
-    backup_sha = sha256_file(backup_db)
+    backup_copy = copy_verified(prod_db, backup_db)
+    backup_sha = str(backup_copy["target_sha256"])
+    async_backup_dir = async_root / backup_dir.name
+    async_backup_db = async_backup_dir / prod_db.name
+    async_backup_copy = copy_verified(backup_db, async_backup_db)
     removed_sidecars = remove_sidecars(prod_db, execute=True)
     tmp_target = prod_db.with_suffix(prod_db.suffix + ".new")
     shutil.copy2(snapshot_db, tmp_target)
@@ -81,6 +93,9 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "stop_results": stop_results,
             "start_results": start_results,
             "backup_db": str(backup_db),
+            "backup_copy": backup_copy,
+            "async_backup_db": str(async_backup_db),
+            "async_backup_copy": async_backup_copy,
             "backup_sha256": backup_sha,
             "new_sha256": new_sha,
             "removed_sidecars": removed_sidecars,

@@ -3112,7 +3112,11 @@ def apply_autonomy_matrix_guard(
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
     draft_text = result.draft_text
-    if _draft_is_low_value_without_exact_fact(draft_text) and not _is_verified_client_safe_template(draft_text):
+    if (
+        _draft_is_low_value_without_exact_fact(draft_text)
+        and not _is_verified_client_safe_template(draft_text)
+        and not _verified_fact_template_blocked_by_inline_handoff(result)
+    ):
         fact_answer = _promoted_verified_fact_text(result, context=context, client_message=client_message)
         if fact_answer:
             draft_text = fact_answer
@@ -6093,6 +6097,12 @@ def _draft_is_low_value_without_exact_fact(draft_text: str) -> bool:
     generic_markers = ("уточним", "уточню", "проверим", "проверю", "передам", "свяжется", "вернемся", "вернусь")
     return any(marker in text for marker in generic_markers) or len(text) < 120
 
+def _verified_fact_template_blocked_by_inline_handoff(result: SubscriptionDraftResult) -> bool:
+    frame = _intent_actions_frame(result)
+    if _intent_actions_frame_fail_reason(frame):
+        return False
+    return str(frame.get("requested_action") or "").strip() == "handoff_manager"
+
 def _promoted_verified_fact_text(
     result: SubscriptionDraftResult,
     *,
@@ -6120,7 +6130,7 @@ def _promoted_verified_fact_text(
             (
                 f"{fact_sentence}{suffix} {next_step}"
                 if prose_model_led
-                else f"Да, сориентирую по проверенным условиям. {fact_sentence}{suffix} {next_step}"
+                else f"По проверенным условиям. {fact_sentence}{suffix} {next_step}"
             ),
             client_message=client_message,
         )
@@ -6137,7 +6147,7 @@ def _promoted_verified_fact_text(
         if prose_model_led:
             return f"{fact_sentence} Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         return (
-            f"Да, по формату есть проверенная информация. {fact_sentence} "
+            f"По формату есть проверенная информация. {fact_sentence} "
             "Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         )
     if result.topic_id in {"theme:016_program", "theme:020_enrollment", "theme:021_continuation", "theme:022_age_level_testing", "theme:023_trial_class"}:
@@ -6164,7 +6174,7 @@ def _promoted_verified_fact_text(
     if prose_model_led:
         return f"{fact_sentence} Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
     return (
-        f"Да, сориентирую по проверенной информации. {fact_sentence} "
+        f"По проверенной информации. {fact_sentence} "
         "Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
     )
 

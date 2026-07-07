@@ -543,7 +543,7 @@ def test_llm_polish_does_not_override_live_availability_answer() -> None:
         route="draft_for_manager",
         topic_id="theme:026_camp_general",
         topic_confidence=0.91,
-        draft_text="Да, сориентирую по проверенной информации. Фотон: ЛВШ Менделеево — 5-10 класс.",
+        draft_text="По проверенной информации. Фотон: ЛВШ Менделеево — 5-10 класс.",
     )
     calls = []
 

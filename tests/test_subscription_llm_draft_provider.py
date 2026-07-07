@@ -6917,9 +6917,49 @@ def test_promoted_autonomous_answer_uses_confirmed_facts_when_original_draft_is_
 
     assert result.route == "bot_answer_self_for_pilot"
     assert "autonomy_verified_fact_answer_template_applied" in result.safety_flags
+    assert not result.draft_text.startswith("Да,")
+    assert "По проверенным условиям." in result.draft_text
     assert "44 600" in result.draft_text
     assert "74 500" in result.draft_text
     assert "подходящий вариант оплаты" in result.draft_text
+
+
+def test_promoted_autonomous_answer_template_is_blocked_by_inline_handoff_frame() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+            "metadata": {
+                "semantic_frame": {
+                    "source": "inline",
+                    "confidence": 0.95,
+                    "requested_action": "handoff_manager",
+                    "risk_class": "safe",
+                    "must_handoff": False,
+                }
+            },
+        }
+    )
+
+    result = provider.build_draft(
+        "Свяжитесь со мной по оплате",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True},
+            "confirmed_facts": {
+                "fact:semester": "Фотон: 5-11 класс, очно, семестр — 44 600 ₽.",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Передам менеджеру."
+    assert "44 600" not in result.draft_text
+    assert "autonomy_verified_fact_answer_template_applied" not in result.safety_flags
 
 
 def test_llm_missing_facts_do_not_block_autonomy_when_context_fact_is_verified() -> None:
@@ -16611,7 +16651,8 @@ def test_prose_model_led_verified_fact_fallback_removes_robotic_opening() -> Non
         client_message="Сколько стоит?",
     )
 
-    assert "Да, сориентирую по проверенным условиям" in off
+    assert "По проверенным условиям" in off
+    assert not off.startswith("Да,")
     assert "сориентирую по проверенной" not in on.casefold()
     assert "44 600 ₽" in on
 

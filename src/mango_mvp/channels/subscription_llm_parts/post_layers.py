@@ -1051,10 +1051,18 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r")",
     re.I,
 )
+NEXT_STEP_SOFT_ACTION_RE_FRAGMENT = (
+    r"(?:уточн\w*|указ\w*|спрос\w*|узна\w*|выясн\w*|поня\w*|"
+    r"подтверд\w*|подбер\w*|подобр\w*|провер\w*|напиш\w*|сообщ\w*)"
+)
 BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE = re.compile(
+    r"(?:"
     r"\bследующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[:—-]|\b(?:будет|это)\b)\s*"
+    r"|"
+    r"\bдальше\s+(?:нужно|по\s+плану)\s+"
+    r")"
     r"[^.!?\n]{0,120}?"
-    r"\b(?:уточн\w*|спрос\w*|узна\w*|выясн\w*|подтверд\w*|подбер\w*|подобр\w*|провер\w*|напиш\w*|сообщ\w*)\b"
+    rf"\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b"
     r"[^.!?\n]{0,120}(?:[.!?]|$)",
     re.I,
 )
@@ -4640,7 +4648,11 @@ UNCONFIRMED_CONTACT_DATA_CLAIM_RE = re.compile(
 NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_rewritten"
 
 NO_MEMORY_STEP_FRAME_RE = re.compile(
-    r"(?P<sentence>[^.?!\n]{0,120}(?:следующий\s+шаг\s*[—:-]\s*|лучше\s+начать\s+с\s+)"
+    r"(?P<sentence>[^.?!\n]{0,120}(?:"
+    r"следующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[—:-]|\b(?:будет|это)\b)\s*"
+    r"|лучше\s+начать\s+с\s+"
+    rf"|дальше\s+(?:нужно|по\s+плану)\s+(?=[^.?!\n]{{0,120}}\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b)"
+    r")"
     r"(?P<body>[^.?!\n]{1,180})(?:[.?!]|$))",
     re.I,
 )
@@ -4787,14 +4799,21 @@ def _rewrite_no_memory_step_frame(draft_text: str) -> str:
     def replacement(match: re.Match[str]) -> str:
         body = " ".join(match.group("body").split()).strip(" .?!:;—-")
         normalized = body.casefold().replace("ё", "е")
+        sentence_normalized = match.group("sentence").casefold().replace("ё", "е")
         details: list[str] = []
         if "класс" in normalized or "клас" in normalized:
             details.append("класс ученика")
-        if "предмет" in normalized:
+        if "предмет" in normalized or any(subject in normalized for subject in ("математ", "физик", "информат", "хими")):
             details.append("предмет")
         if "формат" in normalized or "очно" in normalized or "онлайн" in normalized:
             details.append("формат")
-        if "следующий шаг" in match.group("sentence").casefold():
+        if "уров" in normalized:
+            details.append("уровень подготовки")
+        if (
+            "следующ" in sentence_normalized
+            or "дальше нужно" in sentence_normalized
+            or "дальше по плану" in sentence_normalized
+        ):
             target = ", ".join(dict.fromkeys(details)) or body or "недостающие детали"
             return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
         target = body or "уточнения деталей"
@@ -4840,10 +4859,12 @@ def _rewrite_bot_safe_memory_soft_step_frame(draft_text: str) -> str:
         details: list[str] = []
         if "класс" in claim or "клас" in claim:
             details.append("класс ученика")
-        if "предмет" in claim:
+        if "предмет" in claim or any(subject in claim for subject in ("математ", "физик", "информат", "хими")):
             details.append("предмет")
         if "формат" in claim or "очно" in claim or "онлайн" in claim:
             details.append("формат")
+        if "уров" in claim:
+            details.append("уровень подготовки")
         target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
         return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
 

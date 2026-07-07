@@ -11360,6 +11360,142 @@ def test_direct_path_rewrites_no_memory_better_start_frame(tmp_path: Path) -> No
     assert "no_memory_step_frame_rewritten" in result.safety_flags
 
 
+def test_direct_path_rewrites_no_memory_next_step_synonym_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Дальше нужно подобрать онлайн-группу по уровню для 7 класса по математике. "
+                "Онлайн-занятия в Фотоне проходят на SohoLMS."
+            ),
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Онлайн удобнее. Что дальше нужно сделать?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "дальше нужно" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста" in result.draft_text
+    assert "класс ученика" in result.draft_text
+    assert "предмет" in result.draft_text
+    assert "формат" in result.draft_text
+    assert "уровень подготовки" in result.draft_text
+    assert "no_memory_step_frame_rewritten" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+
+def test_direct_path_keeps_no_memory_neutral_wait_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Дальше нужно дождаться ответа менеджера, чтобы не ошибиться.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Дальше нужно дождаться ответа менеджера, чтобы не ошибиться."
+    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+
+
+def test_direct_path_does_not_rewrite_no_memory_payment_frame_as_step_question(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Дальше нужно оплатить курс до завтра.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+    assert "Уточните, пожалуйста, оплатить курс" not in result.draft_text
+
+
+def test_direct_path_memory_step_guard_rewrites_synonym_frame_for_review_status(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Следующий шаг — понять класс ребёнка, чтобы подобрать подходящую онлайн-группу "
+                "по 4 предметам. Подскажите, пожалуйста, в каком классе ребёнок?"
+            ),
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Тогда какой сейчас следующий шаг?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Бренд: Фотон. Следующий шаг требует проверки менеджером.",
+                            "next_step_status": "needs_manager_review",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста" in result.draft_text
+    assert "класс ученика" in result.draft_text
+    assert "предмет" in result.draft_text
+    assert "формат" in result.draft_text
+    assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+
 def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

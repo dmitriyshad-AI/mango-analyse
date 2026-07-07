@@ -3,7 +3,10 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import sqlite3
 import shutil
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -33,6 +36,7 @@ class NightlyServiceStep:
     config: Optional[NightlyIncrementalConfig] = None
     monitor_config: Optional[Mapping[str, Any]] = None
     mail_link_config: Optional[MailLinkEnrichConfig] = None
+    mango_sweep_config: Optional[Mapping[str, Any]] = None
     reason: Optional[str] = None
 
 
@@ -120,6 +124,43 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "required": step.required,
                         "report_path": str(step_path),
                         "summary": step_report,
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "mango_processed_sweep":
+                step_report = run_mango_processed_sweep(
+                    step,
+                    timeline_db=timeline_db,
+                    allowed_root=allowed_root,
+                    tenant_id=config.tenant_id,
+                )
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("status") == "ready" else (
+                    "failed" if step.required else "skipped_optional_failed"
+                )
+                if status == "failed":
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "status": step_report.get("status"),
+                            "events_written": step_report.get("events_written"),
+                            "dbs_scanned": step_report.get("dbs_scanned"),
+                            "dbs_selected_after_cursor": step_report.get("dbs_selected_after_cursor"),
+                            "cursor": step_report.get("cursor"),
+                            "output_jsonl": step_report.get("output_jsonl"),
+                            "manifest_path": step_report.get("manifest_path"),
+                            "known_rerun_noise": step_report.get("known_rerun_noise"),
+                            "safety": step_report.get("safety"),
+                        },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
                 )
@@ -328,6 +369,7 @@ def service_step_from_json(
     config = None
     monitor_config = None
     mail_link_config = None
+    mango_sweep_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
         if not isinstance(config_payload, Mapping):
@@ -362,6 +404,11 @@ def service_step_from_json(
             apply=bool(raw_config.get("apply", True)),
             max_events=int(raw_config["max_events"]) if raw_config.get("max_events") is not None else None,
         )
+    elif kind == "mango_processed_sweep":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        mango_sweep_config = dict(raw_config)
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
     return NightlyServiceStep(
@@ -372,6 +419,7 @@ def service_step_from_json(
         config=config,
         monitor_config=monitor_config,
         mail_link_config=mail_link_config,
+        mango_sweep_config=mango_sweep_config,
         reason=reason,
     )
 
@@ -430,6 +478,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 guard_customer_timeline_output_path(step.mail_link_config.timeline_db, allowed_root)
                 guard_customer_timeline_output_path(step.mail_link_config.allowed_root, allowed_root)
                 guard_customer_timeline_output_path(step.mail_link_config.out_dir, allowed_root)
+            if step.mango_sweep_config is not None:
+                for key in ("out_jsonl", "report_out", "manifest_path", "inventory_out"):
+                    if step.mango_sweep_config.get(key):
+                        guard_customer_timeline_output_path(Path(str(step.mango_sweep_config[key])), allowed_root)
             continue
         guard_customer_timeline_output_path(step.config.timeline_db, allowed_root)
         guard_customer_timeline_output_path(step.config.allowed_root, allowed_root)
@@ -525,6 +577,276 @@ def run_local_freshness_monitor(
             "runs_asr": False,
         },
     }
+
+
+def run_mango_processed_sweep(
+    step: NightlyServiceStep,
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    tenant_id: str,
+) -> Mapping[str, Any]:
+    config = dict(step.mango_sweep_config or {})
+    out_jsonl = guard_customer_timeline_output_path(
+        Path(str(config.get("out_jsonl") or Path(allowed_root) / "nightly_dv2_sources" / "mango_processed_sweep.jsonl")),
+        allowed_root,
+    )
+    report_out = guard_customer_timeline_output_path(
+        Path(str(config.get("report_out") or out_jsonl.with_suffix(".producer_report.json"))),
+        allowed_root,
+    )
+    manifest_path = guard_customer_timeline_output_path(
+        Path(str(config.get("manifest_path") or out_jsonl.with_suffix(".manifest.json"))),
+        allowed_root,
+    )
+    inventory_out = guard_customer_timeline_output_path(
+        Path(str(config.get("inventory_out") or out_jsonl.with_suffix(".inventory.json"))),
+        allowed_root,
+    )
+    producer_script = Path(str(config.get("producer_script") or Path.cwd() / "scripts" / "build_mango_call_timeline_increment.py"))
+    if not producer_script.exists():
+        return mango_sweep_manifest(
+            status="failed",
+            reason="producer_script_missing",
+            timeline_db=timeline_db,
+            out_jsonl=out_jsonl,
+            report_out=report_out,
+            manifest_path=manifest_path,
+            inventory_out=inventory_out,
+            cursor={},
+            inventory=[],
+            producer_report={},
+            command=(),
+            rc=127,
+        )
+    cursor = mango_processed_cursor(timeline_db, tenant_id=tenant_id)
+    since = str(config.get("since") or cursor.get("max_source_ts") or cursor.get("last_cursor_ts") or "").strip()
+    scan_roots = tuple(Path(str(item)).expanduser() for item in config.get("scan_roots") or ())
+    package_globs = tuple(str(item) for item in config.get("package_globs") or ("mango_update_after_*",))
+    inventory = discover_mango_processed_call_dbs(scan_roots, package_globs=package_globs, since=since)
+    package_dbs = [item["db_path"] for item in inventory if item.get("usable") and int(item.get("selected_after_cursor") or 0) > 0]
+    out_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    report_out.parent.mkdir(parents=True, exist_ok=True)
+    inventory_out.write_text(json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    command = [
+        sys.executable,
+        str(producer_script),
+        "--timeline-db",
+        str(timeline_db),
+        "--out-jsonl",
+        str(out_jsonl),
+        "--report-out",
+        str(report_out),
+        "--tenant-id",
+        tenant_id,
+    ]
+    if since:
+        command.extend(["--since", since])
+    for db_path in package_dbs:
+        command.extend(["--package-db", str(db_path)])
+    proc = subprocess.run(command, cwd=Path.cwd(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    producer_report: Mapping[str, Any] = {}
+    if report_out.exists():
+        try:
+            parsed = json.loads(report_out.read_text(encoding="utf-8"))
+            producer_report = parsed if isinstance(parsed, Mapping) else {}
+        except json.JSONDecodeError:
+            producer_report = {"error": "invalid_producer_report_json"}
+    status = "ready" if proc.returncode == 0 and out_jsonl.exists() else "failed"
+    manifest = mango_sweep_manifest(
+        status=status,
+        reason="" if status == "ready" else "producer_failed",
+        timeline_db=timeline_db,
+        out_jsonl=out_jsonl,
+        report_out=report_out,
+        manifest_path=manifest_path,
+        inventory_out=inventory_out,
+        cursor=cursor,
+        inventory=inventory,
+        producer_report=producer_report,
+        command=tuple(command),
+        rc=proc.returncode,
+        stdout_tail="\n".join((proc.stdout or "").splitlines()[-40:]),
+    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest
+
+
+def mango_sweep_manifest(
+    *,
+    status: str,
+    reason: str,
+    timeline_db: Path,
+    out_jsonl: Path,
+    report_out: Path,
+    manifest_path: Path,
+    inventory_out: Path,
+    cursor: Mapping[str, Any],
+    inventory: Sequence[Mapping[str, Any]],
+    producer_report: Mapping[str, Any],
+    command: Sequence[str],
+    rc: int,
+    stdout_tail: str = "",
+) -> Mapping[str, Any]:
+    return {
+        "schema_version": "mango_processed_sweep_v1",
+        "status": status,
+        "reason": reason,
+        "timeline_db": str(timeline_db),
+        "cursor": dict(cursor),
+        "dbs_scanned": len(inventory),
+        "dbs_selected_after_cursor": sum(1 for item in inventory if int(item.get("selected_after_cursor") or 0) > 0),
+        "rows_selected_after_cursor": sum(int(item.get("selected_after_cursor") or 0) for item in inventory),
+        "events_written": int(producer_report.get("events_written") or 0),
+        "source_counts": dict(producer_report.get("source_counts") or {}),
+        "identity_resolution_counts": dict(producer_report.get("identity_resolution_counts") or {}),
+        "call_type_counts": dict(producer_report.get("call_type_counts") or {}),
+        "output_jsonl": str(out_jsonl),
+        "producer_report": str(report_out),
+        "manifest_path": str(manifest_path),
+        "inventory_out": str(inventory_out),
+        "producer_rc": rc,
+        "producer_command": list(command),
+        "producer_stdout_tail": stdout_tail,
+        "known_rerun_noise": {
+            "amocrm_snapshot_safety_window_updated": True,
+            "note": "calls rerun acceptance must use mango_processed_summary event/chunk deltas; AMO contact snapshots may report updated rows inside the 5-minute overlap.",
+        },
+        "safety": {
+            "network_calls": False,
+            "writes_timeline_db": False,
+            "writes_prod_db": False,
+            "writes_amo": False,
+            "writes_tallanto": False,
+            "sends_messages": False,
+            "runs_asr": False,
+            "runs_analyze": False,
+        },
+    }
+
+
+def mango_processed_cursor(db_path: Path, *, tenant_id: str) -> Mapping[str, Any]:
+    row = None
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        row = con.execute(
+            """
+            SELECT last_cursor_ts, updated_at, metadata_json
+            FROM ingestion_cursors
+            WHERE tenant_id = ? AND source_system = 'mango_processed_summary'
+            """,
+            (tenant_id,),
+        ).fetchone()
+    if row is None:
+        return {"source_system": "mango_processed_summary", "last_cursor_ts": None, "max_source_ts": None}
+    metadata = {}
+    try:
+        parsed = json.loads(str(row["metadata_json"] or "{}"))
+        metadata = parsed.get("metadata") if isinstance(parsed, Mapping) else {}
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+    except json.JSONDecodeError:
+        metadata = {}
+    return {
+        "source_system": "mango_processed_summary",
+        "last_cursor_ts": row["last_cursor_ts"],
+        "updated_at": row["updated_at"],
+        "max_source_ts": metadata.get("max_source_ts"),
+    }
+
+
+def discover_mango_processed_call_dbs(
+    scan_roots: Sequence[Path],
+    *,
+    package_globs: Sequence[str],
+    since: str,
+) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    seen: set[Path] = set()
+    since_dt = parse_iso_datetime(since) if since else None
+    for scan_root in scan_roots:
+        for pattern in package_globs:
+            for root in sorted(scan_root.glob(pattern)):
+                if not root.is_dir():
+                    continue
+                for db_path in sorted((root / "asr_ui_batch").glob("*.sqlite")):
+                    resolved = db_path.expanduser().resolve(strict=False)
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    result.append(inspect_mango_call_db(root, resolved, since_dt=since_dt))
+    return result
+
+
+def inspect_mango_call_db(root: Path, db_path: Path, *, since_dt: datetime | None) -> Mapping[str, Any]:
+    if ".before_" in db_path.name or "before_" in db_path.name:
+        return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "backup_db_name"}
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA query_only=ON")
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='call_records'").fetchone() is None:
+                return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "missing_call_records"}
+            cols = {str(row[1]) for row in con.execute("PRAGMA table_info(call_records)")}
+            if "analysis_status" not in cols or "analysis_json" not in cols:
+                return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "missing_analysis_columns"}
+            date_col = next((col for col in ("started_at", "call_at", "event_at") if col in cols), None)
+            if not date_col:
+                return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "missing_call_datetime"}
+            rows = con.execute(
+                f"""
+                SELECT {date_col} AS call_at, analysis_status, analysis_json
+                FROM call_records
+                WHERE {date_col} IS NOT NULL AND TRIM({date_col}) != ''
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": f"sqlite_error:{type(exc).__name__}"}
+    total = len(rows)
+    done_rows = [
+        row
+        for row in rows
+        if str(row["analysis_status"] or "") == "done" and str(row["analysis_json"] or "").strip()
+    ]
+    selected = 0
+    min_at = None
+    max_at = None
+    for row in done_rows:
+        raw = str(row["call_at"] or "")
+        parsed = parse_iso_datetime(raw)
+        if parsed is None:
+            continue
+        min_at = parsed if min_at is None else min(min_at, parsed)
+        max_at = parsed if max_at is None else max(max_at, parsed)
+        if since_dt is None or parsed >= since_dt:
+            selected += 1
+    return {
+        "root": str(root),
+        "db_path": str(db_path),
+        "usable": True,
+        "rows_total": total,
+        "analysis_done": len(done_rows),
+        "min_started_at": min_at.isoformat() if min_at else None,
+        "max_started_at": max_at.isoformat() if max_at else None,
+        "selected_after_cursor": selected,
+        "has_ra_final_summary": any(root.rglob("RA_FINAL_SUMMARY.json")),
+    }
+
+
+def parse_iso_datetime(raw: str) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:

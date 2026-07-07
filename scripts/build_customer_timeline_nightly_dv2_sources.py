@@ -331,6 +331,24 @@ def build_service_config(
 ) -> Mapping[str, Any]:
     allowed_root = ROOT / ".codex_local" / "staging"
     steps: list[Mapping[str, Any]] = []
+    mango_sweep_jsonl = out_root / "mango_processed_sweep.jsonl"
+    steps.append(
+        {
+            "name": "mango_processed_sweep",
+            "kind": "mango_processed_sweep",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "producer_script": str(ROOT / "scripts" / "build_mango_call_timeline_increment.py"),
+                "scan_roots": [str(Path("/Users/dmitrijfabarisov/Projects/Mango analyse/product_data"))],
+                "package_globs": ["mango_update_after_*"],
+                "out_jsonl": str(mango_sweep_jsonl),
+                "report_out": str(out_root / "mango_processed_sweep_producer_report.json"),
+                "manifest_path": str(out_root / "mango_processed_sweep_manifest.json"),
+                "inventory_out": str(out_root / "mango_processed_sweep_inventory.json"),
+            },
+        }
+    )
     existing_config = allowed_root / "nightly_service" / "customer_timeline_nightly_service_config.json"
     if existing_config.exists():
         payload = json.loads(existing_config.read_text(encoding="utf-8"))
@@ -339,6 +357,11 @@ def build_service_config(
                 normalized = dict(step)
                 normalized["required"] = True
                 normalized["enabled"] = True
+                for source in normalized.get("config", {}).get("sources", []):
+                    if source.get("source_system") == "mango_processed_summary":
+                        source["name"] = "mango_processed_sweep"
+                        source["path"] = str(mango_sweep_jsonl)
+                        source["source_ref"] = "mango:processed_sweep:latest"
                 steps.append(normalized)
                 break
     steps.append(

@@ -1407,3 +1407,22 @@ public Telegram poller — PID `42671` в screen
 poller не найден, поэтому рабочий live-процесс не гасился. Yandex/OpenClaw
 rollback backup повторно подтверждён sha256
 `ef9ef249b4192b768cd1eb826f6df20514994539a3911f9aeee19bbc295d03c8`.
+
+### D-072. Nightly warehouse now sweeps processed Mango call folders before import
+
+Решение владельца от 2026-07-07: исправить именно штатный ночной процесс, а не
+разово подставлять файл со звонками. Добавлен обязательный шаг
+`mango_processed_sweep` перед `calls_and_amo_incremental` в Dv2 nightly chain.
+
+Шаг сканирует локальные `product_data/mango_update_after_*`, берёт только уже
+обработанные `call_records` с `analysis_status='done'`, не запускает ASR,
+Resolve+Analyze, LLM и сетевой Mango API, строит JSONL в формате существующего
+`build_mango_call_timeline_increment.py` и кладёт его в
+`.codex_local/staging/nightly_dv2_sources/`. Далее штатный
+`MangoCallSummaryNormalizer` импортирует JSONL в staging Customer Timeline.
+
+Критерий публикации следующего prod snapshot по звонкам: реальный SQL-прирост
+`timeline_events.source_system='mango_processed_summary'` и продвижение
+`MAX(event_at)`, а не общий `changed_customer_count`. Известное поведение:
+AMO contact snapshot может давать повторный `updated` в 5-минутном overlap,
+поэтому rerun=0 для звонков проверяется отдельно по `mango_processed_summary`.

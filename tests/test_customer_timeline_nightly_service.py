@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 
 import mango_mvp.customer_timeline.nightly_service as nightly_service_module
-from mango_mvp.customer_timeline import CustomerIdentity, CustomerTimelineSQLiteStore, IdentityStatus
+from mango_mvp.customer_timeline import (
+    CustomerIdentity,
+    CustomerTimelineSQLiteStore,
+    IdentityLink,
+    IdentityLinkType,
+    IdentityMatchClass,
+    IdentityStatus,
+)
 from mango_mvp.customer_timeline.nightly_service import run_nightly_service, service_config_from_json
 
 
@@ -38,6 +45,72 @@ def seed_customer(db_path: Path, allowed_root: Path) -> None:
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def seed_phone_link(db_path: Path, allowed_root: Path, *, phone: str = "+79990001122") -> None:
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                link_type=IdentityLinkType.PHONE,
+                link_value=phone,
+                source_system="test",
+                source_ref="test:phone",
+                customer_id="customer:nightly-1",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                first_seen_at=NOW,
+                last_seen_at=NOW,
+            )
+        )
+
+
+def write_processed_call_db(path: Path, *, phone: str = "+79990001122") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            CREATE TABLE call_records (
+              id TEXT PRIMARY KEY,
+              source_call_id TEXT,
+              source_filename TEXT,
+              started_at TEXT,
+              phone TEXT,
+              manager_name TEXT,
+              direction TEXT,
+              duration_sec REAL,
+              analysis_status TEXT,
+              analysis_json TEXT
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO call_records (
+              id, source_call_id, source_filename, started_at, phone, manager_name,
+              direction, duration_sec, analysis_status, analysis_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "call-row-1",
+                "provider-call-1",
+                "call-row-1.wav",
+                "2026-07-04T10:00:00+00:00",
+                phone,
+                "manager",
+                "inbound",
+                120.0,
+                "done",
+                json.dumps(
+                    {
+                        "summary": "Клиент спросил про расписание.",
+                        "history_summary": "Клиент спросил про расписание.",
+                        "call_type": "sales_call",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        con.commit()
 
 
 def write_service_config(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -318,6 +391,87 @@ def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None
         ).fetchone()
     assert row[1:] == ("mango_call", "mango_processed_summary")
     assert chunk_row == (0, 1)
+
+
+def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    seed_phone_link(db_path, tmp_path)
+    source_root = tmp_path / "product_data"
+    call_db = source_root / "mango_update_after_20260704_20260704_v1" / "asr_ui_batch" / "calls.sqlite"
+    write_processed_call_db(call_db)
+    out_jsonl = tmp_path / "nightly_dv2_sources" / "mango_processed_sweep.jsonl"
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "config": {
+                    "producer_script": str(Path(__file__).resolve().parents[1] / "scripts" / "build_mango_call_timeline_increment.py"),
+                    "scan_roots": [str(source_root)],
+                    "package_globs": ["mango_update_after_*"],
+                    "out_jsonl": str(out_jsonl),
+                    "report_out": str(tmp_path / "nightly_dv2_sources" / "mango_processed_sweep_report.json"),
+                    "manifest_path": str(tmp_path / "nightly_dv2_sources" / "mango_processed_sweep_manifest.json"),
+                    "inventory_out": str(tmp_path / "nightly_dv2_sources" / "mango_processed_sweep_inventory.json"),
+                },
+            },
+            {
+                "name": "calls_and_amo_incremental",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service" / "journal.jsonl"),
+                    "safety_margin_seconds": 0,
+                    "sources": [
+                        {
+                            "name": "mango_processed_sweep",
+                            "source_system": "mango_processed_summary",
+                            "path": str(out_jsonl),
+                            "source_ref": "mango:processed_sweep:latest",
+                            "normalizer": "mango_processed_summary",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "mango_sweep_service_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    config = service_config_from_json(config_path)
+
+    first = run_nightly_service(config)
+    second = run_nightly_service(config)
+
+    assert first["overall_status"] == "ok"
+    assert first["steps"][0]["summary"]["events_written"] == 1
+    assert first["steps"][1]["summary"]["changed_customer_count"] == 1
+    assert second["overall_status"] == "ok"
+    assert second["steps"][0]["summary"]["events_written"] == 1
+    assert second["steps"][1]["summary"]["changed_customer_count"] == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM timeline_events
+            WHERE source_system = 'mango_processed_summary' AND event_type = 'mango_call'
+            """
+        ).fetchone()
+        chunk_row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM bot_context_chunks
+            WHERE source_system = 'mango_processed_summary' AND allowed_for_bot = 0 AND requires_manager_review = 1
+            """
+        ).fetchone()
+    assert row[0] == 1
+    assert chunk_row[0] == 1
 
 
 def test_nightly_service_fail_closes_mango_processed_summary_allowed_for_bot_true(tmp_path: Path) -> None:

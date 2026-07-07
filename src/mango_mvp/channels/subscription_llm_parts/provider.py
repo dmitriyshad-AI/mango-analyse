@@ -2744,8 +2744,10 @@ def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]
 def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
     if _clamp_float(frame.get("confidence", 0.0)) < 0.6:
         return False
-    if _semantic_frame_value(frame, "risk_class") == "p0" or _semantic_frame_bool(frame.get("must_handoff")) is True:
+    if _semantic_frame_value(frame, "risk_class") == "p0":
         return False
+    if _semantic_frame_bool(frame.get("must_handoff")) is True:
+        return True
     return (
         _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
         or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
@@ -2771,7 +2773,10 @@ def _apply_tone_close_frame_veto(
     if not _tone_close_frame_veto_enabled(context):
         return after_close
     close_detect = after_close.metadata.get("close_detect") if isinstance(after_close.metadata, Mapping) else {}
-    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() != "fired":
+    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() not in {
+        "fired",
+        "suppressed_handoff",
+    }:
         return after_close
     frame = _semantic_frame_from_result(before_close) or _semantic_frame_from_result(after_close)
     if not frame or not _semantic_frame_close_veto_candidate(frame):
@@ -2781,6 +2786,7 @@ def _apply_tone_close_frame_veto(
         "enabled": True,
         "status": "applied",
         "reason": "semantic_frame_hot_lead_close_veto",
+        "close_status_before_veto": str(close_detect.get("status") or "").strip(),
         "close_step": str(close_detect.get("step") or "").strip(),
         "route_before_close": before_close.route,
         "route_after_close": after_close.route,

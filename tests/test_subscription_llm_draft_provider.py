@@ -143,6 +143,7 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
 )
 from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
+    _semantic_frame_close_veto_candidate,
     build_direct_path_semantic_frame_posthoc_prompt,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import READING_APPLY_CLASSES_ENV, SEMANTIC_READING_CLASSES_ENV
@@ -5830,6 +5831,145 @@ def test_direct_path_tone_close_frame_veto_blocks_hot_lead_close_when_enabled() 
     assert "tone_close_frame_veto" in result.safety_flags
     assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
     assert "close_detect" not in result.metadata
+
+
+def test_direct_path_tone_close_frame_veto_allows_must_handoff_hot_lead() -> None:
+    original_text = "Да, записать можем. Передам менеджеру, чтобы он оформил запись."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=original_text,
+            topic_id="theme:enroll",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "safe",
+                    "must_handoff": True,
+                    "deal_stage": "closing",
+                    "payment_readiness": "ready_to_pay",
+                    "requested_action": "enroll",
+                    "answerability": "manager_only",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, записывайте нас.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_FRAME_VETO_ENV: "1",
+        },
+    )
+
+    assert result.draft_text == original_text
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
+    assert result.metadata["tone_close_frame_veto"]["close_status_before_veto"] == "fired"
+    assert "tone_close_frame_veto" in result.safety_flags
+    assert "close_detect" not in result.metadata
+
+
+def test_direct_path_tone_close_frame_veto_restores_suppressed_handoff_when_frame_requires_action() -> None:
+    original_text = "Передам менеджеру: он проверит чек и вернётся с ответом."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text=original_text,
+            topic_id="theme:payment_confirmation",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "manager_action",
+                    "must_handoff": True,
+                    "deal_stage": "post_payment",
+                    "payment_readiness": "paid",
+                    "requested_action": "handoff_manager",
+                    "answerability": "manager_only",
+                }
+            },
+            safety_flags=("manager_approval_required", "no_auto_send"),
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, перешлю чек.",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_FRAME_VETO_ENV: "1",
+        },
+    )
+
+    assert result.draft_text == original_text
+    assert result.route == "draft_for_manager"
+    assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
+    assert result.metadata["tone_close_frame_veto"]["close_status_before_veto"] == "suppressed_handoff"
+    assert result.metadata["tone_close_frame_veto"]["route_after_close"] == "bot_answer_self_for_pilot"
+    assert "tone_close_frame_veto" in result.safety_flags
+    assert "close_detect" not in result.metadata
+
+
+def test_direct_path_tone_close_frame_veto_does_not_apply_to_p0_frame() -> None:
+    original_text = "Передам менеджеру."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="manager_only",
+            draft_text=original_text,
+            topic_id="theme:p0",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "p0",
+                    "must_handoff": True,
+                    "deal_stage": "closing",
+                    "payment_readiness": "ready_to_pay",
+                    "requested_action": "enroll",
+                    "answerability": "manager_only",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, верните деньги.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_FRAME_VETO_ENV: "1",
+        },
+    )
+
+    assert "tone_close_frame_veto" not in result.metadata
+    assert "tone_close_frame_veto" not in result.safety_flags
+
+
+def test_semantic_frame_close_veto_candidate_rejects_p0_but_allows_handoff_hot_lead() -> None:
+    hot_lead = {
+        "confidence": 0.95,
+        "risk_class": "safe",
+        "must_handoff": True,
+        "deal_stage": "closing",
+        "payment_readiness": "ready_to_pay",
+        "requested_action": "enroll",
+    }
+    handoff_only = {
+        "confidence": 0.95,
+        "risk_class": "manager_action",
+        "must_handoff": True,
+        "deal_stage": "post_payment",
+        "payment_readiness": "paid",
+        "requested_action": "handoff_manager",
+    }
+    p0_hot_lead = {**hot_lead, "risk_class": "p0"}
+
+    assert _semantic_frame_close_veto_candidate(hot_lead) is True
+    assert _semantic_frame_close_veto_candidate(handoff_only) is True
+    assert _semantic_frame_close_veto_candidate(p0_hot_lead) is False
 
 
 def test_direct_path_tone_close_frame_veto_profile_default_blocks_hot_lead_close() -> None:

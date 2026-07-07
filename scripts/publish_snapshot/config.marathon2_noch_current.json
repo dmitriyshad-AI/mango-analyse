@@ -91,13 +91,13 @@
       "stop_command": [
         "screen",
         "-S",
-        "mango_public_pilot_bots_main_eb6fa0b_reliable_20260629_v2",
+        "mango_public_pilot_bots_main_a23dede6_clean_20260707",
         "-X",
         "quit"
       ],
       "start_command": [
         "bash",
-        ".codex_local/reliable_enable_20260629/start_live_with_reliable.sh"
+        ".codex_local/deploy_20260707_a23dede6/start_live_a23dede6_clean.sh"
       ],
       "smoke_command": [
         "python3",

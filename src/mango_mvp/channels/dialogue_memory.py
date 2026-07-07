@@ -32,6 +32,7 @@ MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
 SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
+SLOTS_GSF_KNOWN_MERGE_ENV = "TELEGRAM_SLOTS_GSF_KNOWN_MERGE"
 DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
 P0_LATCH_AUTORELEASE_V2_ENV = "TELEGRAM_P0_LATCH_AUTORELEASE_V2"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
@@ -164,6 +165,7 @@ _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE = re.compile(
     re.I,
 )
 _MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES = {"dialogue_memory", "memory_llm", "bot_inferred", "unknown"}
+_SLOTS_GSF_KNOWN_MERGE_KEYS = ("grade", "subject", "format")
 
 
 @dataclass(frozen=True)
@@ -311,11 +313,18 @@ class DialogueMemory:
 
     def to_prompt_view(self) -> Mapping[str, Any]:
         provenance_enabled = _memory_provenance_enabled()
-        known_values = {
+        base_known_values = {
             key: slot.value
             for key, slot in self.known_slots.items()
             if slot.value and (not provenance_enabled or slot.source != "memory_provenance" or bool(slot.quote))
         }
+        known_values = dict(base_known_values)
+        slot_sources = {key: slot.source for key, slot in self.known_slots.items() if slot.value}
+        semantic_merge = _slots_gsf_known_merge_view(
+            known_values=known_values,
+            slot_sources=slot_sources,
+            semantic_slots=self.semantic_reading_slots,
+        )
         slot_provenance = {
             key: {
                 "value": slot.value,
@@ -334,7 +343,7 @@ class DialogueMemory:
             "active_brand": self.active_brand,
             "recent_turns": [turn.to_json_dict() for turn in self.turns[-MAX_PROMPT_TURNS:]],
             "known_slots": known_values,
-            "slot_sources": {key: slot.source for key, slot in self.known_slots.items() if slot.value},
+            "slot_sources": slot_sources,
             "slot_provenance": slot_provenance,
             "memory_provenance": {
                 "enabled": provenance_enabled,
@@ -358,7 +367,9 @@ class DialogueMemory:
             "client_confirmed_slots": dict(self.client_confirmed_slots),
             "crm_known_slots": dict(self.crm_known_slots),
             "bot_inferred_slots": dict(self.bot_inferred_slots),
-            "do_not_ask_again": list(self.do_not_reask_slots) or sorted(known_values),
+            "semantic_inferred_slots": semantic_merge["semantic_inferred_slots"],
+            "slots_merge_trace": semantic_merge["slots_merge_trace"],
+            "do_not_ask_again": list(self.do_not_reask_slots) or sorted(base_known_values),
             "held_state": self.held_state.to_prompt_view(),
             "current_message_roles": dict(self.current_message_roles),
             "proactive_state": dict(self.proactive_state),
@@ -2097,6 +2108,70 @@ def _slots_reask_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if value is None:
         value = os.getenv(SLOTS_REASK_ENV)
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _slots_gsf_known_merge_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(SLOTS_GSF_KNOWN_MERGE_ENV)
+    if value is None:
+        value = os.getenv(SLOTS_GSF_KNOWN_MERGE_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _slots_gsf_known_merge_view(
+    *,
+    known_values: dict[str, str],
+    slot_sources: dict[str, str],
+    semantic_slots: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not _slots_gsf_known_merge_enabled(None):
+        return {"semantic_inferred_slots": {}, "slots_merge_trace": []}
+    inferred: dict[str, Mapping[str, Any]] = {}
+    trace: list[Mapping[str, Any]] = []
+    for key in _SLOTS_GSF_KNOWN_MERGE_KEYS:
+        raw = semantic_slots.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        value = str(raw.get("value") or "").strip()[:80]
+        if not value:
+            continue
+        source_name = str(raw.get("source_name") or "semantic_reading_llm").strip()[:80] or "semantic_reading_llm"
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        payload = {
+            "value": value,
+            "source": source_name,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "status": "llm_inferred_not_client_confirmed",
+        }
+        inferred[key] = payload
+        existing = str(known_values.get(key) or "").strip()
+        if existing:
+            trace.append(
+                {
+                    "slot": key,
+                    "status": "kept_existing",
+                    "existing_source": slot_sources.get(key, ""),
+                    "semantic_source": source_name,
+                    "conflict": existing != value,
+                }
+            )
+            continue
+        known_values[key] = value
+        slot_sources[key] = source_name
+        trace.append(
+            {
+                "slot": key,
+                "status": "merged_from_semantic_reading",
+                "semantic_source": source_name,
+                "confidence": payload["confidence"],
+                "client_confirmed": False,
+            }
+        )
+    return {"semantic_inferred_slots": inferred, "slots_merge_trace": trace}
 
 
 def _prev_semantic_reading_slots(previous_memory: Mapping[str, Any] | DialogueMemory | None) -> Mapping[str, Mapping[str, Any]]:

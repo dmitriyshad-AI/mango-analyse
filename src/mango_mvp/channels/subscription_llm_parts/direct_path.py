@@ -2870,13 +2870,45 @@ def _direct_path_known_slots_instruction_line(context: Optional[Mapping[str, Any
         slots.setdefault(key, (_direct_path_slot_label(key), ""))
     if not slots:
         return ""
+    semantic_inferred = _direct_path_semantic_inferred_slot_keys(context)
     ordered_keys = [key for key in ("grade", "subject", "format", "learning_goal", "level", "product", "product_family") if key in slots]
     ordered_keys.extend(key for key in sorted(slots) if key not in ordered_keys)
-    parts = []
+    confirmed_parts = []
+    inferred_parts = []
     for key in ordered_keys:
         label, value = slots[key]
-        parts.append(f"{label}: {value}" if value else label)
-    return "эти параметры клиент уже назвал — НЕ переспрашивай: " + "; ".join(parts) + "."
+        part = f"{label}: {value}" if value else label
+        if key in semantic_inferred:
+            inferred_parts.append(part)
+        else:
+            confirmed_parts.append(part)
+    lines: list[str] = []
+    if confirmed_parts:
+        lines.append("эти параметры клиент уже назвал — НЕ переспрашивай: " + "; ".join(confirmed_parts) + ".")
+    if inferred_parts:
+        lines.append(
+            "эти параметры модель вывела из реплики, это НЕ подтверждение клиента; "
+            "используй их только как подсказку для ответа и не утверждай как факт клиента: "
+            + "; ".join(inferred_parts)
+            + "."
+        )
+    return " ".join(lines)
+
+
+def _direct_path_semantic_inferred_slot_keys(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, Mapping):
+        return set()
+    sources = memory.get("slot_sources")
+    if not isinstance(sources, Mapping):
+        return set()
+    return {
+        _direct_path_canonical_slot_key(key)
+        for key, source in sources.items()
+        if str(source or "").strip() == "semantic_reading_llm" and _direct_path_canonical_slot_key(key)
+    }
 
 
 def _direct_path_has_known_qualification_slot(context: Optional[Mapping[str, Any]]) -> bool:

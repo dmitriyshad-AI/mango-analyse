@@ -26,6 +26,8 @@
 
 **1.4 Slots-1b код** по `2026-07-07_DIZAIN_slots1b_pamyat_slotov_na_LLM.md` (default-OFF `TELEGRAM_SLOTS_GSF_KNOWN_MERGE`, вне пачки): merge-view, конфликт-правила, child_name-понижение, юниты+фикстуры. Замер — микро-парой ПОСЛЕ экзамена (единственный оставшийся локальный замер) → отдельное «да» → следующий цикл.
 
+**D1 status 2026-07-07 Slots-1b:** default-OFF merge-view реализован: `TELEGRAM_SLOTS_GSF_KNOWN_MERGE=1` подмешивает только пустые `grade/subject/format` из `semantic_reading_slots` в prompt-view, не перетирает существующие слоты, не подмешивает `child_name`, не пишет в `client_confirmed_slots` и не расширяет `do_not_ask_again`. Direct prompt помечает такие параметры как модельный вывод, а не подтверждение клиента. Микро-пара намеренно оставлена после M1-экзамена, как требует ТЗ.
+
 ## Фаза 2 — после возврата M1 (порядок жёсткий)
 
 **2.1** Отдать Fable сырьё OUT (transcripts+judge+REPORT+per-class счётчики обеих ног) — регрейд по чек-листу §8.

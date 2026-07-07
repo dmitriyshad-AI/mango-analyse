@@ -5,7 +5,9 @@ from pathlib import Path
 
 from mango_mvp.channels.dialogue_memory import (
     DialogueMemory,
+    DialogueSlot,
     DialogueTurn,
+    SLOTS_GSF_KNOWN_MERGE_ENV,
     SLOTS_REASK_ENV,
     build_dialogue_memory,
     dialogue_memory_from_mapping,
@@ -518,6 +520,84 @@ def test_semantic_hidden_slots_do_not_enter_direct_path_prompt_as_confirmed_valu
     assert '"client_confirmed_slots": {}' in prompt
     assert '"known_slots": {}' in prompt
     assert "grade" not in _direct_path_prompt_known_slots({"dialogue_memory_view": followup.to_prompt_view()})
+
+
+def test_slots_gsf_known_merge_is_default_off(monkeypatch) -> None:
+    monkeypatch.delenv(SLOTS_GSF_KNOWN_MERGE_ENV, raising=False)
+    memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        semantic_reading_slots={
+            "grade": {"value": "9", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+            "subject": {"value": "физика", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+        },
+    )
+
+    view = memory.to_prompt_view()
+
+    assert view["known_slots"] == {}
+    assert view["semantic_inferred_slots"] == {}
+    assert view["slots_merge_trace"] == []
+
+
+def test_slots_gsf_known_merge_adds_only_empty_gsf_without_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv(SLOTS_GSF_KNOWN_MERGE_ENV, "1")
+    memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        known_slots={"subject": DialogueSlot("математика", "memory_provenance", 1.0, quote="математика")},
+        client_confirmed_slots={"subject": "математика"},
+        semantic_reading_slots={
+            "grade": {"value": "9", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+            "subject": {"value": "физика", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+            "format": {"value": "онлайн", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.91},
+            "child_name": {"value": "Максим", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.99},
+        },
+    )
+
+    view = memory.to_prompt_view()
+
+    assert view["known_slots"]["grade"] == "9"
+    assert view["known_slots"]["subject"] == "математика"
+    assert view["known_slots"]["format"] == "онлайн"
+    assert "child_name" not in view["known_slots"]
+    assert view["slot_sources"]["grade"] == SEMANTIC_READING_SLOT_SOURCE
+    assert view["slot_sources"]["format"] == SEMANTIC_READING_SLOT_SOURCE
+    assert view["client_confirmed_slots"] == {"subject": "математика"}
+    assert "grade" not in view["client_confirmed_slots"]
+    assert "format" not in view["client_confirmed_slots"]
+    assert view["do_not_ask_again"] == ["subject"]
+    assert view["semantic_inferred_slots"]["grade"]["status"] == "llm_inferred_not_client_confirmed"
+    assert any(item["slot"] == "subject" and item["status"] == "kept_existing" and item["conflict"] for item in view["slots_merge_trace"])
+
+
+def test_slots_gsf_known_merge_prompt_marks_llm_slots_as_inferred(monkeypatch) -> None:
+    monkeypatch.setenv(SLOTS_GSF_KNOWN_MERGE_ENV, "1")
+    memory = DialogueMemory(
+        session_id="s1",
+        active_brand="foton",
+        semantic_reading_slots={
+            "grade": {"value": "9", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+            "subject": {"value": "физика", "source_name": SEMANTIC_READING_SLOT_SOURCE, "confidence": 0.94},
+        },
+    )
+    view = memory.to_prompt_view()
+
+    prompt = _build_direct_path_prompt(
+        "Сколько стоит?",
+        context={
+            "active_brand": "foton",
+            "dialogue_memory_view": view,
+            "TELEGRAM_DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT": "1",
+        },
+        facts={},
+    )
+
+    assert "модель вывела из реплики" in prompt
+    assert "НЕ подтверждение клиента" in prompt
+    assert '"client_confirmed_slots": {}' in prompt
+    assert "клиент уже назвал — НЕ переспрашивай: класс: 9" not in prompt
+    assert _direct_path_prompt_known_slots({"dialogue_memory_view": view})["grade"] == "9"
 
 
 def test_slots_reask_ignores_empty_hidden_values_and_never_leaks_sentinels(monkeypatch) -> None:

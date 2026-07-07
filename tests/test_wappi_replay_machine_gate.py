@@ -34,6 +34,30 @@ def test_machine_gate_allows_client_safe_number() -> None:
     assert result.passed is True
 
 
+def test_machine_gate_allows_known_kb_address_house_number() -> None:
+    result = run_machine_gate(
+        _case(client_message="Где проходит лагерь?"),
+        BotReplayResult(
+            route="bot_answer_self_for_pilot",
+            bot_text="Площадка: Долгопрудный, Институтский пер., 9 (Главный корпус МФТИ).",
+        ),
+    )
+
+    assert result.passed is True
+    assert result.new_numbers == ()
+
+
+def test_machine_gate_keeps_unknown_address_number_unverified() -> None:
+    result = run_machine_gate(
+        _case(client_message="Где проходит лагерь?"),
+        BotReplayResult(route="bot_answer_self_for_pilot", bot_text="Площадка: ул. Ленина, 99."),
+    )
+
+    assert result.passed is False
+    assert "new_number_unverified" in result.flags
+    assert "99" in result.new_numbers
+
+
 def test_machine_gate_requires_p0_manager_route_and_flags() -> None:
     result = run_machine_gate(
         _case(expected_p0=True, client_message="Хочу возврат"),

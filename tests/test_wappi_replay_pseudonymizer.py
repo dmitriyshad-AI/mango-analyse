@@ -6,7 +6,7 @@ from mango_mvp.replay_exam.pseudonymizer import ReplayPseudonymizer, pii_signals
 def test_pseudonymizer_masks_contacts_and_names_recursively() -> None:
     pseudonymizer = ReplayPseudonymizer(dialog_salt="d1")
     payload = {
-        "body": "Мария Иванова, телефон +7 999 123-45-67, email test@example.com, договор ABC-42, сайт https://example.com",
+        "body": "Мария Иванова, телефон +7 999 123-45-67, email test@example.com, telegram @real_user, договор ABC-42, сайт https://example.com",
         "nested": ["Мария Иванова просит документы"],
     }
     scrubbed = pseudonymizer.object(payload)
@@ -14,11 +14,13 @@ def test_pseudonymizer_masks_contacts_and_names_recursively() -> None:
     text = repr(scrubbed)
     assert "+7 999" not in text
     assert "test@example.com" not in text
+    assert "@real_user" not in text
     assert "https://example.com" not in text
     assert "ABC-42" not in text
     assert "Мария Иванова" not in text
     assert "[phone]" in text
     assert "[email]" in text
+    assert "[username]" in text
     assert pii_signals(scrubbed) == []
 
 
@@ -28,6 +30,25 @@ def test_pseudonymizer_masks_mixed_case_child_name_from_pilot() -> None:
     scrubbed = pseudonymizer.text("Записала Сашу кибирева в лагерь.")
 
     assert "Сашу кибирева" not in scrubbed
+    assert pii_signals(scrubbed) == []
+
+
+def test_pseudonymizer_preserves_program_names_from_stop_list() -> None:
+    pseudonymizer = ReplayPseudonymizer(dialog_salt="programs")
+
+    scrubbed = pseudonymizer.text('Интересует Летняя очная школа "Ирина Волкова" и ФизМат «Формула Физтеха».')
+
+    assert 'Летняя очная школа "Ирина Волкова"' in scrubbed
+    assert "ФизМат «Формула Физтеха»" in scrubbed
+    assert pii_signals(scrubbed) == []
+
+
+def test_pseudonymizer_still_masks_same_words_as_person_name_outside_program_context() -> None:
+    pseudonymizer = ReplayPseudonymizer(dialog_salt="person")
+
+    scrubbed = pseudonymizer.text("Ирина Волкова написала про документы.")
+
+    assert "Ирина Волкова" not in scrubbed
     assert pii_signals(scrubbed) == []
 
 
@@ -46,12 +67,14 @@ def test_pseudonymizer_uses_stable_fake_name_per_dialog() -> None:
 def test_pseudonymizer_replaces_wappi_and_amo_ids_recursively() -> None:
     pseudonymizer = ReplayPseudonymizer(dialog_salt="ids")
     payload = {
+        "id": "116000000000000001",
         "profile_id": "ec2eed50-b55f",
         "chat_id": "79001234567",
         "message_id": "msg-real-1",
         "raw": {
             "lead_id": "123456",
             "contact_id": "654321",
+            "reply_message": {"file_name": "6d72888888888888.pdf"},
             "events": [{"talk_id": "talk-77", "thread_id": "thread-88"}],
         },
     }
@@ -59,9 +82,11 @@ def test_pseudonymizer_replaces_wappi_and_amo_ids_recursively() -> None:
     scrubbed = pseudonymizer.object(payload)
     text = repr(scrubbed)
 
+    assert "116000000000000001" not in text
     assert "ec2eed50-b55f" not in text
     assert "79001234567" not in text
     assert "msg-real-1" not in text
     assert "123456" not in text
     assert "654321" not in text
+    assert "6d72888888888888.pdf" not in text
     assert pii_signals(scrubbed) == []

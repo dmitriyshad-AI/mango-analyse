@@ -57,8 +57,8 @@ def build_replay_judge_payload(
         "prefix_messages": _case_prefix_payload(case),
         "client_message": case.client_message,
         "client_safe_facts_digest": _facts_digest(case),
-        "answer_a": {"route": first.route, "text": first.bot_text},
-        "answer_b": {"route": second.route, "text": second.bot_text},
+        "answer_a": {"text": first.bot_text},
+        "answer_b": {"text": second.bot_text},
         "rubric": [
             "Would a manager likely send this without edits?",
             "Does it avoid unsupported numbers, wrong brand, P0 weakening, and private data?",

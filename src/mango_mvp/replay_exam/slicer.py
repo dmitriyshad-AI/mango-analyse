@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 from mango_mvp.channels.p0_recall_spec import codes_from_text
@@ -43,6 +44,7 @@ def slice_teacher_forcing_cases(
     brand: str,
     manager_window_seconds: int = 600,
     burst_seconds: int = 120,
+    min_manager_reference_chars: int = 30,
 ) -> list[ReplayCase]:
     ordered = sorted(messages, key=lambda item: (item.timestamp, item.message_id))
     first_ts = ordered[0].timestamp if ordered else 0
@@ -76,10 +78,11 @@ def slice_teacher_forcing_cases(
                 break
             if future.timestamp - burst[-1].timestamp <= manager_window_seconds:
                 manager_refs.append(future)
-        if manager_refs:
+        manager_reference = "\n".join(item.text for item in manager_refs)
+        meaningful_reference = re.sub(r"\s+", "", manager_reference)
+        if manager_refs and len(meaningful_reference) >= max(0, min_manager_reference_chars):
             turn_no += 1
             client_message = "\n".join(item.text for item in burst)
-            manager_reference = "\n".join(item.text for item in manager_refs)
             prefix = tuple(item for item in ordered[:index] if item.text.strip())
             cases.append(
                 ReplayCase(

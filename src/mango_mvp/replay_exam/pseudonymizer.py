@@ -25,12 +25,12 @@ RU_MIXED_CASE_SURNAME_RE = re.compile(
     r"\b[А-ЯЁ][а-яё]{2,}\s+[а-яё]{3,}(?:ова|ева|ёва|ина|ская|цкая|ский|цкий|ов|ев|ёв|ин)\b"
 )
 RAW_IDENTIFIER_KEY_RE = re.compile(
-    r"^(?:from|to|phone|username|senderName|contact_name|task_id|wappi_bot_id|stanzaId|chatId)$",
+    r"^(?:id|from|to|phone|username|senderName|contact_name|task_id|wappi_bot_id|stanzaId|chatId|file_name|filename|file_id|attachment_id)$",
     re.I,
 )
 SENSITIVE_ID_KEY_RE = re.compile(
     r"(^|_)(?:profile|chat|message|lead|contact|talk|dialog|thread|event|source|dedupe)_?id$|"
-    r"^(?:profile_id|chat_id|message_id|lead_id|contact_id|talk_id|dialog_id|thread_id|from|to|phone|username|senderName|contact_name|task_id|wappi_bot_id|stanzaId|chatId)$",
+    r"^(?:id|profile_id|chat_id|message_id|lead_id|contact_id|talk_id|dialog_id|thread_id|from|to|phone|username|senderName|contact_name|task_id|wappi_bot_id|stanzaId|chatId|file_name|filename|file_id|attachment_id)$",
     re.I,
 )
 TIMESTAMP_KEY_RE = re.compile(r"(^|_)(?:ts|time|timestamp|created_at|updated_at|date|datetime|ts_masked)$", re.I)
@@ -44,6 +44,15 @@ FAKE_NAMES = (
     "Ирина Волкова",
     "Елена Соколова",
     "Наталья Кузнецова",
+)
+PROGRAM_NAME_STOP_PHRASES = (
+    'Летняя очная школа "Ирина Волкова"',
+    "Летняя очная школа «Ирина Волкова»",
+    "Летняя очная школа Ирина Волкова",
+    "ФизМат «Формула Физтеха»",
+    'ФизМат "Формула Физтеха"',
+    "Формула Физтеха",
+    "AI Lab",
 )
 
 
@@ -63,10 +72,20 @@ class ReplayPseudonymizer:
         text = str(value or "")
         text = PHONE_RE.sub("[phone]", text)
         text = EMAIL_RE.sub("[email]", text)
+        text = USERNAME_RE.sub("[username]", text)
         text = URL_RE.sub("[url]", text)
         text = CONTRACT_RE.sub("договор [contract]", text)
+        protected: dict[str, str] = {}
+        for index, phrase in enumerate(sorted(PROGRAM_NAME_STOP_PHRASES, key=len, reverse=True)):
+            token = f"__REPLAY_PROGRAM_NAME_{index}__"
+            if phrase in text:
+                protected[token] = phrase
+                text = text.replace(phrase, token)
         text = RU_NAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
-        return RU_MIXED_CASE_SURNAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
+        text = RU_MIXED_CASE_SURNAME_RE.sub(lambda match: self._fake_name(match.group(0)), text)
+        for token, phrase in protected.items():
+            text = text.replace(token, phrase)
+        return text
 
     def id_value(self, key: str, value: Any) -> str:
         raw = str(value or "").strip()

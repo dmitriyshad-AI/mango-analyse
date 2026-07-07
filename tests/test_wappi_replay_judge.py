@@ -36,6 +36,10 @@ def test_replay_judge_payload_keeps_hidden_key_outside_payload() -> None:
     assert payload.hidden_key["answer_a"] in {"baseline", "candidate"}
     assert "hidden_key" not in serialized
     assert "manager_reference" not in serialized
+    assert "manager_reference" not in json.dumps(payload.payload.get("answer_a"), ensure_ascii=False)
+    assert "manager_reference" not in json.dumps(payload.payload.get("answer_b"), ensure_ascii=False)
+    assert "route" not in json.dumps(payload.payload.get("answer_a"), ensure_ascii=False)
+    assert "route" not in json.dumps(payload.payload.get("answer_b"), ensure_ascii=False)
     assert "SECRET" not in serialized
     assert "prefix_messages" in serialized
     assert "client_safe_facts_digest" in serialized

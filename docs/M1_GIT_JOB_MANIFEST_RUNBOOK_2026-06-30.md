@@ -58,6 +58,26 @@ PY
 bash /tmp/mango_job_cmd.sh
 ```
 
+## Wappi Replay Exam Set Staging
+
+Для Wappi replay-exam пакетов `PROMPT_M1.md` не должен запускать
+`scripts/run_wappi_replay_exam.py` напрямую с `--set "$PKG/set/..."`.
+Перед dry-check и full-run набор нужно скопировать в локальный scrubbed-корень
+M1, сверить SHA-256 и во всех командах использовать только эту копию:
+
+```bash
+M1_SET_DIR="$HOME/.mango_local/replay_exam/scrubbed/<package_id>"
+M1_SET="$M1_SET_DIR/replay_exam_set_v1.jsonl"
+mkdir -p "$M1_SET_DIR"
+cp "$PKG/set/replay_exam_set_v1.jsonl" "$M1_SET"
+printf '<set_sha256>  %s\n' "$M1_SET" | shasum -a 256 -c -
+```
+
+Линт пакета обязан падать, если команда replay-runner не содержит `--set`
+или если значение `--set` не резолвится под
+`~/.mango_local/replay_exam/scrubbed`. `$M1_SET_DIR` обязательно добавлять в
+retention-пути для удаления после экзамена.
+
 ## Heavy Bundle Fallback
 
 `scripts/build_mango_clean_bundle.py` оставлен только как явный аварийный fallback. Его CLI требует `--allow-heavy-bundle`, чтобы случайно не собрать 800МБ-папку.

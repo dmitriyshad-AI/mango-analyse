@@ -12,6 +12,7 @@ from mango_mvp.channels.dialogue_memory import (
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     MEMORY_CHILD_IDENTITY_MODEL_ENV,
+    P0_LATCH_AUTORELEASE_V2_ENV,
     _dialog_summary_rolling_enabled,
     build_memory_llm_prompt,
     build_dialogue_memory,
@@ -1037,6 +1038,176 @@ def _build_memory_sequence(messages: list[str], *, session_id: str = "s-p0-auto-
         )
     assert memory is not None
     return memory
+
+
+_SAFE_INLINE_FRAME = {
+    "source": "inline",
+    "requested_action": "answer_question",
+    "risk_class": "safe",
+    "answerability": "answer_self",
+    "must_handoff": False,
+    "confidence": 0.95,
+}
+
+
+_SAFE_INLINE_READING = {
+    "source": "inline",
+    "requested_action": "answer_question",
+    "frame_confidence": 0.95,
+}
+
+
+def _client_turn_with_safe_frame(
+    previous,
+    message: str,
+    *,
+    session_id: str,
+    trace_dir=None,
+):
+    context = {P0_LATCH_AUTORELEASE_V2_ENV: "1"}
+    if trace_dir is not None:
+        context["dialogue_contract_debug_trace"] = {
+            "enabled": True,
+            "run_dir": str(trace_dir),
+            "dialog_id": session_id,
+            "turn": len(previous.turns) + 1 if previous is not None else 1,
+        }
+    memory = build_dialogue_memory(
+        current_message=message,
+        active_brand="foton",
+        previous_memory=previous,
+        session_id=session_id,
+        context=context,
+    )
+    return update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Отвечаю по справочному вопросу.",
+        route="bot_answer_self_for_pilot",
+        semantic_reading=_SAFE_INLINE_READING,
+        semantic_frame=_SAFE_INLINE_FRAME,
+        context=context,
+    )
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_releases_false_complaint_after_safe_frame(tmp_path) -> None:
+    memory = build_dialogue_memory(
+        current_message="Преподаватель ужасно ведёт занятия, я недовольна.",
+        active_brand="foton",
+        session_id="s-p0-v2-false-complaint",
+    )
+    assert memory.p0_latch.active is True
+    assert "complaint" in memory.p0_latch.codes
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Нет претензий, всё нравится, продлеваем.",
+    ):
+        memory = _client_turn_with_safe_frame(
+            memory,
+            message,
+            session_id="s-p0-v2-false-complaint",
+            trace_dir=tmp_path,
+        )
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "p0_latch_autorelease_v2"
+    assert "p0" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+    rows = _trace_rows(tmp_path / "debug_trace.jsonl")
+    release = [row for row in rows if row["node"] == "p0_latch_autorelease_v2" and row["values"].get("released")]
+    assert release
+    assert release[-1]["values"]["reason"] == "safe_frame_after_three_neutral_client_turns"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_keeps_real_refund_repeat() -> None:
+    memory = build_dialogue_memory(
+        current_message="Верните деньги за курс.",
+        active_brand="foton",
+        session_id="s-p0-v2-refund",
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Верните деньги, пожалуйста.",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-refund")
+
+    assert memory.p0_latch.active is True
+    assert "refund" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+@pytest.mark.parametrize(
+    ("first_message", "expected_code", "session_id"),
+    (
+        ("Верните деньги за курс.", "refund", "s-p0-v2-refund-clean"),
+        ("Деньги списали, а платежа в системе нет.", "payment_dispute", "s-p0-v2-payment-clean"),
+    ),
+)
+def test_dialogue_memory_p0_latch_autorelease_v2_keeps_refund_and_payment_dispute_after_clean_tail(
+    first_message: str,
+    expected_code: str,
+    session_id: str,
+) -> None:
+    memory = build_dialogue_memory(
+        current_message=first_message,
+        active_brand="foton",
+        session_id=session_id,
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id=session_id)
+
+    assert memory.p0_latch.active is True
+    assert expected_code in memory.p0_latch.codes
+    assert memory.p0_latch.release_event_id == ""
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_never_releases_legal_threat() -> None:
+    memory = build_dialogue_memory(
+        current_message="Пойду в суд, если вопрос не решите.",
+        active_brand="foton",
+        session_id="s-p0-v2-legal",
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-legal")
+
+    assert memory.p0_latch.active is True
+    assert "legal_threat" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_releases_bonfire_false_complaint() -> None:
+    memory = build_dialogue_memory(
+        current_message="Разводят костёр?",
+        active_brand="foton",
+        session_id="s-p0-v2-bonfire",
+    )
+    assert memory.p0_latch.active is True
+    assert "complaint" in memory.p0_latch.codes
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-bonfire")
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "p0_latch_autorelease_v2"
+    assert "p0" not in memory.risk_flags
 
 
 def test_dialogue_memory_keeps_refund_latch_after_five_neutral_turns() -> None:

@@ -33,6 +33,7 @@ MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
 SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
 DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
+P0_LATCH_AUTORELEASE_V2_ENV = "TELEGRAM_P0_LATCH_AUTORELEASE_V2"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
@@ -136,6 +137,8 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 )
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
+P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS = 3
+P0_LATCH_AUTORELEASE_V2_EVENT = "p0_latch_autorelease_v2"
 HARD_P0_LATCH_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 HARD_P0_HISTORY_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 MEMORY_LLM_RECOMMENDED_REASONING = "low"
@@ -497,6 +500,7 @@ def update_dialogue_memory_after_answer(
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
     semantic_reading: Mapping[str, Any] | None = None,
+    semantic_frame: Mapping[str, Any] | None = None,
     dialog_summary: str | None = None,
     memory_llm_fn: Callable[[str], object] | None = None,
     context: Mapping[str, Any] | None = None,
@@ -509,14 +513,26 @@ def update_dialogue_memory_after_answer(
     route_history = tuple(dict.fromkeys([*current.route_history, str(route or "").strip()]))[-8:]
     safety_risks = _risk_flags_from_safety(safety_flags)
     risks = tuple(dict.fromkeys([*current.risk_flags, *safety_risks]))
+    latch_context = {
+        **(dict(context) if isinstance(context, Mapping) else {}),
+        "route": route,
+        "safety_flags": list(safety_flags),
+    }
+    if semantic_reading is not None:
+        latch_context["semantic_reading"] = dict(semantic_reading)
+    if semantic_frame is not None:
+        latch_context["semantic_frame"] = dict(semantic_frame)
     p0_latch = _next_p0_latch(
         current.p0_latch,
         current_message="",
         current_risk_flags=safety_risks,
-        context={"route": route, "safety_flags": list(safety_flags)},
+        context=latch_context,
         session_id=current.session_id,
-        turns=turns,
+        turns=current.turns,
     )
+    latch_released = _p0_latch_released(current.p0_latch, p0_latch)
+    if latch_released:
+        risks = tuple(dict.fromkeys(safety_risks))
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = tuple(dict.fromkeys([*current.last_bot_commitments, *_detect_commitments(turns)]))[-8:]
@@ -530,7 +546,8 @@ def update_dialogue_memory_after_answer(
         answered = (*answered, open_question.text)[-8:]
         open_question = DialogueQuestion(open_question.text, open_question.kind, True)
         unanswered = tuple(item for item in unanswered if item != current.open_question.text)
-    handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
+    base_handoff = "none" if latch_released else current.handoff_state
+    handoff = "required" if p0_latch.active or risks or route == "manager_only" else base_handoff
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
     proactive_state = _proactive_state_after_answer(current.proactive_state, answer)
@@ -556,7 +573,7 @@ def update_dialogue_memory_after_answer(
         crm_known_slots=dict(current.crm_known_slots),
         bot_inferred_slots=dict(current.bot_inferred_slots),
         do_not_reask_slots=tuple(current.do_not_reask_slots),
-        held_state=current.held_state,
+        held_state=replace(current.held_state, p0_latched=False, p0_codes=()) if latch_released else current.held_state,
         current_message_roles=dict(current.current_message_roles),
         proactive_state=proactive_state,
         slot_history=tuple(current.slot_history),
@@ -1750,6 +1767,36 @@ def _next_p0_latch(
         )
         return result
     if previous.active:
+        v2_release, v2_trace = _p0_latch_autorelease_v2_event(
+            previous,
+            turns=turns,
+            context=context,
+            current_risk_flags=current_risk_flags,
+        )
+        if v2_release:
+            result = DialogueP0Latch(
+                release_event_id=v2_release,
+                had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+            )
+            trace_event(context, "p0_latch_autorelease_v2", {**v2_trace, "released": True})
+            trace_event(
+                context,
+                "_next_p0_latch",
+                {
+                    "previous_active": previous.active,
+                    "previous_codes": list(previous.codes),
+                    "current_risk_flags": list(current_risk_flags),
+                    "release_event": v2_release,
+                    "autonomous_release": True,
+                    "next_active": result.active,
+                    "next_codes": list(result.codes),
+                    "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                    "next_had_hard_p0_claim": result.had_hard_p0_claim,
+                },
+            )
+            return result
+        if v2_trace:
+            trace_event(context, "p0_latch_autorelease_v2", {**v2_trace, "released": False})
         autonomous_release = _autonomous_p0_latch_release_event(
             previous,
             turns=turns,
@@ -1888,6 +1935,127 @@ def _autonomous_p0_latch_release_event(
     return AUTONOMOUS_P0_LATCH_RELEASE_EVENT
 
 
+def _p0_latch_autorelease_v2_event(
+    previous: DialogueP0Latch,
+    *,
+    turns: Sequence[DialogueTurn],
+    context: Mapping[str, Any] | None,
+    current_risk_flags: Sequence[str],
+) -> tuple[str, Mapping[str, Any]]:
+    if not _p0_latch_autorelease_v2_enabled(context):
+        return "", {}
+    trace: dict[str, Any] = {
+        "schema_version": "p0_latch_autorelease_v2_2026_07_07",
+        "previous_codes": list(previous.codes),
+    }
+    if not previous.active:
+        return "", {**trace, "reason": "previous_not_active"}
+    if any(str(code or "").strip() in {"legal", "legal_threat", "refund", "payment_dispute"} for code in previous.codes):
+        return "", {**trace, "reason": "hard_p0_latch"}
+    if _latchable_p0_codes(current_risk_flags):
+        return "", {**trace, "reason": "current_risk_flags_latchable", "current_risk_flags": list(current_risk_flags)}
+    if _has_pending_manager_event(context):
+        return "", {**trace, "reason": "pending_manager"}
+    frame = _p0_latch_autorelease_v2_frame(context)
+    frame_status = _p0_latch_autorelease_v2_frame_status(frame)
+    trace["frame"] = frame_status
+    if frame_status.get("status") != "ok":
+        return "", {**trace, "reason": str(frame_status.get("status") or "frame_not_ok")}
+    client_texts = [turn.text for turn in turns if turn.role == "client"]
+    recent_client_texts = client_texts[-P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS:]
+    trace["recent_client_turns"] = len(recent_client_texts)
+    if len(recent_client_texts) < P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS:
+        return "", {**trace, "reason": "not_enough_neutral_client_turns"}
+    unsafe_recent: list[Mapping[str, Any]] = []
+    for index, text in enumerate(recent_client_texts):
+        flags = tuple(_latchable_p0_codes(_detect_risk_flags(text)))
+        if flags and not _safe_frame_negates_current_false_complaint(index, recent_client_texts, flags, text):
+            unsafe_recent.append({"offset": index, "codes": list(flags), "text_hash": _text_hash(text)})
+    if unsafe_recent:
+        return "", {**trace, "reason": "recent_client_turn_latchable", "unsafe_recent": unsafe_recent}
+    return P0_LATCH_AUTORELEASE_V2_EVENT, {**trace, "reason": "safe_frame_after_three_neutral_client_turns"}
+
+
+def _p0_latch_autorelease_v2_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(P0_LATCH_AUTORELEASE_V2_ENV)
+    if value is None:
+        value = os.getenv(P0_LATCH_AUTORELEASE_V2_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _p0_latch_autorelease_v2_frame(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    for key in ("semantic_frame", "bot_semantic_frame"):
+        frame = context.get(key)
+        if isinstance(frame, Mapping):
+            return frame
+    reading = context.get("semantic_reading")
+    return reading if isinstance(reading, Mapping) else {}
+
+
+def _p0_latch_autorelease_v2_frame_status(frame: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(frame, Mapping) or not frame:
+        return {"status": "missing_frame"}
+    source = str(frame.get("source") or "").strip()
+    if source != "inline":
+        return {"status": "frame_source_not_inline", "source": source}
+    try:
+        confidence = float(frame.get("confidence", frame.get("frame_confidence", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    risk_class = str(frame.get("risk_class") or "").strip()
+    must_handoff = frame.get("must_handoff")
+    if confidence < 0.90:
+        return {"status": "frame_confidence_low", "confidence": round(confidence, 3)}
+    if risk_class != "safe":
+        return {"status": "frame_risk_not_safe", "risk_class": risk_class, "confidence": round(confidence, 3)}
+    if must_handoff is not False:
+        return {
+            "status": "frame_must_handoff_not_false",
+            "must_handoff": must_handoff,
+            "risk_class": risk_class,
+            "confidence": round(confidence, 3),
+        }
+    return {
+        "status": "ok",
+        "source": source,
+        "risk_class": risk_class,
+        "must_handoff": False,
+        "confidence": round(confidence, 3),
+        "requested_action": str(frame.get("requested_action") or "")[:80],
+    }
+
+
+def _has_pending_manager_event(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    pending = context.get("pending_manager_actions")
+    if isinstance(pending, Sequence) and not isinstance(pending, (str, bytes, bytearray)):
+        return any(str(item or "").strip() for item in pending)
+    return False
+
+
+def _safe_frame_negates_current_false_complaint(
+    index: int,
+    recent_client_texts: Sequence[str],
+    flags: Sequence[str],
+    text: str,
+) -> bool:
+    if index != len(recent_client_texts) - 1:
+        return False
+    if any(flag in {"refund", "payment_dispute"} for flag in flags):
+        return False
+    normalized = normalize_text(text)
+    return "нет претенз" in normalized and set(flags).issubset({"complaint", "legal_threat"})
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
 def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
     return any(str(code or "").strip() in HARD_P0_LATCH_CODES for code in codes)
 
@@ -1901,7 +2069,10 @@ def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> b
 
 
 def _previous_autonomous_p0_latch_released(previous: DialogueP0Latch) -> bool:
-    return bool(not previous.active and previous.release_event_id == AUTONOMOUS_P0_LATCH_RELEASE_EVENT)
+    return bool(
+        not previous.active
+        and previous.release_event_id in {AUTONOMOUS_P0_LATCH_RELEASE_EVENT, P0_LATCH_AUTORELEASE_V2_EVENT}
+    )
 
 
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:

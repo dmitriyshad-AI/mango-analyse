@@ -190,3 +190,5 @@ Inline text health gate получил узкую верификацию адр�
 Также `run_adr003_semantic_reading_e3_paired.sh` больше не подмешивает `TELEGRAM_RELIABLE_ANSWERER_STEP1=1` в обе ноги замера. Это методическая правка: E3-пара должна мерить фактический профиль и явный ON-delta, без скрытого включения дополнительного слоя.
 
 Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлены намеренно. Бюджет regex не повышался: в этом заходе изменены существующие PII-masker regex без добавления новых `re.compile`.
+
+Добавлен default-OFF флаг `TELEGRAM_P0_LATCH_AUTORELEASE_V2`: он не классифицирует новый смысл regex-ами, а только снимает уже активный P0-latch после трёх клиентских ходов без реальных latchable-кодов и валидного inline `SemanticFrame` (`risk_class=safe`, `must_handoff=false`, confidence >= 0.90); `legal_threat` и свежие refund/payment-dispute сигналы не отпускаются.

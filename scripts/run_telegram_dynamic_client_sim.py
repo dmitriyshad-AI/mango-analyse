@@ -88,6 +88,20 @@ def _semantic_reading_memory_from_result(result: Any) -> Mapping[str, Any] | Non
     return reading.to_memory_dict() if reading is not None else None
 
 
+def _semantic_frame_memory_from_result(result: Any) -> Mapping[str, Any] | None:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        direct = metadata.get("direct_path")
+        if isinstance(direct, Mapping):
+            frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
+    return dict(frame) if isinstance(frame, Mapping) and frame else None
+
+
 def _semantic_reading_memory_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any] | None:
     direct_path = dict(turn.get("bot_direct_path") or {}) if isinstance(turn.get("bot_direct_path"), Mapping) else {}
     model_intent = dict(turn.get("bot_model_intent") or {}) if isinstance(turn.get("bot_model_intent"), Mapping) else {}
@@ -1882,6 +1896,7 @@ def attach_context_facts_to_dialog(
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
             semantic_reading=_semantic_reading_memory_from_turn(turn),
+            semantic_frame=dict(turn.get("bot_semantic_frame") or {}) if isinstance(turn.get("bot_semantic_frame"), Mapping) else None,
             dialog_summary=_dialog_summary_from_turn(turn),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
             context=context,
@@ -2020,6 +2035,7 @@ def _enrich_one_transcript_with_semantic_frame(
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
             semantic_reading=_semantic_reading_memory_from_result(framed),
+            semantic_frame=dict(raw_frame) if isinstance(raw_frame, Mapping) and raw_frame else None,
             dialog_summary=_dialog_summary_from_result(framed),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
             context=context,
@@ -2117,6 +2133,7 @@ def run_one_dialog(
             fact_refs=result.context_used,
             safety_flags=result.safety_flags,
             semantic_reading=_semantic_reading_memory_from_result(result),
+            semantic_frame=_semantic_frame_memory_from_result(result),
             dialog_summary=_dialog_summary_from_result(result),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
             context=context,

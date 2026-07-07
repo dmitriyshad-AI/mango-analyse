@@ -929,6 +929,7 @@ class AmoWappiDraftLoop:
                 fact_refs=tuple(getattr(result, "context_used", ()) or ()),
                 safety_flags=safety_flags,
                 semantic_reading=semantic_reading.to_memory_dict() if semantic_reading is not None else None,
+                semantic_frame=_semantic_frame_from_result(result),
                 dialog_summary=_dialog_summary_from_result(result),
                 memory_llm_fn=None,
                 context=context,
@@ -1264,6 +1265,20 @@ def _dialog_summary_from_result(result: object) -> str:
     if isinstance(direct, Mapping):
         return str(direct.get("dialog_summary_candidate") or "").strip()
     return ""
+
+
+def _semantic_frame_from_result(result: object) -> Mapping[str, Any] | None:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        direct = metadata.get("direct_path")
+        if isinstance(direct, Mapping):
+            frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
+    return dict(frame) if isinstance(frame, Mapping) and frame else None
 
 
 def _prompt_history_lines(

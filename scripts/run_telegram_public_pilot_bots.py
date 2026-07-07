@@ -690,6 +690,7 @@ class PublicPilotBotRuntime:
                 route=result.route,
                 fact_refs=result.context_used,
                 safety_flags=result.safety_flags,
+                semantic_frame=semantic_frame_from_result(result),
                 dialog_summary=dialog_summary_from_result(result),
                 context=context,
             )
@@ -1164,6 +1165,20 @@ def dialog_summary_from_result(result: object) -> str:
     if isinstance(direct, Mapping):
         return str(direct.get("dialog_summary_candidate") or "").strip()
     return ""
+
+
+def semantic_frame_from_result(result: object) -> Mapping[str, Any] | None:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        direct = metadata.get("direct_path")
+        if isinstance(direct, Mapping):
+            frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
+    return dict(frame) if isinstance(frame, Mapping) and frame else None
 
 
 def public_reply_text(result: SubscriptionDraftResult) -> str:

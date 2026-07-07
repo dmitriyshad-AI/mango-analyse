@@ -2744,6 +2744,14 @@ def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Map
             result[key] = value
     return result
 
+def _presale_prompt_child_identity_prompt_replacement(match: re.Match[str]) -> str:
+    prefix = str(match.group("prefix") or "")
+    name = " ".join(str(match.group("name") or "").split())
+    prefix_lower = prefix.casefold()
+    if len(name.split()) == 1 and any(cue in prefix_lower for cue in ("зовут", "фио", "имя")):
+        return f"{prefix}[данные у менеджера]"
+    return f"{prefix}{_presale_prompt_child_name_value(name) or '[данные у менеджера]'}"
+
 def _presale_prompt_safe_dialogue_text(text: str) -> str:
     value = str(text or "")
     if not value:
@@ -2751,10 +2759,7 @@ def _presale_prompt_safe_dialogue_text(text: str) -> str:
     value = _replace_echoed_phone(value, _a2_extract_phone(value)) if _a2_extract_phone(value) else value
     value = _CLIENT_EMAIL_RE.sub("[данные у менеджера]", value)
     value = _PARTIAL_PHONE_CONTEXT_RE.sub(lambda m: f"{m.group('label')} [данные у менеджера]", value)
-    value = _CLIENT_CHILD_IDENTITY_PROMPT_RE.sub(
-        lambda m: f"{m.group('prefix')}{_presale_prompt_child_name_value(m.group('name')) or '[данные у менеджера]'}",
-        value,
-    )
+    value = _CLIENT_CHILD_IDENTITY_PROMPT_RE.sub(_presale_prompt_child_identity_prompt_replacement, value)
     value = _CLIENT_PARENT_IDENTITY_PROMPT_RE.sub(lambda m: f"{m.group('prefix')}[данные у менеджера]", value)
     return _normalize_output_sanitizer_text(value)
 
@@ -3733,10 +3738,11 @@ _PARTIAL_PHONE_CONTEXT_RE = re.compile(
 )
 
 _CLIENT_CHILD_IDENTITY_PROMPT_RE = re.compile(
-    r"(?P<prefix>(?i:\b(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|"
-    r"реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя|"
-    r"справк\w*\s+на)\s*[:—-]?\s*))"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2})"
+    r"(?P<prefix>(?i:\b(?:(?:зовут|фио|имя)\s*[:—-]?\s*|"
+    r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|"
+    r"реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|"
+    r"справк\w*\s+на)\s*[:—-]?\s*(?=[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ][а-яё]{2,}))))"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})"
 )
 
 _CLIENT_PARENT_IDENTITY_PROMPT_RE = re.compile(

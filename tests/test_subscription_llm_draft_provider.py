@@ -15878,6 +15878,15 @@ def test_presale_prompt_identity_masker_keeps_case_sensitive_name_masking() -> N
     assert "Иванова" not in sanitized
 
 
+def test_presale_prompt_identity_masker_masks_single_capitalized_child_name_after_name_cue() -> None:
+    sanitized = subscription_llm._presale_prompt_safe_dialogue_text(
+        "Сына зовут Максим. зовут максим пока пишу строчно."
+    )
+
+    assert "Сына зовут [данные у менеджера]" in sanitized
+    assert "зовут максим пока пишу строчно" in sanitized
+
+
 def test_pii_sanitizer_keeps_address_toponyms(monkeypatch) -> None:
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
 

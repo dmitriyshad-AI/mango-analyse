@@ -45,7 +45,6 @@ Profile env: `TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1`
 
 | flag | leg | expected effect |
 |---|---|---|
-| `TELEGRAM_RELIABLE_ANSWERER_STEP1=1` | B and ON | keep reliable answerer parity for `sense_seats` measurement |
 | `TELEGRAM_SEMANTIC_FRAME_SHADOW=1` | B and ON | provide the same inline SemanticFrame payload for readers |
 
 ## C. ON-only reading delta

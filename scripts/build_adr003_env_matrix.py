@@ -5,7 +5,6 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mango_mvp.channels.subscription_llm_parts.reliable_answerer import RELIABLE_ANSWERER_STEP1_ENV
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import SEMANTIC_READING_CLASSES_ENV
 from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
@@ -39,7 +38,6 @@ def build_markdown() -> str:
             "",
             "| flag | leg | expected effect |",
             "|---|---|---|",
-            f"| `{RELIABLE_ANSWERER_STEP1_ENV}=1` | B and ON | keep reliable answerer parity for `sense_seats` measurement |",
             f"| `{SEMANTIC_FRAME_SHADOW_ENV}=1` | B and ON | provide the same inline SemanticFrame payload for readers |",
             "",
             "## C. ON-only reading delta",

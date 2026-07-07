@@ -101,6 +101,15 @@ def test_adr003_e3_runner_baseline_uses_profile_reading_classes() -> None:
     assert 'TELEGRAM_SEMANTIC_READING_CLASSES="$READING_CLASSES"' in on_section
 
 
+def test_adr003_e3_runner_does_not_force_reliable_answerer_step1() -> None:
+    text = _runner_text()
+    base_section = text[text.index("base_env=(") : text.index("validate_leg()", text.index("base_env=("))]
+    manifest_section = text[text.index('"required_env": {') : text.index("},\n}", text.index('"required_env": {'))]
+
+    assert "TELEGRAM_RELIABLE_ANSWERER_STEP1=1" not in base_section
+    assert '"TELEGRAM_RELIABLE_ANSWERER_STEP1"' not in manifest_section
+
+
 def test_adr003_e3_runner_has_resume_on_report_mode() -> None:
     text = _runner_text()
 

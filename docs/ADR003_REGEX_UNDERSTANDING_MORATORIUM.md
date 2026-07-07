@@ -179,4 +179,12 @@ Inline text health gate получил узкую верификацию адр�
 
 Негативные контроли добавлены на обычные вопросы про расписание, выбор преподавателя и порядок встречи у кабинета: они не должны становиться P0 только из-за слова «ребёнок» или «встречать».
 
-Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлены намеренно. Бюджет regex не повышался: изменены существующие P0/backstop regex в `p0_recall_spec.py` и `support.py`.
+## Разрешенное обновление 2026-07-07: PII-masker case fix и tone-close frame veto
+
+Обновлены существующие regex `_CLIENT_CHILD_IDENTITY_PROMPT_RE` и `_CLIENT_PARENT_IDENTITY_PROMPT_RE` в `direct_path.py`: case-insensitive режим теперь применяется только к префиксу (`меня зовут`, `записываю`, `я`), а группа имени остаётся case-sensitive. Это исправляет ПДн-маскер, который раньше мог принимать строчные глаголы клиента (`я оплатила`, `я хочу`, `я звоню`) за имя. Это не новый детектор смысла клиента: правило по-прежнему только чистит ПДн для prompt/output-safety.
+
+Добавлен default-OFF флаг `TELEGRAM_TONE_CLOSE_FRAME_VETO`. Он не читает сырой текст клиента regex-ами и не меняет профиль по умолчанию. При явном включении слой смотрит только на уже готовый `SemanticFrame`: если старый tone-close собирается закрыть горячий лид (`enroll`/готовность к оплате/записи), а frame безопасен и уверен, возвращается предыдущий содержательный черновик вместо закрытия. Это переходный предохранитель от ложного “до свидания”, не новая regex-лазанья.
+
+Также `run_adr003_semantic_reading_e3_paired.sh` больше не подмешивает `TELEGRAM_RELIABLE_ANSWERER_STEP1=1` в обе ноги замера. Это методическая правка: E3-пара должна мерить фактический профиль и явный ON-delta, без скрытого включения дополнительного слоя.
+
+Snapshot `tests/fixtures/adr003_runtime_channel_regex_snapshot.json` и `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` обновлены намеренно. Бюджет regex не повышался: в этом заходе изменены существующие PII-masker regex без добавления новых `re.compile`.

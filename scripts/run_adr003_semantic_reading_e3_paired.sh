@@ -144,7 +144,6 @@ base_env=(
   TELEGRAM_ROUTE_RUBRIC=1
   TELEGRAM_LLM_RETRIEVE=1
   TELEGRAM_SEMANTIC_FRAME_SHADOW=1
-  TELEGRAM_RELIABLE_ANSWERER_STEP1=1
   PYTHONPATH="$ROOT/src"
 )
 
@@ -248,7 +247,6 @@ manifest = {
         "TELEGRAM_ROUTE_RUBRIC": "1",
         "TELEGRAM_LLM_RETRIEVE": "1",
         "TELEGRAM_SEMANTIC_FRAME_SHADOW": "1",
-        "TELEGRAM_RELIABLE_ANSWERER_STEP1": "1",
         "TELEGRAM_SEMANTIC_READING_CLASSES": reading_classes if use_on_reading_env else "(profile default; env unset)",
         "TELEGRAM_READING_APPLY_CLASSES": apply_classes if use_on_reading_env else "(profile default; env unset)",
         "TARGET_READING_CLASSES": target_reading_classes,
@@ -285,7 +283,7 @@ run_on_leg() {
 }
 
 run_b_leg() {
-  echo "== B: profile + reliable + inline frame, profile reading classes =="
+  echo "== B: profile + inline frame, profile reading classes =="
   "${base_env[@]}" \
     python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
       --out-dir "$OUT/B" \

@@ -34,6 +34,8 @@
 
 Обоснование: `apply_reliable_answerer_output_guard` не работает при выключенном reliable step1. Без явной suppressed-записи класс молча стал бы инертным.
 
+Обновление 2026-07-07: решение о принудительном включении reliable step1 в `e3_paired` отменено. Раннер больше не задаёт `TELEGRAM_RELIABLE_ANSWERER_STEP1=1` в B/ON-ногах и измеряет фактический профиль; если классу нужен reliable step1, это должно приходить из профиля или явного целевого env, а не из скрытой методической подмешки.
+
 ## D-006. `semantic_reading_slots` — hidden storage без читателей
 
 Решение: хранить модельные slot-кандидаты отдельно от `known_slots`, `client_confirmed_slots`, `topic_focus`, prompt-view и direct-path prompt. В этом этапе нет потребителя этих слотов.

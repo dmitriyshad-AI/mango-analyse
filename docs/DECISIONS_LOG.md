@@ -1195,3 +1195,45 @@ CRM export `ready=3/blocked=63`, prod sha до/после не менялся.
 и старые/synthetic dynamic transcripts; свежего набора 100 live Telegram
 диалогов последних 2-3 недель в `.codex_local`/рабочем дереве не найдено.
 Подмена источника запрещена; нужен отдельный capture/export реальных диалогов.
+
+### D-062. Owner accepted SWAP+memory risk, but live execution requires a matched runtime
+
+Решение владельца зафиксировано дословно: «SWAP + включение памяти, трафик на
+публичного бота ≈ 0, красный micro v3.4 и дыра черновиков известны».
+
+Гейт на будущее: до подачи трафика на публичного бота (реклама/основной канал)
+нужно закрыть развилку `draft_for_manager`: сейчас менеджер не видит такие
+черновики как отдельный рабочий контур, и live public bot может отправлять
+клиенту итоговый текст независимо от route.
+
+Исполнение SWAP 2026-07-07 остановлено предполётом, несмотря на совпадение DB
+sha: live bot работает из `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`
+на ветке `codex/adr003-semanticframe-migration`, а transfer-package
+`marathon2_noch_current` собран из worktree
+`/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore` на другом HEAD.
+Текущий live-start script не фиксирует `TELEGRAM_TIMELINE_MEMORY_IN_PROMPT=1`
+и не задаёт явный путь к Customer Timeline DB. Поэтому env-включение памяти
+без синхронизации live worktree/commit/runbook могло стать no-op или смешать
+несовместимые код и данные. DB-файлы не подменялись, live bot не
+останавливался.
+
+### D-063. Dev schedule runs as Codex automations before launchd
+
+Решение: до стабильности Customer Timeline pipeline дневные водители и
+ночной кладовщик запускаются задачами Codex по расписанию. Launchd-переезд для
+каждой задачи разрешается после 3-5 подряд чистых запусков без ручных правок:
+`re-run=0`/идемпотентность, нет stop-причин, нет записей в prod/AMO/Tallanto,
+нет ASR и массовых LLM.
+
+Единый вход для Codex-задач и будущих plist-шаблонов:
+`scripts/run_customer_timeline_codex_task.py`. Он запускает штатный driver,
+пишет полный лог в `.codex_local/staging/codex_dev_tasks/` и 5-строчную
+обезличенную сводку в `/Users/dmitrijfabarisov/Claude Projects/Foton/_daily/`.
+При аномалии останавливается только текущая задача.
+
+Состав задач:
+`mail-capture` вызывает mail driver в staging apply; `mango-capture` делает
+безопасный dry-run/accounting, пока не задан `MANGO_CAPTURE_COMMAND_FILE`;
+`tallanto-api-capture` fail-closed до явного
+`TALLANTO_API_CAPTURE_ENABLED=1`; `nightly-warehouse` вызывает staging-only
+nightly service с Dv2 config. Live/prod/CRM/ASR не входят в эти задачи.

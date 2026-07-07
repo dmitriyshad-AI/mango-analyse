@@ -3,26 +3,26 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.mango.customer-timeline-mango-capture</string>
+  <string>com.mango.customer-timeline-tallanto-api-capture</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
     <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
     <string>--task</string>
-    <string>mango-capture</string>
+    <string>tallanto-api-capture</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>
   <key>StandardOutPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mango_capture.launchd.stdout.log</string>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/tallanto_api_capture.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mango_capture.launchd.stderr.log</string>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/tallanto_api_capture.launchd.stderr.log</string>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>1</integer>
+    <integer>2</integer>
     <key>Minute</key>
-    <integer>20</integer>
+    <integer>40</integer>
   </dict>
   <key>RunAtLoad</key>
   <false/>

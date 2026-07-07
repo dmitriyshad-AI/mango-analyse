@@ -6,9 +6,10 @@
   <string>com.mango.customer-timeline-mail-capture</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_mail_capture_daily.sh</string>
-    <string>--apply</string>
+    <string>/usr/bin/python3</string>
+    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
+    <string>--task</string>
+    <string>mail-capture</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>

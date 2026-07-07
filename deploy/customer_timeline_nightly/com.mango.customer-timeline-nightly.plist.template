@@ -6,14 +6,10 @@
   <string>com.mango.customer-timeline-nightly</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>PYTHONDONTWRITEBYTECODE=1</string>
-    <string>PYTHONPATH=/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/src</string>
     <string>/usr/bin/python3</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_nightly_service.py</string>
-    <string>--config</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/nightly_service/customer_timeline_nightly_service_config.json</string>
-    <string>--summary-only</string>
+    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
+    <string>--task</string>
+    <string>nightly-warehouse</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>

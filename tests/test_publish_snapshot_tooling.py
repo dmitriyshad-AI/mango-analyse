@@ -34,7 +34,19 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    payload["control_customers"] = [
+        {
+            "customer_id": staging_customer,
+            "expected_found": True,
+            "expected_counts": {
+                "events_total": 1,
+                "bot_context_chunks_total": 2,
+                "allowed_chunks": 1,
+                "review_required_chunks": 1,
+                "derived_signals_total": 1,
+            },
+        }
+    ]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
 
     report, ok = build_snapshot.build_snapshot(cfg, execute=True, snapshot_name="prod_test")
@@ -48,6 +60,13 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     smoke_report, smoke_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
     assert smoke_ok is True
     assert smoke_report["internal_control_customers"][0]["found"] is True
+    assert smoke_report["internal_control_customers"][0]["count_mismatches"] == {}
+
+    payload["control_customers"][0]["expected_counts"]["events_total"] = 999
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    mismatch_report, mismatch_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
+    assert mismatch_ok is False
+    assert mismatch_report["internal_control_customers"][0]["count_mismatches"]["events_total"]["actual"] == 1
 
 
 def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:

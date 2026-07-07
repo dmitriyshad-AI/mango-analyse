@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -25,20 +26,68 @@ from scripts.publish_snapshot.common import (  # noqa: E402
 )
 
 
+def control_customer_counts(db_path: Path, tenant_id: str, customer_id: str) -> dict[str, int]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+        return {
+            "events_total": int(
+                con.execute(
+                    "SELECT COUNT(*) FROM timeline_events WHERE tenant_id = ? AND customer_id = ?",
+                    (tenant_id, customer_id),
+                ).fetchone()[0]
+            ),
+            "bot_context_chunks_total": int(
+                con.execute(
+                    "SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id = ? AND customer_id = ?",
+                    (tenant_id, customer_id),
+                ).fetchone()[0]
+            ),
+            "allowed_chunks": int(
+                con.execute(
+                    "SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id = ? AND customer_id = ? AND allowed_for_bot = 1",
+                    (tenant_id, customer_id),
+                ).fetchone()[0]
+            ),
+            "review_required_chunks": int(
+                con.execute(
+                    "SELECT COUNT(*) FROM bot_context_chunks WHERE tenant_id = ? AND customer_id = ? AND requires_manager_review = 1",
+                    (tenant_id, customer_id),
+                ).fetchone()[0]
+            ),
+            "derived_signals_total": int(
+                con.execute(
+                    "SELECT COUNT(*) FROM derived_signals WHERE tenant_id = ? AND customer_id = ?",
+                    (tenant_id, customer_id),
+                ).fetchone()[0]
+            ),
+        }
+
+
 def run_internal_smoke(db_path: Path, allowed_root: Path, tenant_id: str, control_customers: tuple[dict, ...]) -> list[dict]:
     results = []
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=allowed_root)) as api:
         for item in control_customers:
             customer_id = str(item.get("customer_id") or "")
             profile = api.customer_profile(tenant_id, customer_id, event_limit=5, bot_context_limit=5)
+            observed_counts = control_customer_counts(db_path, tenant_id, customer_id) if profile.get("found") else {}
+            expected_counts = {str(key): int(value) for key, value in dict(item.get("expected_counts") or {}).items()}
+            count_mismatches = {
+                key: {"expected": expected, "actual": observed_counts.get(key)}
+                for key, expected in expected_counts.items()
+                if observed_counts.get(key) != expected
+            }
+            found_ok = bool(profile.get("found")) == bool(item.get("expected_found", True))
             results.append(
                 {
                     "customer_id": customer_id,
+                    "label": item.get("label"),
                     "expected_found": bool(item.get("expected_found", True)),
                     "found": bool(profile.get("found")),
                     "events": len(((profile.get("timeline") or {}).get("items") or [])),
                     "bot_visible": int(((profile.get("bot_context") or {}).get("summary") or {}).get("visible_chunks") or 0),
-                    "ok": bool(profile.get("found")) == bool(item.get("expected_found", True)),
+                    "observed_counts": observed_counts,
+                    "expected_counts": expected_counts,
+                    "count_mismatches": count_mismatches,
+                    "ok": found_ok and not count_mismatches,
                 }
             )
     return results

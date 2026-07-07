@@ -1272,3 +1272,23 @@ match = AMO exact Telegram ID или Max phone + ровно одна актив�
 только с конкретными fail-closed причинами; старый `draft_loop_pair_missing=0`,
 open-conflict по уже влитому event = `0`, `quick_check=ok`. Внешние записи:
 client sends=0, CRM/AMO write=0, Tallanto write=0.
+
+### D-066. First publish snapshot attempt is blocked by dirty live reader worktree
+
+Попытка первой публикации Customer Timeline snapshot 2026-07-07 остановлена на
+`scripts/publish_snapshot/preflight.py`. До `build_snapshot`, stop live bot,
+flip и e2e-пробы дело не дошло.
+
+Причина: live reader worktree
+`/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff` не чистый
+(`?? product_data/telegram_dynamic_test_sets/adr003_kombo_factsel_veto_masker_ed59692b_20260707.jsonl`,
+`?? product_data/telegram_dynamic_test_sets/adr003_kombo_factsel_veto_masker_ed59692b_20260707_README.md`,
+`?? tasks/_running/2026-07-07_TZ_KOMBO_zahod_minus_regex_odna_para_dlya_D1.md`).
+По runbook-v3 это hard stop: читатель, который будет останавливаться и
+стартовать после flip, должен быть проверяемо чистым.
+
+Перед стопом усилен publish tooling: в конфиг добавлены 3+2 контрольных клиента
+с эталонными счётчиками, а `reader_smoke.py` теперь сравнивает totals
+(`events_total`, `bot_context_chunks_total`, `allowed_chunks`,
+`review_required_chunks`, `derived_signals_total`), а не только `found=true`.
+Prod DB не подменялась, live bot не останавливался.

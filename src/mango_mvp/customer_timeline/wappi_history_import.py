@@ -462,6 +462,7 @@ def run_wappi_history_import(
     write_status_counts: Counter[str] = Counter()
     normalized_counts: Counter[str] = Counter()
     errors: list[Mapping[str, Any]] = []
+    stale_conflict_cleanup: dict[str, int] = {}
     store_summary_before: Optional[Mapping[str, Any]] = None
     store_summary_after: Optional[Mapping[str, Any]] = None
     grouped = group_records_by_source_system(records)
@@ -488,6 +489,11 @@ def run_wappi_history_import(
             store_summary_after = store.summary()
         finally:
             store.close()
+        stale_conflict_cleanup = close_resolved_wappi_pending_conflicts(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            records=records,
+        )
     else:
         for source_system, group in grouped.items():
             preview = TimelineImportService(_DryRunStore()).import_records(
@@ -568,6 +574,7 @@ def run_wappi_history_import(
             "applied": config.apply,
             "status_counts": dict(write_status_counts),
         },
+        "stale_conflict_cleanup": stale_conflict_cleanup,
         "import_reports": import_reports,
         "errors": errors,
         "store_summary_before": store_summary_before,
@@ -1179,6 +1186,76 @@ def load_existing_wappi_event_customers(
                     if source_id and customer_id:
                         found[(str(row["source_system"]), source_id)] = customer_id
     return found
+
+
+def close_resolved_wappi_pending_conflicts(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    records: Sequence[TimelineSourceRecord],
+) -> dict[str, int]:
+    resolved_source_ids = {
+        (
+            str(record.payload.get("source_system") or ""),
+            str(record.payload.get("profile_id") or ""),
+            str(record.payload.get("chat_id") or ""),
+            str(record.payload.get("message_id") or ""),
+        )
+        for record in records
+        if str(record.payload.get("resolved_customer_id") or "").strip()
+    }
+    resolved_source_ids.discard(("", "", "", ""))
+    if not resolved_source_ids or not db_path.exists():
+        return {"resolved_pending_conflicts_closed": 0}
+
+    now = datetime.now(timezone.utc).isoformat()
+    closed = 0
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        for source_system, profile_id, chat_id, message_id in sorted(resolved_source_ids):
+            rows = con.execute(
+                """
+                SELECT conflict_id, record_json
+                FROM timeline_conflicts
+                WHERE tenant_id = ?
+                  AND conflict_type = 'pending_attribution'
+                  AND status = 'open'
+                  AND json_extract(record_json, '$.metadata.source_system') = ?
+                  AND json_extract(record_json, '$.metadata.profile_id') = ?
+                  AND json_extract(record_json, '$.metadata.chat_id') = ?
+                  AND json_extract(record_json, '$.metadata.message_id') = ?
+                """,
+                (tenant_id, source_system, profile_id, chat_id, message_id),
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(str(row["record_json"] or "{}"))
+                metadata = dict(payload.get("metadata") or {})
+                metadata["superseded_by"] = "resolved_wappi_timeline_event"
+                metadata["resolved_by"] = "wappi_history_auto_resolver"
+                payload["metadata"] = metadata
+                payload["status"] = "resolved"
+                payload["resolved_at"] = now
+                safe_payload = scrub_timeline_persisted_json(payload)
+                con.execute(
+                    """
+                    UPDATE timeline_conflicts
+                    SET status = 'resolved',
+                        resolved_at = ?,
+                        record_json = ?,
+                        record_hash = ?
+                    WHERE conflict_id = ?
+                    """,
+                    (
+                        now,
+                        json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                        stable_digest(safe_payload),
+                        row["conflict_id"],
+                    ),
+                )
+                closed += 1
+        con.commit()
+    return {"resolved_pending_conflicts_closed": closed}
 
 
 def replace_wappi_record_resolution(

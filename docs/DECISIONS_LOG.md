@@ -1256,3 +1256,19 @@ staging прошёл. Реальный preflight пакета `marathon2_noch_cu
 публикацию: live reader worktree `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`
 грязный и используется соседней задачей. DB flip не выполнялся, live bot не
 останавливался, prod DB не подменялась.
+
+### D-065. Wappi daily capture/resolver writes only manager-only staging records
+
+Решение: Wappi Telegram/Max дневной захват по 4 профилям
+(Фотон/УНПК × Telegram/Max) выполняется read-only через Wappi GET и AMO GET
+resolver. Статические пары draft-loop не используются в этом проходе; strong
+match = AMO exact Telegram ID или Max phone + ровно одна активная сделка
+нужного бренда + существующий customer/opportunity в timeline. Неуверенные
+чаты остаются `pending_attribution`.
+
+Прогон 2026-07-07: в staging влито `1469` Wappi events/chunks
+(`wappi_telegram=1329`, `wappi_max=140`), все chunks manager-only
+(`allowed_for_bot=0`, `requires_manager_review=1`). Open Wappi pending остались
+только с конкретными fail-closed причинами; старый `draft_loop_pair_missing=0`,
+open-conflict по уже влитому event = `0`, `quick_check=ok`. Внешние записи:
+client sends=0, CRM/AMO write=0, Tallanto write=0.

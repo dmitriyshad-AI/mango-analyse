@@ -159,6 +159,67 @@ def test_wappi_history_import_resolves_missing_pair_through_amo_auto_tg(tmp_path
     assert event["record"]["message"]["allowed_for_bot"] is False
 
 
+def test_wappi_history_import_closes_stale_pending_after_auto_resolve(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    phase1 = write_phase1_config(tmp_path)
+    client = FakeWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {"id": "m-1", "chat_id": "123456", "type": "text", "body": "Здравствуйте", "time": 1_753_000_000},
+            ]
+        },
+    )
+
+    pending = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+        ),
+        client=client,
+    )
+    assert pending["summary"]["pending_attribution"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE status='open'").fetchone()[0] == 1
+
+    seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+    with sqlite3.connect(db_path) as con:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    auto = AmoAutoResolver(
+        client=FakeMcp(contacts=[amo_contact("2002", telegram_id="123456", leads=("1001",))], leads=[amo_lead("1001", org="Фотон")]),
+        shared_phone_stoplist={"+79990000000"},
+        require_known_brand=True,
+    )
+
+    resolved = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            amo_auto_resolver_enabled=True,
+            apply=True,
+            limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+        ),
+        client=client,
+        amo_auto_resolver=auto,
+    )
+
+    assert resolved["summary"]["linked_by_amo_auto"] == 1
+    assert resolved["stale_conflict_cleanup"]["resolved_pending_conflicts_closed"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE status='open'").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE status='resolved'").fetchone()[0] == 1
+
+
 def test_wappi_history_import_fails_closed_for_max_without_stoplist(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()

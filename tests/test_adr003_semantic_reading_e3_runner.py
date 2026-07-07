@@ -12,6 +12,7 @@ from scripts.run_telegram_dynamic_client_sim import write_progress_json
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_adr003_semantic_reading_e3_paired.sh"
+FINAL_PACHKA_RUNNER = ROOT / "scripts" / "run_adr003_final_pachka_pair.sh"
 VALIDATOR = ROOT / "scripts" / "validate_adr003_e3_leg.py"
 
 
@@ -23,8 +24,49 @@ def _validator_text() -> str:
     return VALIDATOR.read_text(encoding="utf-8")
 
 
+def _final_pachka_runner_text() -> str:
+    return FINAL_PACHKA_RUNNER.read_text(encoding="utf-8")
+
+
 def test_adr003_e3_runner_shell_syntax() -> None:
     subprocess.run(["bash", "-n", str(RUNNER)], check=True)
+
+
+def test_adr003_final_pachka_runner_shell_syntax() -> None:
+    subprocess.run(["bash", "-n", str(FINAL_PACHKA_RUNNER)], check=True)
+
+
+def test_adr003_final_pachka_runner_emulates_old_profile_in_b_leg() -> None:
+    text = _final_pachka_runner_text()
+
+    assert 'OLD_READING_CLASSES="sense_seats,slots_gsf,off_topic,intent_actions,live_status_read"' in text
+    assert 'OLD_APPLY_CLASSES="live_status_read/conversation_intent_plan"' in text
+    for flag in (
+        "TELEGRAM_FACT_SELECT_FRAME",
+        "TELEGRAM_TONE_CLOSE_FRAME_VETO",
+        "TELEGRAM_P0_MODEL_LED",
+        "TELEGRAM_PROSE_MODEL_LED",
+        "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT",
+        "TELEGRAM_SEATS_DEFAULT_OPEN",
+        "TELEGRAM_P0_LATCH_AUTORELEASE_V2",
+    ):
+        assert flag in text
+    assert 'b_env=(' in text
+    assert 'TELEGRAM_SEMANTIC_READING_CLASSES="$OLD_READING_CLASSES"' in text
+    assert 'TELEGRAM_READING_APPLY_CLASSES="$OLD_APPLY_CLASSES"' in text
+    assert '"$flag=0"' in text
+    assert '--forbid-trace-class "$TARGET_READING_CLASSES"' in text
+
+
+def test_adr003_final_pachka_runner_uses_current_profile_in_on_leg() -> None:
+    text = _final_pachka_runner_text()
+    on_section = text[text.index("on_env=(") : text.index("b_env=(")]
+
+    assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in on_section
+    assert "-u TELEGRAM_READING_APPLY_CLASSES" in on_section
+    assert '"current HEAD pilot profile as-is; no manual env for target flags"' in text
+    assert '--require-trace-class "$TARGET_READING_CLASSES"' in text
+    assert 'RUN_ORDER="${RUN_ORDER:-ON_FIRST}"' in text
 
 
 def test_adr003_e3_runner_avoids_empty_expect_arg_array_for_bash32() -> None:

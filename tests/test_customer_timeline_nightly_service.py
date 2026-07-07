@@ -164,6 +164,13 @@ def test_nightly_service_rejects_prod_timeline_path(tmp_path: Path) -> None:
 def test_nightly_service_local_freshness_monitor_is_optional_and_writes_no_events(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO ingestion_cursors (tenant_id, source_system, last_cursor_ts, updated_at, metadata_json)
+            VALUES ('foton', 'wappi_history', '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:00+00:00', '{}')
+            """
+        )
     metrics_path = tmp_path / "metrics.json"
     metrics_path.write_text(json.dumps({"pending_attribution": 3}, ensure_ascii=False), encoding="utf-8")
     config_payload = {
@@ -181,8 +188,9 @@ def test_nightly_service_local_freshness_monitor_is_optional_and_writes_no_event
                 "config": {
                     "metrics_path": str(metrics_path),
                     "paths": [str(metrics_path)],
-                    "cursor_source_system": "wappi_history",
+                    "cursor_source_system": "wappi_history_pending",
                     "cursor_ts": "2026-06-21T10:00:00+00:00",
+                    "deprecated_cursor_source_systems": ["wappi_history"],
                     "reason": "pending_only",
                 },
             }
@@ -196,10 +204,49 @@ def test_nightly_service_local_freshness_monitor_is_optional_and_writes_no_event
     assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
     assert report["steps"][0]["summary"]["metrics"]["pending_attribution"] == 3
+    assert report["steps"][0]["summary"]["deprecated_cursors_removed"] == ["wappi_history"]
     assert report["snapshot_manifest"]["counts"]["timeline_events"] == 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
-        cursor = con.execute("SELECT source_system, last_cursor_ts FROM ingestion_cursors").fetchone()
-    assert cursor == ("wappi_history", "2026-06-21T10:00:00+00:00")
+        cursors = con.execute("SELECT source_system, last_cursor_ts FROM ingestion_cursors ORDER BY source_system").fetchall()
+    assert cursors == [("wappi_history_pending", "2026-06-21T10:00:00+00:00")]
+
+
+def test_nightly_service_runs_optional_mail_link_enrich_and_publishes_metrics(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mail_link_enrich",
+                "kind": "mail_link_enrich",
+                "enabled": True,
+                "required": False,
+                "config": {
+                    "timeline_db": str(db_path),
+                    "allowed_root": str(tmp_path),
+                    "out_dir": str(tmp_path / "mail_link_enrich"),
+                    "apply": True,
+                },
+            }
+        ],
+    }
+    config_path = tmp_path / "mail_link_service_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["target_events"] == 0
+    manifest = json.loads((tmp_path / "published" / "latest_customer_timeline_snapshot.json").read_text(encoding="utf-8"))
+    assert manifest["mail_link_enrich"]["status"] == "ok"
+    assert manifest["mail_link_enrich"]["linked_strong"] == 0
+    assert manifest["source_counts"] == []
 
 
 def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None:

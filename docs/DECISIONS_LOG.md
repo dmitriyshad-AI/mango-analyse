@@ -1126,3 +1126,35 @@ judge. Расширение `fact_audit` — кандидат на j5, не на
 контакт переписывается; контакт из реплики клиента сохраняется; телефон центра
 в фактах не разрешает клейм «контакт клиента уже есть»; no-memory рамка
 «лучше начать с…» переписывается без изменения route.
+
+### D-060. Mail link enrich is a separate staging-only step; email remains weak and bot visibility is unchanged
+
+Решение: для 1 312 pending `mail_archive_stage2` сообщений добавлен отдельный
+staging-only шаг `mail_link_enrich` после `mail_archive_incremental`. Он читает
+сырой mail-archive envelope/signature по `message_sha256`, делает `strong`
+только по уникальному телефону из подписи/надёжному identity-link и оставляет
+email-match как `weak_email` без привязки к клиенту. Новые mail chunks всегда
+создаются только `allowed_for_bot=0`, `requires_manager_review=1`; открытие
+почты боту этим решением не выполняется.
+
+Почему так: email сам по себе даёт слишком много ложных совпадений, а телефон
+из тела письма может быть чужим. Поэтому телефон извлекается только из короткой
+нецитированной подписи, а body/citation phone не считается strong-сигналом.
+Повторный `mail_archive_incremental` сохраняет уже принятые
+`mail_link_enrich/pending_reason/customer_id` по `message_sha256`, чтобы full
+nightly re-run не стирал результат enrich.
+
+Результат на staging: dry-run по 1 312 дал `strong=25`, `weak_email=5`,
+`blocked=3`, `unmatched=1279`; apply обновил 1 312 событий и создал 25
+manager-only chunks. Финальный service-run `20260707T015146Z` дал
+`overall_status=ok`, `mail_link_enrich.target_events=0`,
+`pending_without_reason=0`, `quick_check=ok`. `allowed_for_bot` не изменился:
+всего `26607`, для `mail_archive_stage2` `7984` до/после.
+
+Хвосты B2-B4: B2 phone-like проверен по реальному `text` bot-visible chunks и
+`customer_identities.source_ref` в overlay v3.2 — хитов `0`; patch overlay не
+нужен. B3 storage-дубли по mail source accepted, bot-read дедуп остаётся на
+чтении по `message_sha256/source_id/source_ref`, БД не мутируется. M4 cursor
+literal переименован: новый monitor пишет `wappi_history_pending` и удаляет
+устаревший staging-cursor `wappi_history`; latest manifest больше не содержит
+`wappi_history`. Prod/CRM/Tallanto/live writes = 0.

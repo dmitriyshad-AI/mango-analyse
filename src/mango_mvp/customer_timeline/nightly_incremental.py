@@ -233,6 +233,28 @@ class MailArchiveStage2IncrementalNormalizer(TimelineNormalizer):
         )
         preview = optional_string(payload.get("text_preview") or payload.get("body_preview") or summary)
         direction = mail_direction(payload)
+        match_status = IdentityMatchClass(
+            optional_string(payload.get("match_status"))
+            or (IdentityMatchClass.STRONG_UNIQUE.value if customer_id else IdentityMatchClass.UNMATCHED.value)
+        )
+        confidence = float(payload.get("confidence") if payload.get("confidence") is not None else (0.9 if customer_id else 0.0))
+        pending_attribution = payload.get("pending_attribution")
+        if pending_attribution is None:
+            pending_attribution = not bool(customer_id)
+        metadata = {
+            "source_updated_at": normalized_timestamp(payload),
+            "brand": optional_string(payload.get("brand")),
+            "summary_status": optional_string(payload.get("summary_status")) or "needs_summary_later",
+            "needs_summary_later": bool(payload.get("needs_summary_later", True)),
+            "incremental_source": True,
+            "pending_attribution": bool(pending_attribution),
+        }
+        if payload.get("pending_reason"):
+            metadata["pending_reason"] = optional_string(payload.get("pending_reason"))
+        if payload.get("fresh_relink") is not None:
+            metadata["fresh_relink"] = bool(payload.get("fresh_relink"))
+        if isinstance(payload.get("mail_link_enrich"), Mapping):
+            metadata["mail_link_enrich"] = dict(payload["mail_link_enrich"])
         event = TimelineEvent(
             tenant_id=self.tenant_id,
             customer_id=customer_id,
@@ -245,17 +267,10 @@ class MailArchiveStage2IncrementalNormalizer(TimelineNormalizer):
             subject=subject,
             text_preview=preview[:240] if preview else None,
             summary=summary[:1200] if summary else None,
-            match_status=IdentityMatchClass.STRONG_UNIQUE if customer_id else IdentityMatchClass.UNMATCHED,
-            confidence=0.9 if customer_id else 0.0,
+            match_status=match_status,
+            confidence=confidence,
             record={"payload": payload},
-            metadata={
-                "source_updated_at": normalized_timestamp(payload),
-                "brand": optional_string(payload.get("brand")),
-                "summary_status": optional_string(payload.get("summary_status")) or "needs_summary_later",
-                "needs_summary_later": bool(payload.get("needs_summary_later", True)),
-                "incremental_source": True,
-                "pending_attribution": not bool(customer_id),
-            },
+            metadata=metadata,
             created_at=event_at,
         )
         chunks: list[BotContextChunk] = []

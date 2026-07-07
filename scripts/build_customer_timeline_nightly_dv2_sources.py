@@ -54,6 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest_path=mail_manifest,
         since=mail_cursor,
         text_limit=args.text_limit,
+        timeline_db=timeline_db,
     )
     mango_manifest = out_root / "mango_api_freshness_manifest.json"
     mango_report = build_mango_freshness(source_root, mango_manifest)
@@ -104,9 +105,11 @@ def build_mail_increment(
     manifest_path: Path,
     since: datetime,
     text_limit: int,
+    timeline_db: Path | None = None,
 ) -> Mapping[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    existing_state = load_existing_mail_link_state(timeline_db) if timeline_db else {}
     stage2_paths = [
         source_root
         / "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/"
@@ -132,23 +135,26 @@ def build_mail_increment(
                 seen.add(message_sha)
                 text = str(row.get("thread_summary") or row.get("summary") or row.get("subject") or "").strip()
                 rows.append(
-                    {
-                        "source_id": message_sha,
-                        "source_ref": f"mail_stage2:{path.name}:{message_sha[:16]}",
-                        "message_sha256": message_sha,
-                        "event_at": event_at.isoformat(),
-                        "updated_at": event_at.isoformat(),
-                        "date_first": row.get("date_first"),
-                        "date_last": row.get("date_last"),
-                        "customer_id": row.get("customer_id") or None,
-                        "subject": row.get("subject") or "Email message",
-                        "summary": text[:text_limit],
-                        "text_preview": text[:240],
-                        "brand": row.get("brand") or "unknown",
-                        "summary_status": row.get("summary_status") or "stage2_handoff",
-                        "needs_summary_later": False,
-                        "source_file": str(path),
-                    }
+                    merge_existing_mail_state(
+                        {
+                            "source_id": message_sha,
+                            "source_ref": f"mail_stage2:{path.name}:{message_sha[:16]}",
+                            "message_sha256": message_sha,
+                            "event_at": event_at.isoformat(),
+                            "updated_at": event_at.isoformat(),
+                            "date_first": row.get("date_first"),
+                            "date_last": row.get("date_last"),
+                            "customer_id": row.get("customer_id") or None,
+                            "subject": row.get("subject") or "Email message",
+                            "summary": text[:text_limit],
+                            "text_preview": text[:240],
+                            "brand": row.get("brand") or "unknown",
+                            "summary_status": row.get("summary_status") or "stage2_handoff",
+                            "needs_summary_later": False,
+                            "source_file": str(path),
+                        },
+                        existing_state.get(message_sha),
+                    )
                 )
         inputs.append({"path": str(path), "exists": path.exists(), "rows_selected": len(rows) - count_before})
     for db_path in archive_dbs:
@@ -159,7 +165,7 @@ def build_mail_increment(
                 if not message_sha or message_sha in seen:
                     continue
                 seen.add(message_sha)
-                rows.append(row)
+                rows.append(merge_existing_mail_state(row, existing_state.get(message_sha)))
         inputs.append({"path": str(db_path), "exists": db_path.exists(), "rows_selected": len(rows) - count_before})
     rows.sort(key=lambda item: str(item.get("event_at") or ""))
     write_jsonl(out_jsonl, rows)
@@ -172,11 +178,66 @@ def build_mail_increment(
         "rows_written": len(rows),
         "linked_rows": sum(1 for row in rows if row.get("customer_id")),
         "pending_rows": sum(1 for row in rows if not row.get("customer_id")),
+        "preserved_mail_link_state_rows": sum(1 for row in rows if row.get("mail_link_enrich")),
         "max_event_at": max_event_at,
         "safety": {"network_calls": False, "runs_llm": False, "writes_prod_db": False},
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def load_existing_mail_link_state(timeline_db: Path | None) -> dict[str, Mapping[str, Any]]:
+    if not timeline_db or not timeline_db.exists():
+        return {}
+    result: dict[str, Mapping[str, Any]] = {}
+    with sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        for row in con.execute(
+            """
+            SELECT source_id, customer_id, match_status, confidence, record_json
+            FROM timeline_events
+            WHERE source_system = 'mail_archive_stage2'
+              AND json_extract(record_json, '$.metadata.mail_link_enrich.outcome') IS NOT NULL
+            """
+        ):
+            try:
+                payload = json.loads(row["record_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            metadata = payload.get("metadata") if isinstance(payload, Mapping) else {}
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            result[str(row["source_id"])] = {
+                "customer_id": row["customer_id"],
+                "match_status": row["match_status"],
+                "confidence": row["confidence"],
+                "pending_attribution": metadata.get("pending_attribution"),
+                "pending_reason": metadata.get("pending_reason"),
+                "fresh_relink": metadata.get("fresh_relink"),
+                "mail_link_enrich": metadata.get("mail_link_enrich"),
+                "brand": metadata.get("brand"),
+            }
+    return result
+
+
+def merge_existing_mail_state(row: dict[str, Any], state: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not state:
+        return row
+    for key in (
+        "customer_id",
+        "match_status",
+        "confidence",
+        "pending_attribution",
+        "pending_reason",
+        "fresh_relink",
+        "mail_link_enrich",
+    ):
+        if state.get(key) is not None:
+            row[key] = state[key]
+    if state.get("brand") and str(state["brand"]) != "unknown":
+        row["brand"] = state["brand"]
+    return row
 
 
 def read_archive_messages(db_path: Path, *, since: datetime, text_limit: int) -> list[dict[str, Any]]:
@@ -302,6 +363,21 @@ def build_service_config(
             },
         }
     )
+    steps.append(
+        {
+            "name": "mail_link_enrich",
+            "kind": "mail_link_enrich",
+            "enabled": True,
+            "required": False,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "out_dir": str(out_root / "mail_link_enrich"),
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
     wappi_metrics = allowed_root / "wappi_history_block4" / "block4_wappi_metrics.json"
     steps.extend(
         [
@@ -315,9 +391,10 @@ def build_service_config(
             monitor_step(
                 "wappi_history_incremental",
                 wappi_metrics,
-                cursor_source_system="wappi_history",
+                cursor_source_system="wappi_history_pending",
                 cursor_ts=DEFAULT_CURSOR,
                 reason="optional_pending_only_no_timeline_events",
+                deprecated_cursor_source_systems=("wappi_history",),
             ),
             monitor_step(
                 "mango_api_freshness",
@@ -345,6 +422,7 @@ def monitor_step(
     cursor_source_system: str,
     cursor_ts: str,
     reason: str,
+    deprecated_cursor_source_systems: Sequence[str] = (),
 ) -> Mapping[str, Any]:
     return {
         "name": name,
@@ -357,6 +435,7 @@ def monitor_step(
             "cursor_source_system": cursor_source_system,
             "cursor_ts": cursor_ts,
             "reason": reason,
+            "deprecated_cursor_source_systems": list(deprecated_cursor_source_systems),
             "empty_status": "skipped",
         },
     }

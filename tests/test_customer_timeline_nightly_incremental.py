@@ -240,6 +240,62 @@ def test_nightly_incremental_imports_mail_archive_stage2_manager_only(tmp_path: 
     assert chunk == (0, 1)
 
 
+def test_nightly_incremental_preserves_mail_link_enrich_pending_state(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail_stage2_pending.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "message_sha256": "c" * 64,
+                "date_last": "2026-06-21T11:00:00+00:00",
+                "subject": "Вопрос по расписанию",
+                "summary": "Клиент уточнил расписание.",
+                "brand": "unknown",
+                "match_status": "unmatched",
+                "pending_attribution": True,
+                "pending_reason": "no_strong_identity_match",
+                "fresh_relink": True,
+                "mail_link_enrich": {
+                    "schema_version": "mail_link_enrich_v1",
+                    "outcome": "unmatched",
+                    "reason": "no_strong_identity_match",
+                },
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                source_ref="nightly-test:mail",
+                normalizer="mail_archive_stage2",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+    )
+
+    run_nightly_incremental(config)
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute(
+            "SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id = ?",
+            ("c" * 64,),
+        ).fetchone()
+    payload = json.loads(event["record_json"])
+    assert event["customer_id"] is None
+    assert event["match_status"] == "unmatched"
+    assert payload["metadata"]["pending_reason"] == "no_strong_identity_match"
+    assert payload["metadata"]["fresh_relink"] is True
+    assert payload["metadata"]["mail_link_enrich"]["outcome"] == "unmatched"
+
+
 def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failures(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     missing = tmp_path / "missing.jsonl"

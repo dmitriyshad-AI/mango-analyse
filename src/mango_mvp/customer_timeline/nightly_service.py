@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
     summarize_report,
 )
+from mango_mvp.customer_timeline.mail_link_enrich import MailLinkEnrichConfig, run_mail_link_enrich
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
 
 
@@ -31,6 +32,7 @@ class NightlyServiceStep:
     required: bool = True
     config: Optional[NightlyIncrementalConfig] = None
     monitor_config: Optional[Mapping[str, Any]] = None
+    mail_link_config: Optional[MailLinkEnrichConfig] = None
     reason: Optional[str] = None
 
 
@@ -118,6 +120,64 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "required": step.required,
                         "report_path": str(step_path),
                         "summary": step_report,
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "mail_link_enrich":
+                if step.mail_link_config is None:
+                    reason = f"enabled step {step.name} requires config"
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=reason,
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                        )
+                    )
+                    continue
+                try:
+                    step_report = run_mail_link_enrich(step.mail_link_config)
+                except Exception as exc:  # optional enrichment must fail-soft through the service report.
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                safety = step_report.get("safety") if isinstance(step_report.get("safety"), Mapping) else {}
+                changed_visibility = bool(safety.get("allowed_for_bot_changed")) or bool(
+                    safety.get("mail_stage2_allowed_for_bot_changed")
+                )
+                status = "failed_visibility_changed" if changed_visibility else "ok"
+                if changed_visibility and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "target_events": step_report.get("target_events"),
+                            "counts": step_report.get("counts"),
+                            "apply_counts": (step_report.get("apply") or {}).get("counts")
+                            if isinstance(step_report.get("apply"), Mapping)
+                            else {},
+                            "safety": safety,
+                        },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
                 )
@@ -267,6 +327,7 @@ def service_step_from_json(
     reason = str(payload.get("reason")) if payload.get("reason") else None
     config = None
     monitor_config = None
+    mail_link_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
         if not isinstance(config_payload, Mapping):
@@ -289,6 +350,18 @@ def service_step_from_json(
         if not isinstance(raw_config, Mapping):
             raise ValueError(f"step {name} requires config")
         monitor_config = dict(raw_config)
+    elif kind == "mail_link_enrich":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        mail_link_config = MailLinkEnrichConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            out_dir=Path(str(raw_config.get("out_dir") or Path(allowed_root) / "mail_link_enrich")),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+            max_events=int(raw_config["max_events"]) if raw_config.get("max_events") is not None else None,
+        )
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
     return NightlyServiceStep(
@@ -298,6 +371,7 @@ def service_step_from_json(
         required=required,
         config=config,
         monitor_config=monitor_config,
+        mail_link_config=mail_link_config,
         reason=reason,
     )
 
@@ -352,6 +426,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                     guard_customer_timeline_output_path(Path(str(raw_path)), allowed_root)
                 if step.monitor_config.get("metrics_path"):
                     guard_customer_timeline_output_path(Path(str(step.monitor_config["metrics_path"])), allowed_root)
+            if step.mail_link_config is not None:
+                guard_customer_timeline_output_path(step.mail_link_config.timeline_db, allowed_root)
+                guard_customer_timeline_output_path(step.mail_link_config.allowed_root, allowed_root)
+                guard_customer_timeline_output_path(step.mail_link_config.out_dir, allowed_root)
             continue
         guard_customer_timeline_output_path(step.config.timeline_db, allowed_root)
         guard_customer_timeline_output_path(step.config.allowed_root, allowed_root)
@@ -391,9 +469,20 @@ def run_local_freshness_monitor(
     cursor_source_system = str(config.get("cursor_source_system") or "").strip()
     cursor_ts_raw = str(config.get("cursor_ts") or "").strip()
     cursor_written = None
+    deprecated_removed: list[str] = []
     if cursor_source_system and cursor_ts_raw:
         cursor_ts = parse_datetime(cursor_ts_raw, "cursor_ts")
         with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+            for raw_source in config.get("deprecated_cursor_source_systems") or ():
+                legacy_source = str(raw_source or "").strip()
+                if not legacy_source or legacy_source == cursor_source_system:
+                    continue
+                removed = store._con.execute(
+                    "DELETE FROM ingestion_cursors WHERE tenant_id = ? AND source_system = ?",
+                    (tenant_id, legacy_source),
+                )
+                if removed.rowcount:
+                    deprecated_removed.append(legacy_source)
             cursor = store.upsert_ingestion_cursor(
                 tenant_id,
                 cursor_source_system,
@@ -406,6 +495,7 @@ def run_local_freshness_monitor(
                 },
                 actor=actor,
             )
+            store._con.commit()
             cursor_written = cursor.to_json_dict()
     return {
         "schema_version": "customer_timeline_local_freshness_monitor_v1",
@@ -426,6 +516,7 @@ def run_local_freshness_monitor(
         "metrics_path": str(metrics_path) if metrics_path else None,
         "metrics": metrics,
         "cursor": cursor_written,
+        "deprecated_cursors_removed": deprecated_removed,
         "safety": {
             "network_calls": False,
             "writes_timeline_events": False,
@@ -440,6 +531,7 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
     import sqlite3
 
     db = Path(db_path)
+    now = datetime.now(timezone.utc)
     files = {}
     for suffix, label in (("", "sqlite"), ("-wal", "wal"), ("-shm", "shm")):
         path = Path(str(db) + suffix)
@@ -470,6 +562,8 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
                 (tenant_id,),
             )
         ]
+        for row in source_counts:
+            row["max_event_age_days"] = iso_age_days(row.get("max_event_at"), now=now)
         cursors = [
             dict(row)
             for row in con.execute(
@@ -482,6 +576,10 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
                 (tenant_id,),
             )
         ]
+        for row in cursors:
+            row["last_cursor_age_days"] = iso_age_days(row.get("last_cursor_ts"), now=now)
+            row["updated_age_days"] = iso_age_days(row.get("updated_at"), now=now)
+        mail_link_enrich = build_mail_link_enrich_manifest_metrics(con, tenant_id=tenant_id)
     return {
         "schema_version": "customer_timeline_snapshot_manifest_v1",
         "timeline_db": str(db),
@@ -490,7 +588,77 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
         "counts": counts,
         "source_counts": source_counts,
         "ingestion_cursors": cursors,
+        "mail_link_enrich": mail_link_enrich,
     }
+
+
+def build_mail_link_enrich_manifest_metrics(con: Any, *, tenant_id: str) -> Mapping[str, Any]:
+    try:
+        outcome_rows = con.execute(
+            """
+            SELECT COALESCE(json_extract(record_json, '$.metadata.mail_link_enrich.outcome'), 'not_processed') AS outcome,
+                   COUNT(*) AS count
+            FROM timeline_events
+            WHERE tenant_id = ? AND source_system = 'mail_archive_stage2'
+            GROUP BY outcome
+            ORDER BY outcome
+            """,
+            (tenant_id,),
+        ).fetchall()
+        brand_rows = con.execute(
+            """
+            SELECT COALESCE(json_extract(record_json, '$.metadata.brand'), 'unknown') AS brand,
+                   COUNT(*) AS count
+            FROM timeline_events
+            WHERE tenant_id = ? AND source_system = 'mail_archive_stage2'
+            GROUP BY brand
+            ORDER BY brand
+            """,
+            (tenant_id,),
+        ).fetchall()
+        pending_null = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM timeline_events
+            WHERE tenant_id = ?
+              AND source_system = 'mail_archive_stage2'
+              AND match_status = 'unmatched'
+              AND (customer_id IS NULL OR customer_id = '')
+              AND json_extract(record_json, '$.metadata.pending_attribution') = 1
+              AND json_extract(record_json, '$.metadata.pending_reason') IS NULL
+            """,
+            (tenant_id,),
+        ).fetchone()[0]
+    except Exception:
+        return {"status": "unavailable"}
+    outcomes = {str(row["outcome"]): int(row["count"]) for row in outcome_rows}
+    brands = {str(row["brand"]): int(row["count"]) for row in brand_rows}
+    return {
+        "status": "ok",
+        "outcomes": outcomes,
+        "linked_strong": outcomes.get("strong", 0),
+        "weak_email": outcomes.get("weak_email", 0),
+        "unmatched": outcomes.get("unmatched", 0),
+        "blocked": outcomes.get("blocked", 0),
+        "brand_counts": brands,
+        "unknown_brand": brands.get("unknown", 0),
+        "pending_without_reason": int(pending_null),
+    }
+
+
+def iso_age_days(raw: Any, *, now: datetime) -> Optional[float]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return round((now - parsed.astimezone(timezone.utc)).total_seconds() / 86400.0, 3)
 
 
 def table_count(con: Any, table: str) -> int:

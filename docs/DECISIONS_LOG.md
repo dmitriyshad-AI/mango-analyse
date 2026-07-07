@@ -1324,3 +1324,31 @@ Yandex/OpenClaw считается второй точкой.
 обновлён: `preflight` проверяет оба backup-root и свободное место, `flip`
 создаёт и sha-проверяет обе копии до удаления sidecar-файлов и атомарной
 подмены prod DB.
+
+### D-069. Customer Timeline snapshot #1 is published to stable prod path
+
+Решение владельца от 2026-07-07 выполнено: первый snapshot Customer Timeline
+опубликован по стабильному prod-пути
+`product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
+
+Опубликованный snapshot:
+`prod_snapshots/prod_20260707_200020/customer_timeline.sqlite`, sha256
+`836c8713ff7292f9a80dfdaf03d85bde0101fb9ebdb447fb20589a00473bf57c`.
+Перед подменой создан проверенный rollback backup старого prod:
+`prod_backups/pre_flip_backup_2026-07-07T170221.347644Z0000/customer_timeline.sqlite`,
+sha256 `ef9ef249b4192b768cd1eb826f6df20514994539a3911f9aeee19bbc295d03c8`;
+такая же sha256-проверенная копия лежит в
+`~/Yandex.Disk.localized/OpenClaw/prod_backups/pre_flip_backup_2026-07-07T170221.347644Z0000/`.
+
+Post-flip smoke: prod `quick_check=ok`; real live-reader smoke rc=0; 5/5
+контрольных клиентов совпали с manifest counts; prod sha256 совпадает с
+snapshot sha256. `flip.py` завершился rc=1 из-за timeout ожидания
+долгоживущего `start_command`, но live bot screen/process поднят и держит новую
+DB. Tooling исправлен отдельным коммитом: timeout команд теперь возвращается
+структурированным JSON (`rc=124`, `timed_out=true`), а не роняет отчёт.
+
+E2E через Telegram не выполнялся, потому что отправка клиенту остаётся
+абсолютным stop. Вместо этого использованы non-send проверки: live-reader smoke,
+process/screen presence, prod DB lsof/sha/quick_check. В логах public bot после
+старта виден `getUpdates Conflict`; это операционный риск Telegram-поллера, но
+не откатывает опубликованный Customer Timeline snapshot.

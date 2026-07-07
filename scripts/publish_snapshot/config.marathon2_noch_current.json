@@ -94,13 +94,16 @@
       "stop_command": [
         "screen",
         "-S",
-        "mango_public_pilot_bots_main_a23dede6_clean_20260707",
+        "mango_public_pilot_bots_main_15accd2_snapshot2_20260708",
         "-X",
         "quit"
       ],
       "start_command": [
+        "screen",
+        "-dmS",
+        "mango_public_pilot_bots_main_15accd2_snapshot2_20260708",
         "bash",
-        ".codex_local/deploy_20260707_a23dede6/start_live_a23dede6_clean.sh"
+        ".codex_local/deploy_20260707_a23dede6/start_live_15accd2_snapshot2.sh"
       ],
       "smoke_command": [
         "python3",

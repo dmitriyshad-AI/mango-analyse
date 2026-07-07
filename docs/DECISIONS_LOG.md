@@ -1426,3 +1426,34 @@ Resolve+Analyze, LLM и сетевой Mango API, строит JSONL в форм
 `MAX(event_at)`, а не общий `changed_customer_count`. Известное поведение:
 AMO contact snapshot может давать повторный `updated` в 5-минутном overlap,
 поэтому rerun=0 для звонков проверяется отдельно по `mango_processed_summary`.
+
+### D-073. Snapshot #2 published after processed Mango call sweep
+
+Решение владельца от 2026-07-07 исполнено: после `mango_processed_sweep`
+опубликован prod snapshot #2 штатным инструментом `scripts/publish_snapshot/`.
+Снимок:
+`product_data/customer_timeline/prod_snapshots/prod_20260707_211300_calls_sweep/customer_timeline.sqlite`,
+sha256 `eb38dc7a8790f55cbc31d28381f420403a7bcdc3af460ac00aff66e965c1e0e9`.
+
+Фактический прирост от sweep: `timeline_events` по
+`source_system='mango_processed_summary'` выросли с `74029` до `75027`,
+`MAX(event_at)` продвинулся с `2026-07-01T15:03:25+00:00` до
+`2026-07-07T13:44:45+00:00`; `bot_context_chunks` по тому же источнику выросли
+до `72765`. Повторный nightly run дал `0` SQL-прироста по
+`mango_processed_summary`; один overlap/update в AMO safety-window не считается
+дублем звонков.
+
+Публикация: staging `wal_checkpoint(TRUNCATE)` вернул `[0,0,0]`, staging WAL
+обнулён, `reader_smoke` по 5 контрольным клиентам прошёл, prod после flip:
+`timeline_events=175586`, `bot_context_chunks=133428`, `quick_check=ok`.
+Rollback backup создан и sha-проверен:
+`product_data/customer_timeline/prod_backups/pre_flip_backup_2026-07-07T211813.897805Z0000/customer_timeline.sqlite`;
+асинхронная копия создана в `~/Yandex.Disk.localized/OpenClaw/prod_backups/`.
+
+Операционное уточнение: live-worktree уже был на
+`15accd2ebabf7007f62ae6dafe04bad4548c91ba`, а старый launcher был жёстко
+закреплён на `a23dede6`, поэтому старт после flip был переведён на новый
+эквивалентный launcher под текущий HEAD и запускается через `screen`
+`mango_public_pilot_bots_main_15accd2_snapshot2_20260708`. Клиентам сообщений
+не отправлялось; e2e заменён на non-send проверки heartbeat, process/screen,
+sha/counts/reader-smoke.

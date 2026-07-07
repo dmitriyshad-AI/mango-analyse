@@ -113,7 +113,13 @@ def build_replay_m1_manifest(
         payload["raw_manifest_path_local_only"] = str(raw_manifest_resolved)
     if retention_resolved is not None:
         payload["retention_manifest_path"] = str(retention_resolved)
-        payload["retention_delete_command"] = f"rm -rf -- {set_path.parent}"
+        retention_paths = [str(set_path.parent)]
+        if retention_resolved.exists():
+            retention_payload = json.loads(retention_resolved.read_text(encoding="utf-8"))
+            raw_paths = retention_payload.get("suggested_delete_paths_after_exam")
+            if isinstance(raw_paths, list):
+                retention_paths = [str(item) for item in raw_paths if str(item).strip()]
+        payload["retention_delete_command"] = "rm -rf -- " + " ".join(retention_paths)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path

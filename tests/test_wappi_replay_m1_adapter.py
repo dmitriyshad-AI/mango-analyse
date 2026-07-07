@@ -17,6 +17,11 @@ def test_build_replay_m1_manifest_records_chat_only_metric(tmp_path: Path) -> No
     source_head.write_text("abc\n", encoding="utf-8")
     pii_report = tmp_path / "pii_scan_v2.json"
     pii_report.write_text('{"leak_count":0}\n', encoding="utf-8")
+    retention = tmp_path / "RETENTION_MANIFEST.json"
+    retention.write_text(
+        json.dumps({"suggested_delete_paths_after_exam": ["/tmp/raw-local", "/tmp/scrubbed-local", "/tmp/package"]}),
+        encoding="utf-8",
+    )
     out = build_replay_m1_manifest(
         set_path=set_path,
         out_path=tmp_path / "manifest.json",
@@ -25,6 +30,7 @@ def test_build_replay_m1_manifest_records_chat_only_metric(tmp_path: Path) -> No
         snapshot_path=snapshot,
         source_head_path=source_head,
         pii_report_path=pii_report,
+        retention_manifest_path=retention,
         budgets={"max_bot_calls": 1, "max_judge_calls": 1},
         repo_root=Path.cwd(),
     )
@@ -39,6 +45,9 @@ def test_build_replay_m1_manifest_records_chat_only_metric(tmp_path: Path) -> No
     assert payload["real_provider_parallel_cap"] == 2
     assert payload["snapshot_sha256"]
     assert payload["pii_leak_count"] == 0
+    assert "/tmp/raw-local" in payload["retention_delete_command"]
+    assert "/tmp/scrubbed-local" in payload["retention_delete_command"]
+    assert "/tmp/package" in payload["retention_delete_command"]
     assert payload["budgets"]["max_bot_calls"] == 1
     assert payload["case_stats"]["turns"] == 1
     assert payload["case_stats"]["dialogs"] == 1

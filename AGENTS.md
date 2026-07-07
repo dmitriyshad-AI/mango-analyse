@@ -76,6 +76,16 @@
 - `scripts/make_audit_pack.py` — audit pack с ПДн-фильтром телефонов и email; `manifest.json` пишется последним.
 - `scripts/preflight.py` — стоп-гейт перед крупной задачей.
 
+## Workflow Skill Scripts
+
+Скрипты в `scripts/skills/` read-only и fail-soft, кроме `live_truth.py` перед live-действиями.
+
+- При взятии ТЗ запускай `python3 scripts/skills/tz_lint.py <TZ.md>` как advisory-проверку.
+- Перед новой фичей запускай `python3 scripts/skills/inventory_before_build.py --keywords "..." --symbols "..."` как advisory-проверку, что это уже не сделано.
+- При любом FAIL регрейда обязательно запускай `python3 scripts/skills/fail_raw_export.py <run_dir>` и прикладывай сырьё.
+- Перед изменениями Wappi draft-loop обязательно запускай `python3 scripts/skills/wappi_draft_loop_replay.py --replay <jsonl>` только в dry-run/read-only режиме.
+- Перед деплоем или включением live-флага `python3 scripts/skills/live_truth.py` — жёсткий гейт; без фактического PID/worktree/HEAD/env дальше не идти.
+
 ## TZ Header
 
 Для новых ТЗ добавляй машиночитаемую шапку в начале файла:

@@ -24,6 +24,7 @@ from scripts.publish_snapshot.common import (
     report_base,
     run_command,
     sha256_file,
+    split_ignored_lsof_holders,
 )
 
 
@@ -53,9 +54,19 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             result = run_command(render_command(command, {"db": prod_db}), cwd=worktree, timeout=int(reader.get("stop_timeout_seconds") or 120))
             result["name"] = reader.get("name")
             stop_results.append(result)
-    holders = lsof_holders(prod_db)
+    all_holders = lsof_holders(prod_db)
+    holders, ignored_holders = split_ignored_lsof_holders(
+        all_holders,
+        ignored_command_prefixes=tuple(str(item) for item in cfg.raw.get("ignored_lsof_command_prefixes") or ()),
+    )
     if holders:
-        return {**report, "status": "blocked_lsof", "stop_results": stop_results, "holders": holders}, False
+        return {
+            **report,
+            "status": "blocked_lsof",
+            "stop_results": stop_results,
+            "holders": holders,
+            "ignored_holders": ignored_holders,
+        }, False
 
     backup_root = cfg.backup_root
     if backup_root is None:
@@ -99,6 +110,7 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "backup_sha256": backup_sha,
             "new_sha256": new_sha,
             "removed_sidecars": removed_sidecars,
+            "ignored_lsof_holders": ignored_holders,
             "quick_check": quick_check(prod_db),
         }
     )

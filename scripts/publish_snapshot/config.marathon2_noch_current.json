@@ -8,6 +8,9 @@
   "backup_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/prod_backups",
   "backup_async_copy_root": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/prod_backups",
   "required_free_copies": 3,
+  "ignored_lsof_command_prefixes": [
+    "com.apple"
+  ],
   "count_tables": [
     "customer_identities",
     "identity_links",

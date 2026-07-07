@@ -295,6 +295,28 @@ def lsof_holders(path: Path) -> list[str]:
     return lines[1:] if len(lines) > 1 else []
 
 
+def lsof_holder_command(line: str) -> str:
+    parts = line.split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
+def split_ignored_lsof_holders(
+    holders: Sequence[str],
+    *,
+    ignored_command_prefixes: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    active: list[str] = []
+    ignored: list[str] = []
+    prefixes = tuple(str(item).strip() for item in ignored_command_prefixes if str(item).strip())
+    for line in holders:
+        command = lsof_holder_command(line)
+        if prefixes and any(command.startswith(prefix) for prefix in prefixes):
+            ignored.append(line)
+        else:
+            active.append(line)
+    return active, ignored
+
+
 def git_head(worktree: Path) -> str | None:
     proc = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True, capture_output=True)
     return proc.stdout.strip() if proc.returncode == 0 else None

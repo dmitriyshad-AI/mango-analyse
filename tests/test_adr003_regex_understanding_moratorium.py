@@ -262,6 +262,7 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "PROSE_MODEL_LED_ENV", "TELEGRAM_PROSE_MODEL_LED"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "SEMANTIC_OUTPUT_VERIFIER_ENV", "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
+    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_CLOSE_FRAME_VETO_ENV", "TELEGRAM_TONE_CLOSE_FRAME_VETO"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),
     ("src/mango_mvp/channels/tone_block.py", "TONE_CLOSE_DETECT_ENV", "TELEGRAM_TONE_CLOSE_DETECT"),
     ("src/mango_mvp/channels/tone_block.py", "TONE_RICH_FORMAT_ENV", "TELEGRAM_TONE_RICH_FORMAT"),

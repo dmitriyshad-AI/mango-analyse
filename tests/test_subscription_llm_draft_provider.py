@@ -77,6 +77,7 @@ from mango_mvp.channels.subscription_llm import (
     TAX_ONLINE_FORM_SAFE_TEXT,
     TEMPLATE_FROM_KB_ENV,
     TONE_CLOSE_DETECT_ENV,
+    TONE_CLOSE_FRAME_VETO_ENV,
     TONE_RICH_FORMAT_ENV,
     TONE_SELL_PROMPT_ENV,
     TONE_WARM_FRAME_ENV,
@@ -5717,6 +5718,77 @@ def test_direct_path_applies_tone_close_detect_to_self_route_product_facts() -> 
     assert "ноутбук" not in lowered
     assert "сигнализац" not in lowered
     assert "медсестр" not in lowered
+
+
+def test_direct_path_tone_close_frame_veto_is_default_off_for_hot_lead() -> None:
+    assert TONE_CLOSE_FRAME_VETO_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+
+    original_text = "Да, записать можем. Подскажите, пожалуйста, класс и формат."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=original_text,
+            topic_id="theme:enroll",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "safe",
+                    "must_handoff": False,
+                    "deal_stage": "ready_to_enroll",
+                    "payment_readiness": "ready_to_pay",
+                    "requested_action": "enroll",
+                    "answerability": "answer_self",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, записывайте нас.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", TONE_CLOSE_DETECT_ENV: "1"},
+    )
+
+    assert result.metadata["close_detect"]["status"] == "fired"
+    assert "tone_close_frame_veto" not in result.metadata
+    assert result.draft_text != original_text
+
+
+def test_direct_path_tone_close_frame_veto_blocks_hot_lead_close_when_enabled() -> None:
+    original_text = "Да, записать можем. Подскажите, пожалуйста, класс и формат."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=original_text,
+            topic_id="theme:enroll",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "risk_class": "safe",
+                    "must_handoff": False,
+                    "deal_stage": "ready_to_enroll",
+                    "payment_readiness": "ready_to_pay",
+                    "requested_action": "enroll",
+                    "answerability": "answer_self",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, записывайте нас.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_FRAME_VETO_ENV: "1",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == original_text
+    assert "tone_close_frame_veto" in result.safety_flags
+    assert result.metadata["tone_close_frame_veto"]["status"] == "applied"
+    assert "close_detect" not in result.metadata
 
 
 def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_question() -> None:

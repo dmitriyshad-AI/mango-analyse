@@ -124,6 +124,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
+    TONE_CLOSE_FRAME_VETO_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
@@ -979,6 +980,7 @@ class SubscriptionLlmDraftProvider:
             )
             reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
             closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
+            closed = _apply_tone_close_frame_veto(reasked, closed, context=context)
             scrubbed = scrub_direct_path_p0_text(
                 closed,
                 context=context,
@@ -2749,6 +2751,58 @@ def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
         _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
         or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
         or _semantic_frame_value(frame, "requested_action") in _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS
+    )
+
+
+def _tone_close_frame_veto_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return bool(
+        _explicit_truthy_setting(
+            context,
+            TONE_CLOSE_FRAME_VETO_ENV,
+            aliases=("tone_close_frame_veto", "tone_close_frame_veto_enabled"),
+        )
+    )
+
+
+def _apply_tone_close_frame_veto(
+    before_close: SubscriptionDraftResult,
+    after_close: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _tone_close_frame_veto_enabled(context):
+        return after_close
+    close_detect = after_close.metadata.get("close_detect") if isinstance(after_close.metadata, Mapping) else {}
+    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() != "fired":
+        return after_close
+    frame = _semantic_frame_from_result(before_close) or _semantic_frame_from_result(after_close)
+    if not frame or not _semantic_frame_close_veto_candidate(frame):
+        return after_close
+
+    trace = {
+        "enabled": True,
+        "status": "applied",
+        "reason": "semantic_frame_hot_lead_close_veto",
+        "close_step": str(close_detect.get("step") or "").strip(),
+        "route_before_close": before_close.route,
+        "route_after_close": after_close.route,
+        "frame": {
+            "confidence": _clamp_float(frame.get("confidence", 0.0)),
+            "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+            "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+            "requested_action": _semantic_frame_value(frame, "requested_action"),
+            "answerability": _semantic_frame_value(frame, "answerability"),
+        },
+    }
+    metadata = dict(before_close.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    metadata["tone_close_frame_veto"] = trace
+    direct["tone_close_frame_veto"] = trace
+    metadata["direct_path"] = direct
+    return replace(
+        before_close,
+        safety_flags=tuple(dict.fromkeys([*before_close.safety_flags, "tone_close_frame_veto"])),
+        metadata=metadata,
     )
 
 

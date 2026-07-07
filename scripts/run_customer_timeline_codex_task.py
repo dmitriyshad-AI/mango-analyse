@@ -58,6 +58,7 @@ def build_task_spec(task: str, *, tallanto_phone_limit: int) -> TaskSpec:
                 stop_reason="TALLANTO_API_CAPTURE_ENABLED is not 1; read-only Tallanto API capture is not configured",
             )
         out_root = ROOT / ".codex_local" / "staging" / "daily_capture" / "tallanto_api_capture"
+        output_path = out_root / "product" / "tallanto_entities.json"
         return TaskSpec(
             task=task,
             command=(
@@ -68,13 +69,13 @@ def build_task_spec(task: str, *, tallanto_phone_limit: int) -> TaskSpec:
                 "--product-db",
                 str(out_root / "product" / "mango_product_appliance.sqlite"),
                 "--out",
-                str(out_root / "tallanto_entities.json"),
+                str(output_path),
                 "--phone-limit",
                 str(tallanto_phone_limit),
                 "--max-contacts-per-phone",
                 "5",
             ),
-            expected_output=out_root / "tallanto_entities.json",
+            expected_output=output_path,
         )
     if task == "nightly-warehouse":
         return TaskSpec(

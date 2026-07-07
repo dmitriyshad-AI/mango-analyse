@@ -58,6 +58,10 @@ def test_tallanto_client_handles_invalid_base_url():
         TallantoApiClient(TallantoApiConfig(base_url="", api_token="token")).healthcheck()
 
 
+def test_tallanto_phone_lookup_uses_existing_contact_phone_fields_only():
+    assert TallantoApiClient.CONTACT_PHONE_FIELDS == ("phone_mobile", "phone_work")
+
+
 def test_build_contact_context_by_contact_id(monkeypatch):
     client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
 

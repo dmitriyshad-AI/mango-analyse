@@ -1237,3 +1237,22 @@ sha: live bot работает из `/Users/dmitrijfabarisov/Projects/Mango_main
 `tallanto-api-capture` fail-closed до явного
 `TALLANTO_API_CAPTURE_ENABLED=1`; `nightly-warehouse` вызывает staging-only
 nightly service с Dv2 config. Live/prod/CRM/ASR не входят в эти задачи.
+
+### D-064. Publish snapshot v3 becomes codex-executable, but flip is gated by live-reader preflight
+
+Решение владельца: собрать `scripts/publish_snapshot/` как исполняемую
+автоматизацию runbook-v3 для ночной публикации Customer Timeline snapshot.
+Инструмент codex-executable, но `flip --execute` разрешён только после зелёного
+машинного preflight: чистые reader worktree, stop/start команды из конфига,
+reader-smoke реального live-кода, WAL checkpoint с `-wal=0`, backup+rollback.
+
+Почему так: предыдущий SWAP был остановлен из-за несовпадения runtime
+(`Mango_main_intent_ff`) и transfer-package (`Mango_email_pipeline_restore`).
+Новый tooling должен ловить ровно этот класс риска до stop/start и до подмены
+стабильного пути.
+
+Проверка 2026-07-07: tooling и тесты добавлены; reader-smoke live-кода против
+staging прошёл. Реальный preflight пакета `marathon2_noch_current` заблокировал
+публикацию: live reader worktree `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`
+грязный и используется соседней задачей. DB flip не выполнялся, live bot не
+останавливался, prod DB не подменялась.

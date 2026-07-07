@@ -206,7 +206,7 @@ def _is_not_found_error(exc: Exception) -> bool:
 
 
 class TallantoApiClient:
-    CONTACT_PHONE_FIELDS = ("phone_mobile", "phone_work", "phone_home", "phone_other", "phone")
+    CONTACT_PHONE_FIELDS = ("phone_mobile", "phone_work")
 
     def __init__(self, config: TallantoApiConfig):
         self.config = TallantoApiConfig(

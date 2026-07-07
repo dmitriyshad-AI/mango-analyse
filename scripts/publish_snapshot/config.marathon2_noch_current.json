@@ -1,0 +1,57 @@
+{
+  "schema_version": "publish_snapshot_config_v1",
+  "package_name": "marathon2_noch_current",
+  "tenant_id": "foton",
+  "staging_db": "/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/customer_timeline_staging.sqlite",
+  "prod_db": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite",
+  "snapshot_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/prod_snapshots",
+  "required_free_copies": 3,
+  "count_tables": [
+    "customer_identities",
+    "identity_links",
+    "customer_opportunities",
+    "timeline_events",
+    "timeline_event_fts",
+    "bot_context_chunks",
+    "timeline_conflicts",
+    "derived_signals",
+    "ingestion_cursors"
+  ],
+  "control_customers": [],
+  "readers": [
+    {
+      "name": "live_telegram_public_bot",
+      "worktree": "/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff",
+      "process_patterns": [
+        "scripts/run_telegram_public_pilot_bots.py --env-file /dev/null --mode poll --brand all"
+      ],
+      "stop_command": [
+        "screen",
+        "-S",
+        "mango_public_pilot_bots_main_eb6fa0b_reliable_20260629_v2",
+        "-X",
+        "quit"
+      ],
+      "start_command": [
+        "bash",
+        ".codex_local/reliable_enable_20260629/start_live_with_reliable.sh"
+      ],
+      "smoke_command": [
+        "python3",
+        "scripts/customer_timeline_read_report.py",
+        "--tenant-id",
+        "foton",
+        "--timeline-db",
+        "{{db}}",
+        "--allowed-root",
+        "{{allowed_root}}",
+        "--limit",
+        "3"
+      ],
+      "smoke_timeout_seconds": 120,
+      "stop_timeout_seconds": 120,
+      "start_timeout_seconds": 120
+    }
+  ]
+}
+

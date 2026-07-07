@@ -10,7 +10,7 @@ from .models import ReplayCase, ReplayMessage
 
 def mask_replay_timestamp(timestamp: int, *, base_timestamp: int = 0) -> str:
     delta = max(0, int(timestamp or 0) - int(base_timestamp or 0))
-    return f"masked+{delta:06d}s"
+    return f"masked_{delta:06d}s"
 
 
 def _segment_for_reference(reference: str) -> str:

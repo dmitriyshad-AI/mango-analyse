@@ -12,7 +12,7 @@ def test_pii_scanner_catches_bare_phone_cus_username_and_long_ids() -> None:
         {
             "text": "Пишите 79001234567, 79001234567@c.us или @realmanager.",
             "payload": {"chatId": "12345678901234567890", "from": "79001234567@c.us"},
-            "safe": {"from_me": True, "ts_masked": "masked+1234567890s"},
+            "safe": {"from_me": True, "ts_masked": "masked_1234567890s"},
         }
     )
 
@@ -57,7 +57,7 @@ def test_hash_values_are_not_raw_id_findings_but_plain_ids_are() -> None:
 def test_scan_paths_reads_jsonl_and_reports_source(tmp_path: Path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(
-        json.dumps({"prefix_messages": [{"from_me": False, "text": "Мой номер 79001234567", "ts_masked": "masked+000000s"}]}, ensure_ascii=False) + "\n",
+        json.dumps({"prefix_messages": [{"from_me": False, "text": "Мой номер 79001234567", "ts_masked": "masked_000000s"}]}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 

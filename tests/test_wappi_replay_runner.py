@@ -225,7 +225,7 @@ def test_load_cases_reads_scrubbed_jsonl(tmp_path: Path) -> None:
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
                 "prefix_messages": [
-                    {"from_me": False, "text": "Ранний ход", "ts_masked": "masked+000000s"}
+                    {"from_me": False, "text": "Ранний ход", "ts_masked": "masked_000000s"}
                 ],
             },
             ensure_ascii=False,
@@ -251,11 +251,11 @@ def test_load_cases_reads_v4_whitelist_prefix_messages(tmp_path: Path) -> None:
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
                 "prefix_messages": [
-                    {"from_me": False, "text": "Первый клиент", "ts_masked": "masked+000000s"},
-                    {"from_me": True, "text": "Первый ответ", "ts_masked": "masked+000030s"},
+                    {"from_me": False, "text": "Первый клиент", "ts_masked": "masked_000000s"},
+                    {"from_me": True, "text": "Первый ответ", "ts_masked": "masked_000030s"},
                 ],
                 "segment": "chat_only",
-                "meta": {"ts_masked": "masked+000060s"},
+                "meta": {"ts_masked": "masked_000060s"},
             },
             ensure_ascii=False,
         )
@@ -272,7 +272,7 @@ def test_load_cases_reads_v4_whitelist_prefix_messages(tmp_path: Path) -> None:
     assert case.brand == "foton"
     assert [message.from_me for message in case.prefix_messages] == [False, True]
     assert [message.text for message in case.prefix_messages] == ["Первый клиент", "Первый ответ"]
-    assert [message.ts_masked for message in case.prefix_messages] == ["masked+000000s", "masked+000030s"]
+    assert [message.ts_masked for message in case.prefix_messages] == ["masked_000000s", "masked_000030s"]
     assert all(message.raw == {} for message in case.prefix_messages)
 
 
@@ -287,7 +287,7 @@ def test_load_cases_rejects_prefix_messages_outside_v4_whitelist(tmp_path: Path)
                 "brand": "foton",
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
-                "prefix_messages": [{"from_me": False, "text": "Ранний ход", "ts_masked": "masked+000000s", "raw": {"phone": "79001234567"}}],
+                "prefix_messages": [{"from_me": False, "text": "Ранний ход", "ts_masked": "masked_000000s", "raw": {"phone": "79001234567"}}],
             },
             ensure_ascii=False,
         )
@@ -312,7 +312,7 @@ def test_load_cases_rejects_missing_from_me_in_prefix_message(tmp_path: Path) ->
                 "brand": "foton",
                 "client_message": "Вопрос",
                 "manager_reference": "Ответ",
-                "prefix_messages": [{"text": "Ранний ход", "ts_masked": "masked+000000s"}],
+                "prefix_messages": [{"text": "Ранний ход", "ts_masked": "masked_000000s"}],
             },
             ensure_ascii=False,
         )

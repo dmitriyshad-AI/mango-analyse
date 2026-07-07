@@ -24,7 +24,7 @@ def test_replay_judge_payload_keeps_hidden_key_outside_payload() -> None:
         turn_index=1,
         contour="foton",
         dialog_key_masked="dialog-mask",
-        prefix_messages=(ReplayMessage("p", "c", "m0", "Здравствуйте", 1, False, ts_masked="masked+000000s"),),
+        prefix_messages=(ReplayMessage("p", "c", "m0", "Здравствуйте", 1, False, ts_masked="masked_000000s"),),
     )
     payload = build_replay_judge_payload(
         case,

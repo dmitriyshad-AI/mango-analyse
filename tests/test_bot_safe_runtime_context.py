@@ -48,12 +48,12 @@ def test_timeline_memory_in_prompt_env_enables_runtime_builder(monkeypatch) -> N
     assert bot_safe_crm_context_enabled() is True
 
 
-def test_timeline_memory_shadow_env_enables_runtime_builder(monkeypatch) -> None:
+def test_timeline_memory_shadow_env_does_not_enable_prompt_builder(monkeypatch) -> None:
     monkeypatch.delenv(BOT_SAFE_CRM_CONTEXT_ENV, raising=False)
     monkeypatch.delenv(TIMELINE_MEMORY_IN_PROMPT_ENV, raising=False)
     monkeypatch.setenv(TIMELINE_MEMORY_SHADOW_ENV, "1")
 
-    assert bot_safe_crm_context_enabled() is True
+    assert bot_safe_crm_context_enabled() is False
 
 
 def test_explicit_bot_safe_off_overrides_timeline_memory_alias(monkeypatch) -> None:

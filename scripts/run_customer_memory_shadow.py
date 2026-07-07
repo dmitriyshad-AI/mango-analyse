@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sqlite3
@@ -30,6 +31,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--summary-json", required=True, type=Path)
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument(
+        "--include-prompt-text",
+        action="store_true",
+        help="Write raw prompt_text to the local JSONL. Default keeps the shadow log anonymized.",
+    )
     args = parser.parse_args(argv)
 
     db_path = args.db.expanduser().resolve(strict=True)
@@ -57,25 +63,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             trace = _direct_path_customer_memory_shadow_trace(context)
             prompt_text = str(trace.get("prompt_text") or "")
-            rows.append(
-                {
-                    "tenant_id": args.tenant_id,
-                    "customer_id": candidate["customer_id"],
-                    "active_brand": brand,
-                    "brand_source": brand_source,
-                    "llm_mail_events": candidate["llm_mail_events"],
-                    "bot_context_visible_items": bot_context.get("summary", {}).get("visible_chunks", 0),
-                    "shadow_enabled": bool(trace.get("enabled")),
-                    "shadow_found": bool(trace.get("found")),
-                    "shadow_warnings": list(trace.get("warnings") or ()),
-                    "shadow_stats": dict(trace.get("stats") or {}),
-                    "prompt_text": prompt_text,
-                    "prompt_pii_findings": list(scan_bot_safe_context_pii(prompt_text)),
-                    "prompt_has_service_id": bool(_SERVICE_ID_RE.search(prompt_text)),
-                    "route_text_shadow_only": bool(trace.get("route_text_shadow_only")),
-                    "safety": dict(trace.get("safety") or {}),
-                }
-            )
+            pii_findings = list(scan_bot_safe_context_pii(prompt_text))
+            prompt_has_service_id = bool(_SERVICE_ID_RE.search(prompt_text))
+            safety_row = {
+                "active_brand": brand,
+                "shadow_found": bool(trace.get("found")),
+                "prompt_text": prompt_text,
+                "prompt_pii_findings": pii_findings,
+                "prompt_has_service_id": prompt_has_service_id,
+            }
+            row = {
+                "tenant_id": args.tenant_id,
+                "customer_id": candidate["customer_id"],
+                "active_brand": brand,
+                "brand_source": brand_source,
+                "llm_mail_events": candidate["llm_mail_events"],
+                "bot_context_visible_items": bot_context.get("summary", {}).get("visible_chunks", 0),
+                "shadow_enabled": bool(trace.get("enabled")),
+                "shadow_found": bool(trace.get("found")),
+                "shadow_warnings": list(trace.get("warnings") or ()),
+                "shadow_stats": dict(trace.get("stats") or {}),
+                "prompt_text_included": bool(args.include_prompt_text),
+                "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest() if prompt_text else "",
+                "prompt_chars": len(prompt_text),
+                "prompt_pii_findings": pii_findings,
+                "prompt_has_service_id": prompt_has_service_id,
+                "shadow_safety_violations": list(shadow_safety_violations(safety_row)),
+                "shadow_manual_review_flags": list(shadow_manual_review_flags(safety_row)),
+                "route_text_shadow_only": bool(trace.get("route_text_shadow_only")),
+                "safety": dict(trace.get("safety") or {}),
+            }
+            if args.include_prompt_text:
+                row["prompt_text"] = prompt_text
+            rows.append(row)
 
     _write_jsonl(out_jsonl, rows)
     summary = summarize_shadow_rows(rows)
@@ -141,8 +161,24 @@ def infer_shadow_brand(raw_brand: object, items: Sequence[Any]) -> tuple[str, st
 
 
 def summarize_shadow_rows(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    violations = [reason for row in rows for reason in shadow_safety_violations(row)]
-    manual_flags = [reason for row in rows for reason in shadow_manual_review_flags(row)]
+    violations = [
+        reason
+        for row in rows
+        for reason in (
+            row.get("shadow_safety_violations")
+            if isinstance(row.get("shadow_safety_violations"), Sequence) and not isinstance(row.get("shadow_safety_violations"), str)
+            else shadow_safety_violations(row)
+        )
+    ]
+    manual_flags = [
+        reason
+        for row in rows
+        for reason in (
+            row.get("shadow_manual_review_flags")
+            if isinstance(row.get("shadow_manual_review_flags"), Sequence) and not isinstance(row.get("shadow_manual_review_flags"), str)
+            else shadow_manual_review_flags(row)
+        )
+    ]
     return {
         "schema_version": "customer_memory_shadow_run_v1_2026_07_03",
         "total_customers": len(rows),
@@ -158,6 +194,7 @@ def summarize_shadow_rows(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any
         "safety_violations": _count_values(violations),
         "manual_review_flags_total": len(manual_flags),
         "manual_review_flags": _count_values(manual_flags),
+        "raw_prompt_text_rows": sum(1 for row in rows if row.get("prompt_text_included") or "prompt_text" in row),
     }
 
 

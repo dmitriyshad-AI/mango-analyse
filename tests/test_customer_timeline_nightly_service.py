@@ -451,6 +451,99 @@ def test_launchd_install_scripts_are_dry_run_by_default(tmp_path: Path) -> None:
     assert not (tmp_path / "target.plist").exists()
 
 
+def test_daily_capture_launchd_templates_and_drivers_are_safe_by_default(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    templates = [
+        repo / "deploy" / "customer_timeline_daily_captures" / "com.mango.customer-timeline-mail-capture.plist.template",
+        repo / "deploy" / "customer_timeline_daily_captures" / "com.mango.customer-timeline-mango-capture.plist.template",
+        repo / "deploy" / "customer_timeline_nightly" / "com.mango.customer-timeline-nightly.plist.template",
+    ]
+    for template in templates:
+        lint = subprocess.run(["plutil", "-lint", str(template)], text=True, capture_output=True, check=False)
+        assert lint.returncode == 0, lint.stderr + lint.stdout
+
+    mail_manifest = tmp_path / "mail_manifest.json"
+    mango_manifest = tmp_path / "mango_manifest.json"
+    mail = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / "run_customer_timeline_mail_capture_daily.sh"),
+            "--lock-dir",
+            str(tmp_path / "mail.lock"),
+            "--manifest",
+            str(mail_manifest),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    mango = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / "run_customer_timeline_mango_capture_daily.sh"),
+            "--lock-dir",
+            str(tmp_path / "mango.lock"),
+            "--manifest",
+            str(mango_manifest),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert mail.returncode == 0
+    assert mango.returncode == 0
+    assert json.loads(mail_manifest.read_text(encoding="utf-8"))["status"] == "dry_run"
+    mango_payload = json.loads(mango_manifest.read_text(encoding="utf-8"))
+    assert mango_payload["status"] == "dry_run"
+    assert mango_payload["runs_asr"] is False
+
+
+def test_daily_capture_driver_blocks_double_run_with_lock(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    lock_dir = tmp_path / "mail.lock"
+    first_manifest = tmp_path / "first.json"
+    second_manifest = tmp_path / "second.json"
+    first = subprocess.Popen(
+        [
+            "bash",
+            str(repo / "scripts" / "run_customer_timeline_mail_capture_daily.sh"),
+            "--lock-dir",
+            str(lock_dir),
+            "--manifest",
+            str(first_manifest),
+            "--hold-lock-seconds",
+            "2",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        import time
+
+        deadline = time.time() + 1.5
+        while time.time() < deadline and not lock_dir.exists():
+            time.sleep(0.05)
+        second = subprocess.run(
+            [
+                "bash",
+                str(repo / "scripts" / "run_customer_timeline_mail_capture_daily.sh"),
+                "--lock-dir",
+                str(lock_dir),
+                "--manifest",
+                str(second_manifest),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert second.returncode == 75
+        assert json.loads(second_manifest.read_text(encoding="utf-8"))["status"] == "locked"
+    finally:
+        first.communicate(timeout=5)
+
+
 def test_nightly_service_cli_summary_only(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

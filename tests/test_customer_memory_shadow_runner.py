@@ -84,6 +84,32 @@ def test_summarize_shadow_rows_counts_safety_findings() -> None:
         "prompt_pii": 1,
         "prompt_service_id": 1,
     }
+    assert summary["raw_prompt_text_rows"] == 1
+
+
+def test_summarize_shadow_rows_uses_precomputed_anonymized_findings() -> None:
+    summary = summarize_shadow_rows(
+        [
+            {
+                "active_brand": "foton",
+                "brand_source": "a2v3_customer_brand",
+                "shadow_enabled": True,
+                "shadow_found": True,
+                "route_text_shadow_only": True,
+                "prompt_text_included": False,
+                "prompt_sha256": "abc",
+                "prompt_pii_findings": [],
+                "prompt_has_service_id": False,
+                "shadow_warnings": [],
+                "shadow_safety_violations": ["prompt_brand_mismatch"],
+                "shadow_manual_review_flags": ["temporal_marker_in_memory"],
+            }
+        ]
+    )
+
+    assert summary["raw_prompt_text_rows"] == 0
+    assert summary["safety_violations"] == {"prompt_brand_mismatch": 1}
+    assert summary["manual_review_flags"] == {"temporal_marker_in_memory": 1}
 
 
 def test_shadow_safety_violations_block_cross_brand_and_raw_ids() -> None:

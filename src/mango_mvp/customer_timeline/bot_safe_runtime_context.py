@@ -158,7 +158,7 @@ def bot_safe_crm_context_enabled(value: object = None) -> bool:
         if BOT_SAFE_CRM_CONTEXT_ENV in os.environ:
             value = os.getenv(BOT_SAFE_CRM_CONTEXT_ENV)
         else:
-            value = os.getenv(TIMELINE_MEMORY_IN_PROMPT_ENV) or os.getenv(TIMELINE_MEMORY_SHADOW_ENV)
+            value = os.getenv(TIMELINE_MEMORY_IN_PROMPT_ENV)
     return str(value or "").strip().casefold() in _TRUTHY_VALUES
 
 

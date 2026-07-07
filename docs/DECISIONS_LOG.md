@@ -1158,3 +1158,40 @@ manager-only chunks. Финальный service-run `20260707T015146Z` дал
 literal переименован: новый monitor пишет `wappi_history_pending` и удаляет
 устаревший staging-cursor `wappi_history`; latest manifest больше не содержит
 `wappi_history`. Prod/CRM/Tallanto/live writes = 0.
+
+### D-061. Shadow memory is split from in-prompt memory; contour packages stay operator-only
+
+Решение: `TELEGRAM_TIMELINE_MEMORY_SHADOW` больше не является алиасом
+реального включения bot-safe CRM context в prompt. Реальный prompt включает
+память только через `TELEGRAM_BOT_SAFE_CRM_CONTEXT=1` или
+`TELEGRAM_TIMELINE_MEMORY_IN_PROMPT=1`; shadow/expanded-shadow собирают trace
+и локальную телеметрию без вставки памяти в клиентский prompt. Локальный
+shadow-runner по умолчанию пишет только счётчики/хэши/причины, без
+`prompt_text`; сырой текст включается только явным `--include-prompt-text` для
+локального аудита.
+
+Почему так: K6 требовал доказать, что тень не становится боевым prompt. В
+старом helper `bot_safe_crm_context_enabled()` shadow-флаг включал тот же
+builder, что и `IN_PROMPT`, поэтому стенды и draft-loop могли случайно мерить
+не shadow-only. Развод сделан до любых пакетов включения памяти.
+
+Операторские пакеты: добавлены launchd-шаблоны дневных capture-driver'ов и
+runbook nightly 03:30, но установка/launchctl/SWAP/live-включение остаются
+ручными действиями владельца. Driver'ы dry-run по умолчанию, с lock-файлом от
+двойного запуска; Mango capture не запускает ASR без явно заданного
+`MANGO_CAPTURE_COMMAND_FILE`.
+
+Проверка: plist lint OK; driver dry-run OK; install/uninstall dry-run OK;
+K4 e2e staging probe `run_20260707T022446Z`: source mail rows `1312`,
+service statuses `ok/ok`, `allowed_for_bot_delta=0`, re-run zero-new по
+events/chunks/links/conflicts. K6 shadow-run: `75` клиентов, `66` found,
+`safety_violations=0`, `raw_prompt_text_rows=0`. SWAP transfer-package
+`marathon2_noch_current` пересобран на staging sha
+`84466460f447073d4237c9fe724994b118c2a8f593c08ecd605d80166d62d688`,
+CRM export `ready=3/blocked=63`, prod sha до/после не менялся.
+
+Ограничение: K7 “большой экзамен на ~100 реальных live Telegram-диалогах” не
+запускался, потому что локально найден только scrubbed replay на 10 Wappi-кейсов
+и старые/synthetic dynamic transcripts; свежего набора 100 live Telegram
+диалогов последних 2-3 недель в `.codex_local`/рабочем дереве не найдено.
+Подмена источника запрещена; нужен отдельный capture/export реальных диалогов.

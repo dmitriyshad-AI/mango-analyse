@@ -17,7 +17,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
     summarize_report,
 )
-from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
 
 
 NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
@@ -30,6 +30,7 @@ class NightlyServiceStep:
     enabled: bool = True
     required: bool = True
     config: Optional[NightlyIncrementalConfig] = None
+    monitor_config: Optional[Mapping[str, Any]] = None
     reason: Optional[str] = None
 
 
@@ -90,6 +91,34 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "required": step.required,
                         "reason": step.reason,
                         "duration_seconds": 0.0,
+                    }
+                )
+                continue
+            if step.kind == "local_freshness_monitor":
+                step_report = run_local_freshness_monitor(
+                    step,
+                    timeline_db=timeline_db,
+                    allowed_root=allowed_root,
+                    tenant_id=config.tenant_id,
+                    actor=config.actor,
+                )
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("status") == "ok" else (
+                    "failed" if step.required else "skipped_optional_failed"
+                )
+                if status == "failed":
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": step_report,
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
                 )
                 continue
@@ -237,6 +266,7 @@ def service_step_from_json(
     required = bool(payload.get("required", True))
     reason = str(payload.get("reason")) if payload.get("reason") else None
     config = None
+    monitor_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
         if not isinstance(config_payload, Mapping):
@@ -254,9 +284,22 @@ def service_step_from_json(
             lock_timeout_seconds=float(config_payload.get("lock_timeout_seconds", 30.0)),
             actor=str(config_payload.get("actor") or actor),
         )
+    elif kind == "local_freshness_monitor":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        monitor_config = dict(raw_config)
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
-    return NightlyServiceStep(name=name, kind=kind, enabled=enabled, required=required, config=config, reason=reason)
+    return NightlyServiceStep(
+        name=name,
+        kind=kind,
+        enabled=enabled,
+        required=required,
+        config=config,
+        monitor_config=monitor_config,
+        reason=reason,
+    )
 
 
 def source_from_json(payload: Any, *, tenant_id: str) -> IncrementalSourceConfig:
@@ -298,10 +341,17 @@ def failed_step_report(
 def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, Path, Path]:
     allowed_root = Path(config.allowed_root).expanduser().resolve(strict=False)
     timeline_db = guard_customer_timeline_output_path(config.timeline_db, allowed_root)
+    if is_customer_timeline_prod_path(timeline_db):
+        raise ValueError(f"nightly service must not target prod DB paths: {timeline_db}")
     out_root = guard_customer_timeline_output_path(config.out_root, allowed_root)
     publish_dir = guard_customer_timeline_output_path(config.publish_dir, allowed_root)
     for step in config.steps:
         if step.config is None:
+            if step.monitor_config is not None:
+                for raw_path in step.monitor_config.get("paths") or ():
+                    guard_customer_timeline_output_path(Path(str(raw_path)), allowed_root)
+                if step.monitor_config.get("metrics_path"):
+                    guard_customer_timeline_output_path(Path(str(step.monitor_config["metrics_path"])), allowed_root)
             continue
         guard_customer_timeline_output_path(step.config.timeline_db, allowed_root)
         guard_customer_timeline_output_path(step.config.allowed_root, allowed_root)
@@ -309,6 +359,81 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
         for source in step.config.sources:
             guard_customer_timeline_output_path(source.path, allowed_root)
     return timeline_db, allowed_root, out_root, publish_dir
+
+
+def run_local_freshness_monitor(
+    step: NightlyServiceStep,
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    tenant_id: str,
+    actor: str,
+) -> Mapping[str, Any]:
+    from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+    from mango_mvp.customer_timeline.nightly_incremental import parse_datetime
+
+    config = dict(step.monitor_config or {})
+    paths = [guard_customer_timeline_output_path(Path(str(item)), allowed_root) for item in config.get("paths") or ()]
+    metrics_path = (
+        guard_customer_timeline_output_path(Path(str(config["metrics_path"])), allowed_root)
+        if config.get("metrics_path")
+        else None
+    )
+    existing_paths = [path for path in paths if path.exists()]
+    metrics: Mapping[str, Any] = {}
+    if metrics_path and metrics_path.exists():
+        try:
+            parsed = json.loads(metrics_path.read_text(encoding="utf-8"))
+            metrics = parsed if isinstance(parsed, Mapping) else {}
+        except json.JSONDecodeError:
+            metrics = {"error": "invalid_json"}
+    status = "ok" if existing_paths or metrics else str(config.get("empty_status") or "skipped")
+    cursor_source_system = str(config.get("cursor_source_system") or "").strip()
+    cursor_ts_raw = str(config.get("cursor_ts") or "").strip()
+    cursor_written = None
+    if cursor_source_system and cursor_ts_raw:
+        cursor_ts = parse_datetime(cursor_ts_raw, "cursor_ts")
+        with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+            cursor = store.upsert_ingestion_cursor(
+                tenant_id,
+                cursor_source_system,
+                last_cursor_ts=cursor_ts,
+                metadata={
+                    "last_status": status,
+                    "monitor_step": step.name,
+                    "reason": config.get("reason"),
+                    "metrics_path": str(metrics_path) if metrics_path else None,
+                },
+                actor=actor,
+            )
+            cursor_written = cursor.to_json_dict()
+    return {
+        "schema_version": "customer_timeline_local_freshness_monitor_v1",
+        "name": step.name,
+        "kind": step.kind,
+        "required": step.required,
+        "status": status,
+        "reason": config.get("reason"),
+        "paths": [
+            {
+                "path": str(path),
+                "exists": path.exists(),
+                "size_bytes": path.stat().st_size if path.exists() else 0,
+                "mtime": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat() if path.exists() else None,
+            }
+            for path in paths
+        ],
+        "metrics_path": str(metrics_path) if metrics_path else None,
+        "metrics": metrics,
+        "cursor": cursor_written,
+        "safety": {
+            "network_calls": False,
+            "writes_timeline_events": False,
+            "writes_amo": False,
+            "writes_tallanto": False,
+            "runs_asr": False,
+        },
+    }
 
 
 def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:

@@ -1065,3 +1065,64 @@ tests/test_bot_safe_runtime_context.py tests/test_bot_safe_direct_path_context.p
 tests/test_memory_measure_apparatus.py tests/test_customer_timeline_read_api.py
 tests/test_marathon2_m1_bundles.py` дал `62 passed`. Прод/CRM/Tallanto/live
 writes = 0.
+
+### D-058. Nightly D v2 consumes staging-local inputs; external handoffs are prebuilt, not service roots
+
+Решение: ночная служба D v2 не расширяет `allowed_root` на соседний worktree
+`Mango analyse` и не читает `_external_handoffs`/`product_data` напрямую.
+Отдельный безопасный producer собирает локальные входы в
+`.codex_local/staging/nightly_dv2_sources/`, а `nightly_service` работает
+только с этими staging-local JSONL/manifest-файлами.
+
+Почему так: ТЗ требует запись только в `.codex_local/staging/**` и запрещает
+prod/stable_runtime/live-write. D0-артефакты физически лежат в соседнем
+`Mango analyse`, а не в текущем worktree. Если дать service прямой доступ ко
+всему `Projects`, он перестанет быть проверяемым single-root процессом.
+
+Уточнение по источникам: готовый mail stage2 после текущего курсора дал `11`
+строк, но свежие архивы `2026-06-29..2026-06-30` и
+`2026-06-30..2026-07-06` дают ещё `244 + 1057` сообщений без уверенной
+`customer_id`. Они импортируются в staging как `mail_archive_stage2`
+`pending_attribution`, `allowed_for_bot=0`, `requires_manager_review=1`,
+`needs_summary_later=true`; это не память боту и не CRM-запись.
+
+Wappi в D v2 оставлен monitor/pending-only: используется уже созданный
+`block4_wappi_metrics.json`, `timeline_events` для `wappi_telegram`/`wappi_max`
+остаются `0`. Mango API в D v2 — только freshness-monitor локальных
+`mango_update_after_*`; nightly не делает сеть и не запускает ASR. Tallanto —
+optional monitor: staging snapshot есть, но nightly-ready свежей выгрузки нет,
+поэтому курсоры фиксируются как `tallanto_snapshot=2026-05-21T08:59:36+00:00`
+и `tallanto_crm_call=2026-06-04T16:54:54+00:00`.
+
+Проверка: producer собрал `1312` mail rows, первый service-run
+`20260707T000403Z` прошёл `overall_status=ok`,
+`latest_published=true`, `quick_check=ok`, latest sha
+`94f77712f78f9de3312d8625a5cd1175db6e33e50ca6588ee02a6d095d910ce2`.
+Mail-only rerun дал `changed_customer_count=0`, boundary-overlap `1`
+accepted record with `write_status_counts.duplicate=1`. Прод-БД/AMO/Tallanto/
+live-бот/сеть/ASR/LLM не трогались этим блоком.
+
+### D-059. Micro v3.3 fixes contact-data claims locally; judge/fact_audit stay unchanged
+
+Решение: клеймы вида «телефон/почта/адрес уже есть у нас/в диалоге» режутся
+детерминированным post-layer guard на стороне бота. Если в текущей реплике
+клиента или в client-specific факте нет подтверждённого контакта клиента,
+фраза переписывается в нейтральное «Повторно указывать не обязательно —
+менеджер сверит по системе». Телефон/почта учебного центра не считаются
+доказательством контакта клиента.
+
+Почему так: micro v3.2 показал реальный дефект ON-21 — бот заявил «телефон
+уже есть в диалоге», хотя телефона не было ни в диалоге, ни в client-safe
+фактах. `fact_audit` j4 такой тип клейма не видит (`has_unverified_claim=false`
+на ходе), поэтому исправление сделано как точечный output guard, а не правка
+judge. Расширение `fact_audit` — кандидат на j5, не на этот микро-заход.
+
+Дополнительно: generic-клеймы судьи остаются вариативными. Пара OFF-09-T5
+и 16-T5 может давать разные verdict при близком тексте про SohoLMS/запись,
+поэтому этот класс зафиксирован как measurement variability, без нового
+жёсткого gate.
+
+Проверка: добавлены unit и direct-path regression tests: неподтверждённый
+контакт переписывается; контакт из реплики клиента сохраняется; телефон центра
+в фактах не разрешает клейм «контакт клиента уже есть»; no-memory рамка
+«лучше начать с…» переписывается без изменения route.

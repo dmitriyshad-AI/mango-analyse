@@ -11284,6 +11284,82 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
+def test_direct_path_rewrites_unconfirmed_contact_data_claim(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Телефон повторно присылать не нужно, он уже есть в диалоге.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Хочу записаться на курс",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "recent_messages": ["Клиент: Хочу записаться на курс"],
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Повторно указывать не обязательно — менеджер сверит по системе."
+    assert "unconfirmed_contact_data_claim_rewritten" in result.safety_flags
+
+
+def test_direct_path_keeps_contact_claim_when_client_sent_phone(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Телефон повторно присылать не нужно, он уже есть в диалоге.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Мой телефон +7 999 123-45-67",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "recent_messages": ["Клиент: Мой телефон +7 999 123-45-67"],
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Телефон повторно присылать не нужно, он уже есть в диалоге."
+    assert "unconfirmed_contact_data_claim_rewritten" not in result.safety_flags
+
+
+def test_direct_path_rewrites_no_memory_better_start_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Лучше начать с класса ученика, чтобы подобрать группу.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что нужно для подбора?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert "лучше начать" not in result.draft_text.casefold()
+    assert "Предлагаю начать с класса ученика" in result.draft_text
+    assert "no_memory_step_frame_rewritten" in result.safety_flags
+
+
 def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

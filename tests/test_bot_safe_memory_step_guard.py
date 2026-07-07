@@ -4,7 +4,11 @@ from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraf
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     BOT_SAFE_CRM_CONTEXT_ENV,
     BOT_SAFE_MEMORY_STEP_GUARD_FLAG,
+    NO_MEMORY_STEP_FRAME_GUARD_FLAG,
+    UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG,
+    apply_no_memory_step_frame_guard,
     apply_bot_safe_memory_step_guard,
+    apply_unconfirmed_contact_data_claim_guard,
     find_bot_safe_memory_disputed_step_claims,
 )
 
@@ -188,6 +192,91 @@ def test_bot_safe_memory_step_guard_does_not_double_fire_followup_deadline() -> 
 
     assert guarded == result
     assert not find_bot_safe_memory_disputed_step_claims(result.draft_text, context=_context(flag=True))
+
+
+def test_unconfirmed_contact_data_claim_guard_rewrites_missing_phone_claim() -> None:
+    result = _result(
+        "Телефон повторно присылать не нужно, он уже есть в диалоге.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_unconfirmed_contact_data_claim_guard(
+        result,
+        client_message="Хочу записаться на курс",
+        context={"recent_messages": ["Клиент: Хочу записаться на курс"]},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == "Повторно указывать не обязательно — менеджер сверит по системе."
+    assert UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG in guarded.safety_flags
+    assert "телефон" not in guarded.draft_text.casefold()
+    assert guarded.metadata["unconfirmed_contact_data_claim_guard"]["applied"] is True
+
+
+def test_unconfirmed_contact_data_claim_guard_keeps_confirmed_phone_from_client_dialogue() -> None:
+    result = _result(
+        "Телефон повторно присылать не нужно, он уже есть в диалоге.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_unconfirmed_contact_data_claim_guard(
+        result,
+        client_message="Мой телефон +7 999 123-45-67",
+        context={"recent_messages": ["Клиент: Мой телефон +7 999 123-45-67"]},
+    )
+
+    assert guarded == result
+
+
+def test_unconfirmed_contact_data_claim_guard_ignores_school_contact_fact() -> None:
+    result = _result(
+        "Телефон повторно присылать не нужно, он уже есть в диалоге.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_unconfirmed_contact_data_claim_guard(
+        result,
+        client_message="Хочу записаться на курс",
+        context={
+            "client_safe_fact_verified": True,
+            "confirmed_facts": {
+                "foton.contacts": "Фотон: телефон центра +7 495 000-00-00, почта info@example.com."
+            },
+        },
+    )
+
+    assert guarded.draft_text == "Повторно указывать не обязательно — менеджер сверит по системе."
+    assert UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG in guarded.safety_flags
+
+
+def test_no_memory_step_frame_guard_rewrites_baseline_better_start_frame() -> None:
+    result = _result(
+        "Лучше начать с класса ученика, чтобы подобрать группу.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context={})
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "лучше начать" not in guarded.draft_text.casefold()
+    assert "Предлагаю начать с класса ученика" in guarded.draft_text
+    assert NO_MEMORY_STEP_FRAME_GUARD_FLAG in guarded.safety_flags
+
+
+def test_no_memory_step_frame_guard_keeps_active_next_step_frame() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика, чтобы подобрать группу.",
+        route="bot_answer_self_for_pilot",
+        statuses=["active"],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+
+    assert guarded == result
 
 
 def _result(

@@ -149,6 +149,59 @@ def test_nightly_service_rejects_paths_outside_allowed_root(tmp_path: Path) -> N
         service_config_from_json(config_path)
 
 
+def test_nightly_service_rejects_prod_timeline_path(tmp_path: Path) -> None:
+    config_path = write_service_config(tmp_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    prod_root = tmp_path / "customer_timeline_prod_20260621"
+    payload["allowed_root"] = str(tmp_path)
+    payload["timeline_db"] = str(prod_root / "customer_timeline.sqlite")
+    config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="prod DB"):
+        service_config_from_json(config_path)
+
+
+def test_nightly_service_local_freshness_monitor_is_optional_and_writes_no_events(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(json.dumps({"pending_attribution": 3}, ensure_ascii=False), encoding="utf-8")
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "local_freshness_monitor",
+                "enabled": True,
+                "required": False,
+                "config": {
+                    "metrics_path": str(metrics_path),
+                    "paths": [str(metrics_path)],
+                    "cursor_source_system": "wappi_history",
+                    "cursor_ts": "2026-06-21T10:00:00+00:00",
+                    "reason": "pending_only",
+                },
+            }
+        ],
+    }
+    config_path = tmp_path / "monitor_service_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["metrics"]["pending_attribution"] == 3
+    assert report["snapshot_manifest"]["counts"]["timeline_events"] == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        cursor = con.execute("SELECT source_system, last_cursor_ts FROM ingestion_cursors").fetchone()
+    assert cursor == ("wappi_history", "2026-06-21T10:00:00+00:00")
+
+
 def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

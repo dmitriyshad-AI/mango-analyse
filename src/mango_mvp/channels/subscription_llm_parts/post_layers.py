@@ -4600,6 +4600,209 @@ def apply_bot_safe_memory_step_guard(
     )
 
 
+UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG = "unconfirmed_contact_data_claim_rewritten"
+
+UNCONFIRMED_CONTACT_DATA_SAFE_TEXT = "Повторно указывать не обязательно — менеджер сверит по системе."
+
+CONTACT_DATA_EVIDENCE_RE = re.compile(
+    r"(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:мой|моя|наш|наш[аи]|указал[аи]?|пишу|оставляю)\b[^.?!\n]{0,80}"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)",
+    re.I,
+)
+
+CLIENT_CONTACT_FACT_EVIDENCE_RE = re.compile(
+    r"(?:\b(?:клиент|родител[ьяюем]?|мам[аы]?|пап[аы]?|заявител[ьяюем]?|контакт\s+клиент[а-яё]*)\b"
+    r"[^.?!\n]{0,120}(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)"
+    r"|(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)"
+    r"[^.?!\n]{0,120}\b(?:клиент|родител[ьяюем]?|мам[аы]?|пап[аы]?|заявител[ьяюем]?)\b)",
+    re.I,
+)
+
+UNCONFIRMED_CONTACT_DATA_CLAIM_RE = re.compile(
+    r"(?P<sentence>[^.?!\n]{0,180}(?:"
+    r"(?:телефон|номер(?:\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\s+данные)?)"
+    r"[^.?!\n]{0,180}"
+    r"(?:уже\s+(?:есть|вижу|указан[аоы]?)|есть\s+(?:у\s+нас|у\s+центра|в\s+диалоге|в\s+системе)|"
+    r"повторно\s+(?:указывать|присылать|отправлять)\s+не\s+нужно|"
+    r"(?:указывать|присылать|отправлять)\s+повторно\s+не\s+нужно|"
+    r"не\s+нужно\s+(?:повторно\s+)?(?:указывать|присылать|отправлять))"
+    r"|"
+    r"(?:уже\s+(?:есть|вижу)|есть\s+(?:у\s+нас|у\s+центра|в\s+диалоге|в\s+системе))"
+    r"[^.?!\n]{0,180}"
+    r"(?:телефон|номер(?:\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\s+данные)?)"
+    r")[^.?!\n]*(?:[.?!]|$))",
+    re.I,
+)
+
+NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_rewritten"
+
+NO_MEMORY_STEP_FRAME_RE = re.compile(
+    r"(?P<sentence>[^.?!\n]{0,120}(?:следующий\s+шаг\s*[—:-]\s*|лучше\s+начать\s+с\s+)"
+    r"(?P<body>[^.?!\n]{1,180})(?:[.?!]|$))",
+    re.I,
+)
+
+
+def apply_unconfirmed_contact_data_claim_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    claims = find_unconfirmed_contact_data_claims(result.draft_text)
+    if not claims or _contact_data_claim_has_evidence(client_message=client_message, context=context):
+        return result
+
+    rewritten = _rewrite_unconfirmed_contact_data_claims(result.draft_text)
+    if not rewritten or rewritten == result.draft_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["unconfirmed_contact_data_claim_guard"] = {
+        "applied": True,
+        "claims": list(claims),
+        "source": "deterministic_output_guard",
+    }
+    return replace(
+        result,
+        draft_text=rewritten,
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG])),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Не утверждать, что контактные данные уже есть, без client-safe факта или реплики клиента в этом диалоге.",
+                ]
+            )
+        ),
+        metadata=metadata,
+    )
+
+
+def find_unconfirmed_contact_data_claims(draft_text: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            " ".join(match.group("sentence").split())
+            for match in UNCONFIRMED_CONTACT_DATA_CLAIM_RE.finditer(str(draft_text or ""))
+            if match.group("sentence").strip()
+        )
+    )
+
+
+def _rewrite_unconfirmed_contact_data_claims(draft_text: str) -> str:
+    return " ".join(
+        UNCONFIRMED_CONTACT_DATA_CLAIM_RE.sub(UNCONFIRMED_CONTACT_DATA_SAFE_TEXT, str(draft_text or "")).split()
+    )
+
+
+def _contact_data_claim_has_evidence(
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    evidence_texts: list[str] = []
+    if str(client_message or "").strip():
+        evidence_texts.append(str(client_message))
+    if isinstance(context, Mapping):
+        evidence_texts.extend(_client_dialogue_texts_from_context(context))
+        if any(CONTACT_DATA_EVIDENCE_RE.search(text) for text in evidence_texts):
+            return True
+        return any(CLIENT_CONTACT_FACT_EVIDENCE_RE.search(text) for text in _fresh_fact_texts(context))
+    return any(CONTACT_DATA_EVIDENCE_RE.search(text) for text in evidence_texts)
+
+
+def _client_dialogue_texts_from_context(context: Mapping[str, Any]) -> tuple[str, ...]:
+    texts: list[str] = []
+    for key in ("recent_messages", "conversation", "messages", "dialogue_messages"):
+        _append_client_dialogue_texts(texts, context.get(key))
+    return tuple(texts)
+
+
+def _append_client_dialogue_texts(result: list[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.match(r"^(?:клиент|client|user|пользователь|родитель)\s*[:：-]", stripped, re.I):
+            result.append(stripped)
+        return
+    if isinstance(value, Mapping):
+        role = str(value.get("role") or value.get("speaker") or value.get("author") or "").strip().casefold()
+        if role in {"client", "customer", "user", "parent", "клиент", "родитель", "пользователь"}:
+            text = value.get("text") or value.get("content") or value.get("message")
+            if str(text or "").strip():
+                result.append(str(text))
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            _append_client_dialogue_texts(result, item)
+
+
+def apply_no_memory_step_frame_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    statuses = _bot_safe_memory_next_step_statuses(result, context)
+    if "active" in statuses:
+        return result
+    claims = find_no_memory_step_frame_claims(result.draft_text)
+    if not claims:
+        return result
+    rewritten = _rewrite_no_memory_step_frame(result.draft_text)
+    if not rewritten or rewritten == result.draft_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["no_memory_step_frame_guard"] = {
+        "applied": True,
+        "claims": list(claims),
+        "next_step_statuses": list(statuses),
+        "source": "deterministic_output_guard",
+    }
+    return replace(
+        result,
+        draft_text=rewritten,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, NO_MEMORY_STEP_FRAME_GUARD_FLAG])),
+        manager_checklist=tuple(
+            dict.fromkeys([*result.manager_checklist, "Не называть уточняющий вопрос «следующим шагом» без active next_step."])
+        ),
+        metadata=metadata,
+    )
+
+
+def find_no_memory_step_frame_claims(draft_text: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            " ".join(match.group("sentence").split())
+            for match in NO_MEMORY_STEP_FRAME_RE.finditer(str(draft_text or ""))
+            if match.group("sentence").strip()
+        )
+    )
+
+
+def _rewrite_no_memory_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        body = " ".join(match.group("body").split()).strip(" .?!:;—-")
+        normalized = body.casefold().replace("ё", "е")
+        details: list[str] = []
+        if "класс" in normalized or "клас" in normalized:
+            details.append("класс ученика")
+        if "предмет" in normalized:
+            details.append("предмет")
+        if "формат" in normalized or "очно" in normalized or "онлайн" in normalized:
+            details.append("формат")
+        if "следующий шаг" in match.group("sentence").casefold():
+            target = ", ".join(dict.fromkeys(details)) or body or "недостающие детали"
+            return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+        target = body or "уточнения деталей"
+        return f"Предлагаю начать с {target}."
+
+    return " ".join(NO_MEMORY_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
+
+
 def find_bot_safe_memory_disputed_step_claims(
     draft_text: str,
     *,

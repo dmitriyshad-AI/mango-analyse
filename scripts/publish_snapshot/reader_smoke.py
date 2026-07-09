@@ -62,6 +62,82 @@ def control_customer_counts(db_path: Path, tenant_id: str, customer_id: str) -> 
         }
 
 
+def _table_exists(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+        if not _table_exists(con, "a2v3_mail_event_facts") or not _table_exists(con, "bot_context_chunks"):
+            return {"ok": True, "skipped": True, "reason": "mail_facts_or_chunks_table_missing"}
+        counts = {
+            "allowed_mail_chunks": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks
+                    WHERE source_system = 'mail_archive_stage2' AND allowed_for_bot = 1
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mail_with_manager_tags": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND (
+                        f.sensitivity_tags_json LIKE '%manager_action_required%'
+                        OR f.sensitivity_tags_json LIKE '%has_manager_note%'
+                      )
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mail_client_safe_false": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND f.client_safe = 0
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mail_bot_visible_false": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND f.bot_visible = 0
+                    """
+                ).fetchone()[0]
+            ),
+        }
+    violations = {
+        key: value
+        for key, value in counts.items()
+        if key != "allowed_mail_chunks" and int(value) > 0
+    }
+    return {
+        "ok": not violations,
+        "skipped": False,
+        "counts": counts,
+        "violations": violations,
+        "policy": "opened mail chunks must not contradict A2 facts client_safe/bot_visible/manager tags",
+    }
+
+
 def run_internal_smoke(db_path: Path, allowed_root: Path, tenant_id: str, control_customers: tuple[dict, ...]) -> list[dict]:
     results = []
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=allowed_root)) as api:
@@ -112,12 +188,15 @@ def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
     internal_results = run_internal_smoke(db_path, db_path.parent, cfg.tenant_id, tuple(dict(x) for x in cfg.control_customers))
     if internal_results:
         ok = ok and all(item["ok"] for item in internal_results)
+    mail_safety = mail_allowed_safety_gate(db_path)
+    ok = ok and bool(mail_safety["ok"])
     report.update(
         {
             "snapshot_db": str(db_path),
             "quick_check": quick_check(db_path),
             "reader_results": reader_results,
             "internal_control_customers": internal_results,
+            "mail_allowed_safety_gate": mail_safety,
             "status": "ok" if ok else "failed",
         }
     )

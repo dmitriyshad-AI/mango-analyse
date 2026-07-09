@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from scripts.publish_snapshot import build_snapshot, preflight, reader_smoke
@@ -70,6 +71,62 @@ def test_build_snapshot_vacuum_into_and_manifest_then_reader_smoke(tmp_path: Pat
     mismatch_report, mismatch_ok = reader_smoke.smoke(cfg, snapshot_db=snapshot_db)
     assert mismatch_ok is False
     assert mismatch_report["internal_control_customers"][0]["count_mismatches"]["events_total"]["actual"] == 1
+
+
+def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    with sqlite3.connect(staging) as con:
+        event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
+        con.execute(
+            """
+            INSERT INTO bot_context_chunks (
+              chunk_id, tenant_id, customer_id, opportunity_id, event_id,
+              source_system, source_ref, chunk_type, event_at, freshness_score,
+              allowed_for_bot, requires_manager_review, ordinal, created_at,
+              record_hash, record_json
+            )
+            VALUES (?, 'foton', ?, NULL, ?, 'mail_archive_stage2', 'mail:1',
+              'email_message', '2026-05-12T12:00:00+00:00', 0.7,
+              1, 0, 0, '2026-05-12T12:00:00+00:00', ?, ?)
+            """,
+            (
+                "mail-sensitive",
+                staging_customer,
+                event_id,
+                "f" * 64,
+                json.dumps({"allowed_for_bot": True, "summary": "internal"}, ensure_ascii=False),
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE a2v3_mail_event_facts (
+              event_id TEXT PRIMARY KEY,
+              client_safe INTEGER NOT NULL,
+              bot_visible INTEGER NOT NULL,
+              sensitivity_tags_json TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 0, ?)",
+            (event_id, json.dumps(["manager_action_required", "has_manager_note"], ensure_ascii=False)),
+        )
+        con.commit()
+
+    smoke_report, smoke_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert smoke_ok is False
+    gate = smoke_report["mail_allowed_safety_gate"]
+    assert gate["ok"] is False
+    assert gate["violations"]["allowed_mail_with_manager_tags"] == 1
+    assert gate["violations"]["allowed_mail_client_safe_false"] == 1
+    assert gate["violations"]["allowed_mail_bot_visible_false"] == 1
 
 
 def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:

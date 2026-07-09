@@ -1476,3 +1476,32 @@ Timeline prod-пути для публикации snapshot #3 — Wappi→AMO d
 для draft-loop — только AMO manager note draft через AI Office endpoint с
 маркером `ЧЕРНОВИК БОТА, не отправлено`. Watchdog draft-loop на время flip
 останавливается, чтобы не держать prod DB; после успешного smoke возвращается.
+
+### D-075. Mail-merge snapshot #3 rolled back on mail safety gate
+
+Исполнение 2026-07-09: snapshot
+`prod_snapshots/prod_20260709_m1_mail_merge_e3cd3fb7/customer_timeline.sqlite`
+был опубликован на стабильный prod-путь и прошёл формальный `reader_smoke`
+по 5 контрольным клиентам. Новый prod sha:
+`06f4c081f4336280dac95c8b95ec53d042b1be9eb979510a80218fa86ed0a5a3`;
+rollback backup старого prod sha:
+`eb38dc7a8790f55cbc31d28381f420403a7bcdc3af460ac00aff66e965c1e0e9`.
+
+После независимого аудита найден post-gate blocker: в опубликованном snapshot
+`7919` opened mail chunks (`mail_archive_stage2`, `allowed_for_bot=1`) связаны
+с A2 facts, где есть `manager_action_required`/`has_manager_note`, и `7921`
+opened mail chunks имеют `client_safe=0`. Это нарушает правило публикации:
+почтовые chunks, противоречащие A2 facts `client_safe`/`bot_visible`/manager
+tags, не должны быть открыты боту.
+
+Решение: Wappi draft-loop и watchdog остановлены, snapshot #3 откатан через
+`scripts/publish_snapshot/rollback.py` на sha-проверенный backup. Prod после
+rollback: sha `eb38dc7a8790f55cbc31d28381f420403a7bcdc3af460ac00aff66e965c1e0e9`,
+`quick_check=ok`, `email_summary_cache_v1=1507`. Клиентам сообщений не
+отправлялось. AMO note writes в этом SWAP-заходе не выполнялись.
+
+Постоянная защита: `reader_smoke.py` теперь включает `mail_allowed_safety_gate`
+и падает, если opened mail chunks имеют связанные A2 facts с
+`client_safe=0`, `bot_visible=0`, `manager_action_required` или
+`has_manager_note`. Следующий SWAP разрешён только после исправления
+stage4b/mail opening на staging и зелёного `mail_allowed_safety_gate=ok`.

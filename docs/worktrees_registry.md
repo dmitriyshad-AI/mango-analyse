@@ -8,6 +8,14 @@
 
 | Ветка | Worktree | Тема | Уникальных коммитов к `origin/main` | СТОП-дата | Решение |
 |---|---|---|---:|---|---|
+| `codex/calls-two-processes` | `/Users/dmitrijfabarisov/Projects/Mango_calls_two_processes` | Два процесса обработки звонков: локальный конвейер и staging-ingest | стек от `codex/email-pipeline-restore` | 2026-07-16 | Работать только по ТЗ 2026-07-09; prod/CRM/Tallanto не трогать |
+| `main` | `/Users/dmitrijfabarisov/Projects/Mango_britva_main` | Актуальный чистый main | н/д | 2026-07-16 | Не трогать в этом ТЗ |
+| `codex/email-pipeline-restore` | `/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore` | Операционная staging/nightly ветка, база текущего стека | н/д | 2026-07-16 | Только читать; изменения вести в calls-two-processes |
+| `codex/skills-top5-tools` | `/Users/dmitrijfabarisov/Projects/Mango_skills_top5_tools` | Инструменты рабочих процессов Codex | н/д | 2026-07-16 | Не трогать в этом ТЗ |
+| detached | `/Users/dmitrijfabarisov/Projects/Mango_live_deploy` | Текущий live deploy | н/д | 2026-07-16 | Не трогать |
+| detached | `/Users/dmitrijfabarisov/Projects/Mango_live_rollback_eb6fa0b` | Резерв live rollback | н/д | 2026-07-16 | Не трогать |
+| detached | `/Users/dmitrijfabarisov/Projects/Mango_replay_m1_pack_03eca184` | Replay pack | н/д | 2026-07-16 | Не трогать |
+| detached | `/Users/dmitrijfabarisov/Projects/Mango_replay_m1_pack_5d631930` | Replay pack | н/д | 2026-07-16 | Не трогать |
 | `codex/tz-email-timeline-bridge` | `/Users/dmitrijfabarisov/Projects/Mango_tz_email_timeline_bridge` | D4 мост письма+звонки в тестовую customer_timeline | 0 | 2026-06-25 | Жива до регрейда D4 по ТЗ 2026-06-21 |
 | `codex/etap2-step1-address-book` | `/Users/dmitrijfabarisov/Projects/mango-tz33-perf` | Etap2 address book / fresh relink артефакты | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/d7-amo-safety` | `/Users/dmitrijfabarisov/Projects/Mango_d7_amo_safety` | D7 AMO safety | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |

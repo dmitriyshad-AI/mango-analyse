@@ -1527,3 +1527,48 @@ manager-draft context при `bot_visible=1`.
 открытом письме без A2-факта, с `bot_visible=0`, с секретным тегом или с
 первичной причиной `manager_action_required`/`has_manager_note`; Variant B
 считается отдельно и не является нарушением.
+
+### D-077. Snapshot #3 re-published after mail opening gate fix
+
+Исполнение 2026-07-09: после исправления stage4b/mail opening и зелёного
+`reader_smoke` опубликован snapshot
+`prod_snapshots/prod_20260709_m1_mail_merge_stage4b_gatefix_e3aae646/customer_timeline.sqlite`.
+Snapshot sha256 и prod sha256 после flip:
+`a366916ebec19b7b13fa6d16c65eb0c19eb17afeeb057fccc5dc1b51bb0c7f84`.
+Writer git head: `e3aae6464ab112dc5859711c9c3a84d5ca582f03`.
+
+Перед flip: preflight зелёный, schema-diff `0`, prod/staging `quick_check=ok`,
+staging WAL checkpoint `[0,0,0]`, 5 контрольных клиентов прочитались, mail gate
+зелёный: `allowed_mail_chunks=3240`, `allowed_mail_bot_visible_false=0`,
+`allowed_mail_secret_tags=0`, Variant B `allowed_mail_variant_b_client_unsafe=3042`.
+
+Flip: rollback backup старого prod sha `eb38dc7a8790f55cbc31d28381f420403a7bcdc3af460ac00aff66e965c1e0e9`
+создан и sha-проверен в
+`product_data/customer_timeline/prod_backups/pre_flip_backup_2026-07-09T195415.484788Z0000/customer_timeline.sqlite`;
+асинхронная копия создана и sha-проверена в
+`~/Yandex.Disk.localized/OpenClaw/prod_backups/pre_flip_backup_2026-07-09T195415.484788Z0000/customer_timeline.sqlite`.
+Вторая `lsof`-проверка прямо перед `os.replace` прошла.
+
+После flip: prod `quick_check=ok`, 5 контрольных клиентов совпали,
+mail gate зелёный, Wappi→AMO draft-loop стартовал через screen
+`mango_draft_loop`, post-start проверка нашла ровно один процесс
+`scripts/run_amo_wappi_draft_loop.py`. Публичный Telegram-бот не стартовал.
+Клиентам сообщений не отправлялось.
+
+### D-078. M1 mail merge must pass archive envelope email to A2
+
+Решение 2026-07-09: M1 mail merge обязан передавать в A2 локально извлечённый
+email-конверт письма (`contact_email`, `from_email`, `to_emails`, `to_domains`,
+`external_recipient_count`) из архивной mail-БД. Иначе A2 получает только телефон
+из уже существующего `identity_links`, а email-match выглядит как `0` даже там,
+где исходные заголовки письма есть.
+
+Поддерживаем оба формата источника архива:
+
+- старый: `record.payload.source_file` -> соседний `archive/mail_archive.sqlite`;
+- новый M1/stage2: `record.stage2_enrich_archive_db`.
+
+Граница безопасности: один email сам по себе не повышает событие до `strong`.
+Существующий `mail_link_enrich` оставляет email-only как `weak_email` /
+`pending_reason=weak_email_only`, если нет другого сильного соответствия.
+Это входной факт для сверки и отчёта, а не автоматическая склейка клиента.

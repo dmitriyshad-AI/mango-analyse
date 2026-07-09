@@ -272,11 +272,17 @@ def _source_payload(event_payload: Mapping[str, Any]) -> Mapping[str, Any]:
         payload = record.get("payload")
         if isinstance(payload, Mapping):
             return payload
+        return record
     return {}
 
 
 def _archive_db_for_source_payload(source_payload: Mapping[str, Any]) -> Optional[Path]:
-    raw_db = str(source_payload.get("source_db") or "").strip()
+    raw_db = str(
+        source_payload.get("stage2_enrich_archive_db")
+        or source_payload.get("archive_db")
+        or source_payload.get("source_db")
+        or ""
+    ).strip()
     if raw_db:
         db_path = Path(raw_db).expanduser()
         if db_path.exists() and db_path.is_file():

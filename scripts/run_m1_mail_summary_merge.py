@@ -28,6 +28,11 @@ from mango_mvp.customer_timeline.a2_mail_ingest import (
     ensure_not_prod_apply_path,
     validate_a2v3_mail_ingest,
 )
+from mango_mvp.customer_timeline.mail_link_enrich import (
+    _archive_db_for_source_payload,
+    _contact_from_archive_row,
+    _source_payload,
+)
 from mango_mvp.customer_timeline.stage4b_bot_opening import (
     Stage4BBotOpeningConfig,
     run_stage4b_bot_opening,
@@ -497,7 +502,7 @@ def _load_matching_stage2_rows(
                 WHERE e.tenant_id = ?
                   AND e.source_system = ?
                   AND COALESCE(e.superseded_by, '') = ''
-                  AND lower(e.source_id) IN ({placeholders})
+                  AND e.source_id IN ({placeholders})
                 ORDER BY e.customer_id, e.event_at, e.source_id
                 """,
                 (tenant_id, tenant_id, SOURCE_SYSTEM, *chunk),
@@ -505,58 +510,151 @@ def _load_matching_stage2_rows(
         )
     rows.sort(key=lambda row: (str(row["customer_id"] or ""), str(row["event_at"] or ""), str(row["source_id"] or "")))
     result: list[dict[str, Any]] = []
-    for line_number, row in enumerate(rows, start=1):
-        payload = json_loads(str(row["record_json"] or "{}"))
-        record = payload.get("record") if isinstance(payload.get("record"), Mapping) else {}
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-        full_text = str(record.get("full_clean_text") or "")
-        clean_text, thread_context = split_thread_context(full_text)
-        body_missing = not bool(clean_text.strip())
-        subject = str(row["subject"] or record.get("subject") or "Email message")
-        brand = _brand_for_row(row=row, record=record, metadata=metadata, text=clean_text)
-        result.append(
-            {
-                "_line_number": line_number,
-                "event_id": str(row["event_id"]),
-                "customer_id": str(row["customer_id"] or ""),
-                "message_sha256": str(row["source_id"]).lower(),
-                "date_iso": str(row["event_at"] or ""),
-                "direction": str(row["direction"] or "unknown"),
-                "brand": brand,
-                "brand_source": str(
-                    record.get("brand_source") or record.get("brand_signal") or metadata.get("brand_source") or "staging_event"
-                ),
-                "raw_infer_offline_brand": brand,
-                "classification_reason": "m1_full_mail_summary_existing_stage2_event",
-                "subject_full": subject,
-                "subject": subject,
-                "full_clean_text": clean_text,
-                "body_missing": body_missing,
-                "thread_context": thread_context,
-                "thread_context_source": "raw_body_split_thread_context" if thread_context else "none",
-                "full_clean_text_chars": len(clean_text),
-                "body_chars": len(full_text),
-                "body": clean_text,
-                "contact_phone": row["contact_phone"],
-                "contact_email": None,
-                "contact_name": None,
-                "contact_source": "staging_identity_link_phone" if row["contact_phone"] else "missing",
-                "contact_missing": not bool(row["contact_phone"]),
-                "contact_ambiguous": False,
-                "contact_reason": "strong_phone_identity_link" if row["contact_phone"] else "no_strong_phone_identity_link",
-                "from_email": None,
-                "from_domain": None,
-                "to_domains": [],
-                "to_emails": [],
-                "cc_emails": [],
-                "external_recipient_count": 0,
-                "outbound_template_freq": 0,
-                "is_outbound_template": False,
-                "is_mass_recipient": False,
-                "has_attachment": False,
-            }
-        )
+    archive_cache: dict[Path, sqlite3.Connection] = {}
+    try:
+        for line_number, row in enumerate(rows, start=1):
+            payload = json_loads(str(row["record_json"] or "{}"))
+            record = payload.get("record") if isinstance(payload.get("record"), Mapping) else {}
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+            full_text = str(record.get("full_clean_text") or "")
+            clean_text, thread_context = split_thread_context(full_text)
+            body_missing = not bool(clean_text.strip())
+            subject = str(row["subject"] or record.get("subject") or "Email message")
+            brand = _brand_for_row(row=row, record=record, metadata=metadata, text=clean_text)
+            envelope = _mail_archive_envelope_for_row(
+                payload,
+                message_sha=str(row["source_id"]).lower(),
+                direction=str(row["direction"] or "unknown"),
+                archive_cache=archive_cache,
+            )
+            contact_phone = row["contact_phone"]
+            contact_email = envelope.get("contact_email")
+            contact_source = (
+                envelope.get("contact_source")
+                or ("staging_identity_link_phone" if contact_phone else "missing")
+            )
+            contact_reason = (
+                envelope.get("contact_reason")
+                or ("strong_phone_identity_link" if contact_phone else "no_strong_phone_or_email_identity_link")
+            )
+            result.append(
+                {
+                    "_line_number": line_number,
+                    "event_id": str(row["event_id"]),
+                    "customer_id": str(row["customer_id"] or ""),
+                    "message_sha256": str(row["source_id"]).lower(),
+                    "date_iso": str(row["event_at"] or ""),
+                    "direction": str(row["direction"] or "unknown"),
+                    "brand": brand,
+                    "brand_source": str(
+                        record.get("brand_source") or record.get("brand_signal") or metadata.get("brand_source") or "staging_event"
+                    ),
+                    "raw_infer_offline_brand": brand,
+                    "classification_reason": "m1_full_mail_summary_existing_stage2_event",
+                    "subject_full": subject,
+                    "subject": subject,
+                    "full_clean_text": clean_text,
+                    "body_missing": body_missing,
+                    "thread_context": thread_context,
+                    "thread_context_source": "raw_body_split_thread_context" if thread_context else "none",
+                    "full_clean_text_chars": len(clean_text),
+                    "body_chars": len(full_text),
+                    "body": clean_text,
+                    "contact_phone": contact_phone,
+                    "contact_email": contact_email,
+                    "contact_name": envelope.get("contact_name"),
+                    "contact_source": contact_source,
+                    "contact_missing": not bool(contact_phone or contact_email),
+                    "contact_ambiguous": bool(envelope.get("contact_ambiguous")),
+                    "contact_reason": contact_reason,
+                    "from_email": envelope.get("from_email"),
+                    "from_domain": envelope.get("from_domain"),
+                    "to_domains": envelope.get("to_domains", []),
+                    "to_emails": envelope.get("to_emails", []),
+                    "cc_emails": envelope.get("cc_emails", []),
+                    "external_recipient_count": int(envelope.get("external_recipient_count") or 0),
+                    "outbound_template_freq": 0,
+                    "is_outbound_template": False,
+                    "is_mass_recipient": False,
+                    "has_attachment": False,
+                }
+            )
+    finally:
+        for archive_con in archive_cache.values():
+            archive_con.close()
     return result
+
+
+def _mail_archive_envelope_for_row(
+    event_payload: Mapping[str, Any],
+    *,
+    message_sha: str,
+    direction: str,
+    archive_cache: dict[Path, sqlite3.Connection],
+) -> Mapping[str, Any]:
+    source_payload = _source_payload(event_payload)
+    archive_db = _archive_db_for_source_payload(source_payload)
+    if archive_db is None:
+        return {}
+    db = archive_db.resolve(strict=False)
+    archive_con = archive_cache.get(db)
+    if archive_con is None:
+        archive_con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        archive_con.row_factory = sqlite3.Row
+        archive_con.execute("PRAGMA query_only=ON")
+        archive_cache[db] = archive_con
+    participants = [
+        dict(row)
+        for row in archive_con.execute(
+            """
+            SELECT header_name, display_name, email_normalized, domain
+            FROM message_participants
+            WHERE message_sha256 = ?
+            """,
+            (message_sha,),
+        )
+    ]
+    if not participants:
+        return {}
+    contact = _contact_from_archive_row(direction, {"participants": participants, "text": ""})
+    from_email = _first_participant_email(participants, "from")
+    to_emails = _participant_emails(participants, "to")
+    cc_emails = _participant_emails(participants, "cc")
+    return {
+        "contact_email": contact.contact_email,
+        "contact_name": contact.contact_name,
+        "contact_source": contact.contact_source,
+        "contact_reason": contact.contact_reason,
+        "contact_ambiguous": contact.contact_ambiguous,
+        "external_recipient_count": contact.external_recipient_count,
+        "from_email": from_email,
+        "from_domain": _email_domain(from_email),
+        "to_emails": to_emails,
+        "to_domains": [_email_domain(email) for email in to_emails],
+        "cc_emails": cc_emails,
+    }
+
+
+def _participant_emails(participants: Sequence[Mapping[str, Any]], header_name: str) -> list[str]:
+    result: list[str] = []
+    for item in participants:
+        if str(item.get("header_name") or "").strip().lower() != header_name:
+            continue
+        email = str(item.get("email_normalized") or "").strip().lower()
+        if email and email not in result:
+            result.append(email)
+    return result
+
+
+def _first_participant_email(participants: Sequence[Mapping[str, Any]], header_name: str) -> str | None:
+    emails = _participant_emails(participants, header_name)
+    return emails[0] if emails else None
+
+
+def _email_domain(email: str | None) -> str:
+    if not email or "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[-1].strip().lower()
 
 
 def _prepare_rows_with_m1_summaries(

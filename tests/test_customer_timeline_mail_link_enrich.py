@@ -91,6 +91,38 @@ def _seed_pending_event(db_path: Path, allowed_root: Path, *, sha: str, source_f
         store.upsert_event(event, actor="test")
 
 
+def _seed_pending_event_with_archive_db(
+    db_path: Path,
+    allowed_root: Path,
+    *,
+    sha: str,
+    archive_db: Path,
+    subject: str,
+) -> None:
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            event_type="email_message",
+            event_at=NOW,
+            source_system=A2V3_MAIL_SOURCE_SYSTEM,
+            source_id=sha,
+            source_ref=f"mail_stage2:test:{sha[:16]}",
+            direction=TimelineDirection.INBOUND,
+            match_status="unmatched",
+            subject=subject,
+            text_preview="Входящее письмо.",
+            summary="Родитель спрашивает про обучение.",
+            record={
+                "stage2_enrich_archive_db": str(archive_db),
+                "full_clean_text": "Родитель спрашивает про обучение.",
+                "brand": "unknown",
+            },
+            metadata={"pending_attribution": True},
+            created_at=NOW,
+        )
+        store.upsert_event(event, actor="test")
+
+
 def _write_archive(tmp_path: Path, *, sha: str, email: str, text: str) -> tuple[Path, Path]:
     handoff = tmp_path / "handoff"
     source_file = handoff / "stage2_delta_ingest" / "stage2_delta_full_events.jsonl"
@@ -200,3 +232,36 @@ def test_mail_link_enrich_keeps_email_only_and_body_phone_as_weak_pending(tmp_pa
     assert event["match_status"] == "unmatched"
     assert payload["metadata"]["pending_reason"] == "weak_email_only"
     assert chunks == 0
+
+
+def test_mail_link_enrich_reads_stage2_archive_db_without_legacy_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "c" * 64
+    _, archive_db = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует Фотон.",
+    )
+    _seed_pending_event_with_archive_db(db_path, tmp_path, sha=sha, archive_db=archive_db, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["planned.weak_email"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute("SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
+    payload = json.loads(event["record_json"])
+    assert event["customer_id"] is None
+    assert event["match_status"] == "unmatched"
+    assert payload["metadata"]["pending_reason"] == "weak_email_only"
+    assert payload["metadata"]["mail_link_enrich"]["reason"] == "email_unique_identity_link"
+    assert payload["record"]["payload"]["contact_email_hash"]

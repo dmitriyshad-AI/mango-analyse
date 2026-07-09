@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -256,7 +257,14 @@ def run_process_a(
                         config.working_dir,
                     )
                 )
-                worker_reports.extend(run_parallel_pipeline_workers(config, base_env, command_runner))
+                worker_reports.extend(
+                    run_parallel_pipeline_workers(
+                        config,
+                        base_env,
+                        command_runner,
+                        include_llm=bool(environment.get("codex_network_ok")),
+                    )
+                )
             failed_commands = [item for item in worker_reports if int(item.get("rc", 0)) != 0]
             if failed_commands:
                 return finalize_report(
@@ -275,6 +283,45 @@ def run_process_a(
                     },
                 )
             db_counts = call_db_counts(config.working_db) if config.working_db.exists() else empty_call_counts()
+            if dead_letter_mass_failure(db_counts):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "dead_letter_mass_failure",
+                    {
+                        "disk": disk,
+                        "environment": environment,
+                        "capture": capture,
+                        "metadata": metadata,
+                        "workers": compact_command_reports(worker_reports),
+                        "call_db": db_counts,
+                        "dead_letter": db_counts.get("dead_letter_stage", {}),
+                        "lock": lock_info,
+                    },
+                )
+            if not bool(environment.get("codex_network_ok")):
+                if not skip_capture:
+                    write_cursor(config.cursor_path, window_until, capture)
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "deferred",
+                    "codex_network_unavailable",
+                    {
+                        "disk": disk,
+                        "environment": environment,
+                        "capture": capture,
+                        "metadata": metadata,
+                        "workers": compact_command_reports(worker_reports),
+                        "call_db": db_counts,
+                        "dead_letter": db_counts.get("dead_letter_stage", {}),
+                        "window": {"since": window_since.isoformat(), "until": window_until.isoformat()},
+                        "lock": lock_info,
+                    },
+                )
             drop = publish_ready_db(config, db_counts) if config.working_db.exists() else {"status": "not_created"}
             if not skip_capture:
                 write_cursor(config.cursor_path, window_until, capture)
@@ -327,10 +374,11 @@ def run_process_b(
     quick_before = sqlite_check(config.timeline_db, "quick_check")
     source_systems_before = call_event_source_systems(config.timeline_db)
     cursor = mango_processed_cursor(config.timeline_db, tenant_id=config.tenant_id)
-    since = optional_text(cursor.get("max_source_ts") or cursor.get("last_cursor_ts"))
     increment_path = config.ingest_dir / "mango_processed_summary.jsonl"
     producer_report_path = config.ingest_dir / "mango_processed_summary_producer_report.json"
-    producer = producer_runner(config, increment_path, producer_report_path, since)
+    # A call may finish Analyze after newer calls were already imported. Scan the
+    # sealed drop fully and let dedupe_key decide; a timestamp cursor can lose it.
+    producer = producer_runner(config, increment_path, producer_report_path, None)
     if str(producer.get("status") or "ok") not in {"ok", "ready"}:
         return finalize_report(
             config,
@@ -382,6 +430,7 @@ def run_process_b(
         "source_systems_after": source_systems_after,
         "unexpected_source_systems": unexpected,
         "cursor_before": cursor,
+        "producer_scan_mode": "full_drop_dedupe",
     }
     return finalize_report(config, run_id, "process_b", status, stop_reason, counters)
 
@@ -615,6 +664,7 @@ def environment_preflight(
     codex_ok = config.codex_binary.is_file() and os.access(config.codex_binary, os.X_OK)
     auth_ok = False
     modules_ok = False
+    network_ok = codex_network_available() if run_commands else True
     if run_commands and python_ok:
         probe = subprocess.run(
             [str(config.python_executable), "-c", "import sqlalchemy,dotenv,mlx_whisper,gigaam,mango_mvp.cli"],
@@ -648,9 +698,18 @@ def environment_preflight(
         "asr_modules_ok": modules_ok,
         "codex_binary_ok": codex_ok,
         "codex_authenticated": auth_ok,
+        "codex_network_ok": network_ok,
         "asr_mode": config.asr_mode,
-        "parallel_stages": list(pipeline_stages(config)),
+        "parallel_stages": list(pipeline_stages(config, include_llm=network_ok)),
     }
+
+
+def codex_network_available() -> bool:
+    try:
+        socket.getaddrinfo("chatgpt.com", 443, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    return True
 
 
 def disk_preflight(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
@@ -774,22 +833,35 @@ def stage_worker_environment_for(
     if stage == "backfill-second-asr":
         return transcribe_environment(config, base_env)
     if stage in {"resolve", "analyze"}:
-        return base_env
+        if config.asr_mode == "gigaam_fallback":
+            return {
+                **base_env,
+                "DUAL_TRANSCRIBE_ENABLED": "0",
+                "SECONDARY_TRANSCRIBE_PROVIDER": "",
+            }
+        return transcribe_environment(config, base_env)
     raise ValueError(f"unsupported parallel pipeline stage: {stage}")
 
 
-def pipeline_stages(config: CallsTwoProcessesConfig) -> tuple[str, ...]:
-    if config.asr_mode == "gigaam_fallback":
-        return GIGAAM_FALLBACK_STAGES
-    return PARALLEL_PIPELINE_STAGES
+def pipeline_stages(
+    config: CallsTwoProcessesConfig,
+    *,
+    include_llm: bool = True,
+) -> tuple[str, ...]:
+    stages = GIGAAM_FALLBACK_STAGES if config.asr_mode == "gigaam_fallback" else PARALLEL_PIPELINE_STAGES
+    if include_llm:
+        return stages
+    return tuple(stage for stage in stages if stage not in {"resolve", "analyze"})
 
 
 def run_parallel_pipeline_workers(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
     runner: CommandRunner,
+    *,
+    include_llm: bool = True,
 ) -> list[Mapping[str, Any]]:
-    stages = pipeline_stages(config)
+    stages = pipeline_stages(config, include_llm=include_llm)
     if runner is not run_command:
         return [
             runner(
@@ -958,6 +1030,19 @@ def empty_call_counts() -> Mapping[str, Any]:
         "analysis_status": {},
         "dead_letter_stage": {},
     }
+
+
+def dead_letter_total(counts: Mapping[str, Any]) -> int:
+    stages = counts.get("dead_letter_stage")
+    if not isinstance(stages, Mapping):
+        return 0
+    return sum(positive_int(count) for stage, count in stages.items() if str(stage or "").strip())
+
+
+def dead_letter_mass_failure(counts: Mapping[str, Any]) -> bool:
+    total = positive_int(counts.get("total"))
+    dead = dead_letter_total(counts)
+    return total > 0 and dead > 3 and dead * 20 > total
 
 
 def call_event_source_systems(path: Path) -> list[str]:

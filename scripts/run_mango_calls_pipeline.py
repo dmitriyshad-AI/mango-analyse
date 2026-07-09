@@ -69,7 +69,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "counters": {},
         }
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report.get("status") in {"ok", "idle", "locked"} else 1
+    return 0 if report.get("status") in {"ok", "idle", "locked", "deferred"} else 1
 
 
 if __name__ == "__main__":

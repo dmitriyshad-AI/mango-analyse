@@ -18,6 +18,9 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     assert_no_pdn,
     call_event_source_systems,
     capture_mango_window,
+    codex_network_available,
+    dead_letter_total,
+    dead_letter_mass_failure,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
@@ -226,8 +229,8 @@ def test_parallel_pipeline_matches_ui_one_worker_per_stage(tmp_path: Path) -> No
     )
     assert calls[0][1]["DUAL_TRANSCRIBE_ENABLED"] == "0"
     assert calls[1][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
-    assert "TRANSCRIBE_PROVIDER" not in calls[2][1]
-    assert "TRANSCRIBE_PROVIDER" not in calls[3][1]
+    assert calls[2][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
+    assert calls[3][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
     assert all("sync" not in command for command, _ in calls)
 
 
@@ -244,8 +247,31 @@ def test_gigaam_fallback_avoids_mlx_and_secondary_worker(tmp_path: Path) -> None
 
     assert pipeline_stages(config) == ("transcribe", "resolve", "analyze")
     assert calls[0][1]["TRANSCRIBE_PROVIDER"] == "gigaam"
-    assert calls[0][1]["DUAL_TRANSCRIBE_ENABLED"] == "0"
     assert all("backfill-second-asr" not in command for command, _ in calls)
+    assert all(env["DUAL_TRANSCRIBE_ENABLED"] == "0" for _, env in calls)
+
+
+def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:
+    normal = config_for(tmp_path)
+    fallback = replace(normal, asr_mode="gigaam_fallback")
+
+    assert pipeline_stages(normal, include_llm=False) == ("transcribe", "backfill-second-asr")
+    assert pipeline_stages(fallback, include_llm=False) == ("transcribe",)
+
+
+def test_codex_network_probe_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args, **kwargs):
+        del args, kwargs
+        raise OSError("dns unavailable")
+
+    monkeypatch.setattr("socket.getaddrinfo", fail)
+    assert codex_network_available() is False
+
+
+def test_dead_letter_total_ignores_empty_stage_and_counts_failures() -> None:
+    assert dead_letter_total({"dead_letter_stage": {"": 200, "transcribe": 2, "analyze": 1}}) == 3
+    assert dead_letter_mass_failure({"total": 241, "dead_letter_stage": {"transcribe": 3}}) is False
+    assert dead_letter_mass_failure({"total": 241, "dead_letter_stage": {"transcribe": 13}}) is True
 
 
 def test_codex_runtime_does_not_copy_desktop_mcp_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,6 +396,28 @@ def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> 
     assert first["status"] == second["status"] == "ok"
     assert first_count == second_count == 1
     assert call_event_source_systems(config.timeline_db) == ["mango_processed_summary"]
+
+
+def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    store = CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root)
+    store.close()
+    first = run_process_b(config)
+    assert first["status"] == "ok"
+    seen_since: list[str | None] = []
+
+    def fake_producer(_: CallsTwoProcessesConfig, out: Path, report: Path, since: str | None) -> dict[str, object]:
+        seen_since.append(since)
+        out.write_text("", encoding="utf-8")
+        report.write_text("{}", encoding="utf-8")
+        return {"status": "ok", "events_written": 0}
+
+    second = run_process_b(config, producer_runner=fake_producer)
+
+    assert second["status"] == "ok"
+    assert seen_since == [None]
+    assert second["counters"]["producer_scan_mode"] == "full_drop_dedupe"
 
 
 def test_foton_pdn_sweep_blocks_phone() -> None:

@@ -857,34 +857,32 @@ def run_parallel_pipeline_workers(
             )
             for stage in stages
         ]
-    processes: list[tuple[subprocess.Popen[str], Path, str]] = []
     logs_dir = config.working_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    reports: list[Mapping[str, Any]] = []
     for stage in stages:
         label = stage.replace("-", "_")
-        log_path = logs_dir / f"parallel_{label}.log"
-        log_handle = log_path.open("w", encoding="utf-8")
+        log_path = logs_dir / f"stage_{label}.log"
         worker_env = {
             **stage_worker_environment_for(config, base_env, stage),
             "CODEX_HOME": str(
                 prepare_codex_home(config.codex_home_root / label)
             ),
         }
-        proc = subprocess.Popen(
-            worker_command(config, stage),
-            cwd=config.working_dir,
-            env=worker_env,
-            text=True,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-        )
-        proc._mango_log_handle = log_handle  # type: ignore[attr-defined]
-        processes.append((proc, log_path, stage))
-    reports: list[Mapping[str, Any]] = []
-    for proc, log_path, stage in processes:
-        rc = proc.wait()
-        proc._mango_log_handle.close()  # type: ignore[attr-defined]
+        with log_path.open("w", encoding="utf-8") as log_handle:
+            proc = subprocess.run(
+                worker_command(config, stage),
+                cwd=config.working_dir,
+                env=worker_env,
+                text=True,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        rc = int(proc.returncode or 0)
         reports.append({"rc": rc, "command": f"worker:{stage}", "log_path": str(log_path)})
+        if rc != 0:
+            break
     return reports
 
 
@@ -964,14 +962,18 @@ def run_increment_producer(
 def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any]) -> Mapping[str, Any]:
     config.ready_db.parent.mkdir(parents=True, exist_ok=True)
     temp = config.ready_db.with_suffix(".sqlite.tmp")
+    cleanup_sqlite_sidecars(temp)
     with sqlite3.connect(f"file:{config.working_db}?mode=ro", uri=True, timeout=60) as source:
         source.execute("PRAGMA query_only=ON")
         with sqlite3.connect(temp) as target:
             source.backup(target)
-    quick = sqlite_check(temp, "quick_check")
+            target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            target.execute("PRAGMA journal_mode=DELETE")
+            quick = str(target.execute("PRAGMA quick_check").fetchone()[0])
     if quick != "ok":
         raise RuntimeError("ready DB quick_check failed")
     temp.replace(config.ready_db)
+    cleanup_sqlite_sidecars(temp)
     sha = sha256_file(config.ready_db)
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -985,6 +987,15 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
     }
     write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
     return manifest
+
+
+def cleanup_sqlite_sidecars(path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(path) + suffix)
+        try:
+            sidecar.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
 
 
 def call_db_counts(path: Path) -> Mapping[str, Any]:

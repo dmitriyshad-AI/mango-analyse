@@ -25,6 +25,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     prepare_codex_home,
     process_lease,
     pipeline_stages,
+    publish_ready_db,
     read_known_processed_ids,
     run_parallel_pipeline_workers,
     run_process_b,
@@ -212,7 +213,7 @@ def test_worker_command_is_drain_and_never_sync(tmp_path: Path) -> None:
     assert "sync" not in command
 
 
-def test_parallel_pipeline_matches_ui_one_worker_per_stage(tmp_path: Path) -> None:
+def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     calls: list[tuple[list[str], dict[str, str]]] = []
 
@@ -238,6 +239,21 @@ def test_single_asr_fallback_mode_is_rejected(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), asr_mode="gigaam_fallback")
     with pytest.raises(ValueError, match="single-ASR fallback is disabled"):
         config.validate()
+
+
+def test_publish_ready_db_handles_space_path_wal_tmp(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), pipeline_root=tmp_path / "Mango analyse" / "pipeline")
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records(id) VALUES (1)")
+
+    manifest = publish_ready_db(config, {"total": 1})
+
+    assert manifest["quick_check"] == "ok"
+    assert config.ready_db.exists()
+    assert not config.ready_db.with_suffix(".sqlite.tmp-shm").exists()
 
 
 def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:

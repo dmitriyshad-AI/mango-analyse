@@ -15,6 +15,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig  # noqa: E402
+from mango_mvp.customer_timeline.stage4b_bot_opening import (  # noqa: E402
+    _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS,
+    _MAIL_OUTPUT_SECRET_TAGS,
+)
 from scripts.publish_snapshot.common import (  # noqa: E402
     add_common_args,
     finish_cli,
@@ -24,6 +28,8 @@ from scripts.publish_snapshot.common import (  # noqa: E402
     report_base,
     run_command,
 )
+
+_MAIL_FORBIDDEN_PRIMARY_REASONS = frozenset({"manager_action_required", "has_manager_note"})
 
 
 def control_customer_counts(db_path: Path, tenant_id: str, customer_id: str) -> dict[str, int]:
@@ -74,6 +80,9 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
         if not _table_exists(con, "a2v3_mail_event_facts") or not _table_exists(con, "bot_context_chunks"):
             return {"ok": True, "skipped": True, "reason": "mail_facts_or_chunks_table_missing"}
+        allowed_reason_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS)
+        primary_reason_placeholders = ",".join("?" for _ in _MAIL_FORBIDDEN_PRIMARY_REASONS)
+        secret_tag_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_SECRET_TAGS)
         counts = {
             "allowed_mail_chunks": int(
                 con.execute(
@@ -84,31 +93,29 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     """
                 ).fetchone()[0]
             ),
-            "allowed_mail_with_manager_tags": int(
+            "allowed_mail_without_a2_fact": int(
                 con.execute(
                     """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    LEFT JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
-                      AND (
-                        f.sensitivity_tags_json LIKE '%manager_action_required%'
-                        OR f.sensitivity_tags_json LIKE '%has_manager_note%'
-                      )
+                      AND f.event_id IS NULL
                     """
                 ).fetchone()[0]
             ),
-            "allowed_mail_client_safe_false": int(
+            "allowed_mail_forbidden_primary_reason": int(
                 con.execute(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
                     JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
-                      AND f.client_safe = 0
-                    """
+                      AND f.client_safe_reason IN ({primary_reason_placeholders})
+                    """,
+                    tuple(_MAIL_FORBIDDEN_PRIMARY_REASONS),
                 ).fetchone()[0]
             ),
             "allowed_mail_bot_visible_false": int(
@@ -123,18 +130,67 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     """
                 ).fetchone()[0]
             ),
+            "allowed_mail_secret_tags": int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND EXISTS (
+                        SELECT 1
+                        FROM json_each(COALESCE(f.sensitivity_tags_json, '[]')) AS tag
+                        WHERE tag.value IN ({secret_tag_placeholders})
+                      )
+                    """,
+                    tuple(_MAIL_OUTPUT_SECRET_TAGS),
+                ).fetchone()[0]
+            ),
+            "allowed_mail_unapproved_client_unsafe_reason": int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND f.client_safe = 0
+                      AND f.client_safe_reason NOT IN ({allowed_reason_placeholders})
+                    """,
+                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+                ).fetchone()[0]
+            ),
+            "allowed_mail_variant_b_client_unsafe": int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    WHERE b.source_system = 'mail_archive_stage2'
+                      AND b.allowed_for_bot = 1
+                      AND f.bot_visible = 1
+                      AND f.client_safe = 0
+                      AND f.client_safe_reason IN ({allowed_reason_placeholders})
+                    """,
+                    tuple(_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+                ).fetchone()[0]
+            ),
         }
     violations = {
         key: value
         for key, value in counts.items()
-        if key != "allowed_mail_chunks" and int(value) > 0
+        if key not in {"allowed_mail_chunks", "allowed_mail_variant_b_client_unsafe"} and int(value) > 0
     }
     return {
         "ok": not violations,
         "skipped": False,
         "counts": counts,
         "violations": violations,
-        "policy": "opened mail chunks must not contradict A2 facts client_safe/bot_visible/manager tags",
+        "policy": (
+            "opened mail chunks require A2 bot_visible=1; money/tax/contract may be opened for manager drafts; "
+            "missing facts, bot_visible=0, secret tags, and primary manager-review reasons block publish"
+        ),
     }
 
 

@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from scripts.publish_snapshot import build_snapshot, preflight, reader_smoke
+from scripts.publish_snapshot import build_snapshot, flip, preflight, reader_smoke
 from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified, run_command
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
@@ -81,6 +81,9 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
     prod, _prod_customer = seed_timeline_db(prod_dir)
     staging, staging_customer = seed_timeline_db(staging_dir)
     cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
     with sqlite3.connect(staging) as con:
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
         con.execute(
@@ -109,13 +112,14 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
               event_id TEXT PRIMARY KEY,
               client_safe INTEGER NOT NULL,
               bot_visible INTEGER NOT NULL,
+              client_safe_reason TEXT NOT NULL,
               sensitivity_tags_json TEXT NOT NULL
             )
             """
         )
         con.execute(
-            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 0, ?)",
-            (event_id, json.dumps(["manager_action_required", "has_manager_note"], ensure_ascii=False)),
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 0, ?, ?)",
+            (event_id, "has_manager_note", json.dumps(["manager_action_required", "has_manager_note"], ensure_ascii=False)),
         )
         con.commit()
 
@@ -124,9 +128,87 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
     assert smoke_ok is False
     gate = smoke_report["mail_allowed_safety_gate"]
     assert gate["ok"] is False
-    assert gate["violations"]["allowed_mail_with_manager_tags"] == 1
-    assert gate["violations"]["allowed_mail_client_safe_false"] == 1
+    assert gate["violations"]["allowed_mail_forbidden_primary_reason"] == 1
     assert gate["violations"]["allowed_mail_bot_visible_false"] == 1
+    assert gate["violations"]["allowed_mail_unapproved_client_unsafe_reason"] == 1
+
+
+def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    with sqlite3.connect(staging) as con:
+        event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
+        con.execute(
+            """
+            INSERT INTO bot_context_chunks (
+              chunk_id, tenant_id, customer_id, opportunity_id, event_id,
+              source_system, source_ref, chunk_type, event_at, freshness_score,
+              allowed_for_bot, requires_manager_review, ordinal, created_at,
+              record_hash, record_json
+            )
+            VALUES (?, 'foton', ?, NULL, ?, 'mail_archive_stage2', 'mail:money',
+              'email_message', '2026-05-12T12:00:00+00:00', 0.7,
+              1, 0, 0, '2026-05-12T12:00:00+00:00', ?, ?)
+            """,
+            (
+                "mail-money",
+                staging_customer,
+                event_id,
+                "f" * 64,
+                json.dumps({"allowed_for_bot": True, "summary": "money"}, ensure_ascii=False),
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE a2v3_mail_event_facts (
+              event_id TEXT PRIMARY KEY,
+              client_safe INTEGER NOT NULL,
+              bot_visible INTEGER NOT NULL,
+              client_safe_reason TEXT NOT NULL,
+              sensitivity_tags_json TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 1, ?, ?)",
+            (
+                event_id,
+                "sensitive_money",
+                json.dumps(["sensitive_money", "manager_action_required"], ensure_ascii=False),
+            ),
+        )
+        con.commit()
+
+    money_report, money_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert money_ok is True
+    money_gate = money_report["mail_allowed_safety_gate"]
+    assert money_gate["ok"] is True
+    assert money_gate["counts"]["allowed_mail_variant_b_client_unsafe"] == 1
+    assert money_gate["violations"] == {}
+
+    with sqlite3.connect(staging) as con:
+        event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET sensitivity_tags_json = ? WHERE event_id = ?",
+            (json.dumps(["sensitive_credentials"], ensure_ascii=False), event_id),
+        )
+        con.commit()
+
+    secret_report, secret_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert secret_ok is False
+    secret_gate = secret_report["mail_allowed_safety_gate"]
+    assert secret_gate["ok"] is False
+    assert secret_gate["violations"]["allowed_mail_secret_tags"] == 1
 
 
 def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:
@@ -199,6 +281,55 @@ def test_backup_plan_allows_same_disk_with_verified_async_copy(tmp_path: Path) -
     assert report["policy"] == "same_disk_verified_backup_plus_yandex_async_copy"
     assert first["source_sha256"] == first["target_sha256"]
     assert second["source_sha256"] == second["target_sha256"]
+
+
+def test_flip_process_pattern_counts_exactly_one(monkeypatch) -> None:
+    class Result:
+        returncode = 0
+        stdout = (
+            "101 python3 scripts/run_amo_wappi_draft_loop.py --loop\n"
+            "202 python3 scripts/other.py\n"
+        )
+        stderr = ""
+
+    monkeypatch.setattr(flip.subprocess, "run", lambda *args, **kwargs: Result())
+
+    checks = flip.process_pattern_counts(["scripts/run_amo_wappi_draft_loop.py"])
+
+    assert checks == [
+        {
+            "pattern": "scripts/run_amo_wappi_draft_loop.py",
+            "count": 1,
+            "matches": ["101 python3 scripts/run_amo_wappi_draft_loop.py --loop"],
+        }
+    ]
+
+
+def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    original_sha = flip.sha256_file(prod)
+    calls = {"count": 0}
+
+    def fake_lsof(_path: Path) -> list[str]:
+        calls["count"] += 1
+        return [] if calls["count"] == 1 else ["python 123 reopened customer_timeline.sqlite"]
+
+    monkeypatch.setattr(flip, "lsof_holders", fake_lsof)
+
+    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+
+    assert ok is False
+    assert report["status"] == "blocked_lsof_before_replace"
+    assert flip.sha256_file(prod) == original_sha
 
 
 def test_run_command_reports_timeout_instead_of_raising() -> None:

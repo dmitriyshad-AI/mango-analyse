@@ -1505,3 +1505,25 @@ rollback: sha `eb38dc7a8790f55cbc31d28381f420403a7bcdc3af460ac00aff66e965c1e0e9`
 `client_safe=0`, `bot_visible=0`, `manager_action_required` или
 `has_manager_note`. Следующий SWAP разрешён только после исправления
 stage4b/mail opening на staging и зелёного `mail_allowed_safety_gate=ok`.
+
+### D-076. Mail opening Variant B is constrained by A2 bot_visible
+
+Решение владельца/архитектора от 2026-07-09: для Wappi→AMO manager drafts
+разрешён Вариант Б — письма с денежными/налоговыми/договорными фактами могут
+быть открыты в память черновика, если A2 явно пометил их `bot_visible=1`.
+Это не означает автономную отправку клиенту: клиентам сообщений не отправлять,
+финальный текст видит и отправляет менеджер.
+
+Исполнительное правило: `mail_archive_stage2` chunk можно открыть
+(`allowed_for_bot=1`, `requires_manager_review=0`) только если есть связанная
+строка `a2v3_mail_event_facts.bot_visible=1` и нет секретных тегов
+`sensitive_credentials`/`sensitive_bank_requisites`/
+`sensitive_payment_details`/`sensitive_personal_data`/
+`sensitive_document_data`/`sensitive_medical`. Деньги/налоги/договоры
+(`sensitive_money`, `sensitive_tax`, `sensitive_contract`) разрешены только как
+manager-draft context при `bot_visible=1`.
+
+Защита публикации: `reader_smoke.mail_allowed_safety_gate` обязан падать на
+открытом письме без A2-факта, с `bot_visible=0`, с секретным тегом или с
+первичной причиной `manager_action_required`/`has_manager_note`; Variant B
+считается отдельно и не является нарушением.

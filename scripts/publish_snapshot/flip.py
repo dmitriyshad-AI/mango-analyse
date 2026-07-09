@@ -4,8 +4,11 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -26,6 +29,51 @@ from scripts.publish_snapshot.common import (
     sha256_file,
     split_ignored_lsof_holders,
 )
+
+
+def process_pattern_counts(patterns: Sequence[str]) -> list[dict[str, object]]:
+    normalized = tuple(str(pattern).strip() for pattern in patterns if str(pattern).strip())
+    if not normalized:
+        return []
+    proc = subprocess.run(["ps", "-axo", "pid=,command="], text=True, capture_output=True)
+    if proc.returncode != 0:
+        return [
+            {
+                "pattern": pattern,
+                "count": -1,
+                "matches": [],
+                "error": proc.stderr.strip(),
+            }
+            for pattern in normalized
+        ]
+    lines = [line.rstrip() for line in proc.stdout.splitlines() if line.strip()]
+    return [
+        {
+            "pattern": pattern,
+            "count": sum(1 for line in lines if pattern in line),
+            "matches": [line for line in lines if pattern in line][:10],
+        }
+        for pattern in normalized
+    ]
+
+
+def wait_process_pattern_counts(patterns: Sequence[str], *, timeout: int) -> Mapping[str, object]:
+    deadline = time.monotonic() + max(1, timeout)
+    last: list[dict[str, object]] = process_pattern_counts(patterns)
+    while time.monotonic() <= deadline:
+        if last and all(int(item.get("count") or 0) == 1 for item in last):
+            return {"ok": True, "checks": last}
+        time.sleep(1)
+        last = process_pattern_counts(patterns)
+    return {"ok": bool(last) and all(int(item.get("count") or 0) == 1 for item in last), "checks": last}
+
+
+def _non_ignored_holders(prod_db: Path, cfg) -> tuple[list[str], list[str]]:
+    all_holders = lsof_holders(prod_db)
+    return split_ignored_lsof_holders(
+        all_holders,
+        ignored_command_prefixes=tuple(str(item) for item in cfg.raw.get("ignored_lsof_command_prefixes") or ()),
+    )
 
 
 def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, bool]:
@@ -54,11 +102,7 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             result = run_command(render_command(command, {"db": prod_db}), cwd=worktree, timeout=int(reader.get("stop_timeout_seconds") or 120))
             result["name"] = reader.get("name")
             stop_results.append(result)
-    all_holders = lsof_holders(prod_db)
-    holders, ignored_holders = split_ignored_lsof_holders(
-        all_holders,
-        ignored_command_prefixes=tuple(str(item) for item in cfg.raw.get("ignored_lsof_command_prefixes") or ()),
-    )
+    holders, ignored_holders = _non_ignored_holders(prod_db, cfg)
     if holders:
         return {
             **report,
@@ -85,11 +129,29 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     removed_sidecars = remove_sidecars(prod_db, execute=True)
     tmp_target = prod_db.with_suffix(prod_db.suffix + ".new")
     shutil.copy2(snapshot_db, tmp_target)
+    pre_replace_holders, pre_replace_ignored_holders = _non_ignored_holders(prod_db, cfg)
+    if pre_replace_holders:
+        tmp_target.unlink(missing_ok=True)
+        return {
+            **report,
+            "status": "blocked_lsof_before_replace",
+            "stop_results": stop_results,
+            "holders": pre_replace_holders,
+            "ignored_holders": ignored_holders,
+            "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,
+            "backup_db": str(backup_db),
+            "backup_copy": backup_copy,
+            "async_backup_db": str(async_backup_db),
+            "async_backup_copy": async_backup_copy,
+            "backup_sha256": backup_sha,
+            "removed_sidecars": removed_sidecars,
+        }, False
     os.replace(tmp_target, prod_db)
     new_sha = sha256_file(prod_db)
     ok = quick_check(prod_db) == "ok"
 
     start_results = []
+    post_start_process_checks = []
     for reader in cfg.readers:
         command = reader.get("start_command")
         if command:
@@ -98,11 +160,23 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             result["name"] = reader.get("name")
             start_results.append(result)
             ok = ok and result.get("rc") == 0
+        patterns = tuple(str(item) for item in reader.get("process_patterns") or ())
+        if patterns:
+            process_check = dict(
+                wait_process_pattern_counts(
+                    patterns,
+                    timeout=int(reader.get("start_timeout_seconds") or 120),
+                )
+            )
+            process_check["name"] = reader.get("name")
+            post_start_process_checks.append(process_check)
+            ok = ok and bool(process_check.get("ok"))
     report.update(
         {
             "status": "ok" if ok else "failed",
             "stop_results": stop_results,
             "start_results": start_results,
+            "post_start_process_checks": post_start_process_checks,
             "backup_db": str(backup_db),
             "backup_copy": backup_copy,
             "async_backup_db": str(async_backup_db),
@@ -111,6 +185,7 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "new_sha256": new_sha,
             "removed_sidecars": removed_sidecars,
             "ignored_lsof_holders": ignored_holders,
+            "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,
             "quick_check": quick_check(prod_db),
         }
     )

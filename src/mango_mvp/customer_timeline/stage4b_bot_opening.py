@@ -52,6 +52,16 @@ _MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS = frozenset(
         "sensitive_medical",
     }
 )
+_MAIL_OUTPUT_SECRET_TAGS = frozenset(
+    {
+        "sensitive_credentials",
+        "sensitive_bank_requisites",
+        "sensitive_payment_details",
+        "sensitive_personal_data",
+        "sensitive_document_data",
+        "sensitive_medical",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -687,6 +697,8 @@ def _prepare_client_unsafe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id:
     ).fetchone()
     if facts_exists is None:
         return 0
+    reason_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS)
+    tag_placeholders = ",".join("?" for _ in _MAIL_OUTPUT_SECRET_TAGS)
     con.execute(
         f"""
         INSERT OR IGNORE INTO {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
@@ -697,15 +709,20 @@ def _prepare_client_unsafe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id:
           AND c.source_system = ?
           AND COALESCE(c.superseded_by, '') = ''
           AND (
-            f.client_safe_reason IN (?, ?, ?, ?, ?, ?, ?, ?)
-            OR f.sensitivity_tags_json LIKE '%sensitive_credentials%'
-            OR f.sensitivity_tags_json LIKE '%sensitive_bank_requisites%'
-            OR f.sensitivity_tags_json LIKE '%sensitive_payment_details%'
-            OR f.sensitivity_tags_json LIKE '%sensitive_personal_data%'
-            OR f.sensitivity_tags_json LIKE '%sensitive_document_data%'
+            f.client_safe_reason IN ({reason_placeholders})
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(COALESCE(f.sensitivity_tags_json, '[]')) AS tag
+              WHERE tag.value IN ({tag_placeholders})
+            )
           )
         """,
-        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM, *_MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS),
+        (
+            tenant_id,
+            MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
+            *_MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS,
+            *_MAIL_OUTPUT_SECRET_TAGS,
+        ),
     )
     return _client_unsafe_mail_chunk_count(con)
 
@@ -733,6 +750,7 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
         WHERE c.tenant_id = ?
           AND c.source_system = ?
           AND COALESCE(c.superseded_by, '') = ''
+          AND f.bot_visible = 1
           AND (
             f.client_safe = 1
             OR f.client_safe_reason IN (?, ?, ?)

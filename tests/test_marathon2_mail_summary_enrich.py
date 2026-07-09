@@ -614,6 +614,18 @@ def test_marathon2_mail_summary_sanitizer_drops_internal_payload_keys() -> None:
     assert sanitized["summary"] == "Клиент просит расписание."
 
 
+def test_marathon2_mail_summary_sanitizer_preserves_m1_quality_flags() -> None:
+    payload = {
+        "message_sha256": "sha",
+        "summary": "Клиент прислал документ.",
+        "quality_flags": ["contains_password", "contains_personal_data"],
+    }
+
+    sanitized = _sanitize_summary_payload_for_stage2(payload)
+
+    assert sanitized["quality_flags"] == ["contains_password", "contains_personal_data"]
+
+
 def test_marathon2_mail_summary_hallucination_gate_blocks_new_model_facts() -> None:
     row = {
         "subject_full": "Расписание",

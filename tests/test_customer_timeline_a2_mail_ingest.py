@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from mango_mvp.customer_timeline.a2_mail_ingest import (
     A2V3MailIngestConfig,
+    _client_safe,
     _chunk_text,
+    _merged_existing_event,
+    _resolve_customer,
     apply_a2v3_mail_ingest,
     build_local_client_review,
     create_test_db_backup,
@@ -29,6 +33,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineDirection,
     TimelineEvent,
 )
+from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.source_policy import (
     MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     MAIL_STAGE2_BOT_VISIBLE_ENV,
@@ -218,6 +223,74 @@ def _config(tmp_path: Path, rows: list[dict[str, object]]) -> A2V3MailIngestConf
     )
 
 
+def test_m1_sensitive_quality_flags_make_mail_not_client_safe() -> None:
+    row = _row("sha-sensitive")
+    row["summary_payload"] = {
+        **dict(row["summary_payload"]),
+        "quality_flags": ["contains_password", "contains_personal_data"],
+    }
+    row["quality"] = {**dict(row["quality"]), "quality_flags": []}
+
+    client_safe, reason = _client_safe(row)
+
+    assert client_safe == 0
+    assert reason == "sensitive_credentials"
+
+
+def test_enrich_existing_preserves_existing_customer_link_when_new_resolution_unmatched() -> None:
+    incoming = TimelineEvent(
+        tenant_id="foton",
+        event_type="email_message",
+        event_at=datetime.fromisoformat("2026-07-01T10:00:00+00:00"),
+        source_system="mail_archive_stage2",
+        source_id="mail-sha",
+        direction="inbound",
+        customer_id=None,
+        match_status="unmatched",
+        confidence=0.0,
+        summary="Новая выжимка письма.",
+        record={"summary_payload": {"summary": "Новая выжимка письма."}},
+    )
+    existing_payload = {
+        **incoming.to_json_dict(),
+        "customer_id": "customer:known",
+        "match_status": "strong_unique",
+        "confidence": 0.95,
+        "record": {"full_clean_text": "Старый полный текст."},
+        "metadata": {"brand": "foton"},
+    }
+    existing_action = {
+        "record_json": json.dumps(existing_payload, ensure_ascii=False),
+        "event_id": incoming.event_id,
+        "message_sha256": "mail-sha",
+        "existing_hash": stable_digest(existing_payload),
+        "incoming_hash": stable_digest(incoming.to_json_dict()),
+    }
+
+    merged = _merged_existing_event(incoming, existing_action)
+
+    assert merged.customer_id == "customer:known"
+    assert merged.match_status == "strong_unique"
+    assert merged.confidence == 0.95
+    assert merged.summary == "Новая выжимка письма."
+
+
+def test_resolve_customer_uses_existing_event_customer_id_when_identity_is_strong() -> None:
+    resolution = _resolve_customer(
+        {"customer_id": "customer:known", "contact_email": None, "contact_phone": None},
+        snapshot={
+            "customer_payload_by_id": {"customer:known": {"identity_status": "strong"}},
+            "direct_links": {"email": {}, "phone": {}},
+            "tallanto_to_customers": {},
+        },
+        tallanto_matches={"matches": {"email": {}, "phone": {}}},
+    )
+
+    assert resolution.outcome == "linked"
+    assert resolution.customer_id == "customer:known"
+    assert resolution.method == "existing_event_customer_id"
+
+
 def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
@@ -332,6 +405,52 @@ def test_a2v3_mail_ingest_reconciles_facts_for_existing_event_after_partial_cras
     with sqlite3.connect(config.timeline_db_path) as con:
         assert con.execute("SELECT count(*) FROM timeline_events").fetchone()[0] == 1
         assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
+def test_a2v3_mail_ingest_reconciles_fact_customer_from_existing_event(tmp_path: Path) -> None:
+    row = _row("m" * 64, email="")
+    row["contact_email"] = None
+    row["contact_phone"] = None
+    row["contact_missing"] = True
+    row["contact_reason"] = "missing"
+    config = replace(_config(tmp_path, [row]), enrich_existing=True)
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    existing = TimelineEvent(
+        tenant_id="foton",
+        customer_id="customer:known",
+        event_type="email_message",
+        event_at=datetime.fromisoformat("2026-07-01T10:00:00+00:00"),
+        source_system="mail_archive_stage2",
+        source_id="m" * 64,
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.95,
+        summary="Старая выжимка письма.",
+        record={"summary_payload": {"summary": "Старая выжимка письма."}},
+    )
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:known",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Known",
+            )
+        )
+        store.upsert_event(existing)
+    finally:
+        store.close()
+
+    backup = create_test_db_backup(config)
+    applied = apply_a2v3_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert applied["counts"]["enrich_existing_events"] == 1
+    with sqlite3.connect(config.timeline_db_path) as con:
+        fact = con.execute(
+            "SELECT customer_id, identity_outcome, identity_reason FROM a2v3_mail_event_facts"
+        ).fetchone()
+        assert fact == ("customer:known", "linked", "existing_event_customer_id")
 
 
 def test_reconcile_a2v3_event_facts_is_idempotent(tmp_path: Path) -> None:

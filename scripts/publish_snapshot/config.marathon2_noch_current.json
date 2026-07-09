@@ -30,8 +30,8 @@
       "expected_counts": {
         "events_total": 362,
         "bot_context_chunks_total": 363,
-        "allowed_chunks": 20,
-        "review_required_chunks": 343,
+        "allowed_chunks": 1,
+        "review_required_chunks": 362,
         "derived_signals_total": 1
       }
     },
@@ -54,8 +54,8 @@
       "expected_counts": {
         "events_total": 230,
         "bot_context_chunks_total": 221,
-        "allowed_chunks": 24,
-        "review_required_chunks": 197,
+        "allowed_chunks": 1,
+        "review_required_chunks": 220,
         "derived_signals_total": 0
       }
     },
@@ -86,24 +86,20 @@
   ],
   "readers": [
     {
-      "name": "live_telegram_public_bot",
-      "worktree": "/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff",
+      "name": "wappi_amo_draft_loop_owner_gated",
+      "worktree": "/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore",
       "process_patterns": [
-        "scripts/run_telegram_public_pilot_bots.py --env-file /dev/null --mode poll --brand all"
+        "scripts/run_amo_wappi_draft_loop.py"
       ],
       "stop_command": [
-        "screen",
-        "-S",
-        "mango_public_pilot_bots_main_15accd2_snapshot2_20260708",
-        "-X",
-        "quit"
+        "bash",
+        "-lc",
+        "echo 'draft-loop stop/start is owner-gated; flip is forbidden in mail_merge v1.2' >&2; exit 21"
       ],
       "start_command": [
-        "screen",
-        "-dmS",
-        "mango_public_pilot_bots_main_15accd2_snapshot2_20260708",
         "bash",
-        ".codex_local/deploy_20260707_a23dede6/start_live_15accd2_snapshot2.sh"
+        "-lc",
+        "echo 'draft-loop stop/start is owner-gated; flip is forbidden in mail_merge v1.2' >&2; exit 21"
       ],
       "smoke_command": [
         "python3",

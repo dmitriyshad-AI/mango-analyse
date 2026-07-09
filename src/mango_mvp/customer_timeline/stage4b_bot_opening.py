@@ -31,6 +31,27 @@ OPENABLE_SOURCE_SYSTEMS = (
 )
 OPENABLE_CHANNEL_SOURCE_SYSTEMS = tuple(sorted(CHANNEL_HISTORY_SOURCE_SYSTEMS))
 _OPEN_CONFLICT_CUSTOMERS_TEMP_TABLE = "temp_stage4b_open_conflict_customers"
+_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE = "temp_stage4b_client_unsafe_mail_chunks"
+_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE = "temp_stage4b_client_safe_mail_chunks"
+_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS = frozenset(
+    {
+        "sensitive_money",
+        "sensitive_tax",
+        "sensitive_contract",
+    }
+)
+_MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS = frozenset(
+    {
+        "manager_action_required",
+        "has_manager_note",
+        "sensitive_credentials",
+        "sensitive_bank_requisites",
+        "sensitive_payment_details",
+        "sensitive_personal_data",
+        "sensitive_document_data",
+        "sensitive_medical",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +80,8 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
     try:
         before = _metrics(con, tenant_id=config.tenant_id)
         open_conflict_customers = _prepare_open_conflict_customer_ids(con, tenant_id=config.tenant_id)
+        client_safe_mail_chunks = _prepare_client_safe_mail_chunk_ids(con, tenant_id=config.tenant_id)
+        client_unsafe_mail_chunks = _prepare_client_unsafe_mail_chunk_ids(con, tenant_id=config.tenant_id)
         plan = _load_opening_plan(con, tenant_id=config.tenant_id)
         report: dict[str, Any] = {
             "schema_version": STAGE4B_BOT_OPENING_SCHEMA_VERSION,
@@ -75,6 +98,8 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
             "before": before,
             "plan": plan["summary"],
             "open_conflict_customers_indexed": open_conflict_customers,
+            "client_safe_mail_chunks_indexed": client_safe_mail_chunks,
+            "client_unsafe_mail_chunks_indexed": client_unsafe_mail_chunks,
         }
         if config.apply:
             report["apply"] = _apply_opening_plan(con, plan["rows"], tenant_id=config.tenant_id)
@@ -129,6 +154,19 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
                 FROM temp_stage4b_open_conflict_customers occ
                 WHERE occ.customer_id = c.customer_id
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM temp_stage4b_client_unsafe_mail_chunks unsafe
+                WHERE unsafe.chunk_id = c.chunk_id
+              )
+              AND (
+                c.source_system != ?
+                OR EXISTS (
+                  SELECT 1
+                  FROM temp_stage4b_client_safe_mail_chunks safe_mail
+                  WHERE safe_mail.chunk_id = c.chunk_id
+                )
+              )
           AND (
             (c.source_system = ? AND e.match_status = 'strong_unique')
             OR (c.source_system = ? AND e.match_status = 'strong_unique')
@@ -139,6 +177,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         (
             tenant_id,
             *OPENABLE_SOURCE_SYSTEMS,
+            MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
@@ -168,6 +207,8 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
     skipped = {
         **_skipped_counts(con, tenant_id=tenant_id),
         "unknown_brand_chunks": unknown_brand_chunks,
+        "client_unsafe_mail_chunks": _client_unsafe_mail_chunk_count(con),
+        "mail_chunks_not_allowed_by_output_gate": _mail_without_client_safe_fact_count(con),
     }
     return {
         "rows": rows,
@@ -630,6 +671,121 @@ def _prepare_open_conflict_customer_ids(con: sqlite3.Connection, *, tenant_id: s
             [(customer_id,) for customer_id in sorted(ids)],
         )
     return len(ids)
+
+
+def _prepare_client_unsafe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    con.execute(f"DROP TABLE IF EXISTS {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}")
+    con.execute(
+        f"""
+        CREATE TEMP TABLE {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE} (
+          chunk_id TEXT PRIMARY KEY
+        )
+        """
+    )
+    facts_exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+    ).fetchone()
+    if facts_exists is None:
+        return 0
+    con.execute(
+        f"""
+        INSERT OR IGNORE INTO {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
+        SELECT c.chunk_id
+        FROM bot_context_chunks c
+        JOIN a2v3_mail_event_facts f ON f.event_id = c.event_id
+        WHERE c.tenant_id = ?
+          AND c.source_system = ?
+          AND COALESCE(c.superseded_by, '') = ''
+          AND (
+            f.client_safe_reason IN (?, ?, ?, ?, ?, ?, ?, ?)
+            OR f.sensitivity_tags_json LIKE '%sensitive_credentials%'
+            OR f.sensitivity_tags_json LIKE '%sensitive_bank_requisites%'
+            OR f.sensitivity_tags_json LIKE '%sensitive_payment_details%'
+            OR f.sensitivity_tags_json LIKE '%sensitive_personal_data%'
+            OR f.sensitivity_tags_json LIKE '%sensitive_document_data%'
+          )
+        """,
+        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM, *_MAIL_OUTPUT_FORBIDDEN_CLIENT_UNSAFE_REASONS),
+    )
+    return _client_unsafe_mail_chunk_count(con)
+
+
+def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    con.execute(f"DROP TABLE IF EXISTS {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}")
+    con.execute(
+        f"""
+        CREATE TEMP TABLE {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE} (
+          chunk_id TEXT PRIMARY KEY
+        )
+        """
+    )
+    facts_exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+    ).fetchone()
+    if facts_exists is None:
+        return 0
+    con.execute(
+        f"""
+        INSERT OR IGNORE INTO {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
+        SELECT c.chunk_id
+        FROM bot_context_chunks c
+        JOIN a2v3_mail_event_facts f ON f.event_id = c.event_id
+        WHERE c.tenant_id = ?
+          AND c.source_system = ?
+          AND COALESCE(c.superseded_by, '') = ''
+          AND (
+            f.client_safe = 1
+            OR f.client_safe_reason IN (?, ?, ?)
+          )
+        """,
+        (tenant_id, MAIL_STAGE2_INGEST_SOURCE_SYSTEM, *_MAIL_OUTPUT_ALLOWED_CLIENT_UNSAFE_REASONS),
+    )
+    return _client_safe_mail_chunk_count(con)
+
+
+def _client_safe_mail_chunk_count(con: sqlite3.Connection) -> int:
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?",
+        (_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE,),
+    ).fetchone()
+    if exists is None:
+        return 0
+    return int(con.execute(f"SELECT count(*) FROM {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}").fetchone()[0])
+
+
+def _mail_without_client_safe_fact_count(con: sqlite3.Connection) -> int:
+    safe_exists = con.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?",
+        (_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE,),
+    ).fetchone()
+    if safe_exists is None:
+        return 0
+    return int(
+        con.execute(
+            f"""
+            SELECT count(*)
+            FROM bot_context_chunks c
+            WHERE c.source_system = ?
+              AND COALESCE(c.superseded_by, '') = ''
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE} safe_mail
+                WHERE safe_mail.chunk_id = c.chunk_id
+              )
+            """,
+            (MAIL_STAGE2_INGEST_SOURCE_SYSTEM,),
+        ).fetchone()[0]
+    )
+
+
+def _client_unsafe_mail_chunk_count(con: sqlite3.Connection) -> int:
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?",
+        (_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE,),
+    ).fetchone()
+    if exists is None:
+        return 0
+    return int(con.execute(f"SELECT count(*) FROM {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}").fetchone()[0])
 
 
 def _normalize_conflict_entity_ref(value: object) -> str:

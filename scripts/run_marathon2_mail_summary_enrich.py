@@ -436,6 +436,12 @@ def _prepare_rows_with_summaries(
     }
     for row in prepared:
         text_hash = _text_hash(row)
+        cached = _cache_get(con, row, text_hash=text_hash, config=config)
+        if cached is not None:
+            row["summary_payload"] = cached
+            row["_summary_cache_hit"] = True
+            stats["cache_hits"] += 1
+            continue
         if row.get("body_missing"):
             row["summary_payload"] = _summary_review_needed_payload(
                 row,
@@ -445,12 +451,6 @@ def _prepare_rows_with_summaries(
             _cache_put(con, row, text_hash=text_hash, config=config, source_kind="missing_full_text")
             stats["missing_full_text_rows"] += 1
             stats["fallback_rows"] += 1
-            continue
-        cached = _cache_get(con, row, text_hash=text_hash, config=config)
-        if cached is not None:
-            row["summary_payload"] = cached
-            row["_summary_cache_hit"] = True
-            stats["cache_hits"] += 1
             continue
         if int(row.get("full_clean_text_chars") or 0) < SHORT_TEXT_LIMIT:
             row["summary_payload"] = _short_summary_payload(row)
@@ -765,6 +765,7 @@ def _sanitize_summary_payload_for_stage2(payload: Mapping[str, Any]) -> dict[str
         "summary_review_needed",
         "summary_review_reasons",
         "rejected_summary_payload_sha256",
+        "quality_flags",
     }
     return {
         str(key): value

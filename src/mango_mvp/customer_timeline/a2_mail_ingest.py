@@ -99,6 +99,36 @@ SENSITIVE_TYPE_TAGS = {
     "tax": "sensitive_tax",
     "medical": "sensitive_medical",
 }
+M1_CLIENT_UNSAFE_QUALITY_FLAG_TAGS = {
+    "contains_password": "sensitive_credentials",
+    "contains_login_credentials": "sensitive_credentials",
+    "contains_bank_requisites": "sensitive_bank_requisites",
+    "contains_raw_bank_requisites": "sensitive_bank_requisites",
+    "raw_payment_details_present": "sensitive_payment_details",
+    "contains_personal_data": "sensitive_personal_data",
+    "contains_sensitive_personal_data": "sensitive_personal_data",
+    "contains_personal_documents": "sensitive_document_data",
+    "contains_sensitive_document_data": "sensitive_document_data",
+}
+M1_CLIENT_UNSAFE_QUALITY_FLAG_MARKERS = (
+    "credential",
+    "password",
+    "bank_requisite",
+    "raw_bank",
+    "raw_requisite",
+    "raw_payment_detail",
+    "sensitive_personal",
+    "personal_document",
+    "sensitive_document",
+    "парол",
+    "логин",
+    "доступ",
+    "реквизит",
+    "банковск",
+    "персональн",
+    "паспорт",
+    "документ",
+)
 
 
 @dataclass(frozen=True)
@@ -416,7 +446,8 @@ def create_test_db_backup(config: A2V3MailIngestConfig, *, label: str = "a2v3_ma
     backup_dir = config.out_dir / "backups" / f"{label}_{_now_stamp()}"
     backup_dir.mkdir(parents=True, exist_ok=False)
     backup_db = backup_dir / config.timeline_db_path.name
-    with sqlite3.connect(f"file:{config.timeline_db_path}?mode=ro", uri=True) as source, sqlite3.connect(backup_db) as target:
+    source_uri = f"{config.timeline_db_path.resolve(strict=False).as_uri()}?mode=ro"
+    with sqlite3.connect(source_uri, uri=True) as source, sqlite3.connect(backup_db) as target:
         source.backup(target)
     manifest = {
         "schema_version": A2V3_MAIL_INGEST_SCHEMA_VERSION,
@@ -706,12 +737,18 @@ def _merged_existing_event(event: TimelineEvent, existing_action: Mapping[str, A
         existing_source_refs = (existing_payload.get("source_ref") or event.source_ref,)
     return replace(
         event,
+        customer_id=event.customer_id or existing_payload.get("customer_id"),
+        opportunity_id=event.opportunity_id or existing_payload.get("opportunity_id"),
         event_at=parse_datetime(str(existing_payload["event_at"]), "event_at"),
         source_system=str(existing_payload["source_system"]),
         source_id=str(existing_payload["source_id"]),
         source_ref=str(existing_payload.get("source_ref") or event.source_ref),
         source_refs=tuple(str(item) for item in existing_source_refs if item),
         direction=str(existing_payload["direction"]),
+        match_status=event.match_status
+        if event.customer_id
+        else str(existing_payload.get("match_status") or event.match_status.value),
+        confidence=event.confidence if event.customer_id else existing_payload.get("confidence", event.confidence),
         created_at=parse_datetime(str(existing_payload["created_at"]), "created_at"),
         metadata=merged_metadata,
         record=merged_record,
@@ -1028,15 +1065,45 @@ def _plans_with_existing_a2v3_events(
     placeholders = ",".join("?" for _ in source_ids)
     rows = con.execute(
         f"""
-        SELECT source_id
+        SELECT
+          event_id, source_id, customer_id, opportunity_id, match_status, confidence,
+          event_at, source_system, source_ref, direction, created_at
         FROM timeline_events
         WHERE source_system = ?
           AND source_id IN ({placeholders})
         """,
         (A2V3_MAIL_SOURCE_SYSTEM, *source_ids),
     ).fetchall()
-    existing = {str(row["source_id"]).lower() for row in rows}
-    return [plan for plan in plans if _message_sha(plan.row) in existing]
+    existing = {str(row["source_id"]).lower(): row for row in rows}
+    reconciled: list[PlannedA2V3MailEvent] = []
+    for plan in plans:
+        row = existing.get(_message_sha(plan.row))
+        if row is None:
+            continue
+        customer_id = str(row["customer_id"] or "").strip()
+        event = replace(
+            plan.event,
+            event_id=str(row["event_id"]),
+            customer_id=customer_id or plan.event.customer_id,
+            opportunity_id=str(row["opportunity_id"] or "") or plan.event.opportunity_id,
+            event_at=parse_datetime(str(row["event_at"]), "event_at"),
+            source_system=str(row["source_system"]),
+            source_ref=str(row["source_ref"] or plan.event.source_ref),
+            direction=str(row["direction"] or plan.event.direction.value),
+            match_status=str(row["match_status"] or plan.event.match_status.value),
+            confidence=float(row["confidence"] if row["confidence"] is not None else plan.event.confidence),
+            created_at=parse_datetime(str(row["created_at"]), "created_at"),
+        )
+        resolution = plan.resolution
+        if customer_id and resolution.outcome != "linked":
+            resolution = CustomerResolution(
+                "linked",
+                "existing_event_customer_id",
+                customer_id=customer_id,
+                method="existing_event_customer_id",
+            )
+        reconciled.append(replace(plan, event=event, resolution=resolution))
+    return reconciled
 
 
 def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connection | None = None) -> None:
@@ -1119,7 +1186,7 @@ def _a2v3_event_fact_row(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
     return {
         "event_id": plan.event.event_id,
         "tenant_id": plan.event.tenant_id,
-        "customer_id": plan.resolution.customer_id if plan.resolution.outcome == "linked" else None,
+        "customer_id": plan.resolution.customer_id if plan.resolution.outcome == "linked" else plan.event.customer_id,
         "message_sha256": _message_sha(row),
         "event_type_detail": _detail_event_type(row),
         "money_direction": payload.get("money_direction"),
@@ -2023,6 +2090,23 @@ def _resolve_customer(
 ) -> CustomerResolution:
     if bool(row.get("contact_ambiguous")):
         return CustomerResolution("blocked", "contact_ambiguous", blocked=True, ambiguous=True)
+    existing_customer_id = str(row.get("customer_id") or "").strip()
+    if existing_customer_id:
+        if _customer_is_ambiguous(existing_customer_id, snapshot):
+            return CustomerResolution(
+                "blocked",
+                "existing_event_customer_identity_ambiguous",
+                customer_id=existing_customer_id,
+                blocked=True,
+                ambiguous=True,
+            )
+        if existing_customer_id in snapshot["customer_payload_by_id"]:
+            return CustomerResolution(
+                "linked",
+                "existing_event_customer_id",
+                customer_id=existing_customer_id,
+                method="existing_event_customer_id",
+            )
     email = normalize_email(row.get("contact_email"))
     phone = _normalize_optional_identity("phone", row.get("contact_phone"))
     for kind, value in (("email", email), ("phone", phone)):
@@ -2287,6 +2371,44 @@ def _quality(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return row.get("quality") or {}
 
 
+def _quality_flags_from_value(value: Any) -> tuple[str, ...]:
+    if isinstance(value, Mapping):
+        return tuple(str(key).strip() for key, flag_value in value.items() if flag_value and str(key).strip())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def _unsafe_quality_flag_tags(row: Mapping[str, Any]) -> tuple[str, ...]:
+    payload = row.get("summary_payload") or {}
+    quality = _quality(row)
+    flags = (
+        *_quality_flags_from_value(payload.get("quality_flags")),
+        *_quality_flags_from_value(quality.get("quality_flags")),
+    )
+    tags: list[str] = []
+    for flag in flags:
+        normalized = flag.strip().casefold()
+        if not normalized:
+            continue
+        mapped = M1_CLIENT_UNSAFE_QUALITY_FLAG_TAGS.get(normalized)
+        if mapped:
+            tags.append(mapped)
+            continue
+        if any(marker in normalized for marker in M1_CLIENT_UNSAFE_QUALITY_FLAG_MARKERS):
+            if "bank" in normalized or "requisite" in normalized or "реквизит" in normalized or "банковск" in normalized:
+                tags.append("sensitive_bank_requisites")
+            elif "payment" in normalized:
+                tags.append("sensitive_payment_details")
+            elif "password" in normalized or "credential" in normalized or "парол" in normalized or "логин" in normalized or "доступ" in normalized:
+                tags.append("sensitive_credentials")
+            elif "document" in normalized or "паспорт" in normalized or "документ" in normalized:
+                tags.append("sensitive_document_data")
+            else:
+                tags.append("sensitive_personal_data")
+    return tuple(dict.fromkeys(tags))
+
+
 def _sensitivity_tags(row: Mapping[str, Any]) -> tuple[str, ...]:
     payload = row.get("summary_payload") or {}
     quality = _quality(row)
@@ -2308,6 +2430,7 @@ def _sensitivity_tags(row: Mapping[str, Any]) -> tuple[str, ...]:
         tags.append("manager_action_required")
     if quality.get("safe_next_step_note"):
         tags.append("has_manager_note")
+    tags.extend(_unsafe_quality_flag_tags(row))
     return tuple(dict.fromkeys(tags))
 
 
@@ -2318,6 +2441,11 @@ def _client_safe(row: Mapping[str, Any]) -> tuple[int, str]:
         "sensitive_contract",
         "sensitive_tax",
         "sensitive_medical",
+        "sensitive_credentials",
+        "sensitive_bank_requisites",
+        "sensitive_payment_details",
+        "sensitive_personal_data",
+        "sensitive_document_data",
         "manager_action_required",
         "has_manager_note",
     ):

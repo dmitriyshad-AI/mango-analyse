@@ -279,8 +279,48 @@ def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path
     assert report.next_step_status_counts["needs_manager_review"] == 1
     assert next_step["status"] == "needs_manager_review"
     assert next_step["reason_code"] == "ambiguous_identity_open"
-    assert "Уточнить у менеджера: открыт конфликт идентичности" in dumped
+    assert "Следующий шаг:" not in payload["text"]
+    assert "открыт конфликт идентичности" not in payload["text"]
     assert "отправить договор" not in dumped.casefold()
+
+
+def test_bot_safe_summary_does_not_render_empty_next_step_placeholder(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-no-step",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Менеджер обсудил условия онлайн-курса.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 180, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert report.next_step_status_counts["empty"] == 1
+    assert "Следующий шаг:" not in dumped
+    assert "активный шаг не найден" not in dumped
 
 
 def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) -> None:

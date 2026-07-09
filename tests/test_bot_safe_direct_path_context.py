@@ -96,6 +96,57 @@ def test_bot_safe_context_prompt_marks_unconfirmed_dated_memory() -> None:
     assert "Фотон: клиент ранее уточнял удобный формат. (2026-06-20)" in block
 
 
+def test_bot_safe_context_prompt_strips_unconfirmed_next_step_text() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-review-step",
+                "chunk_type": "bot_safe_summary",
+                "text": "Фотон: клиент обсуждал онлайн-группу. Следующий шаг: проверить актуальные очные группы.",
+                "event_at": "2026-06-20T12:00:00+00:00",
+                "next_step_status": "needs_manager_review",
+                "relevance_tags": ["bot_safe", "structured", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            }
+        ],
+    )
+
+    block = _direct_path_bot_safe_context_prompt_block(context)
+
+    assert "Фотон: клиент обсуждал онлайн-группу." in block
+    assert "проверить актуальные очные группы" not in block
+    assert "Фотон: клиент обсуждал онлайн-группу. Следующий шаг:" not in block
+    assert "статус следующего шага: needs_manager_review" in block
+
+
+def test_bot_safe_context_prompt_strips_inline_unconfirmed_next_step_text() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-inline-step",
+                "chunk_type": "bot_safe_summary",
+                "text": "Фотон: обсуждали Следующий шаг: проверить группы.",
+                "event_at": "2026-06-20T12:00:00+00:00",
+                "next_step_status": "needs_manager_review",
+                "relevance_tags": ["bot_safe", "structured", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            }
+        ],
+    )
+
+    block = _direct_path_bot_safe_context_prompt_block(context)
+
+    assert "Фотон: обсуждали" in block
+    assert "проверить группы" not in block.casefold()
+    assert "статус следующего шага: needs_manager_review" in block
+
+
 def test_bot_safe_context_prompt_does_not_overhedge_active_memory() -> None:
     context = _context(flag=True, include_unknown=False)
 

@@ -317,7 +317,9 @@ def _render_safe_text(*, brand: str, status: str, interest: str, next_step: Next
         parts.append(f"Бренд: {_brand_label(brand)}.")
     parts.append(f"Стадия: {status or 'не определена'}.")
     parts.append(f"Интерес: {interest or 'не определён'}.")
-    parts.append(f"Следующий шаг: {_safe_fragment(next_step.display_text) or 'активный шаг не найден'}.")
+    safe_next_step = _safe_fragment(next_step.display_text)
+    if next_step.status == "active" and safe_next_step:
+        parts.append(f"Следующий шаг: {safe_next_step}.")
     return " ".join(parts)
 
 

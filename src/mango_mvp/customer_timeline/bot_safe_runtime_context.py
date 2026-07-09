@@ -50,6 +50,20 @@ _EXACT_DETAIL_RE = re.compile(
     r")",
     re.I,
 )
+_UNCONFIRMED_NEXT_STEP_TEXT_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s)|\b)"
+    r"Следующ(?:ий|им)\s+шаг(?:ом)?\s*[:—-]\s*"
+    r"(?:активн(?:ый|ого)\s+)?(?:следующ(?:ий|его)\s+шаг(?:а)?\s+)?"
+    r"(?:не\s+найден(?:о)?|не\s+определ[её]н[ао]?|отсутствует)"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
+_NEXT_STEP_SENTENCE_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s)|\b)"
+    r"Следующ(?:ий|им)\s+шаг(?:ом)?\s*[:—-]\s*"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
 _PROMPT_INJECTION_RE = re.compile(
     r"(?i)(?:"
     r"ignore\s+(?:all\s+)?previous|ignore\s+the\s+above|system\s*:|developer\s*:|assistant\s*:"
@@ -319,6 +333,8 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         text = _clean_text(item.get("summary")) or _clean_text(item.get("text"))
         if not text:
             continue
+        next_step_status = _next_step_status(item)
+        text = strip_unconfirmed_next_step_text_for_bot(text, next_step_status=next_step_status)
         text = scrub_customer_memory_text(text)
         if not text or scan_bot_safe_context_pii(text):
             continue
@@ -327,7 +343,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
                 "chunk_type": BOT_SAFE_CHUNK_TYPE,
                 "text": _truncate(text, 700),
                 "event_at": _clean_text(item.get("event_at")),
-                "next_step_status": _next_step_status(item),
+                "next_step_status": next_step_status,
                 "freshness_score": item.get("freshness_score"),
                 "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
                 "allowed_for_bot": True,
@@ -348,6 +364,19 @@ def _next_step_status(item: Mapping[str, Any]) -> str:
             if isinstance(next_step, Mapping):
                 status = _clean_text(next_step.get("status")).casefold()
     return status if status in {"active", "needs_manager_review", "empty"} else ""
+
+
+def strip_unconfirmed_next_step_text_for_bot(value: object, *, next_step_status: str = "") -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    cleaned = _UNCONFIRMED_NEXT_STEP_TEXT_RE.sub(" ", text)
+    status = _clean_text(next_step_status).casefold()
+    if status != "active":
+        cleaned = _NEXT_STEP_SENTENCE_RE.sub(" ", cleaned)
+    if cleaned != text:
+        cleaned = re.sub(r"\s+([.!?,;:])", r"\1", cleaned)
+    return _clean_text(cleaned)
 
 
 def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) -> bool:

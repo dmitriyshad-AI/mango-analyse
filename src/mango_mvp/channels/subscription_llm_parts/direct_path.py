@@ -41,6 +41,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     build_customer_memory_for_prompt,
     scrub_customer_memory_text,
+    strip_unconfirmed_next_step_text_for_bot,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
@@ -642,12 +643,16 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
             text = str(item.get("summary") or item.get("text") or "").strip()
             if not text or _direct_path_bot_safe_text_has_pii(text):
                 continue
+            next_step_status = _direct_path_bot_safe_next_step_status(item)
+            text = strip_unconfirmed_next_step_text_for_bot(text, next_step_status=next_step_status)
+            if not text:
+                continue
             result.append(
                 {
                     "chunk_type": "bot_safe_summary",
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),
-                    "next_step_status": _direct_path_bot_safe_next_step_status(item),
+                    "next_step_status": next_step_status,
                     "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
                 }
             )

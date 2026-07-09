@@ -4,7 +4,9 @@ from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraf
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     BOT_SAFE_CRM_CONTEXT_ENV,
     BOT_SAFE_MEMORY_STEP_GUARD_FLAG,
+    NO_MEMORY_STEP_FRAME_GUARD_FLAG,
     apply_bot_safe_memory_step_guard,
+    apply_no_memory_step_frame_guard,
     find_bot_safe_memory_disputed_step_claims,
 )
 
@@ -104,6 +106,77 @@ def test_bot_safe_memory_step_guard_does_not_double_fire_followup_deadline() -> 
 
     assert guarded == result
     assert not find_bot_safe_memory_disputed_step_claims(result.draft_text, context=_context(flag=True))
+
+
+def test_bot_safe_memory_step_guard_rewrites_soft_next_step_frame() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика и предмет, чтобы подобрать группу.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "Следующий шаг" not in guarded.draft_text
+    assert guarded.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошибся с подбором."
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+    assert guarded.metadata["bot_safe_memory_step_guard"]["claims"]
+
+
+def test_no_memory_step_frame_guard_rewrites_without_statuses() -> None:
+    result = _result(
+        "Дальше нужно проверить формат и написать вам.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+
+    assert guarded.route == result.route
+    assert guarded.draft_text == "Уточните, пожалуйста, формат, чтобы я не ошибся с подбором."
+    assert NO_MEMORY_STEP_FRAME_GUARD_FLAG in guarded.safety_flags
+    assert guarded.metadata["no_memory_step_frame_guard"]["next_step_statuses"] == []
+
+
+def test_no_memory_step_frame_guard_drops_dangerous_body_details() -> None:
+    result = _result(
+        "Следующий шаг — вернуть оплату клиенту 5000 рублей.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+
+    assert guarded.draft_text == "Уточните, пожалуйста, недостающие детали, чтобы я не ошибся с подбором."
+    assert "оплат" not in guarded.draft_text
+    assert "5000" not in guarded.draft_text
+    assert NO_MEMORY_STEP_FRAME_GUARD_FLAG in guarded.safety_flags
+
+
+def test_no_memory_step_frame_guard_keeps_active_next_step() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика.",
+        route="bot_answer_self_for_pilot",
+        statuses=["active"],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+
+    assert guarded == result
+
+
+def test_no_memory_step_frame_guard_is_off_without_bot_safe_context_flag() -> None:
+    result = _result(
+        "Следующий шаг — уточнить класс ученика.",
+        route="bot_answer_self_for_pilot",
+        statuses=[],
+    )
+
+    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=False))
+
+    assert guarded is result
+    assert "Следующий шаг" in guarded.draft_text
 
 
 def _result(

@@ -12719,6 +12719,65 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
+def test_direct_path_no_memory_step_frame_guard_runs_without_active_next_step(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Следующий шаг — уточнить класс ученика и предмет, чтобы подобрать группу.",
+            metadata={"direct_path": {"model_response": "raw"}},
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошибся с подбором."
+    assert "Следующий шаг" not in result.draft_text
+    assert "no_memory_step_frame_rewritten" in result.safety_flags
+    assert result.metadata["no_memory_step_frame_guard"]["applied"] is True
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_no_memory_step_frame_guard_does_not_run_after_authoritative_gate(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Следующий шаг — уточнить класс ученика.",
+            metadata={
+                "direct_path": {"model_response": "raw"},
+                "authoritative_output_gate": {"checked": True},
+            },
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Следующий шаг" not in result.draft_text
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
 def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

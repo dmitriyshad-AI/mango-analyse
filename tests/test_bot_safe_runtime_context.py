@@ -56,6 +56,113 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     }
 
 
+def test_bot_safe_crm_context_strips_unconfirmed_next_step_text(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer_id,
+            chunk_id="chunk-foton-review-step",
+            chunk_type="bot_safe_summary",
+            text="Фотон: клиент спрашивал про онлайн-курс. Следующий шаг: проверить актуальные группы.",
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer_id}:foton:review",
+            event_at=NOW,
+            freshness_score=0.99,
+            relevance_tags=("bot_safe", "structured", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            metadata={"next_step": {"status": "needs_manager_review", "display_text": "Проверить актуальные группы"}},
+        )
+    )
+    store.close()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert "Фотон: клиент спрашивал про онлайн-курс." in raw
+    assert "Следующий шаг: проверить актуальные группы" not in raw
+    assert "Проверить актуальные группы" not in raw
+
+
+def test_bot_safe_crm_context_strips_unconfirmed_next_step_without_sentence_boundary(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer_id,
+            chunk_id="chunk-foton-inline-step",
+            chunk_type="bot_safe_summary",
+            text="Фотон: обсуждали Следующий шаг: проверить группы.",
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer_id}:foton:inline",
+            event_at=NOW,
+            freshness_score=0.97,
+            relevance_tags=("bot_safe", "structured", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            metadata={"next_step": {"status": "needs_manager_review", "display_text": "Проверить группы"}},
+        )
+    )
+    store.close()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert "Фотон: обсуждали" in raw
+    assert "проверить группы" not in raw.casefold()
+
+
+def test_bot_safe_crm_context_strips_empty_next_step_placeholder(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer_id,
+            chunk_id="chunk-foton-empty-step",
+            chunk_type="bot_safe_summary",
+            text="Фотон: клиент уточнял формат. Следующий шаг: активный шаг не найден.",
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer_id}:foton:empty",
+            event_at=NOW,
+            freshness_score=0.98,
+            relevance_tags=("bot_safe", "structured", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            metadata={"next_step": {"status": "empty"}},
+        )
+    )
+    store.close()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert "Фотон: клиент уточнял формат." in raw
+    assert "активный шаг не найден" not in raw
+    assert "Фотон: клиент уточнял формат. Следующий шаг:" not in raw
+
+
 def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
 

@@ -979,6 +979,31 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r")",
     re.I,
 )
+NEXT_STEP_SOFT_ACTION_RE_FRAGMENT = (
+    r"(?:уточн\w*|указ\w*|спрос\w*|узна\w*|выясн\w*|поня\w*|"
+    r"подтверд\w*|подбер\w*|подобр\w*|провер\w*|напиш\w*|сообщ\w*)"
+)
+BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE = re.compile(
+    r"(?:"
+    r"\bследующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[:—-]|\b(?:будет|это)\b)\s*"
+    r"|"
+    r"\bдальше\s+(?:нужно|по\s+плану)\s+"
+    r")"
+    r"[^.!?\n]{0,120}?"
+    rf"\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b"
+    r"[^.!?\n]{0,120}(?:[.!?]|$)",
+    re.I,
+)
+NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_rewritten"
+NO_MEMORY_STEP_FRAME_RE = re.compile(
+    r"(?P<sentence>[^.?!\n]{0,120}(?:"
+    r"следующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[—:-]|\b(?:будет|это)\b)\s*"
+    r"|лучше\s+начать\s+с\s+"
+    rf"|дальше\s+(?:нужно|по\s+плану)\s+(?=[^.?!\n]{{0,120}}\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b)"
+    r")"
+    r"(?P<body>[^.?!\n]{1,180})(?:[.?!]|$))",
+    re.I,
+)
 
 
 def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
@@ -4456,7 +4481,9 @@ def apply_bot_safe_memory_step_guard(
     if not review_statuses:
         return result
     guard_context = _context_with_dialogue_contract_retrieved_facts(context, result)
-    claims = find_bot_safe_memory_disputed_step_claims(result.draft_text, context=guard_context)
+    hard_claims = _bot_safe_memory_hard_step_claims(result.draft_text, context=guard_context)
+    soft_claims = _bot_safe_memory_soft_step_claims(result.draft_text, context=guard_context)
+    claims = tuple(dict.fromkeys([*hard_claims, *soft_claims]))
     if not claims:
         return result
     metadata = dict(result.metadata)
@@ -4467,6 +4494,24 @@ def apply_bot_safe_memory_step_guard(
         "claims": list(claims),
         "source": "deterministic_output_guard",
     }
+    if soft_claims and not hard_claims:
+        rewritten_text = _rewrite_bot_safe_memory_soft_step_frame(result.draft_text)
+        if rewritten_text and rewritten_text != result.draft_text:
+            return replace(
+                result,
+                draft_text=rewritten_text,
+                forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+                safety_flags=tuple(dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG])),
+                manager_checklist=tuple(
+                    dict.fromkeys(
+                        [
+                            *result.manager_checklist,
+                            "Не называть уточняющий вопрос «следующим шагом» без active next_step.",
+                        ]
+                    )
+                ),
+                metadata=metadata,
+            )
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     return replace(
         result,
@@ -4493,7 +4538,116 @@ def find_bot_safe_memory_disputed_step_claims(
     *,
     context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [
+                *_bot_safe_memory_hard_step_claims(draft_text, context=context),
+                *_bot_safe_memory_soft_step_claims(draft_text, context=context),
+            ]
+        )
+    )
+
+
+def apply_no_memory_step_frame_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _bot_safe_memory_step_guard_enabled(context):
+        return result
+    statuses = _bot_safe_memory_next_step_statuses(result, context)
+    if "active" in statuses:
+        return result
+    claims = find_no_memory_step_frame_claims(result.draft_text)
+    if not claims:
+        return result
+    rewritten = _rewrite_no_memory_step_frame(result.draft_text)
+    if not rewritten or rewritten == result.draft_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["no_memory_step_frame_guard"] = {
+        "applied": True,
+        "claims": list(claims),
+        "next_step_statuses": list(statuses),
+        "source": "deterministic_output_guard",
+    }
+    return replace(
+        result,
+        draft_text=rewritten,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, NO_MEMORY_STEP_FRAME_GUARD_FLAG])),
+        manager_checklist=tuple(
+            dict.fromkeys([*result.manager_checklist, "Не называть уточняющий вопрос «следующим шагом» без active next_step."])
+        ),
+        metadata=metadata,
+    )
+
+
+def find_no_memory_step_frame_claims(draft_text: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            " ".join(match.group("sentence").split())
+            for match in NO_MEMORY_STEP_FRAME_RE.finditer(str(draft_text or ""))
+            if match.group("sentence").strip()
+        )
+    )
+
+
+def _rewrite_no_memory_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        body = " ".join(match.group("body").split()).strip(" .?!:;—-")
+        normalized = body.casefold().replace("ё", "е")
+        sentence_normalized = match.group("sentence").casefold().replace("ё", "е")
+        details = _safe_next_step_detail_labels(normalized)
+        if (
+            "следующ" in sentence_normalized
+            or "дальше нужно" in sentence_normalized
+            or "дальше по плану" in sentence_normalized
+        ):
+            target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
+            return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+        target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
+        return f"Предлагаю начать с {target}."
+
+    return " ".join(NO_MEMORY_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
+
+
+def _bot_safe_memory_hard_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
     return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_CONCRETE_STEP_RE, context=context)
+
+
+def _bot_safe_memory_soft_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE, context=context)
+
+
+def _rewrite_bot_safe_memory_soft_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        claim = " ".join(match.group(0).split()).casefold()
+        details = _safe_next_step_detail_labels(claim)
+        target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
+        return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+
+    return " ".join(BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
+
+
+def _safe_next_step_detail_labels(normalized_text: str) -> list[str]:
+    labels: list[str] = []
+    if "класс" in normalized_text or "клас" in normalized_text:
+        labels.append("класс ученика")
+    if "предмет" in normalized_text or any(subject in normalized_text for subject in ("математ", "физик", "информат", "хими")):
+        labels.append("предмет")
+    if "формат" in normalized_text or "очно" in normalized_text or "онлайн" in normalized_text:
+        labels.append("формат")
+    if "уров" in normalized_text:
+        labels.append("уровень подготовки")
+    return labels
 
 
 def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) -> bool:

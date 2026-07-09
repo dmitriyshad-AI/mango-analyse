@@ -862,6 +862,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
     apply_night_hours_note,
+    apply_no_memory_step_frame_guard,
     apply_output_sanitizer,
     apply_phase2_tone_layer,
     apply_semantic_diagnosis_guard,
@@ -1253,6 +1254,7 @@ class SubscriptionLlmDraftProvider:
             regen_fn=self._semantic_output_regen_runner,
         )
         semantic_checked = apply_bot_safe_memory_step_guard(semantic_checked, context=context)
+        semantic_checked = apply_no_memory_step_frame_guard(semantic_checked, context=context)
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
         return _direct_path_finalize_metadata(

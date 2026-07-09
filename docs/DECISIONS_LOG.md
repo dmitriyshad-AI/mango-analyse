@@ -1457,3 +1457,22 @@ Rollback backup создан и sha-проверен:
 `mango_public_pilot_bots_main_15accd2_snapshot2_20260708`. Клиентам сообщений
 не отправлялось; e2e заменён на non-send проверки heartbeat, process/screen,
 sha/counts/reader-smoke.
+
+### D-074. Mail-merge snapshot #3 publishes through Wappi draft-loop reader only
+
+Решение владельца от 2026-07-09: после M1 mail merge публичный Telegram-бот
+остается выключенным, а единственный прикладной читатель стабильного Customer
+Timeline prod-пути для публикации snapshot #3 — Wappi→AMO draft-loop.
+
+Конфиг `scripts/publish_snapshot/config.marathon2_noch_current.json` переведен
+с owner-gated заглушек на реальные команды остановки/старта
+`run_amo_wappi_draft_loop.py`: start через screen `mango_draft_loop`, память
+в prompt включена (`TELEGRAM_TIMELINE_MEMORY_IN_PROMPT=1`,
+`TELEGRAM_BOT_SAFE_CRM_CONTEXT=1`), auto-resolver выключен
+(`DRAFT_LOOP_AUTO_RESOLVER=0`), auto-pairs для постоянного процесса заменены
+на локальный пустой файл, модель/reasoning — `gpt-5.5/high`.
+
+Граница безопасности: клиентам ничего не отправлять; разрешённая внешняя запись
+для draft-loop — только AMO manager note draft через AI Office endpoint с
+маркером `ЧЕРНОВИК БОТА, не отправлено`. Watchdog draft-loop на время flip
+останавливается, чтобы не держать prod DB; после успешного smoke возвращается.

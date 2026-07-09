@@ -1572,3 +1572,33 @@ email-конверт письма (`contact_email`, `from_email`, `to_emails`, `
 Существующий `mail_link_enrich` оставляет email-only как `weak_email` /
 `pending_reason=weak_email_only`, если нет другого сильного соответствия.
 Это входной факт для сверки и отчёта, а не автоматическая склейка клиента.
+
+### D-079. M1 email-envelope re-merge applied to staging, not yet published
+
+Исполнение 2026-07-09: после D-078 M1 mail summary merge повторно применён к
+staging-БД, чтобы A2 получил реальные email-конверты из `message_participants`.
+Prod/CRM/Tallanto не писались, клиентам сообщений не отправлялось.
+
+Результат staging apply:
+
+- `input_rows=13685`;
+- `linked=9044`, `unmatched=2537`, `blocked=2104`;
+- `tallanto_email_strong_unique=27`;
+- `bot_visible facts=5385`;
+- `allowed mail chunks=3411`;
+- `quick_check=ok`;
+- prod sha не изменился.
+
+Второй SWAP сразу не выполнялся: старый безопасный `mail_link_enrich` после
+повторного M1 apply имеет `target_events=0`, а оставшиеся unmatched уже помечены
+конкретными `pending_reason`. Для следующего прироста нужен отдельный reprocess
+режим и/или свежая Tallanto-директория/email map.
+
+Orphan-классификация выполнена счётчиками: `9326` M1 orphan; сырые заголовки
+найдены для `9326/9326`, но новые события не создавались до отдельного owner-go.
+Owner-facing классификация обязана использовать raw-envelope слой, потому что
+summary/quality слой заметно оптимистичнее. Строгий envelope-срез:
+`bulk_newsletter=4281`, `internal=3792`, `outbound_campaign=471`, `bounce=543`,
+`service_notification=121`, `real_correspondence=118`; owner buckets:
+`broadcast_or_internal_skip=8544`, `delivery_failure_skip=543`,
+`service_auto_skip=121`, `real_candidate=89`, `real_manager_review=29`.

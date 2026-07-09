@@ -234,29 +234,16 @@ def test_parallel_pipeline_matches_ui_one_worker_per_stage(tmp_path: Path) -> No
     assert all("sync" not in command for command, _ in calls)
 
 
-def test_gigaam_fallback_avoids_mlx_and_secondary_worker(tmp_path: Path) -> None:
+def test_single_asr_fallback_mode_is_rejected(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), asr_mode="gigaam_fallback")
-    calls: list[tuple[list[str], dict[str, str]]] = []
-
-    def fake_runner(command, env, cwd):
-        del cwd
-        calls.append((list(command), dict(env)))
-        return {"rc": 0}
-
-    run_parallel_pipeline_workers(config, {}, fake_runner)
-
-    assert pipeline_stages(config) == ("transcribe", "resolve", "analyze")
-    assert calls[0][1]["TRANSCRIBE_PROVIDER"] == "gigaam"
-    assert all("backfill-second-asr" not in command for command, _ in calls)
-    assert all(env["DUAL_TRANSCRIBE_ENABLED"] == "0" for _, env in calls)
+    with pytest.raises(ValueError, match="single-ASR fallback is disabled"):
+        config.validate()
 
 
 def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:
     normal = config_for(tmp_path)
-    fallback = replace(normal, asr_mode="gigaam_fallback")
 
     assert pipeline_stages(normal, include_llm=False) == ("transcribe", "backfill-second-asr")
-    assert pipeline_stages(fallback, include_llm=False) == ("transcribe",)
 
 
 def test_codex_network_probe_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:

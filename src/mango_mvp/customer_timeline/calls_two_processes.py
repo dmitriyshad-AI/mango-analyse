@@ -49,7 +49,6 @@ PARALLEL_PIPELINE_STAGES = (
     "resolve",
     "analyze",
 )
-GIGAAM_FALLBACK_STAGES = ("transcribe", "resolve", "analyze")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 SECRET_RE = re.compile(
@@ -129,8 +128,8 @@ class CallsTwoProcessesConfig:
             raise ValueError("worker drain settings must be positive")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
             raise ValueError("api_window_hours must be between 1 and 24")
-        if self.asr_mode not in {"mlx_dual", "gigaam_fallback"}:
-            raise ValueError("asr_mode must be mlx_dual or gigaam_fallback")
+        if self.asr_mode != "mlx_dual":
+            raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
         if self.min_free_gib < 1:
             raise ValueError("min_free_gib must be at least 1")
 
@@ -809,13 +808,6 @@ def primary_transcribe_environment(
     config: CallsTwoProcessesConfig,
     base_env: Mapping[str, str],
 ) -> Mapping[str, str]:
-    if config.asr_mode == "gigaam_fallback":
-        return {
-            **transcribe_environment(config, base_env),
-            "TRANSCRIBE_PROVIDER": "gigaam",
-            "DUAL_TRANSCRIBE_ENABLED": "0",
-            "SECONDARY_TRANSCRIBE_PROVIDER": "",
-        }
     return {
         **transcribe_environment(config, base_env),
         "DUAL_TRANSCRIBE_ENABLED": "0",
@@ -833,12 +825,6 @@ def stage_worker_environment_for(
     if stage == "backfill-second-asr":
         return transcribe_environment(config, base_env)
     if stage in {"resolve", "analyze"}:
-        if config.asr_mode == "gigaam_fallback":
-            return {
-                **base_env,
-                "DUAL_TRANSCRIBE_ENABLED": "0",
-                "SECONDARY_TRANSCRIBE_PROVIDER": "",
-            }
         return transcribe_environment(config, base_env)
     raise ValueError(f"unsupported parallel pipeline stage: {stage}")
 
@@ -848,7 +834,7 @@ def pipeline_stages(
     *,
     include_llm: bool = True,
 ) -> tuple[str, ...]:
-    stages = GIGAAM_FALLBACK_STAGES if config.asr_mode == "gigaam_fallback" else PARALLEL_PIPELINE_STAGES
+    stages = PARALLEL_PIPELINE_STAGES
     if include_llm:
         return stages
     return tuple(stage for stage in stages if stage not in {"resolve", "analyze"})

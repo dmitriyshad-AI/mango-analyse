@@ -35,7 +35,7 @@
 
 Как в UI, запускается ровно по одному worker на стадию: Whisper, GigaAM-дозаполнение, Resolve и Analyze. Дублирующих ASR-процессов нет. Пакет `stage_limit=20` сохраняет скорость без повторной загрузки модели на каждый звонок.
 
-Обычный режим идёт по UI-схеме: один worker `transcribe` для Whisper/MLX, один `backfill-second-asr` для GigaAM, затем отдельные `resolve` и `analyze`. При подтверждённой системной недоступности Metal допускается явный `asr_mode=gigaam_fallback`: один GigaAM на CPU, затем Resolve и Analyze. Режим фиксируется в отчёте и не выдаётся за двойное распознавание.
+Обычный режим идёт по UI-схеме: один worker `transcribe` для Whisper/MLX, один `backfill-second-asr` для GigaAM, затем отдельные `resolve` и `analyze`. Одиночный ASR-режим отключён: при проблемах Metal/памяти запуск останавливается и разбирается, а не переключается молча на GigaAM-only.
 
 Если `chatgpt.com` не разрешается через DNS, Process A выполняет только локальные стадии ASR и возвращает `deferred/codex_network_unavailable`. Resolve/Analyze не запускаются и их лимит повторов не расходуется; drop публикуется только после следующего успешного полного дренажа.
 

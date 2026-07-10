@@ -1775,3 +1775,41 @@ Read-only sentinel `scripts/skills/live_truth.py` был запущен 2026-07-
 может ложно классифицировать собственный процесс, если имя marker встречается
 в аргументах команды; это требует отдельного hardening, но не отменяет
 координационное правило выше.
+
+### D-086. Consolidated main and Customer Timeline snapshot are live; call-memory semantic triage remains open
+
+Решение владельца и исполнение 2026-07-10:
+
+- `main`, `origin/main` и `yandex/main` опубликованы на `cca8aeb4`;
+- живой Wappi→AMO draft-loop переведён на чистый detached-worktree
+  `/Users/dmitrijfabarisov/Projects/Mango_live_cca8aeb4_consolidated`;
+- память включена: bot-safe CRM context, Timeline in prompt и memory-step guard;
+- stable Customer Timeline заменён атомарно снимком
+  `prod_20260710T174200Z_cca8aeb4`, SHA-256
+  `855bc256203fa971d38386b7d8e08c4aafc47e7caadef7a564acd7e8658e3ca9`;
+- боту открыты `59044` strong call chunks, `4044` mail chunks, `755`
+  Telegram chunks и `4` Wappi Telegram chunks;
+- opened non-strong, missing-identity, wrong-chunk-type и customer-mismatch:
+  `0`; raw `reader_smoke` на artifact и stable prod дал `status=ok`;
+- старый code `2cc82b13` и старый prod SHA
+  `b5efadc21c89578fc9a0a61cb75d90774c14397e567a2b6a890bc334f4d7c1ec`
+  сохранены как полный rollback; локальный и Yandex backup совпадают по SHA;
+- LaunchAgents staging writers после окна снова загружены; их конфиги пишут
+  только staging. В момент постпроверки плановые writer-процессы не выполнялись.
+
+Операционный статус deploy: `PASS_WITH_NOTES`, rollback не требуется.
+Semantic-pass не заявлен: после рестарта не было нового сообщения, поэтому
+первые 10–20 черновиков со звонковым контекстом должны быть проверены на
+ложные обещания/пересказы, смешение брендов, внутренний язык, P0/refund и
+латентность. Каждая подтверждённая ошибка превращается в regression test или
+semantic gate.
+
+Cleanup refs после deploy: после archive-tag в обоих remote удалены девять
+веток: `codex/calls-two-processes`, `codex/next-step-proactivity-port`,
+`codex/wappi-controlled-watch-observe`, `codex/tz155-light-git-bundles`,
+`codex/tz139-customer-timeline`,
+`codex/tz139-customer-timeline-integrate`, `codex/wappi-history`,
+`codex/mango-call-increment`, `codex/phase1-dossier-enrich`.
+`codex/email-pipeline-restore` намеренно сохранена, потому что в её worktree
+обнаружены незакоммиченные изменения параллельного трека; чужие изменения не
+трогались.

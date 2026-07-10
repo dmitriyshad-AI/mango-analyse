@@ -734,6 +734,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--claude-auth-mode", choices=tuple(sorted(_CLAUDE_AUTH_MODES)), default="subscription")
     parser.add_argument("--bot-reasoning", default="medium")
+    parser.add_argument(
+        "--bot-max-attempts",
+        type=int,
+        default=2,
+        help="Maximum provider attempts per bot draft. Set to 1 for no-retry acceptance runs.",
+    )
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
     parser.add_argument("--memory-mode", choices=("codex", "fake", "off"), default="codex")
@@ -1351,6 +1357,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         model=model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
+        max_attempts=max(1, int(getattr(args, "bot_max_attempts", 2))),
         cache_dir=cache_dir,
         runner=runner,
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,

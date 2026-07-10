@@ -13,6 +13,7 @@ import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
 import mango_mvp.channels.subscription_llm_parts.direct_path as direct_path_module
+import mango_mvp.channels.subscription_llm_parts.post_layers as post_layers_module
 import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
@@ -11157,6 +11158,31 @@ def test_semantic_output_verifier_fail_soft_retries_once_on_timeout() -> None:
     assert checked.route == base.route
     assert checked.draft_text == base.draft_text
     assert any("недоступен" in item for item in checked.manager_checklist)
+
+
+def test_semantic_output_verifier_no_retry_contract_stops_after_one_attempt(monkeypatch) -> None:
+    base = _semantic_verifier_base_result("Да, дочка справится.")
+    calls = 0
+
+    def timeout(_prompt: str):
+        nonlocal calls
+        calls += 1
+        raise subprocess.TimeoutExpired(cmd=["semantic"], timeout=30)
+
+    monkeypatch.setenv(post_layers_module.SEMANTIC_OUTPUT_VERIFIER_MAX_ATTEMPTS_SETTING, "1")
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Дочка справится?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=timeout,
+    )
+
+    meta = checked.metadata["semantic_output_verifier"]
+    assert calls == 1
+    assert meta["unavailable"] is True
+    assert meta.get("retry_attempted") is not True
+    assert checked.route == base.route
+    assert checked.draft_text == base.draft_text
 
 
 def test_presale_semantic_output_verifier_reports_provider_rc_error() -> None:

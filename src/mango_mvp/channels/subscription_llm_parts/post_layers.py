@@ -644,6 +644,9 @@ SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
 SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
 
 
+SEMANTIC_OUTPUT_VERIFIER_MAX_ATTEMPTS_SETTING = "MANGO_EVAL_SEMANTIC_VERIFIER_MAX_ATTEMPTS"
+
+
 LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
 
 
@@ -5312,7 +5315,7 @@ def apply_semantic_output_verifier(
         route=result.route,
         context=gate_context,
     )
-    if unavailable_reason:
+    if unavailable_reason and _semantic_output_verifier_max_attempts() > 1:
         verifier_meta["retry_attempted"] = True
         findings, unavailable_reason = _run_semantic_output_verifier_once(
             verifier,
@@ -5524,6 +5527,13 @@ def _semantic_output_verifier_timeout_sec() -> int:
         return max(1, int(float(os.getenv(SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV) or "30")))
     except Exception:
         return 30
+
+
+def _semantic_output_verifier_max_attempts() -> int:
+    try:
+        return max(1, int(float(os.getenv(SEMANTIC_OUTPUT_VERIFIER_MAX_ATTEMPTS_SETTING) or "2")))
+    except Exception:
+        return 2
 
 
 def _llm_retrieve_timeout_sec() -> int:

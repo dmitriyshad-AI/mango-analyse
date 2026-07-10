@@ -2908,10 +2908,13 @@ def test_build_bot_provider_codex_mode_is_isolated_by_default_and_can_disable() 
 
     isolated = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True))
     baseline = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=False))
+    no_retry = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True, bot_max_attempts=1))
 
     assert isinstance(isolated, sim.CountingSubscriptionLlmDraftProvider)
     assert isolated.codex_isolated is True
+    assert isolated.max_attempts == 2
     assert baseline.codex_isolated is False
+    assert no_retry.max_attempts == 1
 
 
 def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:

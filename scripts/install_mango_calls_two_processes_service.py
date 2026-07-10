@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install one launchd trigger for Mango calls process A -> B.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--env-file", required=True)
-    parser.add_argument("--interval-seconds", type=int, default=600)
+    parser.add_argument("--interval-seconds", type=int, default=900)
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--out")
     return parser

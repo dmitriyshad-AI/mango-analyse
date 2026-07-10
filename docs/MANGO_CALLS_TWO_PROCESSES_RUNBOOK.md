@@ -23,7 +23,7 @@
   "codex_home_root": "/Users/user/.mango_local/mango_calls_pipeline/codex_home",
   "foton_daily_dir": "/absolute/Foton/_daily",
   "bootstrap_since": "2026-07-09T03:00:35+03:00",
-  "poll_overlap_minutes": 4320,
+  "poll_overlap_minutes": 30,
   "api_window_hours": 12,
   "min_free_gib": 40,
   "stage_limit": 20,
@@ -59,7 +59,7 @@ set +a
 /usr/bin/python3 scripts/install_mango_calls_two_processes_service.py \
   --config <config.json> \
   --env-file ~/.mango_secrets/mango_office.env \
-  --interval-seconds 600 \
+  --interval-seconds 900 \
   --install
 ```
 

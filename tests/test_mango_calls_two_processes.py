@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import subprocess
 import sqlite3
 import sys
@@ -444,3 +445,45 @@ def test_locked_report_does_not_claim_work_or_publish_pid() -> None:
 
     assert payload["counters"]["lock"] == {}
     assert payload["safety"]["runs_asr"] is False
+
+
+def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    config_path = tmp_path / "config.json"
+    env_path = tmp_path / "mango.env"
+    plist_path = tmp_path / "calls.plist"
+    config_path.write_text(
+        json.dumps(
+            {
+                "pipeline_root": str(config.pipeline_root),
+                "timeline_db": str(config.timeline_db),
+                "timeline_allowed_root": str(config.timeline_allowed_root),
+                "python_executable": str(config.python_executable),
+                "codex_binary": str(config.codex_binary),
+                "codex_home_root": str(config.codex_home_root),
+                "poll_overlap_minutes": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/install_mango_calls_two_processes_service.py",
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_path),
+            "--out",
+            str(plist_path),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+    with plist_path.open("rb") as handle:
+        payload = plistlib.load(handle)
+    assert payload["StartInterval"] == 900

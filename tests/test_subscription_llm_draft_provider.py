@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -11,6 +12,8 @@ import pytest
 import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
+import mango_mvp.channels.subscription_llm_parts.direct_path as direct_path_module
+import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV,
@@ -145,6 +148,14 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     _direct_path_semantic_frame_from_payload,
     _semantic_frame_close_veto_candidate,
     build_direct_path_semantic_frame_posthoc_prompt,
+)
+from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    DIRECT_PATH_FORMAT_GUIDANCE_ENV,
+    DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV,
+    DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT,
+    _direct_path_format_guidance_enabled,
+    _direct_path_scope_overclaim_guard_enabled,
+    apply_direct_path_scope_overclaim_guard,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import READING_APPLY_CLASSES_ENV, SEMANTIC_READING_CLASSES_ENV
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
@@ -17075,3 +17086,728 @@ def test_prose_model_led_does_not_rewrite_p0_safe_templates() -> None:
 
     assert guarded.draft_text == COMPLAINT_SAFE_TEXT
     assert not any(str(flag).startswith("prose_model_led:near_repeat") for flag in guarded.safety_flags)
+
+
+def _scope_overclaim_context(*, brand: str = "unpk", grade: str = "8", subject: str = "математика") -> dict[str, object]:
+    return {
+        "active_brand": brand,
+        "known_slots": {"grade": grade, "subject": subject},
+        DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1",
+    }
+
+
+@pytest.mark.parametrize(
+    "text,grade,subject",
+    [
+        (
+            "Можно смотреть подходящий формат в УНПК. "
+            "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса.",
+            "8",
+            "математика",
+        ),
+        (
+            "Для проверки очной группы уже достаточно основных данных: 7 класс, математика, очный формат. "
+            "Следующий шаг — проверить актуальные очные группы под ваш уровень.",
+            "7",
+            "математика",
+        ),
+    ],
+)
+def test_phase1c_scope_overclaim_guard_replaces_raw_07_and_20_sentences(
+    text: str,
+    grade: str,
+    subject: str,
+) -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=f"{text} Стоимость по факту — 29 750 ₽.",
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade=grade, subject=subject),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.route == original.route
+    assert guarded.draft_text.count(DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT) == 1
+    assert "проверить подходящую онлайн-группу" not in guarded.draft_text.casefold()
+    assert "для проверки очной группы" not in guarded.draft_text.casefold()
+    assert "проверить актуальные очные группы" not in guarded.draft_text.casefold()
+    assert "29 750 ₽" in guarded.draft_text
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] >= 1
+
+
+def test_phase1c_scope_overclaim_guard_reads_scope_from_real_result_frame_shape() -> None:
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса.",
+        metadata={
+            "direct_path": {
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "requested_product": {"grade": "8 класс", "subject": "математика"},
+                }
+            }
+        },
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context={"active_brand": "unpk", DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1"},
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == original.route
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_uses_frame_scope_for_exact_fact_exception() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    fact_key = "unpk.math8.online.availability"
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=text,
+        metadata={
+            "direct_path": {
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "requested_product": {"grade": "8", "subject": "математика"},
+                }
+            }
+        },
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context={"active_brand": "unpk", DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1"},
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 8 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "skipped_supported_exact_fact"
+
+
+def test_phase1c_scope_overclaim_guard_candidate_grade_overrides_known_slot_for_exact_fact() -> None:
+    fact_key = "unpk.math9.online.availability"
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Следующий шаг — проверить подходящую онлайн-группу по математике для 7 класса.",
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade="9", subject="математика"),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 9 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == original.route
+    assert guarded.metadata["scope_overclaim_guard"]["supported_count"] == 0
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_ordinal_candidate_grade_overrides_known_slot() -> None:
+    fact_key = "unpk.math9.online.availability"
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Следующий шаг — проверить подходящую онлайн-группу по математике для 7-го класса.",
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade="9", subject="математика"),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 9-го класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_accepts_matching_ordinal_grade_fact() -> None:
+    fact_key = "unpk.math9.online.availability"
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 9-го класса."
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(grade="9", subject="математика"),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 9-го класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "skipped_supported_exact_fact"
+
+
+def test_phase1c_scope_overclaim_guard_candidate_grade_overrides_frame_for_exact_fact() -> None:
+    fact_key = "unpk.math9.online.availability"
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Следующий шаг — проверить подходящую онлайн-группу по математике для 7 класса.",
+        metadata={
+            "direct_path": {
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "requested_product": {"grade": "9", "subject": "математика"},
+                }
+            }
+        },
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context={"active_brand": "unpk", DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1"},
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 9 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_checks_exact_fact_per_candidate_sentence() -> None:
+    fact_key = "unpk.math9.online.availability"
+    supported = "Следующий шаг — проверить подходящую онлайн-группу по математике для 9 класса."
+    unsupported = "Следующий шаг — проверить подходящую онлайн-группу по математике для 7 класса."
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=f"{supported} {unsupported}",
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade="9", subject="математика"),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 9 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == f"{supported} {DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT}"
+    assert guarded.metadata["scope_overclaim_guard"]["candidate_count"] == 2
+    assert guarded.metadata["scope_overclaim_guard"]["supported_count"] == 1
+    assert guarded.metadata["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_keeps_honest_colleague_handoff() -> None:
+    text = "Передам запрос коллеге и попрошу проверить подходящую группу для 7 класса по актуальному набору."
+    original = SubscriptionDraftResult(route="draft_for_manager", draft_text=text)
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade="9", subject="математика"),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "skipped_honest_handoff"
+    assert guarded.metadata["scope_overclaim_guard"]["handoff_skip_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_low_confidence_frame_cannot_unlock_exact_fact_exception() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    fact_key = "unpk.math8.online.availability"
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=text,
+        metadata={
+            "direct_path": {
+                "semantic_frame": {
+                    "confidence": 0.89,
+                    "requested_product": {"grade": "8", "subject": "математика"},
+                }
+            }
+        },
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context={"active_brand": "unpk", DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1"},
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 8 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == original.route
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        {"p0_latch": {"active": True}},
+        {"risk_flags": ["payment_dispute"]},
+    ],
+)
+def test_phase1c_scope_overclaim_guard_skips_active_p0_context(memory: Mapping[str, object]) -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    original = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text)
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context={
+            **_scope_overclaim_context(),
+            "dialogue_memory_view": memory,
+        },
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "В УНПК доступны занятия по математике. Можем сориентировать по обучению для 7 класса.",
+        "Менеджер проверит подходящую группу для 7 класса по актуальному набору.",
+        "Менеджер может посмотреть подходящий формат для 7 класса.",
+        "Лучше проверить по актуальному набору.",
+        DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT,
+        "Математика для 7 класса есть.",
+        "Уровни: базовый, продвинутый и олимпиадный.",
+    ],
+)
+def test_phase1c_scope_overclaim_guard_keeps_raw_09_and_safe_disclaimers(text: str) -> None:
+    original = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text)
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(grade="7"),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+
+
+def test_phase1c_scope_overclaim_guard_is_idempotent_with_existing_safe_text() -> None:
+    text = (
+        f"{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT} "
+        "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
+def test_phase1c_scope_overclaim_guard_is_default_off_even_for_pilot_profile() -> None:
+    profile = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert _direct_path_scope_overclaim_guard_enabled(profile) is False
+    assert _direct_path_format_guidance_enabled(profile) is False
+    assert DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert DIRECT_PATH_FORMAT_GUIDANCE_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+
+
+def test_phase1c_scope_overclaim_guard_skips_p0_and_keeps_route() -> None:
+    text = "Следующий шаг — проверить подходящую группу по математике для 8 класса. Верните деньги."
+    original = SubscriptionDraftResult(
+        route="manager_only",
+        risk_level="high",
+        safety_flags=("p0_refund",),
+        draft_text=text,
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == "manager_only"
+    assert guarded.safety_flags == original.safety_flags
+
+
+def test_phase1c_scope_overclaim_guard_skips_p0_flag_even_if_route_is_self() -> None:
+    text = "Следующий шаг — проверить подходящую группу по математике для 8 класса."
+    original = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        risk_level="low",
+        safety_flags=("p0_refund",),
+        draft_text=text,
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "conversation_intent_plan_p0",
+        "direct_path_model_p0_refund",
+        "direct_path_model_p0_paid_operation_context",
+        "final_p0_text_override",
+    ],
+)
+def test_phase1c_scope_overclaim_guard_skips_real_p0_flag_families(flag: str) -> None:
+    text = "Следующий шаг — проверить подходящую группу по математике для 8 класса."
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            risk_level="low",
+            safety_flags=("manager_approval_required", "no_auto_send", flag),
+            draft_text=text,
+        ),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
+@pytest.mark.parametrize("repaired_flag", ["false_p0_repaired", "non_p0", "p0_repaired", "p0_cleared"])
+def test_phase1c_scope_overclaim_guard_does_not_treat_repaired_false_p0_as_active(repaired_flag: str) -> None:
+    text = "Следующий шаг — проверить подходящую группу по математике для 8 класса."
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            safety_flags=("manager_approval_required", "no_auto_send", repaired_flag),
+            draft_text=text,
+        ),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+
+
+def test_phase1c_scope_overclaim_guard_keeps_generic_format_without_grade_scope() -> None:
+    text = "Можно посмотреть подходящий формат обучения. Потом расскажу про стоимость."
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
+def test_phase1c_scope_overclaim_guard_keeps_sentence_intact_around_city_abbreviation() -> None:
+    text = (
+        "Следующий шаг — проверить подходящую группу в г. Москве для 8 класса. "
+        "Стоимость по факту — 29 750 ₽."
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == f"{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT} Стоимость по факту — 29 750 ₽."
+    assert guarded.route == "draft_for_manager"
+
+
+@pytest.mark.parametrize("abbreviation", ["г.Москве", "т.д.", "т.е."])
+def test_phase1c_scope_overclaim_guard_keeps_no_space_abbreviations_intact(abbreviation: str) -> None:
+    text = (
+        f"Следующий шаг — проверить подходящую группу в {abbreviation} для 8 класса. "
+        "Стоимость по факту — 29 750 ₽."
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == f"{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT} Стоимость по факту — 29 750 ₽."
+    assert guarded.route == "draft_for_manager"
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "на 29.07",
+        "на 29.07.2026",
+        "в 10.30",
+        "см. детали",
+    ],
+)
+def test_phase1c_scope_overclaim_guard_keeps_dates_time_and_see_abbreviation_intact(detail: str) -> None:
+    text = (
+        f"Следующий шаг — проверить подходящую группу по математике для 8 класса, {detail}. "
+        "Стоимость по факту — 29 750 ₽."
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == f"{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT} Стоимость по факту — 29 750 ₽."
+    assert guarded.route == "draft_for_manager"
+
+
+@pytest.mark.parametrize(
+    "next_sentence",
+    [
+        "29 750 ₽ — стоимость по факту.",
+        "стоимость по факту — 29 750 ₽.",
+        "online-формат тоже можно уточнить.",
+    ],
+)
+def test_phase1c_scope_overclaim_guard_does_not_consume_neighbor_sentence(next_sentence: str) -> None:
+    text = (
+        "Следующий шаг — проверить подходящую группу по математике для 8 класса. "
+        f"{next_sentence}"
+    )
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == f"{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT} {next_sentence}"
+    assert guarded.route == "draft_for_manager"
+
+
+def test_phase1c_scope_overclaim_guard_skips_same_brand_exact_availability_fact() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    original = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text)
+    fact_key = "unpk.math8.online.availability"
+    fact_pack = {
+        "facts": {fact_key: "УНПК: для 8 класса по математике доступна онлайн-группа."},
+        "fact_metadata": {fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}},
+        "exact_keys": [fact_key],
+    }
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        original,
+        context=_scope_overclaim_context(),
+        fact_pack=fact_pack,
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == original.route
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "skipped_supported_exact_fact"
+
+
+def test_phase1c_scope_overclaim_guard_accepts_exact_grade_range_fact() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    fact_key = "unpk.math7_9.online.availability"
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 7-9 классов по математике доступны онлайн-группы."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "skipped_supported_exact_fact"
+
+
+def test_phase1c_scope_overclaim_guard_does_not_accept_foreign_brand_fact() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    fact_key = "foton.math8.online.availability"
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={
+            "facts": {fact_key: "Фотон: для 8 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "foton", "fact_type": "availability", "client_safe": "true"}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
+def test_phase1c_scope_overclaim_guard_rejects_non_client_safe_exact_fact() -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+    fact_key = "unpk.math8.online.availability"
+
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={
+            "facts": {fact_key: "УНПК: для 8 класса по математике доступна онлайн-группа."},
+            "fact_metadata": {
+                fact_key: {"brand": "unpk", "fact_type": "availability", "client_safe": False}
+            },
+            "exact_keys": [fact_key],
+        },
+    )
+
+    assert guarded.draft_text == DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
+def test_phase1c_scope_overclaim_guard_runs_before_verifier_and_gate(monkeypatch) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def verifier(result: SubscriptionDraftResult, **_: object) -> SubscriptionDraftResult:
+        seen.append(("verifier", result.draft_text))
+        return result
+
+    def gate(result: SubscriptionDraftResult, **_: object) -> SubscriptionDraftResult:
+        seen.append(("gate", result.draft_text))
+        return result
+
+    monkeypatch.setattr(subscription_provider, "apply_semantic_output_verifier", verifier)
+    monkeypatch.setattr(subscription_provider, "apply_authoritative_output_gate", gate)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса.",
+            metadata={
+                "semantic_frame": {
+                    "confidence": 0.95,
+                    "requested_product": {"grade": "8", "subject": "математика"},
+                }
+            },
+        )
+    )
+
+    result = provider._build_direct_path_draft(
+        "Что делать дальше?",
+        context={
+            DIRECT_PATH_ENV: "1",
+            "active_brand": "unpk",
+            DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV: "1",
+        },
+    )
+
+    assert [name for name, _ in seen] == ["verifier", "gate"]
+    assert all(DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT in text for _, text in seen)
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["direct_path"]["scope_overclaim_guard"]["replacement_count"] == 1
+
+
+def test_phase1c_scope_overclaim_guard_records_fail_open_without_text_leak(monkeypatch) -> None:
+    text = "Следующий шаг — проверить подходящую онлайн-группу по математике для 8 класса."
+
+    def fail(*_: object, **__: object) -> bool:
+        raise RuntimeError("sensitive internal detail")
+
+    monkeypatch.setattr(direct_path_module, "_direct_path_scope_overclaim_supported_by_exact_fact", fail)
+    guarded = apply_direct_path_scope_overclaim_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=text),
+        context=_scope_overclaim_context(),
+        fact_pack={"facts": {}, "fact_metadata": {}, "exact_keys": []},
+    )
+
+    assert guarded.draft_text == text
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.metadata["scope_overclaim_guard"]["action"] == "error_fail_open"
+    assert guarded.metadata["scope_overclaim_guard"]["error_type"] == "RuntimeError"
+    assert "sensitive internal detail" not in json.dumps(guarded.metadata, ensure_ascii=False)
+
+
+def test_phase1c_direct_path_format_guidance_is_separate_default_off_prompt_flag() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }
+
+    off_prompt = _build_direct_path_prompt("Расскажите про курс.", context=context)
+    on_prompt = _build_direct_path_prompt(
+        "Расскажите про курс.",
+        context={**context, DIRECT_PATH_FORMAT_GUIDANCE_ENV: "1"},
+    )
+    format_block = direct_path_module._direct_path_format_guidance_block(
+        {DIRECT_PATH_FORMAT_GUIDANCE_ENV: "1"}
+    )
+
+    assert "Если в ответе два или больше смысловых блока" not in off_prompt
+    assert "Если в ответе два или больше смысловых блока" in on_prompt
+    assert "максимум один эмодзи" in on_prompt
+    assert "В P0, жалобах, возвратах, гарантиях и юридических темах не используй эмодзи" in on_prompt
+    assert "без Markdown-разметки и без жирного шрифта" in on_prompt
+    assert on_prompt.replace(format_block, "", 1) == off_prompt
+    assert subscription_llm.DIRECT_PATH_FORMAT_GUIDANCE_ENV == DIRECT_PATH_FORMAT_GUIDANCE_ENV
+    assert subscription_llm.DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV == DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV
+
+
+def test_phase1c_tone_rich_flag_does_not_enable_new_direct_path_format_guidance() -> None:
+    prompt = _build_direct_path_prompt(
+        "Расскажите про курс.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", TONE_RICH_FORMAT_ENV: "1"},
+    )
+
+    assert "Формат текста для клиента в draft_text" not in prompt
+    assert "Если в ответе два или больше смысловых блока" not in prompt
+
+
+def test_phase1c_direct_path_format_flag_does_not_change_monolith_prompt() -> None:
+    context = {"active_brand": "foton"}
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+
+    off_prompt = build_draft_prompt("Расскажите про курс.", context=context, now=now)
+    on_prompt = build_draft_prompt(
+        "Расскажите про курс.",
+        context={**context, DIRECT_PATH_FORMAT_GUIDANCE_ENV: "1"},
+        now=now,
+    )
+
+    assert on_prompt == off_prompt

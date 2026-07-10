@@ -3008,6 +3008,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"групп\" in normalized",
+    "expression_sha256": "8bbcef81e0c5fb01ced4b6d03ba2d78dd3607445c7b2a980f834483f9b7ab4f0",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "_direct_path_scope_overclaim_supported_by_exact_fact",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"дат\" in query_text",
     "expression_sha256": "490a632974dbe774280c49a1fe374980dd6e94556f83bf25baabd9551e95314e",
     "node_kind": "string_contains",
@@ -3288,6 +3296,22 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"клас\" in normalized_text",
+    "expression_sha256": "1e4133501e6b8c6f5f86675044662837ec45f7166e9d10e2b580990d5796efb1",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"класс\" in normalized_text",
+    "expression_sha256": "28929ba88b77bf4688a812a4fd9b6c53570a90be1aaf1ea26880435e319cb652",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"класс\" not in text",
     "expression_sha256": "ed95e37a655b6add4a441bb70c6b7df9b1dd460b734a9344d5a6f304da6fdf50",
     "node_kind": "string_contains",
@@ -3397,6 +3421,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_cross_brand_safe_template",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"лучше проверить по актуальному набору\" in normalized",
+    "expression_sha256": "8f7f364b4d93b22fd839d8d910e3af8fdc3ac536a12c76b18b72217243db93c5",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "_direct_path_scope_overclaim_candidate",
     "symbol": "In"
   },
   {
@@ -3640,6 +3672,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"онлайн\" in normalized_text",
+    "expression_sha256": "d365dbb7d907c94b0b8c115dfd30ec2f64c9cb86e898d1e14999562609c304d4",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"онлайн\" in query_text",
     "expression_sha256": "715d666de1aa8d454e9bacc7858f47bb8aa39620ad42542a3ddf2955f2620098",
     "node_kind": "string_contains",
@@ -3752,6 +3792,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"оплат\" not in normalized",
+    "expression_sha256": "baae1c9ca412f100e9c45d526070222332d98e688cbea06b091a48e946dc8472",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_bot_safe_memory_safe_payment_link_step_claim",
+    "symbol": "NotIn"
+  },
+  {
     "expression_preview": "\"отвечает\" in client_haystack",
     "expression_sha256": "1057fa8b452530bf6479e22404f500d8ea4fa22d9c67f1ffff9638424b469a0b",
     "node_kind": "string_contains",
@@ -3821,6 +3869,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
     "qualname": "_fact_matches_known_selection",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"очно\" in normalized_text",
+    "expression_sha256": "5bdab5d77f2ef3bc6f9a8b02f9114f05366e6d68db56ee48889c18cb8481876e",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
     "symbol": "In"
   },
   {
@@ -4037,6 +4093,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/rules_engine.py",
     "qualname": "_apply_camp_lvsh_rule",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"предмет\" in normalized_text",
+    "expression_sha256": "fa3a05d05f4d957e7e6feb67af8bf959ff81a92028cd39a91e1858c36a3aa4bb",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
     "symbol": "In"
   },
   {
@@ -4264,6 +4328,14 @@
     "symbol": "In"
   },
   {
+    "expression_preview": "\"ссыл\" not in normalized",
+    "expression_sha256": "5417759b50ce7af8c943bcd1a3edd4f91d015ac0812260df6552b319f8d9ca3c",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_bot_safe_memory_safe_payment_link_step_claim",
+    "symbol": "NotIn"
+  },
+  {
     "expression_preview": "\"ссылк\" in client_haystack",
     "expression_sha256": "84fd4206cc778caf7f1151dec72a5f76f0bc6fa44e12b7534ba9d0dae3dd4a27",
     "node_kind": "string_contains",
@@ -4336,6 +4408,14 @@
     "symbol": "NotIn"
   },
   {
+    "expression_preview": "\"уров\" in normalized_text",
+    "expression_sha256": "359ec318311a960f01003e29d2d33fcae27297e5403edfb638d3940d52dab528",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
+    "symbol": "In"
+  },
+  {
     "expression_preview": "\"учебный год\" in text",
     "expression_sha256": "ba176074098d9733aaf4d7659ba711a34a4e4a9671860bec9f091ec895c8e404",
     "node_kind": "string_contains",
@@ -4365,6 +4445,14 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
+    "symbol": "In"
+  },
+  {
+    "expression_preview": "\"формат\" in normalized_text",
+    "expression_sha256": "953ec21250368c1d142b95ac8540d9edb17614ede9abebb7ba678139547b3d2d",
+    "node_kind": "string_contains",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "_safe_next_step_detail_labels",
     "symbol": "In"
   },
   {
@@ -5075,6 +5163,16 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "\\D+",
     "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
+    "qualname": "_direct_path_scope_overclaim_grade_subject",
+    "symbol": "re.sub",
+    "target": ""
+  },
+  {
+    "flags": "\"\"",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "\\D+",
+    "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
     "qualname": "_replace_echoed_phone",
     "symbol": "re.sub",
     "target": "candidate_digits"
@@ -5308,6 +5406,16 @@
     "qualname": "_clean_fact_text",
     "symbol": "re.sub",
     "target": "cleaned"
+  },
+  {
+    "flags": "_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "(?<=\\d)\\.(?=\\d)",
+    "pattern_sha256": "9e88f4a4e63ceaa15010391c21333c97d7b79cf0739b6951be9d237c62be79b9",
+    "qualname": "apply_direct_path_scope_overclaim_guard",
+    "symbol": "re.sub",
+    "target": "protected_text"
   },
   {
     "flags": "_normalize_fact_match_text(client_message)",
@@ -6362,6 +6470,26 @@
   {
     "flags": "normalized",
     "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "rf\"\\b(?:\\d{{1,2}}\\s*[-–]\\s*)?{_DIRECT_PATH_GRADE_CLASS_PATTERN}\"",
+    "pattern_sha256": "a6ab176c6784ff1b4ca840ca678f2bfc3beabfe24a13f88bdcafee0dd6a9d4f2",
+    "qualname": "_direct_path_scope_overclaim_supported_by_exact_fact",
+    "symbol": "re.search",
+    "target": ""
+  },
+  {
+    "flags": "normalized",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "rf\"\\b(\\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}\"",
+    "pattern_sha256": "61d5af589ef506cc0b8094dcef9b1c7207542768e7dde2f13bb92daef0435fe7",
+    "qualname": "_direct_path_scope_overclaim_sentence_grade_subject",
+    "symbol": "re.search",
+    "target": "grade_match"
+  },
+  {
+    "flags": "normalized",
+    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "(сколько|какая|почем|почём|стоим)[^.?!]{0,80}после\\s+1\\s+июля|после\\s+1\\s+июля[^.?!]{0,80}(сколько|какая|почем|почём|стоим)",
     "pattern_sha256": "a2920b2d3509baf244e88b43c7c792364e0807295e3830baa3ee4111b2c0f8b5",
@@ -6396,6 +6524,16 @@
     "pattern_preview": "[бвгджзклмнпрстфхцчшщ]$",
     "pattern_sha256": "fa2c06f47937241d7f93467c62ca2057e6905146c6dfeb03bc2e00c01a224b42",
     "qualname": "_name_word_pattern",
+    "symbol": "re.search",
+    "target": ""
+  },
+  {
+    "flags": "normalized",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "\\b(?:верн\\w*|возврат\\w*|деньг\\w*|компенс\\w*|руб(?:\\.|л)|₽|\\d{3,})\\b",
+    "pattern_sha256": "997adf8dc4956151630f2590b678be8caa6d7a7e18fd1055ed378dc351649a1f",
+    "qualname": "_bot_safe_memory_safe_payment_link_step_claim",
     "symbol": "re.search",
     "target": ""
   },
@@ -7262,6 +7400,16 @@
   {
     "flags": "re.I",
     "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "rf\"(?:\"\n    r\"\\b(?:проверить|посмотреть|смотреть)\\s+подходящ\\w+\\s+\"\n    r\"(?:[a-zа-яё]+[-\\s]+){0,2}(?:групп\\w*|формат\\w*|вариант\\w*)\"\n    rf\"[^.!?\\n]{{0,50}}\\b(",
+    "pattern_sha256": "a872fd003d591465ae316ac79718a3ec132e65a447b9512deef26e3a954a621d",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "_DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE"
+  },
+  {
+    "flags": "re.I",
+    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "(?:гарантир\\w*|обеща\\w*|получит\\w*|получите|набрать|набер[её]т\\w*|набер[её]те|сдаст\\w*|сдадите|поступит\\w*|ваш\\w*\\s+реб[её]н\\w*|ученик\\w*)[^.!?\\n]{0,80}\\b\\d{1,3",
     "pattern_sha256": "d33d4eb340da8cd661133e3a6015519445bc0b48913cdb82fa38dd84aa89a794",
@@ -7438,6 +7586,16 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "BOT_SAFE_MEMORY_CONCRETE_STEP_RE"
+  },
+  {
+    "flags": "re.I",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "(?:\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*|\\bдальше\\s+(?:нужно|по\\s+плану)\\s+|\\bлучше\\s+начать\\s+с\\s+)[^.!?\\n]{0,160}?\\b",
+    "pattern_sha256": "8239c82c42e46cfabe7e3ec66fc9952ce55cb604c0ba5766cd033f9fda5960f5",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "BOT_SAFE_MEMORY_RISKY_NEXT_STEP_FRAME_RE"
   },
   {
     "flags": "re.I",
@@ -7963,6 +8121,16 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "r\"(?:\"\n    r\"\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*\"\n    r\"|\"\n    r\"\\bдальше\\s+(?:нужно|по\\s+плану)\\s+\"\n    r\")\"\n    r\"",
+    "pattern_sha256": "80d17be11f80807cd2cd34497a3b2487a34e38b7d9b9f5e18bd18a0cf3afa6be",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE"
+  },
+  {
+    "flags": "re.I",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "rf\"(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})\"",
     "pattern_sha256": "f6f7656619f3a4b0d5b75f50214d942986463fd8e003c962dfb247b4d3be8d28",
     "qualname": "<module>",
@@ -8148,6 +8316,16 @@
     "qualname": "_phase2_tone_rewrite",
     "symbol": "re.sub",
     "target": "value"
+  },
+  {
+    "flags": "replace_sentence | re.M",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "_DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN",
+    "pattern_sha256": "0d23c03b14601f31f355c0581a6d1b69152aa19b7776fcedc95741676b27df5f",
+    "qualname": "apply_direct_path_scope_overclaim_guard",
+    "symbol": "re.sub",
+    "target": ""
   },
   {
     "flags": "replacement | re.I",
@@ -8345,7 +8523,7 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "p0|payment_dispute|refund|complaint|legal|high_risk",
     "pattern_sha256": "b6f049fb8c5d0f174f0d083c846505fb35782a04c4c89af4b5bbe15429632ff8",
-    "qualname": "_direct_path_assumed_scope_p0_active",
+    "qualname": "_direct_path_context_p0_active",
     "symbol": "re.search",
     "target": ""
   },
@@ -8763,8 +8941,8 @@
     "flags": "text",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "\\b(\\d{1,2})\\s*(?:класс|кл)\\b",
-    "pattern_sha256": "9a2bc8106299512cd7ba10a04f5614385e82980533dd9b895d030970e987de10",
+    "pattern_preview": "rf\"\\b(\\d{{1,2}})\\s*[-–]\\s*(\\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\\s*\"\n            rf\"{_DIRECT_PATH_CLASS_LABEL_PATTERN}\"",
+    "pattern_sha256": "08055b5e38135338ce21ee800adc47050bf15b7c97647a0c2adbb2057d2ce785",
     "qualname": "_direct_path_grade_in_fact",
     "symbol": "re.findall",
     "target": ""
@@ -8773,8 +8951,8 @@
     "flags": "text",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "\\b(\\d{1,2})\\s*[-–]\\s*(\\d{1,2})\\s*(?:класс|кл)",
-    "pattern_sha256": "5ee87346bc2d6d86b29239b41c1b79bcea9eebf5bd6fe819d93f279478ebd6c4",
+    "pattern_preview": "rf\"\\b(\\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}\"",
+    "pattern_sha256": "61d5af589ef506cc0b8094dcef9b1c7207542768e7dde2f13bb92daef0435fe7",
     "qualname": "_direct_path_grade_in_fact",
     "symbol": "re.findall",
     "target": ""
@@ -10423,6 +10601,22 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "<module>",
+    "symbol": "DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV",
+    "value_preview": "\"TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD\"",
+    "value_sha256": "5437c9abf8c06b56cdb89833c349be10b7f6882651c0bf1ca3bf1bd234f8852b"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT",
+    "value_preview": "\"Чтобы я не ошиблась с актуальным набором, могу попросить менеджера проверить, есть ли подходящая группа.\"",
+    "value_sha256": "07be186588ab11fbb0b8aa3e8673266f454df2abdca450aee7fee835c079893c"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
     "symbol": "DIRECT_SLOT_TOPIC_SHADOW_ENV",
     "value_preview": "\"TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW\"",
     "value_sha256": "472c19eb4934e6744b18b8af394638ad48eb68adae55890eb721b0e02c6583ef"
@@ -10463,9 +10657,73 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_CLASS_LABEL_PATTERN",
+    "value_preview": "r\"(?:класс(?:а|е|у|ом|ы|ов|ах)?|кл)\\b\\.?\"",
+    "value_sha256": "a1569f247e62d605601f72e866880692d0f6286cd54409f5fd9834012f6fe212"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_GRADE_CLASS_PATTERN",
+    "value_preview": "rf\"\\d{{1,2}}{_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}\"",
+    "value_sha256": "75b9c165d084e688ea554a00e16fe0fbc5e6ab2c59aa2ad16c4725e5a359876a"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN",
+    "value_preview": "r\"(?:\\s*-\\s*(?:й|го))?\"",
+    "value_sha256": "2b1b7161dc37a5c0aa2daaa9fb2abbd9988f5e9e75be18feeebb51c19cf1fcce"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
     "symbol": "_DIRECT_PATH_QUESTIONNAIRE_GOLD_TOPICS",
     "value_preview": "frozenset({\"course_pick\"})",
     "value_sha256": "2f2321a51ace4c232c714e7fb4e98274b3df1f7794c2ad30dfdd37fa92d6d946"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_SCOPE_OVERCLAIM_ABBREVIATIONS",
+    "value_preview": "(\n    \"т. д.\",\n    \"т. п.\",\n    \"т. е.\",\n    \"т.д.\",\n    \"т.п.\",\n    \"т.е.\",\n    \"г. \",\n    \"Г. \",\n    \"г.\",\n    \"Г.\",\n    \"см.\",\n    \"См.\",\n)",
+    "value_sha256": "2da93534338e4d289ff15754ab026bf131292fc42676f1d10cbeee1676576e0e"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL",
+    "value_preview": "\"\\ue000\"",
+    "value_sha256": "48847ce170fed1418545aec0e633a5f6eef4743342cab182be163e9239eaad93"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN",
+    "value_preview": "r\"(?P<leading>^[ \\t]*|(?<=[.!?])[ \\t]+)\"\n    r\"(?P<body>[^\\n]+?(?:[!?]+|\\.(?=[ \\t]+|$)|$))\"",
+    "value_sha256": "30e9de18cf79c52b2db639b4e95be945ae9237acacc82bc706eb555341ff184e"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE",
+    "value_preview": "re.compile(\n    rf\"(?:\"\n    r\"\\b(?:проверить|посмотреть|смотреть)\\s+подходящ\\w+\\s+\"\n    r\"(?:[a-zа-яё]+[-\\s]+){0,2}(?:групп\\w*|формат\\w*|вариант\\w*)\"\n    rf\"[^.!?\\n]{{0,50}}\\b(?:для|под)\\s+{_DIRECT_PATH_GRADE_CLASS_PATTERN}\"\n    r\"|\\bможно\\",
+    "value_sha256": "bd87a306843ac279ed2f1a71c25dfcf7c0764b340907901906dcf4bdb7398b85"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
+    "symbol": "_DIRECT_PATH_SUBJECT_MARKERS",
+    "value_preview": "(\n    (\"физика\", (\"физик\", \"physics\")),\n    (\"математика\", (\"математ\", \"math\")),\n    (\"информатика\", (\"информат\", \"программирован\", \"informatics\", \"programming\")),\n    (\"русский\", (\"русск\", \"russian\")),\n    (\"английский\", (\"англий\", \"englis",
+    "value_sha256": "415bb58ba9af8cefa9b81e74a282c53a3540088d2cc759fac7620ad830b290c7"
   },
   {
     "node_kind": "text_table",
@@ -10504,8 +10762,8 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "<module>",
     "symbol": "INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD",
-    "value_preview": "0.80",
-    "value_sha256": "1d464f4ecc27b72a9ec9055c27fd9fb9266bee266546149204cc8732b0cffe39"
+    "value_preview": "0.90",
+    "value_sha256": "26210f2c9712b1bbc37314121e08bacebd8bc2641e7495461f7462c9dc3f4e49"
   },
   {
     "node_kind": "text_table",
@@ -10690,6 +10948,14 @@
     "symbol": "MANAGER_ACTION_PROMISE_DEADLINE_RE",
     "value_preview": "re.compile(\n    r\"\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|\"\n    r\"в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|\"\n    r\"до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}(?::\\d{2})?)\\b\",\n    re.I,\n)",
     "value_sha256": "ba99f6823a807d560bc669391cae5fdf9a3ca1ecae186160d345bba96f7ac34c"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "qualname": "<module>",
+    "symbol": "NEXT_STEP_SOFT_ACTION_RE_FRAGMENT",
+    "value_preview": "r\"(?:уточн\\w*|указ\\w*|спрос\\w*|узна\\w*|выясн\\w*|поня\\w*|\"\n    r\"подтверд\\w*|подбер\\w*|подобр\\w*|провер\\w*|напиш\\w*|сообщ\\w*)\"",
+    "value_sha256": "6a9b41da793212e5168d04f47d37ded20fa640eb64b6f6cb2a81ed949a1554c4"
   },
   {
     "node_kind": "text_table",

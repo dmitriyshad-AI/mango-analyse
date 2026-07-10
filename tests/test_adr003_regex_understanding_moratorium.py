@@ -76,9 +76,9 @@ CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/p0_recall_spec.py": 11,
     "src/mango_mvp/channels/rules_engine.py": 7,
     "src/mango_mvp/channels/subscription_llm_parts/contracts.py": 11,
-    "src/mango_mvp/channels/subscription_llm_parts/direct_path.py": 10,
+    "src/mango_mvp/channels/subscription_llm_parts/direct_path.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 15,
-    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 64,
+    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 66,
     "src/mango_mvp/channels/subscription_llm_parts/provider.py": 3,
     "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/support.py": 3,
@@ -119,6 +119,11 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ("src/mango_mvp/channels/fact_venue_scope.py", "FACT_VENUE_SCOPE_ENV", "TELEGRAM_FACT_VENUE_SCOPE"),
     ("src/mango_mvp/channels/semantic_roles.py", "INTENT_STATE_REPAIR_ENV", "TELEGRAM_INTENT_STATE_REPAIR"),
     ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "ASSUMED_SCOPE_GUARD_ENV", "TELEGRAM_ASSUMED_SCOPE_GUARD"),
+    (
+        "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+        "DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV",
+        "TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD",
+    ),
     ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "DIRECT_P0_TEXT_HYGIENE_ENV", "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"),
     ("src/mango_mvp/channels/subscription_llm_parts/direct_path.py", "DIRECT_SLOT_TOPIC_SHADOW_ENV", "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"),
     (

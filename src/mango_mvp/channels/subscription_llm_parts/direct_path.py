@@ -104,6 +104,10 @@ RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
 ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 
+DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV = "TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD"
+
+DIRECT_PATH_FORMAT_GUIDANCE_ENV = "TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE"
+
 DIRECT_PLAN_KNOWN_SLOTS_ENV = "TELEGRAM_DIRECT_PLAN_KNOWN_SLOTS"
 
 DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV = "TELEGRAM_DIRECT_KEYWORD_FALLBACK_RELEVANCE"
@@ -171,6 +175,49 @@ _BOT_SAFE_MEMORY_INJECTION_RE = re.compile(
     r"(?i)(?:ignore\s+(?:all\s+)?previous|system\s*:|developer\s*:|assistant\s*:|"
     r"ты\s+теперь|игнорируй(?:те)?\s+(?:предыдущ|все|инструкц)|забудь(?:те)?\s+инструкц)"
 )
+
+_DIRECT_PATH_CLASS_LABEL_PATTERN = r"(?:класс(?:а|е|у|ом|ы|ов|ах)?|кл)\b\.?"
+_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN = r"(?:\s*-\s*(?:й|го))?"
+_DIRECT_PATH_GRADE_CLASS_PATTERN = (
+    rf"\d{{1,2}}{_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}"
+)
+
+_DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE = re.compile(
+    rf"(?:"
+    r"\b(?:проверить|посмотреть|смотреть)\s+подходящ\w+\s+"
+    r"(?:[a-zа-яё]+[-\s]+){0,2}(?:групп\w*|формат\w*|вариант\w*)"
+    rf"[^.!?\n]{{0,50}}\b(?:для|под)\s+{_DIRECT_PATH_GRADE_CLASS_PATTERN}"
+    r"|\bможно\s+смотреть\s+подходящ\w+\s+формат\w*\s+в\s+(?:унпк|фотон\w*)\b"
+    r"|\bдля\s+проверки\s+[^.!?\n]{0,30}\bгрупп\w*[^.!?\n]{0,30}\bдостаточно\b"
+    r"|\bследующ\w*\s+шаг\w*[^.!?\n]{0,30}\bпроверить\s+актуальн\w*\s+[^.!?\n]{0,20}\bгрупп\w*"
+    r")",
+    re.I,
+)
+
+DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT = (
+    "Чтобы я не ошиблась с актуальным набором, могу попросить менеджера проверить, есть ли подходящая группа."
+)
+
+_DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN = (
+    r"(?P<leading>^[ \t]*|(?<=[.!?])[ \t]+)"
+    r"(?P<body>[^\n]+?(?:[!?]+|\.(?=[ \t]+|$)|$))"
+)
+
+_DIRECT_PATH_SCOPE_OVERCLAIM_ABBREVIATIONS = (
+    "т. д.",
+    "т. п.",
+    "т. е.",
+    "т.д.",
+    "т.п.",
+    "т.е.",
+    "г. ",
+    "Г. ",
+    "г.",
+    "Г.",
+    "см.",
+    "См.",
+)
+_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL = "\ue000"
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     Path(__file__).resolve().parents[4]
@@ -279,6 +326,18 @@ def _text_hygiene_payment_fix_prompt_block(context: Optional[Mapping[str, Any]])
     )
 
 
+def _direct_path_format_guidance_block(context: Optional[Mapping[str, Any]]) -> str:
+    if not _direct_path_format_guidance_enabled(context):
+        return ""
+    return (
+        "Формат текста для клиента в draft_text:\n"
+        "- Если в ответе два или больше смысловых блока, разделяй их короткими абзацами с пустой строкой. "
+        "Пиши без Markdown-разметки и без жирного шрифта.\n"
+        "- Допустим максимум один эмодзи и только в лёгком позитивном контексте. "
+        "В P0, жалобах, возвратах, гарантиях и юридических темах не используй эмодзи.\n\n"
+    )
+
+
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if isinstance(context, Mapping):
         for key in (DIRECT_PATH_ENV, "direct_path_enabled"):
@@ -317,6 +376,22 @@ def _assumed_scope_guard_enabled(context: Optional[Mapping[str, Any]] = None) ->
         context,
         ASSUMED_SCOPE_GUARD_ENV,
         aliases=("assumed_scope_guard", "assumed_scope_guard_enabled"),
+    )
+
+
+def _direct_path_scope_overclaim_guard_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_PATH_SCOPE_OVERCLAIM_GUARD_ENV,
+        aliases=("direct_path_scope_overclaim_guard", "direct_path_scope_overclaim_guard_enabled"),
+    )
+
+
+def _direct_path_format_guidance_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_PATH_FORMAT_GUIDANCE_ENV,
+        aliases=("direct_path_format_guidance", "direct_path_format_guidance_enabled"),
     )
 
 def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -1040,8 +1115,21 @@ def _direct_path_grade_in_fact(grade: str, fact_text: str) -> bool:
         return True
     value = int(grade)
     text = _normalize_fact_match_text(fact_text)
-    ranges = [(int(a), int(b)) for a, b in re.findall(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(?:класс|кл)", text)]
-    singles = [int(item) for item in re.findall(r"\b(\d{1,2})\s*(?:класс|кл)\b", text)]
+    ranges = [
+        (int(a), int(b))
+        for a, b in re.findall(
+            rf"\b(\d{{1,2}})\s*[-–]\s*(\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\s*"
+            rf"{_DIRECT_PATH_CLASS_LABEL_PATTERN}",
+            text,
+        )
+    ]
+    singles = [
+        int(item)
+        for item in re.findall(
+            rf"\b(\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}",
+            text,
+        )
+    ]
     if ranges:
         return any(start <= value <= end for start, end in ranges)
     if singles:
@@ -1490,21 +1578,32 @@ def _direct_path_known_grade_subject(context: Optional[Mapping[str, Any]]) -> tu
     subject = _normalize_fact_match_text(known.get("subject") or known.get("course_subject") or "")
     return grade, subject
 
+
+_DIRECT_PATH_SUBJECT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("физика", ("физик", "physics")),
+    ("математика", ("математ", "math")),
+    ("информатика", ("информат", "программирован", "informatics", "programming")),
+    ("русский", ("русск", "russian")),
+    ("английский", ("англий", "english")),
+    ("химия", ("хими", "chemistry")),
+    ("биология", ("биолог", "biology")),
+)
+
+
+def _direct_path_subject_from_text(value: Any) -> str:
+    text = _normalize_fact_match_text(value)
+    for subject, aliases in _DIRECT_PATH_SUBJECT_MARKERS:
+        if any(alias in text for alias in aliases):
+            return subject
+    return ""
+
+
 def _direct_path_subject_matches_fact(subject: str, fact_text: str) -> bool:
     if not subject:
         return False
     text = _normalize_fact_match_text(fact_text)
-    subject_markers = (
-        ("физик", ("физик", "physics")),
-        ("математ", ("математ", "math")),
-        ("информат", ("информат", "программирован", "informatics", "programming")),
-        ("русск", ("русск", "russian")),
-        ("англий", ("англий", "english")),
-        ("хими", ("хими", "chemistry")),
-        ("биолог", ("биолог", "biology")),
-    )
-    for marker, aliases in subject_markers:
-        if marker in subject:
+    for marker, aliases in _DIRECT_PATH_SUBJECT_MARKERS:
+        if marker in subject or any(alias in subject for alias in aliases):
             return any(alias in text for alias in aliases)
     return subject in text
 
@@ -3294,6 +3393,7 @@ def _build_direct_path_prompt(
     return (
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
         f"{_direct_path_prose_model_led_block(context)}"
+        f"{_direct_path_format_guidance_block(context)}"
         f"{_direct_path_route_rubric_block(context)}"
         f"{_text_hygiene_payment_fix_prompt_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
@@ -3472,6 +3572,18 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
     return replace(result, metadata=metadata)
 
 
+def _direct_path_context_p0_active(context: Optional[Mapping[str, Any]]) -> bool:
+    if isinstance(context, Mapping):
+        memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else context
+        latch = memory.get("p0_latch") if isinstance(memory, Mapping) and isinstance(memory.get("p0_latch"), Mapping) else {}
+        if latch and (latch.get("active") or latch.get("had_hard_p0_claim")):
+            return True
+        risk_flags = memory.get("risk_flags") if isinstance(memory, Mapping) else ()
+        if isinstance(risk_flags, Sequence) and not isinstance(risk_flags, (str, bytes, bytearray)):
+            return any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", str(flag), re.I) for flag in risk_flags)
+    return False
+
+
 def _direct_path_assumed_scope_p0_active(
     result: SubscriptionDraftResult,
     *,
@@ -3484,15 +3596,7 @@ def _direct_path_assumed_scope_p0_active(
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     if isinstance(metadata.get("direct_path_model_p0"), Mapping):
         return True
-    if isinstance(context, Mapping):
-        memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else context
-        latch = memory.get("p0_latch") if isinstance(memory, Mapping) and isinstance(memory.get("p0_latch"), Mapping) else {}
-        if latch and (latch.get("active") or latch.get("had_hard_p0_claim")):
-            return True
-        risk_flags = memory.get("risk_flags") if isinstance(memory, Mapping) else ()
-        if isinstance(risk_flags, Sequence) and not isinstance(risk_flags, (str, bytes, bytearray)):
-            return any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", str(flag), re.I) for flag in risk_flags)
-    return False
+    return _direct_path_context_p0_active(context)
 
 
 def _direct_path_do_not_reask_slots(context: Optional[Mapping[str, Any]]) -> set[str]:
@@ -3626,6 +3730,288 @@ def apply_assumed_scope_guard(
     direct["assumed_scope_guard"] = trace
     metadata["direct_path"] = direct
     return replace(result, metadata=metadata)
+
+
+def _direct_path_scope_overclaim_candidate(
+    sentence: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    normalized = _normalize_fact_match_text(sentence)
+    if not normalized or _normalize_fact_match_text(DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT) in normalized:
+        return False
+    if _direct_path_scope_overclaim_honest_handoff(sentence):
+        return False
+    if "лучше проверить по актуальному набору" in normalized:
+        return False
+    return bool(_DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE.search(sentence))
+
+
+def _direct_path_scope_overclaim_honest_handoff(sentence: str) -> bool:
+    normalized = _normalize_fact_match_text(sentence)
+    has_actor = any(marker in normalized for marker in ("менеджер", "коллег", "специалист", "администратор"))
+    if not has_actor:
+        return False
+    cautious_check = any(marker in normalized for marker in ("есть ли", "актуальн", "уточн", "свер", "посмотр"))
+    explicit_transfer = any(marker in normalized for marker in ("передам", "передаю", "попрошу", "подключу", "свяжу"))
+    future_check = any(marker in normalized for marker in ("проверит", "уточнит", "сверит", "посмотрит", "может проверить", "может посмотреть"))
+    return (explicit_transfer and any(marker in normalized for marker in ("провер", "уточн", "свер", "посмотр"))) or (
+        future_check and cautious_check
+    )
+
+
+def _direct_path_scope_overclaim_grade_subject(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> tuple[str, str]:
+    grade, subject = _direct_path_known_grade_subject(context)
+    if grade and subject:
+        return grade, subject
+
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    containers: list[Mapping[str, Any]] = []
+    for key in ("semantic_frame", "semantic_frame_shadow"):
+        value = metadata.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        for key in ("semantic_frame", "semantic_frame_shadow"):
+            value = direct.get(key)
+            if isinstance(value, Mapping):
+                containers.append(value)
+    for frame in containers:
+        product, confidence, _, _ = _fact_select_product_from_payload(frame)
+        if confidence < 0.90:
+            continue
+        if not grade:
+            grade = re.sub(r"\D+", "", str(product.get("grade") or ""))[:2]
+        if not subject:
+            subject = _normalize_fact_match_text(product.get("subject") or "")
+        if grade and subject:
+            break
+    return grade, subject
+
+
+def _direct_path_scope_overclaim_sentence_grade_subject(
+    sentence: str,
+) -> tuple[str, str]:
+    normalized = _normalize_fact_match_text(sentence)
+    grade_match = re.search(
+        rf"\b(\d{{1,2}}){_DIRECT_PATH_ORDINAL_GRADE_SUFFIX_PATTERN}\s*{_DIRECT_PATH_CLASS_LABEL_PATTERN}",
+        normalized,
+    )
+    grade = grade_match.group(1) if grade_match else ""
+    subject = _direct_path_subject_from_text(normalized)
+    return grade, subject
+
+
+def _direct_path_scope_overclaim_p0_active(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if result.route == "manager_only" or str(result.risk_level or "").strip().casefold() in {
+        "high",
+        "p0",
+        "critical",
+        "high_risk",
+    }:
+        return True
+    flags = {str(flag or "").strip().casefold() for flag in result.safety_flags}
+    result_flag_active = any(
+        (
+            "p0" in flag
+            and not any(marker in flag for marker in ("false_p0", "non_p0", "p0_repaired", "p0_cleared"))
+        )
+        or any(
+            marker in flag
+            for marker in (
+                "high_risk",
+                "legal_threat",
+                "payment_dispute",
+                "complaint",
+                "zero_collect",
+            )
+        )
+        for flag in flags
+    )
+    return result_flag_active or _direct_path_context_p0_active(context)
+
+
+def _direct_path_scope_overclaim_supported_by_exact_fact(
+    fact_pack: Optional[Mapping[str, Any]],
+    *,
+    sentence: str,
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if not isinstance(fact_pack, Mapping):
+        return False
+    trusted_grade, trusted_subject = _direct_path_scope_overclaim_grade_subject(result, context=context)
+    if not trusted_grade or not trusted_subject:
+        return False
+    sentence_grade, sentence_subject = _direct_path_scope_overclaim_sentence_grade_subject(sentence)
+    normalized_trusted_subject = _direct_path_subject_from_text(trusted_subject) or trusted_subject
+    if sentence_grade and sentence_grade != trusted_grade:
+        return False
+    if sentence_subject and sentence_subject != normalized_trusted_subject:
+        return False
+    grade = sentence_grade or trusted_grade
+    subject = sentence_subject or normalized_trusted_subject
+    facts = fact_pack.get("facts") if isinstance(fact_pack.get("facts"), Mapping) else {}
+    metadata = fact_pack.get("fact_metadata") if isinstance(fact_pack.get("fact_metadata"), Mapping) else {}
+    exact_keys = tuple(str(key) for key in (fact_pack.get("exact_keys") or ()) if str(key).strip())
+    active_brand = _normalize_fact_match_text(_active_brand(context))
+    for key in exact_keys:
+        fact_text = str(facts.get(key) or "").strip()
+        fact_meta = metadata.get(key) if isinstance(metadata.get(key), Mapping) else {}
+        fact_brand = _normalize_fact_match_text(fact_meta.get("brand") or key.split(".", 1)[0])
+        if not fact_text or not active_brand or fact_brand != active_brand:
+            continue
+        if not _truthy_value(fact_meta.get("client_safe")):
+            continue
+        normalized = _normalize_fact_match_text(fact_text)
+        if not re.search(
+            rf"\b(?:\d{{1,2}}\s*[-–]\s*)?{_DIRECT_PATH_GRADE_CLASS_PATTERN}",
+            normalized,
+        ):
+            continue
+        if not _direct_path_grade_in_fact(grade, fact_text) or not _direct_path_subject_matches_fact(subject, fact_text):
+            continue
+        if any(marker in normalized for marker in ("недоступ", "не доступ", "мест нет", "нет мест")):
+            continue
+        words = {word.strip(".,:;!?()") for word in normalized.split()}
+        has_positive_availability = any(
+            marker in normalized
+            for marker in (
+                "идет набор",
+                "набор идет",
+                "набор открыт",
+                "открыт набор",
+                "можно записаться",
+                "места есть",
+            )
+        ) or bool(words.intersection({"доступна", "доступны", "доступен", "доступно"})) or (
+            "есть" in words and "групп" in normalized
+        )
+        if has_positive_availability:
+            return True
+    return False
+
+
+def apply_direct_path_scope_overclaim_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    fact_pack: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _direct_path_scope_overclaim_guard_enabled(context):
+        return result
+    if _direct_path_scope_overclaim_p0_active(result, context=context):
+        return result
+    text = str(result.draft_text or "")
+    if not text.strip():
+        return result
+
+    try:
+        safe_text_present = DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT in text
+        candidate_count = 0
+        replacement_count = 0
+        supported_count = 0
+        handoff_skip_count = 0
+        protected_text = text
+        for abbreviation in _DIRECT_PATH_SCOPE_OVERCLAIM_ABBREVIATIONS:
+            protected_text = protected_text.replace(
+                abbreviation,
+                abbreviation.replace(".", _DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL),
+            )
+        protected_text = re.sub(
+            r"(?<=\d)\.(?=\d)",
+            _DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL,
+            protected_text,
+        )
+
+        def replace_sentence(match: re.Match[str]) -> str:
+            nonlocal candidate_count, handoff_skip_count, replacement_count, supported_count
+            sentence = str(match.group("body") or "")
+            if not _DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE.search(sentence):
+                return match.group(0)
+            if _direct_path_scope_overclaim_honest_handoff(sentence):
+                handoff_skip_count += 1
+                return match.group(0)
+            if not _direct_path_scope_overclaim_candidate(sentence, context=context):
+                return match.group(0)
+            candidate_count += 1
+            supported = _direct_path_scope_overclaim_supported_by_exact_fact(
+                fact_pack,
+                sentence=sentence,
+                result=result,
+                context=context,
+            )
+            if supported:
+                supported_count += 1
+                return match.group(0)
+            replacement_count += 1
+            if safe_text_present or replacement_count > 1:
+                return ""
+            return f"{match.group('leading')}{DIRECT_PATH_SCOPE_OVERCLAIM_SAFE_TEXT}"
+
+        updated = re.sub(
+            _DIRECT_PATH_SCOPE_OVERCLAIM_SENTENCE_PATTERN,
+            replace_sentence,
+            protected_text,
+            flags=re.M,
+        ).replace(_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL, ".")
+        if not candidate_count and not handoff_skip_count:
+            return result
+
+        if replacement_count:
+            action = "replaced_overclaim_sentence"
+        elif supported_count:
+            action = "skipped_supported_exact_fact"
+        else:
+            action = "skipped_honest_handoff"
+
+        trace = {
+            "schema_version": "direct_path_scope_overclaim_guard_v1_2026_07_10",
+            "enabled": True,
+            "action": action,
+            "candidate_count": candidate_count,
+            "replacement_count": replacement_count,
+            "supported_count": supported_count,
+            "handoff_skip_count": handoff_skip_count,
+            "route_unchanged": True,
+        }
+        metadata = dict(result.metadata)
+        direct = dict(metadata.get("direct_path") or {})
+        direct["scope_overclaim_guard"] = trace
+        metadata["direct_path"] = direct
+        metadata["scope_overclaim_guard"] = trace
+        if not replacement_count:
+            return replace(result, metadata=metadata)
+        return replace(
+            result,
+            draft_text=updated.strip(),
+            safety_flags=tuple(dict.fromkeys((*result.safety_flags, "direct_path_scope_overclaim_guarded"))),
+            context_used=tuple(dict.fromkeys((*result.context_used, "direct_path_scope_overclaim_guard"))),
+            metadata=metadata,
+        )
+    except Exception as exc:  # fail open: this guard must never block a valid draft
+        metadata = dict(result.metadata)
+        trace = {
+            "schema_version": "direct_path_scope_overclaim_guard_v1_2026_07_10",
+            "enabled": True,
+            "action": "error_fail_open",
+            "error_type": type(exc).__name__,
+            "route_unchanged": True,
+        }
+        direct = dict(metadata.get("direct_path") or {})
+        direct["scope_overclaim_guard"] = trace
+        metadata["direct_path"] = direct
+        metadata["scope_overclaim_guard"] = trace
+        return replace(result, metadata=metadata)
 
 
 def _direct_path_route_rubric_should_regenerate(

@@ -969,6 +969,14 @@
   },
   {
     "flags": "re.I",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "pattern_preview": "rf\"(?:\"\n    r\"\\b(?:проверить|посмотреть|смотреть)\\s+подходящ\\w+\\s+\"\n    r\"(?:[a-zа-яё]+[-\\s]+){0,2}(?:групп\\w*|формат\\w*|вариант\\w*)\"\n    rf\"[^.!?\\n]{{0,50}}\\b(",
+    "pattern_sha256": "a872fd003d591465ae316ac79718a3ec132e65a447b9512deef26e3a954a621d",
+    "qualname": "<module>",
+    "target": "_DIRECT_PATH_SCOPE_OVERCLAIM_TARGET_RE"
+  },
+  {
+    "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "(?:гарантир\\w*|обеща\\w*|получит\\w*|получите|набрать|набер[её]т\\w*|набер[её]те|сдаст\\w*|сдадите|поступит\\w*|ваш\\w*\\s+реб[её]н\\w*|ученик\\w*)[^.!?\\n]{0,80}\\b\\d{1,3",
     "pattern_sha256": "d33d4eb340da8cd661133e3a6015519445bc0b48913cdb82fa38dd84aa89a794",
@@ -1110,6 +1118,14 @@
     "pattern_sha256": "5757214a47c801e40d2f2d8ac15cc0a72b43df13307273ffdf76f66fcedaed8a",
     "qualname": "<module>",
     "target": "BOT_SAFE_MEMORY_CONCRETE_STEP_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "(?:\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*|\\bдальше\\s+(?:нужно|по\\s+плану)\\s+|\\bлучше\\s+начать\\s+с\\s+)[^.!?\\n]{0,160}?\\b",
+    "pattern_sha256": "8239c82c42e46cfabe7e3ec66fc9952ce55cb604c0ba5766cd033f9fda5960f5",
+    "qualname": "<module>",
+    "target": "BOT_SAFE_MEMORY_RISKY_NEXT_STEP_FRAME_RE"
   },
   {
     "flags": "re.I",
@@ -1526,6 +1542,14 @@
     "pattern_sha256": "d858f60d6eb1ceed7fee412f2811ca122624b22dde97313469614e3871199802",
     "qualname": "<module>",
     "target": "COSMETIC_OPENING_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "r\"(?:\"\n    r\"\\bследующ(?:ий|им)\\s+шаг(?:ом)?(?:\\s+\\w+){0,2}\\s*(?:[:—-]|\\b(?:будет|это)\\b)\\s*\"\n    r\"|\"\n    r\"\\bдальше\\s+(?:нужно|по\\s+плану)\\s+\"\n    r\")\"\n    r\"",
+    "pattern_sha256": "80d17be11f80807cd2cd34497a3b2487a34e38b7d9b9f5e18bd18a0cf3afa6be",
+    "qualname": "<module>",
+    "target": "BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE"
   },
   {
     "flags": "re.I",

@@ -53,6 +53,7 @@ def test_memory_measure_off_on_commands_use_same_set_and_enable_e4b_sources_for_
     assert off["argv"][:-1] == on["argv"][:-1]
     assert off["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "0"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "1"
+    assert on["env"]["TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"] == "1"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"] == str(tmp_path / "customer_timeline.sqlite")
     assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE"] == "1"
     assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS"] == "1"

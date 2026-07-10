@@ -1270,6 +1270,7 @@ def run_one_dialog_replay(
         max_turns_override=len(source_turns),
         debug_trace_run_dir=debug_trace_run_dir,
         judge_prompt_version=judge_prompt_version,
+        replay_reference_turns=source_turns,
     )
     return {
         **dialog,
@@ -1715,6 +1716,7 @@ def run_one_dialog(
     max_turns_override: int = 0,
     debug_trace_run_dir: Path | None = None,
     judge_prompt_version: str = "v2",
+    replay_reference_turns: Sequence[Mapping[str, Any]] | None = None,
 ) -> Mapping[str, Any]:
     dialog_id = str(persona.get("dialog_id") or "")
     brand = str(persona.get("brand") or "unknown")
@@ -1905,11 +1907,20 @@ def run_one_dialog(
             turn["bot_answerability_trace"] = answerability_trace_metadata
         if semantic_frame_metadata:
             turn["bot_semantic_frame"] = semantic_frame_metadata
+        reference_turn = (
+            replay_reference_turns[turn_index - 1]
+            if replay_reference_turns is not None and turn_index - 1 < len(replay_reference_turns)
+            else {}
+        )
+        reference_manager_reply = str(reference_turn.get("reference_manager_reply") or "").strip()
+        if reference_manager_reply:
+            turn["reference_manager_reply"] = reference_manager_reply
+            turn["reference_event_count"] = reference_turn.get("reference_event_count")
         if _handoff_trace_enabled():
             turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
         recent_messages.append(f"Клиент: {client_message}")
-        recent_messages.append(f"Ответ: {bot_text}")
+        recent_messages.append(f"Ответ: {reference_manager_reply or bot_text}")
         if client_stop:
             break
 
@@ -2252,6 +2263,7 @@ def build_judge_prompt(
         f"Ход {turn['turn']}\n"
         f"Клиент видел реплику клиента: {turn['client_message']}\n"
         f"Клиент видел ответ бота: {turn['bot_text']}\n"
+        f"{_reference_manager_reply_for_judge(turn)}"
         "Внутренние метаданные, клиент их НЕ видел: "
         f"route={turn['bot_route']}; topic={turn['bot_topic_id']}; safety={turn['bot_safety_flags']}; "
         f"checklist={turn.get('bot_manager_checklist') or []}; missing_facts={turn.get('bot_missing_facts') or []}\n"
@@ -2307,6 +2319,16 @@ def build_judge_prompt(
         f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
         "Транскрипт:\n"
         f"{transcript}\n"
+    )
+
+
+def _reference_manager_reply_for_judge(turn: Mapping[str, Any]) -> str:
+    text = str(turn.get("reference_manager_reply") or "").strip()
+    if not text:
+        return ""
+    return (
+        "Реальный ответ менеджера после этой реплики клиента, это эталон сравнения, клиент его видел в прошлом диалоге: "
+        f"{text}\n"
     )
 
 

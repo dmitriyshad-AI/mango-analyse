@@ -26,6 +26,7 @@ MAIN_FOLDER_TIMELINE_DB = Path(
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
 DEFAULT_REPORT = Path("audits/_inbox/memory_measure_apparatus_2026-06-21/context_probe_report.json")
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 E4B_MEMORY_SOURCE_POLICY_ENV = {
     "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE": "1",
     "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS": "1",
@@ -88,19 +89,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def probe_persona(persona: Mapping[str, Any], *, timeline_db: Path) -> Mapping[str, Any]:
     old_flag = os.environ.get("TELEGRAM_BOT_SAFE_CRM_CONTEXT")
+    old_memory_prompt_flag = os.environ.get(TIMELINE_MEMORY_IN_PROMPT_ENV)
     old_db = os.environ.get("TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB")
     old_policy_env = {name: os.environ.get(name) for name in E4B_MEMORY_SOURCE_POLICY_ENV}
     try:
         os.environ["TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"] = str(timeline_db)
         os.environ["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] = "0"
+        os.environ.pop(TIMELINE_MEMORY_IN_PROMPT_ENV, None)
         off_context = build_dynamic_bot_safe_crm_context(persona, active_brand=str(persona.get("brand") or "unknown"))
         off_block = _prompt_block(persona, off_context)
         os.environ["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] = "1"
+        os.environ[TIMELINE_MEMORY_IN_PROMPT_ENV] = "1"
         os.environ.update(E4B_MEMORY_SOURCE_POLICY_ENV)
         on_context = build_dynamic_bot_safe_crm_context(persona, active_brand=str(persona.get("brand") or "unknown"))
         on_block = _prompt_block(persona, on_context)
     finally:
         _restore_env("TELEGRAM_BOT_SAFE_CRM_CONTEXT", old_flag)
+        _restore_env(TIMELINE_MEMORY_IN_PROMPT_ENV, old_memory_prompt_flag)
         _restore_env("TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB", old_db)
         for name, value in old_policy_env.items():
             _restore_env(name, value)
@@ -163,6 +168,8 @@ def _select_probe_personas(
             if persona.get("category") == "memory_dual_brand_neg" and str(persona.get("brand") or "").casefold() in {"foton", "unpk"}:
                 selected.append(persona)
                 break
+    if not selected:
+        selected.extend(personas[: max(1, int(limit or 3))])
     return selected[: max(1, int(limit or 3))]
 
 

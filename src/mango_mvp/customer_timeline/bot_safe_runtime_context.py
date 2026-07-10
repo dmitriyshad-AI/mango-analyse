@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
-from mango_mvp.customer_timeline.source_policy import CHANNEL_HISTORY_SOURCE_SYSTEMS, MAIL_STAGE2_SOURCE_SYSTEM
+from mango_mvp.customer_timeline.source_policy import (
+    CHANNEL_HISTORY_SOURCE_SYSTEMS,
+    MAIL_STAGE2_SOURCE_SYSTEM,
+    MANGO_PROCESSED_SOURCE_SYSTEM,
+)
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
@@ -22,6 +26,7 @@ BOT_SAFE_TIMELINE_CONTEXT_SOURCE = "customer_timeline_bot_context"
 BOT_SAFE_CHUNK_TYPE = "bot_safe_summary"
 MAIL_STAGE2_CHUNK_TYPE = "email_message"
 CHANNEL_HISTORY_CHUNK_TYPE = "channel_message"
+MANGO_CALL_CHUNK_TYPE = "mango_call_summary"
 DEFAULT_BOT_SAFE_TENANT_ID = "foton"
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
@@ -376,6 +381,32 @@ def _safe_item_for_brand(
 ) -> Mapping[str, Any]:
     source_system = _normalize_tag(item.get("source_system"))
     chunk_type = _normalize_tag(item.get("chunk_type"))
+    if source_system == MANGO_PROCESSED_SOURCE_SYSTEM and chunk_type == MANGO_CALL_CHUNK_TYPE:
+        if not _mango_call_item_visible_for_bot(tags):
+            return {}
+        status = _next_step_status(item)
+        text = strip_unconfirmed_next_step_text_for_bot(
+            _sanitize_channel_history_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary"))),
+            next_step_status=status,
+        )
+        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
+            return {}
+        return {
+            "chunk_type": MANGO_CALL_CHUNK_TYPE,
+            "source_system": MANGO_PROCESSED_SOURCE_SYSTEM,
+            "text": _truncate(text, 700),
+            "event_at": _clean_text(item.get("event_at")),
+            "next_step_status": status,
+            "freshness_score": item.get("freshness_score"),
+            "relevance_tags": [
+                tag
+                for tag in tags
+                if tag in {"call", "bot_visible", MANGO_PROCESSED_SOURCE_SYSTEM}
+            ],
+            "brand_scope": "brand_agnostic_call_input",
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }
     if source_system == MAIL_STAGE2_SOURCE_SYSTEM and chunk_type == MAIL_STAGE2_CHUNK_TYPE:
         if not _mail_stage2_item_visible_for_active_brand(tags, active_brand=active_brand):
             return {}
@@ -484,6 +515,11 @@ def _mail_stage2_item_visible_for_active_brand(tags: Sequence[str], *, active_br
     if known_brand_tags != {active_brand}:
         return False
     return {"email", "bot_visible", MAIL_STAGE2_SOURCE_SYSTEM}.issubset(tag_set)
+
+
+def _mango_call_item_visible_for_bot(tags: Sequence[str]) -> bool:
+    tag_set = set(tags)
+    return {"call", "bot_visible", MANGO_PROCESSED_SOURCE_SYSTEM}.issubset(tag_set)
 
 
 def _channel_history_item_visible_for_active_brand(

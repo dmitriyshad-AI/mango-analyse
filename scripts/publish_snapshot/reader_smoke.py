@@ -199,7 +199,6 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
         if not _table_exists(con, "timeline_events") or not _table_exists(con, "bot_context_chunks"):
             return {"ok": True, "skipped": True, "reason": "timeline_events_or_chunks_table_missing"}
-        brand_placeholders = ",".join("?" for _ in _KNOWN_BRANDS)
         counts = {
             "allowed_mango_processed_chunks": int(
                 con.execute(
@@ -225,7 +224,32 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     """
                 ).fetchone()[0]
             ),
-            "allowed_mango_processed_non_strong_identity": int(
+            "allowed_mango_processed_wrong_chunk_type": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND COALESCE(b.chunk_type, '') != 'mango_call_summary'
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_customer_mismatch": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    LEFT JOIN timeline_events AS e ON e.event_id = b.event_id
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND COALESCE(b.customer_id, '') != COALESCE(e.customer_id, '')
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_missing_identity": int(
                 con.execute(
                     """
                     SELECT COUNT(*)
@@ -239,29 +263,31 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                       AND (
                         b.customer_id IS NULL OR b.customer_id = ''
                         OR e.customer_id IS NULL OR e.customer_id = ''
-                        OR ci.identity_status IS NULL OR ci.identity_status != 'strong'
+                        OR b.customer_id != e.customer_id
+                        OR ci.identity_status IS NULL
+                        OR ci.identity_status NOT IN ('strong', 'partial')
                       )
                     """
                 ).fetchone()[0]
             ),
-            "allowed_mango_processed_unknown_brand": int(
+            "allowed_mango_processed_unknown_brand_metric": int(
                 con.execute(
-                    f"""
+                    """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
                     WHERE b.source_system = 'mango_processed_summary'
                       AND b.allowed_for_bot = 1
                       AND b.requires_manager_review = 0
-                      AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ({brand_placeholders})
-                    """,
-                    tuple(sorted(_KNOWN_BRANDS)),
+                      AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ('foton', 'unpk')
+                    """
                 ).fetchone()[0]
             ),
         }
     violations = {
         key: value
         for key, value in counts.items()
-        if key != "allowed_mango_processed_chunks" and int(value) > 0
+        if key not in {"allowed_mango_processed_chunks", "allowed_mango_processed_unknown_brand_metric"}
+        and int(value) > 0
     }
     return {
         "ok": not violations,
@@ -270,7 +296,7 @@ def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
         "violations": violations,
         "policy": (
             "opened mango_processed_summary chunks require strong_unique event match, "
-            "strong customer identity, and content_brand in {foton, unpk}"
+            "resolved customer identity; content_brand may be unknown because calls are brand-agnostic input context"
         ),
     }
 

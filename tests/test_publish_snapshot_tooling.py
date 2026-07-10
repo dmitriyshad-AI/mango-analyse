@@ -271,7 +271,7 @@ def test_reader_smoke_allows_strong_known_brand_mango_processed_chunks(tmp_path:
     assert gate["violations"] == {}
 
 
-def test_reader_smoke_blocks_mango_processed_non_strong_or_unknown_brand(tmp_path: Path) -> None:
+def test_reader_smoke_blocks_mango_processed_non_strong_but_allows_unknown_brand_metric(tmp_path: Path) -> None:
     prod_dir = tmp_path / "prod"
     staging_dir = tmp_path / "staging"
     prod_dir.mkdir()
@@ -328,7 +328,80 @@ def test_reader_smoke_blocks_mango_processed_non_strong_or_unknown_brand(tmp_pat
     gate = smoke_report["mango_processed_allowed_safety_gate"]
     assert gate["ok"] is False
     assert gate["violations"]["allowed_mango_processed_non_strong_match"] == 1
-    assert gate["violations"]["allowed_mango_processed_unknown_brand"] == 1
+    assert "allowed_mango_processed_unknown_brand_metric" not in gate["violations"]
+    assert gate["counts"]["allowed_mango_processed_unknown_brand_metric"] == 1
+
+
+def test_reader_smoke_blocks_mango_processed_corrupted_identity_contract(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["control_customers"] = [{"customer_id": staging_customer, "expected_found": True}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    with sqlite3.connect(staging) as con:
+        event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
+        con.execute(
+            """
+            UPDATE timeline_events
+            SET source_system = 'mango_processed_summary',
+                match_status = 'strong_unique'
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+        con.execute(
+            "UPDATE customer_identities SET identity_status = 'ambiguous' WHERE customer_id = ?",
+            (staging_customer,),
+        )
+        rows = [
+            ("mango-wrong-type", staging_customer, "wrong_call_summary"),
+            ("mango-mismatch", "customer:other", "mango_call_summary"),
+            ("mango-bad-identity", staging_customer, "mango_call_summary"),
+        ]
+        for chunk_id, customer_id, chunk_type in rows:
+            con.execute(
+                """
+                INSERT INTO bot_context_chunks (
+                  chunk_id, tenant_id, customer_id, opportunity_id, event_id,
+                  source_system, source_ref, chunk_type, event_at, freshness_score,
+                  allowed_for_bot, requires_manager_review, ordinal, created_at,
+                  record_hash, record_json
+                )
+                VALUES (?, 'foton', ?, NULL, ?, 'mango_processed_summary', 'mango:bad',
+                  ?, '2026-05-12T12:00:00+00:00', 0.7,
+                  1, 0, 0, '2026-05-12T12:00:00+00:00', ?, ?)
+                """,
+                (
+                    chunk_id,
+                    customer_id,
+                    event_id,
+                    chunk_type,
+                    "f" * 64,
+                    json.dumps(
+                        {
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                            "metadata": {"content_brand": "unknown"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+        con.commit()
+
+    smoke_report, smoke_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+
+    assert smoke_ok is False
+    gate = smoke_report["mango_processed_allowed_safety_gate"]
+    assert gate["ok"] is False
+    assert gate["violations"]["allowed_mango_processed_wrong_chunk_type"] == 1
+    assert gate["violations"]["allowed_mango_processed_customer_mismatch"] == 1
+    assert gate["violations"]["allowed_mango_processed_missing_identity"] == 3
 
 
 def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:

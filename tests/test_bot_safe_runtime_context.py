@@ -22,6 +22,7 @@ from mango_mvp.customer_timeline.contracts import (
     IdentityLink,
     IdentityLinkType,
     IdentityStatus,
+    TimelineEvent,
 )
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
@@ -29,6 +30,7 @@ from mango_mvp.customer_timeline.source_policy import (
     MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     MAIL_STAGE2_BOT_VISIBLE_ENV,
 )
+from mango_mvp.customer_timeline.stage4b_bot_opening import Stage4BBotOpeningConfig, run_stage4b_bot_opening
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -305,6 +307,103 @@ def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path:
     assert context["found"] is True
     assert "клиент в Telegram уточнял" in raw
     assert "telegram_history" in raw
+
+
+def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="channel_message",
+                text="УНПК: клиент в Wappi уточнял выездную школу.",
+                source_system="wappi_telegram",
+                source_ref="wappi:foreign",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("channel", "bot_visible", "wappi_telegram", "unpk"),
+                created_at=NOW,
+            )
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is False
+    assert "УНПК: клиент в Wappi" not in raw
+
+
+def test_bot_safe_crm_context_reads_opened_mango_calls_without_brand_scope(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="mango_call",
+            event_at=NOW,
+            source_system="mango_processed_summary",
+            source_id="mango-call-runtime",
+            direction="inbound",
+            summary="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
+            text_preview="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
+            match_status="strong_unique",
+            created_at=NOW,
+        )
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_id=event.event_id,
+                chunk_id="chunk-mango-call",
+                chunk_type="mango_call_summary",
+                text="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
+                source_system="mango_processed_summary",
+                source_ref="mango:test-call",
+                event_at=NOW,
+                relevance_tags=("call", "bot_visible", "mango_processed_summary", "brand_unknown"),
+                allowed_for_bot=False,
+                requires_manager_review=True,
+            )
+        )
+    report = run_stage4b_bot_opening(
+        Stage4BBotOpeningConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+            allow_test_paths=True,
+        )
+    )
+    assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "клиент обсуждал подготовку к экзамену" in raw
+    item = next(
+        item
+        for item in context["timeline_context"]["bot_context"]["items"]
+        if item.get("chunk_type") == "mango_call_summary"
+    )
+    assert item["source_system"] == "mango_processed_summary"
+    assert item["brand_scope"] == "brand_agnostic_call_input"
 
 
 def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, monkeypatch) -> None:

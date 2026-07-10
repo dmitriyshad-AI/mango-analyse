@@ -226,8 +226,24 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             created_at=NOW,
             updated_at=NOW,
         )
+        mismatch_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:mango-mismatch",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        ambiguous_identity_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="ambiguous",
+            customer_id="customer:mango-ambiguous-identity",
+            created_at=NOW,
+            updated_at=NOW,
+        )
         store.upsert_customer(customer)
         store.upsert_customer(partial_customer)
+        store.upsert_customer(mismatch_customer)
+        store.upsert_customer(ambiguous_identity_customer)
         strong_event = _mango_call_event(
             customer,
             "mango-strong",
@@ -253,19 +269,56 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             partial_customer,
             "mango-partial",
             match_status="strong_unique",
-            text="Фотон. Partial identity не должен открыться даже при strong_unique event.",
+            text="Фотон. Partial identity у клиента не закрывает strong_unique звонок.",
             brand="foton",
         )
         unknown_brand_event = _mango_call_event(
             customer,
             "mango-unknown-brand",
             match_status="strong_unique",
-            text="Звонок без бренда не должен открыться.",
+            text="Звонок без бренда должен открыться как общий телефонный контекст.",
             brand="unknown",
         )
-        for event in (strong_event, ambiguous_event, unmatched_event, partial_event, unknown_brand_event):
+        wrong_chunk_type_event = _mango_call_event(
+            customer,
+            "mango-wrong-chunk-type",
+            match_status="strong_unique",
+            text="Mango source с неправильным chunk_type не должен открыться.",
+            brand="unknown",
+        )
+        mismatch_event = _mango_call_event(
+            customer,
+            "mango-customer-mismatch",
+            match_status="strong_unique",
+            text="Mango chunk с другим customer_id не должен открыться.",
+            brand="unknown",
+        )
+        ambiguous_identity_event = _mango_call_event(
+            ambiguous_identity_customer,
+            "mango-ambiguous-identity",
+            match_status="strong_unique",
+            text="Mango strong_unique не должен открыться при ambiguous customer identity.",
+            brand="unknown",
+        )
+        for event in (
+            strong_event,
+            ambiguous_event,
+            unmatched_event,
+            partial_event,
+            unknown_brand_event,
+            wrong_chunk_type_event,
+            mismatch_event,
+            ambiguous_identity_event,
+        ):
             store.upsert_event(event)
-            store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
+            if event is wrong_chunk_type_event:
+                store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or "", chunk_type="wrong_call_summary"))
+            elif event is mismatch_event:
+                store.upsert_bot_context_chunk(
+                    _mango_call_chunk(event, text=event.summary or "", customer_id=mismatch_customer.customer_id)
+                )
+            else:
+                store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
 
     report = run_stage4b_bot_opening(
         Stage4BBotOpeningConfig(
@@ -277,11 +330,13 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
         )
     )
 
-    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 1}
-    assert report["apply"]["chunks_updated"] == 1
-    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 1
+    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 3}
+    assert report["apply"]["chunks_updated"] == 3
+    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 3
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
     assert report["final_checks"]["opened_disallowed_identity_after"] == 0
+    assert report["final_checks"]["opened_unknown_brand_non_call_after"] == 0
+    assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 1
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -297,8 +352,15 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert "brand_unknown" not in set(payload["relevance_tags"])
     assert rows[ambiguous_event.event_id]["allowed_for_bot"] == 0
     assert rows[unmatched_event.event_id]["allowed_for_bot"] == 0
-    assert rows[partial_event.event_id]["allowed_for_bot"] == 0
-    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 0
+    assert rows[partial_event.event_id]["allowed_for_bot"] == 1
+    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 1
+    unknown_payload = json.loads(rows[unknown_brand_event.event_id]["record_json"])
+    assert {"call", "mango_processed_summary", "bot_visible", "brand_unknown"}.issubset(
+        set(unknown_payload["relevance_tags"])
+    )
+    assert rows[wrong_chunk_type_event.event_id]["allowed_for_bot"] == 0
+    assert rows[mismatch_event.event_id]["allowed_for_bot"] == 0
+    assert rows[ambiguous_identity_event.event_id]["allowed_for_bot"] == 0
 
 
 def test_stage4b_retracts_previously_opened_non_strong_or_conflicted_chunks(tmp_path: Path) -> None:
@@ -673,14 +735,20 @@ def _mango_call_event(
     )
 
 
-def _mango_call_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
+def _mango_call_chunk(
+    event: TimelineEvent,
+    *,
+    text: str,
+    chunk_type: str = "mango_call_summary",
+    customer_id: str | None = None,
+) -> BotContextChunk:
     return BotContextChunk(
         tenant_id=event.tenant_id,
-        customer_id=event.customer_id or "",
+        customer_id=customer_id or event.customer_id or "",
         event_id=event.event_id,
         source_ref=event.source_ref,
         source_system=event.source_system,
-        chunk_type="mango_call_summary",
+        chunk_type=chunk_type,
         text=text,
         summary=event.summary or "",
         event_at=event.event_at,

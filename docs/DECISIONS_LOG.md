@@ -1714,3 +1714,41 @@ owner report from 2026-07-09 was based on a `23068`-row cache and counted
 cache and classifier scope changed, applying a hard-coded `118` would be unsafe.
 Any orphan event creation requires owner review of the current sensitive table
 and a separate explicit apply decision.
+
+### D-084. Mango call memory is brand-agnostic input context; output brand guards remain mandatory
+
+Решение владельца 2026-07-10: открыть боту звонки `mango_processed_summary`
+как общую клиентскую память. Для звонков бренд в chunk metadata не является
+гейтом видимости: телефония общая, а `content_brand=unknown` не должен
+закрывать историю разговора.
+
+Исполнение на staging:
+
+- code branch: `codex/email-pipeline-restore`;
+- stage4b policy: `e4b_owner_policy_linked_rich_context_v3`;
+- runtime: `mango_call_summary` читается отдельной веткой как
+  `brand_agnostic_call_input`;
+- safety-contract for calls: `timeline_events.match_status='strong_unique'`,
+  `bot_context_chunks.chunk_type='mango_call_summary'`,
+  `bot_context_chunks.customer_id = timeline_events.customer_id`, and
+  customer identity status in `strong/partial`;
+- mail/Telegram/Wappi brand gates не ослаблялись;
+- staging report:
+  `.codex_local/staging/stage4b_calls_brand_agnostic_20260710T134644Z/apply/stage4b_bot_opening_report.json`;
+- Foton summary:
+  `/Users/dmitrijfabarisov/Claude Projects/Foton/_daily/20260710T135300Z_calls_brand_agnostic_opening.md`.
+
+Staging result:
+
+- opened `mango_processed_summary`: `14172 -> 59044`;
+- `opened_mango_processed_non_strong_after=0`;
+- `opened_disallowed_identity_after=0`;
+- `opened_unknown_brand_non_call_after=0`;
+- `opened_mango_processed_unknown_brand_after=34152` is an allowed metric,
+  not a violation.
+- publish-smoke call gate after audit hardening:
+  `wrong_chunk_type=0`, `customer_mismatch=0`, `missing_identity=0`.
+
+Safety caveat: brand-agnostic applies only to input memory. Draft/output still
+must pass active-brand and fact guards. Regrade must track
+`brand_leak_in_draft`.

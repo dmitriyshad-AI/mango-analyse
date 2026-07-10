@@ -22,8 +22,9 @@ from mango_mvp.customer_timeline.source_policy import (
 from mango_mvp.customer_timeline.store import json_dumps, json_loads, scrub_timeline_persisted_json
 
 
-STAGE4B_BOT_OPENING_SCHEMA_VERSION = "stage4b_rich_bot_opening_v2"
-STAGE4B_OPENING_POLICY_VERSION = "e4b_owner_policy_linked_rich_context_v2"
+STAGE4B_BOT_OPENING_SCHEMA_VERSION = "stage4b_rich_bot_opening_v3"
+STAGE4B_OPENING_POLICY_VERSION = "e4b_owner_policy_linked_rich_context_v3"
+MANGO_CALL_CHUNK_TYPE = "mango_call_summary"
 OPENABLE_SOURCE_SYSTEMS = (
     MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
     MANGO_PROCESSED_SOURCE_SYSTEM,
@@ -126,7 +127,16 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
             "candidate_review_violations_after": _candidate_review_violations_count(con, tenant_id=config.tenant_id),
             "opened_disallowed_identity_after": _opened_disallowed_identity_count(con, tenant_id=config.tenant_id),
             "opened_mango_processed_non_strong_after": _opened_mango_non_strong_count(con, tenant_id=config.tenant_id),
-            "opened_unknown_brand_after": _opened_unknown_brand_count(con, tenant_id=config.tenant_id),
+            "opened_unknown_brand_non_call_after": _opened_unknown_brand_count(
+                con,
+                tenant_id=config.tenant_id,
+                include_mango_processed=False,
+            ),
+            "opened_mango_processed_unknown_brand_after": _opened_unknown_brand_count(
+                con,
+                tenant_id=config.tenant_id,
+                only_mango_processed=True,
+            ),
         }
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
         (config.out_dir / "stage4b_bot_opening_report.json").write_text(
@@ -160,9 +170,17 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           AND c.source_system IN ({source_placeholders})
           AND c.superseded_by IS NULL
           AND e.superseded_by IS NULL
-          AND ci.identity_status = 'strong'
+          AND (
+            ci.identity_status = 'strong'
+            OR (
+              c.source_system = ?
+              AND ci.identity_status = 'partial'
+              AND e.match_status = 'strong_unique'
+            )
+          )
           AND c.customer_id IS NOT NULL
           AND c.customer_id != ''
+          AND c.customer_id = e.customer_id
               AND trim(coalesce(json_extract(c.record_json, '$.text'), '')) != ''
               AND NOT EXISTS (
                 SELECT 1
@@ -185,7 +203,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           AND (
             (c.source_system = ? AND e.match_status = 'strong_unique')
             OR (c.source_system = ? AND e.match_status = 'strong_unique')
-            OR (c.source_system = ? AND e.match_status = 'strong_unique')
+            OR (c.source_system = ? AND c.chunk_type = ? AND e.match_status = 'strong_unique')
             OR (c.source_system IN (?, ?) AND e.match_status IN ('manual', 'strong_unique'))
           )
         ORDER BY c.event_at, c.chunk_id
@@ -193,10 +211,12 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         (
             tenant_id,
             *OPENABLE_SOURCE_SYSTEMS,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
             MANGO_PROCESSED_SOURCE_SYSTEM,
+            MANGO_CALL_CHUNK_TYPE,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
         ),
@@ -208,11 +228,12 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
     already_open = 0
     to_update = 0
     for row in raw_rows:
+        source_system = str(row["source_system"])
         payload = json_loads(row["record_json"])
         event_payload = json_loads(row["event_record_json"]) if row["event_record_json"] else {}
         brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
-        if brand not in {"foton", "unpk"}:
+        if source_system != MANGO_PROCESSED_SOURCE_SYSTEM and brand not in {"foton", "unpk"}:
             unknown_brand_chunks += 1
             continue
         rows.append(row)
@@ -557,8 +578,20 @@ def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str
             OR c.customer_id = ''
             OR e.customer_id IS NULL
             OR e.customer_id = ''
+            OR c.customer_id != e.customer_id
             OR ci.identity_status IS NULL
-            OR ci.identity_status != 'strong'
+            OR (
+              c.source_system != ?
+              AND ci.identity_status != 'strong'
+            )
+            OR (
+              c.source_system = ?
+              AND ci.identity_status NOT IN ('strong', 'partial')
+            )
+            OR (
+              c.source_system = ?
+              AND c.chunk_type != ?
+            )
             OR EXISTS (
               SELECT 1
               FROM temp_stage4b_open_conflict_customers occ
@@ -585,6 +618,10 @@ def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str
         (
             tenant_id,
             *OPENABLE_SOURCE_SYSTEMS,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
+            MANGO_CALL_CHUNK_TYPE,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
             MANGO_PROCESSED_SOURCE_SYSTEM,
@@ -622,8 +659,22 @@ def _candidate_review_violations_count(con: sqlite3.Connection, *, tenant_id: st
     )
 
 
-def _opened_unknown_brand_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+def _opened_unknown_brand_count(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    include_mango_processed: bool = True,
+    only_mango_processed: bool = False,
+) -> int:
     source_placeholders = ",".join("?" for _ in OPENABLE_SOURCE_SYSTEMS)
+    source_filter = ""
+    extra_params: tuple[str, ...] = ()
+    if only_mango_processed:
+        source_filter = "AND c.source_system = ?"
+        extra_params = (MANGO_PROCESSED_SOURCE_SYSTEM,)
+    elif not include_mango_processed:
+        source_filter = "AND c.source_system != ?"
+        extra_params = (MANGO_PROCESSED_SOURCE_SYSTEM,)
     rows = con.execute(
         f"""
         SELECT c.record_json, e.record_json AS event_record_json
@@ -635,8 +686,9 @@ def _opened_unknown_brand_count(con: sqlite3.Connection, *, tenant_id: str) -> i
           AND e.superseded_by IS NULL
           AND c.allowed_for_bot = 1
           AND c.requires_manager_review = 0
+          {source_filter}
         """,
-        (tenant_id, *OPENABLE_SOURCE_SYSTEMS),
+        (tenant_id, *OPENABLE_SOURCE_SYSTEMS, *extra_params),
     ).fetchall()
     return sum(
         1

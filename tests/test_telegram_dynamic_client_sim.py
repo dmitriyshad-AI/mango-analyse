@@ -1669,6 +1669,65 @@ def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tm
     assert trace_cfg["turn"] == 1
 
 
+def test_replay_prefix_uses_real_manager_reply_instead_of_generated_bot_reply(monkeypatch, tmp_path):
+    captured_recent = []
+
+    def fake_pilot_context(*args, **kwargs):
+        captured_recent.append(tuple(kwargs.get("recent_messages") or ()))
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_pilot_context)
+
+    class BotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "route": "draft_for_manager",
+                    "draft_text": f"Сгенерированный ботом ответ на: {client_message}",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                }
+            )
+
+    source_dialog = {
+        "dialog_id": "real_dialog",
+        "turns": [
+            {
+                "client_message": "Первый вопрос клиента",
+                "client_stop": False,
+                "reference_manager_reply": "Реальный первый ответ менеджера",
+            },
+            {
+                "client_message": "Второй вопрос клиента",
+                "client_stop": True,
+                "reference_manager_reply": "Реальный второй ответ менеджера",
+            },
+        ],
+    }
+
+    dialog = sim.run_one_dialog_replay(
+        source_dialog,
+        persona={"dialog_id": "real_dialog", "brand": "unpk", "persona": "родитель"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=BotProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert captured_recent[0] == ()
+    assert "Ответ: Реальный первый ответ менеджера" in captured_recent[1]
+    assert all("Сгенерированный ботом ответ" not in item for item in captured_recent[1])
+    assert dialog["turns"][0]["reference_manager_reply"] == "Реальный первый ответ менеджера"
+    prompt = sim.build_judge_prompt(
+        {"output_schema": {"verdict": "PASS|FAIL"}},
+        {"dialog_id": "real_dialog", "brand": "unpk"},
+        dialog["turns"],
+        judge_prompt_version="v9.1",
+    )
+    assert "Реальный ответ менеджера после этой реплики клиента" in prompt
+
+
 def test_handoff_trace_records_handoff_origin_and_summary_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
     monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())

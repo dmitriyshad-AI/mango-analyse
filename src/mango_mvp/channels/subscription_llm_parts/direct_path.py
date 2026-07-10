@@ -175,11 +175,12 @@ _BOT_SAFE_MEMORY_EXACT_DETAIL_RE = re.compile(
     re.I,
 )
 _BOT_SAFE_PERSON_CONTEXT_RE = re.compile(
-    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
+    r"(?i:\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя))\s*[:—-]?\s*"
     r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
-    re.I,
 )
+_BOT_SAFE_FOTON_BRAND_MENTION_RE = re.compile(r"\b(?:фотон(?:а|е|ом|ы|ов)?|foton)\b", re.I)
+_BOT_SAFE_UNPK_BRAND_MENTION_RE = re.compile(r"\b(?:унпк|мфти|unpk|mipt)\b", re.I)
 _BOT_SAFE_MEMORY_INJECTION_RE = re.compile(
     r"(?i)(?:ignore\s+(?:all\s+)?previous|system\s*:|developer\s*:|assistant\s*:|"
     r"ты\s+теперь|игнорируй(?:те)?\s+(?:предыдущ|все|инструкц)|забудь(?:те)?\s+инструкц)"
@@ -766,6 +767,11 @@ def _direct_path_bot_safe_context_items(
                 str(item.get("summary") or item.get("text") or "").strip(),
                 next_step_status=status,
             )
+            if source_system == "mango_processed_summary" and _direct_path_bot_safe_text_mentions_other_brand(
+                text,
+                active_brand=active_brand,
+            ):
+                continue
             if not text or _direct_path_bot_safe_text_has_pii(text):
                 continue
             next_step_status = _direct_path_bot_safe_next_step_status(item)
@@ -861,6 +867,14 @@ def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
         or _BOT_SAFE_SERVICE_ID_RE.search(text)
         or _BOT_SAFE_PERSON_CONTEXT_RE.search(text)
     )
+
+
+def _direct_path_bot_safe_text_mentions_other_brand(text: str, *, active_brand: str) -> bool:
+    if active_brand == "foton":
+        return bool(_BOT_SAFE_UNPK_BRAND_MENTION_RE.search(text))
+    if active_brand == "unpk":
+        return bool(_BOT_SAFE_FOTON_BRAND_MENTION_RE.search(text))
+    return True
 
 
 def _direct_path_trim_context_text(text: str, limit: int) -> str:

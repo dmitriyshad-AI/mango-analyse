@@ -41,6 +41,7 @@ def test_memory_measure_scenario_payload_has_no_raw_pii_and_keeps_resolver_id(tm
 def test_memory_measure_off_on_commands_use_same_set_and_enable_e4b_sources_for_on(tmp_path: Path) -> None:
     commands = off_on.build_commands(
         scenarios=tmp_path / "scenarios.jsonl",
+        replay_path=tmp_path / "replay.jsonl",
         snapshot=tmp_path / "snapshot.json",
         timeline_db=tmp_path / "customer_timeline.sqlite",
         out_root=tmp_path / "out",
@@ -52,7 +53,9 @@ def test_memory_measure_off_on_commands_use_same_set_and_enable_e4b_sources_for_
     on = commands["on"]
     assert off["argv"][:-1] == on["argv"][:-1]
     assert off["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "0"
+    assert off["env"]["TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"] == "0"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "1"
+    assert on["env"]["TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"] == "1"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"] == str(tmp_path / "customer_timeline.sqlite")
     assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE"] == "1"
     assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS"] == "1"
@@ -64,6 +67,13 @@ def test_memory_measure_off_on_commands_use_same_set_and_enable_e4b_sources_for_
     assert "4" in on["argv"]
     assert "--judge-prompt-version" in on["argv"]
     assert "v9.1" in on["argv"]
+    assert "--replay-from" in off["argv"]
+    assert str(tmp_path / "replay.jsonl") in off["argv"]
+    assert "--replay-from" in on["argv"]
+    assert "--semantic-verifier-mode" in on["argv"]
+    assert on["argv"][on["argv"].index("--semantic-verifier-mode") + 1] == "codex"
+    assert "--disable-bot-cache" in on["argv"]
+    assert on["argv"][on["argv"].index("--bot-max-attempts") + 1] == "1"
 
 
 def test_memory_measure_execute_is_blocked_until_streams_ready(tmp_path: Path, monkeypatch) -> None:
@@ -76,6 +86,8 @@ def test_memory_measure_execute_is_blocked_until_streams_ready(tmp_path: Path, m
                 str(tmp_path / "scenarios.jsonl"),
                 "--snapshot",
                 str(tmp_path / "snapshot.json"),
+                "--replay-from",
+                str(tmp_path / "replay.jsonl"),
                 "--timeline-db",
                 str(tmp_path / "customer_timeline.sqlite"),
                 "--out-root",

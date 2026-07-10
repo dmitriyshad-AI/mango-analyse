@@ -42,10 +42,9 @@ _SERVICE_ID_RE = re.compile(
     re.I,
 )
 _PERSON_CONTEXT_RE = re.compile(
-    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа)\s*[:—-]?\s*"
+    r"(?i:\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа))\s*[:—-]?\s*"
     r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
-    re.I,
 )
 _ADDRESS_RE = re.compile(
     r"\b(?:адрес|ул\.|улица|проспект|пр-т|шоссе|переулок|пер\.|дом|д\.|квартира|кв\.|подъезд)\s*"
@@ -130,6 +129,8 @@ _PROMPT_INJECTION_RE = re.compile(
     r"|выполни(?:те)?\s+(?:команд|инструкц)|не\s+слушай(?:те)?\s+(?:систем|инструкц)"
     r")"
 )
+_FOTON_BRAND_MENTION_RE = re.compile(r"\b(?:фотон(?:а|е|ом|ы|ов)?|foton)\b", re.I)
+_UNPK_BRAND_MENTION_RE = re.compile(r"\b(?:унпк|мфти|unpk|mipt)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -437,7 +438,12 @@ def _safe_item_for_brand(
             _sanitize_channel_history_text_for_bot(_clean_text(item.get("text")) or _clean_text(item.get("summary"))),
             next_step_status=status,
         )
-        if not text or scan_bot_safe_context_pii(text) or _is_junk_bot_safe_summary(text):
+        if (
+            not text
+            or _text_mentions_other_brand(text, active_brand=active_brand)
+            or scan_bot_safe_context_pii(text)
+            or _is_junk_bot_safe_summary(text)
+        ):
             return {}
         return {
             "chunk_type": MANGO_CALL_CHUNK_TYPE,
@@ -568,6 +574,15 @@ def _mail_stage2_item_visible_for_active_brand(tags: Sequence[str], *, active_br
 def _mango_call_item_visible_for_bot(tags: Sequence[str]) -> bool:
     tag_set = set(tags)
     return {"call", "bot_visible", MANGO_PROCESSED_SOURCE_SYSTEM}.issubset(tag_set)
+
+
+def _text_mentions_other_brand(text: object, *, active_brand: str) -> bool:
+    value = str(text or "")
+    if active_brand == "foton":
+        return bool(_UNPK_BRAND_MENTION_RE.search(value))
+    if active_brand == "unpk":
+        return bool(_FOTON_BRAND_MENTION_RE.search(value))
+    return True
 
 
 def _channel_history_item_visible_for_active_brand(

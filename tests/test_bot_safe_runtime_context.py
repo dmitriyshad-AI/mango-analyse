@@ -15,6 +15,11 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
     strip_unconfirmed_next_step_text_for_bot,
+    _text_mentions_other_brand,
+)
+from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    _direct_path_bot_safe_text_has_pii,
+    _direct_path_bot_safe_text_mentions_other_brand,
 )
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
@@ -564,6 +569,27 @@ def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
 def test_scan_bot_safe_context_pii_detects_person_name_and_address() -> None:
     assert scan_bot_safe_context_pii("Имя ученика: Иван Петров") == ("person_name",)
     assert scan_bot_safe_context_pii("Адрес: улица Ленина, дом 5") == ("address",)
+
+
+def test_scan_bot_safe_context_pii_does_not_treat_manager_action_as_person_name() -> None:
+    assert scan_bot_safe_context_pii("Менеджер уточнил формат и отправил расписание") == ()
+    assert scan_bot_safe_context_pii("менеджер общался с клиентом") == ()
+    assert _direct_path_bot_safe_text_has_pii("Менеджер уточнил формат и отправил расписание") is False
+    assert _direct_path_bot_safe_text_has_pii("менеджер общался с клиентом") is False
+
+
+def test_call_memory_text_with_other_brand_is_rejected() -> None:
+    assert _text_mentions_other_brand("Клиент ранее учился в УНПК МФТИ.", active_brand="foton") is True
+    assert _text_mentions_other_brand("Клиент ранее учился в Фотоне.", active_brand="unpk") is True
+    assert _direct_path_bot_safe_text_mentions_other_brand(
+        "Клиент ранее учился в центре УНПК МФТИ.", active_brand="foton"
+    ) is True
+    assert _direct_path_bot_safe_text_mentions_other_brand(
+        "Клиент занимается в учебном центре Фотон.", active_brand="unpk"
+    ) is True
+    assert _direct_path_bot_safe_text_mentions_other_brand(
+        "Клиент обсуждал занятия по физике.", active_brand="foton"
+    ) is False
 
 
 def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None:

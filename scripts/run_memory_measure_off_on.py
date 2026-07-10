@@ -19,6 +19,7 @@ MAIN_FOLDER_TIMELINE_DB = Path(
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
 READY_ENV = "MEMORY_MEASURE_STREAMS_1_2_READY"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 E4B_MEMORY_SOURCE_POLICY_ENV = {
     "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE": "1",
     "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS": "1",
@@ -30,6 +31,7 @@ E4B_MEMORY_SOURCE_POLICY_ENV = {
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare or run OFF/ON M1 memory measurement pair.")
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
+    parser.add_argument("--replay-from", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--timeline-db", type=Path, default=_default_timeline_db())
     parser.add_argument("--out-root", type=Path, default=_default_out_root())
@@ -53,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     commands = build_commands(
         scenarios=args.scenarios,
+        replay_path=args.replay_from,
         snapshot=args.snapshot,
         timeline_db=args.timeline_db,
         out_root=args.out_root,
@@ -68,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "execute": bool(args.execute),
         "precondition": "Run only after Streams 1-2 are integrated and Dmitry gives go.",
         "scenarios": str(args.scenarios),
+        "replay_from": str(args.replay_from),
         "snapshot": str(args.snapshot),
         "timeline_db": str(args.timeline_db),
         "parallel": args.parallel,
@@ -91,6 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def build_commands(
     *,
     scenarios: Path,
+    replay_path: Path,
     snapshot: Path,
     timeline_db: Path,
     out_root: Path,
@@ -102,6 +107,8 @@ def build_commands(
         "scripts/run_telegram_dynamic_client_sim.py",
         "--scenarios",
         str(scenarios),
+        "--replay-from",
+        str(replay_path),
         "--snapshot",
         str(snapshot),
         "--brand",
@@ -110,16 +117,44 @@ def build_commands(
         str(parallel),
         "--judge-prompt-version",
         str(judge_prompt_version),
+        "--model",
+        "gpt-5.5",
+        "--bot-reasoning",
+        "high",
+        "--bot-max-attempts",
+        "1",
+        "--judge-reasoning",
+        "high",
+        "--client-mode",
+        "fake",
+        "--memory-mode",
+        "off",
+        "--semantic-mode",
+        "off",
+        "--semantic-verifier-mode",
+        "codex",
+        "--semantic-verifier-reasoning",
+        "medium",
+        "--disable-bot-cache",
     ]
     common_env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": "src",
+        "ENFORCE_CANONICAL_PROFILE": "1",
+        "TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1",
+        "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
+        "TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE": "1",
+        "TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD": "0",
     }
     return {
         "off": {
             "label": "memory_off",
             "out_dir": str(out_root / "memory_off"),
-            "env": {**common_env, "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "0"},
+            "env": {
+                **common_env,
+                "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "0",
+                TIMELINE_MEMORY_IN_PROMPT_ENV: "0",
+            },
             "argv": [*base, "--out-dir", str(out_root / "memory_off")],
         },
         "on": {
@@ -128,6 +163,7 @@ def build_commands(
             "env": {
                 **common_env,
                 "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+                TIMELINE_MEMORY_IN_PROMPT_ENV: "1",
                 "TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB": str(timeline_db),
                 **E4B_MEMORY_SOURCE_POLICY_ENV,
             },

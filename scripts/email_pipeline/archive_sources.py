@@ -10,6 +10,7 @@ from typing import Iterable
 from scripts.email_pipeline.classification import (
     ClassificationInput,
     EML_HDR_BYTES,
+    OWN_DOMAINS,
     RE_AUTO_SUBMITTED,
     RE_CAMPAIGN,
     RE_LIST_UNSUB,
@@ -146,14 +147,14 @@ def load_archive_messages(
             from_domain = str(from_record[2] or "").lower()
             to_domains = tuple(str(item[2] or "").lower() for item in to_records)
             is_outbound = (
-                from_domain in {"kmipt.ru"}
+                from_domain in OWN_DOMAINS
                 or mailbox in ("Sent", "Sent Messages", "Drafts", "Templates")
                 or "Шаблоны" in (mailbox or "")
             )
             resolved_eml = resolve_data_path(eml_path, source_root=source_root, repo_root=repo_root)
             eml_meta = scan_eml_metadata(resolved_eml)
             eml_flags = {"list_unsub": False, "bulk": False, "auto": False, "campaign": False}
-            if not is_outbound and kind != "internal" and from_domain not in {"kmipt.ru"}:
+            if not is_outbound and kind != "internal" and from_domain not in OWN_DOMAINS:
                 eml_flags = {key: bool(eml_meta.get(key)) for key in ("list_unsub", "bulk", "auto", "campaign")}
             classification_input = ClassificationInput(
                 kind=kind or "",

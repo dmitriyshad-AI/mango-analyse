@@ -1628,3 +1628,89 @@ summary/quality слой заметно оптимистичнее. Строги
 - `quick_check=ok`, `foreign_key_check_rows=0`.
 
 Это staging-подготовка к SWAP #4. Прод-снимок этим решением не публиковался.
+
+### D-081. SWAP #4 published staging memory to prod snapshot path
+
+Исполнение 2026-07-10: по owner-gated решению опубликован свежий staging-снимок
+Customer Timeline в стабильный prod-путь для читателей.
+
+Опубликованный снимок:
+
+- run id: `swap4_epoch1_20260710T103746Z_38be4961`;
+- writer/reader code head: `38be49612fd0320aa0dab42aed82dacb4a6eb098`;
+- snapshot/prod sha256:
+  `b5efadc21c89578fc9a0a61cb75d90774c14397e567a2b6a890bc334f4d7c1ec`;
+- rollback backup sha256:
+  `a366916ebec19b7b13fa6d16c65eb0c19eb17afeeb057fccc5dc1b51bb0c7f84`;
+- backup verified locally and in OpenClaw/Yandex copy;
+- `quick_check=ok`, `schema_diff.changed_count=0`, FK rows `0`;
+- prod counts: `timeline_events=175824`, `bot_context_chunks=141692`,
+  `identity_links=93779`, `customer_opportunities=34901`;
+- opened mail chunks: `4044`;
+- opened `mango_processed_summary` chunks: `14172`;
+- opened call gate violations: `0` (`non_strong_match=0`,
+  `non_strong_identity=0`, `unknown_brand=0`).
+
+Reader smoke after flip passed on prod. Wappi draft-loop was restarted by the
+publish tool and post-start check found exactly one
+`run_amo_wappi_draft_loop.py` process pointing to the stable prod DB path.
+Client sends remained `0`; AMO/Tallanto writes were not performed by this SWAP.
+
+Post-swap semantic triage remains monitoring-dependent: no fresh post-swap
+Wappi draft was generated during this maintenance window, so 10-20 draft review
+cannot be claimed as complete yet.
+
+### D-082. Customer Timeline nightly launchd service installed; prod remains snapshot-only
+
+Исполнение 2026-07-10: installed LaunchAgent
+`com.mango.customer-timeline-nightly` from
+`deploy/customer_timeline_nightly/com.mango.customer-timeline-nightly.plist.template`.
+The plist calls the same command as the Codex task wrapper:
+`scripts/run_customer_timeline_codex_task.py --task nightly-warehouse`.
+
+First fully headless `launchctl kickstart` run passed:
+
+- launchd last exit code: `0`;
+- daily summary:
+  `/Users/dmitrijfabarisov/Claude Projects/Foton/_daily/20260710T105156Z_nightly-warehouse.md`;
+- run id: `20260710T104623Z`;
+- all seven steps `ok`: `mango_processed_sweep`, `calls_and_amo_incremental`,
+  `mail_archive_incremental`, `mail_link_enrich`,
+  `tallanto_money_incremental`, `wappi_history_incremental`,
+  `mango_api_freshness`;
+- wrapper safety output: `writes_prod=false`, `writes_crm=false`,
+  `writes_tallanto=false`, `runs_asr=false`, `runs_llm=false`;
+- `prod_snapshot_age_hours=0.2`, `prod_snapshot_staleness=ok`.
+
+Nightly updates staging only. Prod remains snapshot-only: publishing to prod is
+manual/owner-gated through `scripts/publish_snapshot/`.
+
+### D-083. Orphan mail driver is dry-run only; current owner count drifted from 118 to 151
+
+Исполнение 2026-07-10: added a thin orphan dry-run driver on top of
+`scripts/email_pipeline/classification.py` and synchronized own-domain handling
+with the mail-link layer: `kmipt.ru`, `cdpofoton.ru`, `foton.school`,
+`amocrm.ru`, `amocrm.com`.
+
+Current dry-run:
+
+- local report:
+  `.codex_local/staging/orphan_driver_20260710T105651Z/orphan_owner_report_v3.json`;
+- local sensitive rows:
+  `.codex_local/staging/orphan_driver_20260710T105651Z/orphan_rows_sensitive.jsonl`;
+- Foton summary:
+  `/Users/dmitrijfabarisov/Claude Projects/Foton/_daily/20260710T105704Z_orphan_mail_owner_review.md`;
+- cache rows now: `24575`;
+- orphan count: `9326`;
+- archive envelope/header found: `9326/9326`;
+- strict classes: `bulk_newsletter=4219`, `internal=3817`,
+  `outbound_campaign=477`, `bounce=543`, `service_notification=119`,
+  `real_correspondence=151`;
+- owner buckets: `real_candidate=134`, `real_manager_review=17`.
+
+This intentionally does not create timeline events. The earlier canonical
+owner report from 2026-07-09 was based on a `23068`-row cache and counted
+`118` real orphan emails (`89 candidate`, `29 review`). Because the current
+cache and classifier scope changed, applying a hard-coded `118` would be unsafe.
+Any orphan event creation requires owner review of the current sensitive table
+and a separate explicit apply decision.

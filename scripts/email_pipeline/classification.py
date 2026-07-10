@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-OWN_DOMAINS = {"kmipt.ru"}
+OWN_DOMAINS = {"kmipt.ru", "cdpofoton.ru", "foton.school", "amocrm.ru", "amocrm.com"}
 NOTIFY_DOMAINS = {
     "gosuslugi.ru",
     "id.yandex.ru",

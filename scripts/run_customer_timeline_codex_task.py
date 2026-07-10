@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
 LOG_ROOT = ROOT / ".codex_local" / "staging" / "codex_dev_tasks"
 NIGHTLY_DV2_CONFIG = ROOT / ".codex_local" / "staging" / "nightly_service" / "customer_timeline_nightly_service_dv2_config.json"
+PROD_TIMELINE_DB = Path(
+    "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
+    "customer_timeline_prod_20260621/customer_timeline.sqlite"
+)
+PROD_SNAPSHOT_STALE_HOURS = 7 * 24
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,16 @@ def compact_metrics(payload: Mapping[str, Any]) -> str:
     return "; ".join(parts) if parts else "payload_keys=" + ",".join(sorted(str(k) for k in payload.keys())[:12])
 
 
+def prod_snapshot_staleness_metric(now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    if not PROD_TIMELINE_DB.exists():
+        return "prod_snapshot_alert=missing"
+    mtime = datetime.fromtimestamp(PROD_TIMELINE_DB.stat().st_mtime, timezone.utc)
+    age_hours = max(0.0, (now - mtime).total_seconds() / 3600.0)
+    status = "alert" if age_hours > PROD_SNAPSHOT_STALE_HOURS else "ok"
+    return f"prod_snapshot_age_hours={age_hours:.1f}; prod_snapshot_staleness={status}"
+
+
 def write_summary(
     *,
     task: str,
@@ -181,15 +196,17 @@ def write_summary(
     stop_reason: str,
     metrics: str,
     expected_output: Path | None,
+    extra_metrics: str = "",
 ) -> Path:
     FOTON_DAILY.mkdir(parents=True, exist_ok=True)
     stamp = finished.strftime("%Y%m%dT%H%M%SZ")
     path = FOTON_DAILY / f"{stamp}_{task}.md"
     command_text = " ".join(command) if command else "not_run"
+    metrics_text = metrics if not extra_metrics else f"{metrics}; {extra_metrics}"
     lines = [
         f"Задача: {task}; статус: {status}; rc={rc}; старт={started.isoformat()}; финиш={finished.isoformat()}.",
         f"Команда: `{command_text}`.",
-        f"Новое/курсоры/метрики: {metrics}.",
+        f"Новое/курсоры/метрики: {metrics_text}.",
         f"Аномалия/stop-причина: {stop_reason or 'нет'}.",
         f"Лог: `{log_path}`; ожидаемый артефакт: `{expected_output}`.",
     ]
@@ -254,6 +271,7 @@ def run_task(task: str, *, tallanto_phone_limit: int) -> int:
         stop_reason=reason,
         metrics=compact_metrics(payload),
         expected_output=spec.expected_output,
+        extra_metrics=prod_snapshot_staleness_metric(finished) if task == "nightly-warehouse" else "",
     )
     print(
         json.dumps(

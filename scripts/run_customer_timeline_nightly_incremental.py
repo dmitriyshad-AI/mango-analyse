@@ -75,6 +75,7 @@ def source_from_json(payload: Any) -> IncrementalSourceConfig:
         tenant_id=str(payload.get("tenant_id") or "foton"),
         source_ref=str(payload["source_ref"]) if payload.get("source_ref") else None,
         normalizer=str(payload.get("normalizer") or "jsonl"),
+        required=bool(payload.get("required", True)),
     )
 
 

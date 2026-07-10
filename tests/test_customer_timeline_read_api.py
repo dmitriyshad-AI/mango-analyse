@@ -132,6 +132,43 @@ def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp
     assert timeline["items"][0]["event_type"] == "mango_call"
 
 
+def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for chunk_id, source_ref, text in (
+            ("mail-1", "a2v3_mail:120:bab8a94c", "Первый вариант письма."),
+            ("mail-2", "mail_stage2:stage2_full:7450:bab8a94c", "Дубль того же письма."),
+        ):
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=chunk_id,
+                    source_system="mail_archive_stage2",
+                    source_ref=source_ref,
+                    chunk_type="email_message",
+                    text=text,
+                    summary=text,
+                    event_at=NOW + timedelta(minutes=3),
+                    relevance_tags=("email", "bot_visible", "mail_archive_stage2", "foton"),
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={"message_sha256": "bab8a94ccfc211a7e15956076b3d7d00519bde54efc3fdc3e5a855fba546b093"},
+                    created_at=NOW + timedelta(minutes=3),
+                )
+            )
+
+    with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True, limit=20)
+
+    mail_items = [item for item in context["items"] if item.get("source_system") == "mail_archive_stage2"]
+    assert len(mail_items) == 1
+    assert context["summary"]["allowed_chunks"] > context["summary"]["visible_chunks"]
+    assert "Дубль того же письма" not in json.dumps(context, ensure_ascii=False)
+
+
 def test_read_api_routes_are_get_only_and_report_is_deterministic(tmp_path: Path) -> None:
     db_path, customer_id = seed_timeline_db(tmp_path)
     config = CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)

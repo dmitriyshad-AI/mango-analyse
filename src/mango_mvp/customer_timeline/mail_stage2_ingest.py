@@ -27,7 +27,11 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import normalize_key
 from mango_mvp.customer_timeline.ingestion import compact_text
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    existing_timeline_email_content_signatures,
+    timeline_email_content_signature,
+)
 from mango_mvp.productization.mail_archive import (
     build_stage2_value_brand_scope,
     clean_text,
@@ -701,10 +705,14 @@ def validate_backup_manifest(config: MailStage2IngestConfig, manifest_path: Path
 def dry_run_stage2_mail_ingest(config: MailStage2IngestConfig) -> Mapping[str, Any]:
     plans, counters = plan_stage2_mail_ingest(config)
     existing = existing_event_dedupe_keys(config.timeline_db_path)
+    existing_content = existing_timeline_email_content_signatures(config.timeline_db_path)
     seen: set[str] = set()
+    seen_content: set[str] = set()
     duplicate_in_input = 0
+    duplicate_content_in_input = 0
     would_create = 0
     would_skip_existing = 0
+    would_skip_content_existing = 0
     for plan in plans:
         key = plan.event.dedupe_key
         if key in seen:
@@ -713,8 +721,25 @@ def dry_run_stage2_mail_ingest(config: MailStage2IngestConfig) -> Mapping[str, A
         seen.add(key)
         if key in existing:
             would_skip_existing += 1
-        else:
-            would_create += 1
+            continue
+        content_signature = timeline_email_content_signature(
+            tenant_id=plan.event.tenant_id,
+            customer_id=plan.event.customer_id,
+            event_type=plan.event.event_type.value,
+            event_at=plan.event.event_at,
+            subject=plan.event.subject,
+            summary=plan.event.summary,
+            text_preview=plan.event.text_preview,
+        )
+        if content_signature and content_signature in seen_content:
+            duplicate_content_in_input += 1
+            continue
+        if content_signature and content_signature in existing_content:
+            would_skip_content_existing += 1
+            continue
+        if content_signature:
+            seen_content.add(content_signature)
+        would_create += 1
     report = {
         "schema_version": MAIL_STAGE2_TIMELINE_INGEST_SCHEMA_VERSION,
         "mode": "dry_run",
@@ -730,7 +755,9 @@ def dry_run_stage2_mail_ingest(config: MailStage2IngestConfig) -> Mapping[str, A
             "planned_events": len(plans),
             "would_create_events": would_create,
             "would_skip_existing_events": would_skip_existing,
+            "would_skip_existing_content_events": would_skip_content_existing,
             "duplicate_events_in_input": duplicate_in_input,
+            "duplicate_content_events_in_input": duplicate_content_in_input,
         },
         "gates": {
             "channel_chunks_allowed_for_bot": False,
@@ -747,10 +774,14 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
     backup_manifest = validate_backup_manifest(config, backup_manifest_path)
     plans, counters = plan_stage2_mail_ingest(config)
     existing = existing_event_dedupe_keys(config.timeline_db_path)
+    existing_content = existing_timeline_email_content_signatures(config.timeline_db_path)
     seen: set[str] = set()
+    seen_content: set[str] = set()
     selected: list[PlannedMailStage2Event] = []
     duplicate_in_input = 0
+    duplicate_content_in_input = 0
     skipped_existing = 0
+    skipped_existing_content = 0
     for plan in plans:
         key = plan.event.dedupe_key
         if key in seen:
@@ -760,6 +791,23 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
         if key in existing:
             skipped_existing += 1
             continue
+        content_signature = timeline_email_content_signature(
+            tenant_id=plan.event.tenant_id,
+            customer_id=plan.event.customer_id,
+            event_type=plan.event.event_type.value,
+            event_at=plan.event.event_at,
+            subject=plan.event.subject,
+            summary=plan.event.summary,
+            text_preview=plan.event.text_preview,
+        )
+        if content_signature and content_signature in seen_content:
+            duplicate_content_in_input += 1
+            continue
+        if content_signature and content_signature in existing_content:
+            skipped_existing_content += 1
+            continue
+        if content_signature:
+            seen_content.add(content_signature)
         selected.append(plan)
 
     run_report: dict[str, Any] = {
@@ -779,10 +827,13 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
             "planned_events": len(plans),
             "selected_new_events": len(selected),
             "skipped_existing_events": skipped_existing,
+            "skipped_existing_content_events": skipped_existing_content,
             "duplicate_events_in_input": duplicate_in_input,
+            "duplicate_content_events_in_input": duplicate_content_in_input,
             "created_events": 0,
             "created_chunks": 0,
             "pending_attribution_events": 0,
+            "skipped_content_duplicate_events": 0,
         },
     }
     store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=config.allowed_root)
@@ -823,6 +874,9 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
                 )
                 if event_result.created:
                     run_report["counts"]["created_events"] += 1
+                elif event_result.status == "duplicate" and event_result.record_id != plan.event.event_id:
+                    run_report["counts"]["skipped_content_duplicate_events"] += 1
+                    continue
                 if plan.event.metadata.get("pending_attribution"):
                     run_report["counts"]["pending_attribution_events"] += 1
                 if plan.chunk is not None:
@@ -837,7 +891,13 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
             run.run_id,
             status="completed",
             accepted_count=run_report["counts"]["created_events"],
-            rejected_count=run_report["counts"]["skipped_existing_events"] + run_report["counts"]["duplicate_events_in_input"],
+            rejected_count=(
+                run_report["counts"]["skipped_existing_events"]
+                + run_report["counts"]["skipped_existing_content_events"]
+                + run_report["counts"]["duplicate_events_in_input"]
+                + run_report["counts"]["duplicate_content_events_in_input"]
+                + run_report["counts"]["skipped_content_duplicate_events"]
+            ),
             output_ref=str(config.out_dir / "apply_report.json"),
             metadata={"counts": dict(run_report["counts"])},
             actor="mail_stage2_ingest_procedure",

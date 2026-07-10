@@ -30,7 +30,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEventType,
     TimelineParticipant,
 )
-from mango_mvp.customer_timeline.ids import normalize_key, optional_text, stable_digest
+from mango_mvp.customer_timeline.ids import normalize_key, optional_text, stable_digest, stable_prefixed_id
 from mango_mvp.customer_timeline.import_cli import safety_ok
 from mango_mvp.customer_timeline.ingestion import (
     TimelineImportReport,
@@ -68,6 +68,7 @@ class TallantoPaymentsImportConfig:
     allowed_root: Path
     tenant_id: str
     apply: bool = False
+    allow_test_paths: bool = False
     actor: str = "tallanto_payments_timeline_import"
     source_label: str = "crm_call.sh:tallanto_select"
 
@@ -76,6 +77,8 @@ class TallantoPaymentsImportConfig:
         source = guard_customer_timeline_source_path(Path(self.source).expanduser(), root) if self.source else None
         timeline_db = guard_customer_timeline_sqlite_path(Path(self.timeline_db).expanduser())
         timeline_db = guard_customer_timeline_output_path(timeline_db, root)
+        if self.apply:
+            assert_tallanto_import_apply_staging_path(timeline_db, root, allow_test_paths=self.allow_test_paths)
         if source and source == timeline_db:
             raise ValueError("source path and timeline DB path must be different")
         object.__setattr__(self, "allowed_root", root)
@@ -150,10 +153,12 @@ class TallantoPaymentsTimelineNormalizer:
         tenant_id: str,
         customer_lookup: TallantoCustomerLookup,
         class_lookup: Mapping[str, Mapping[str, Any]],
+        opportunity_lookup: Mapping[str, str] = (),
     ) -> None:
         self.tenant_id = normalize_key(tenant_id, "tenant_id")
         self._customer_lookup = customer_lookup
         self._class_lookup = {str(key): dict(value) for key, value in class_lookup.items()}
+        self._opportunity_lookup = dict(opportunity_lookup)
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         module = normalize_key(record.payload.get("_tallanto_module") or record.source_system, "tallanto_module")
@@ -192,6 +197,7 @@ class TallantoPaymentsTimelineNormalizer:
             tenant_id=self.tenant_id,
             customer_id=customer_id,
             opportunity_type=OpportunityType.TALLANTO_COURSE,
+            opportunity_id=self._opportunity_id(f"payment:{payment_id}"),
             source_system=SOURCE_SYSTEM,
             source_id=f"payment:{payment_id}",
             title=compact_text(
@@ -297,6 +303,7 @@ class TallantoPaymentsTimelineNormalizer:
             tenant_id=self.tenant_id,
             customer_id=customer_id,
             opportunity_type=OpportunityType.TALLANTO_COURSE,
+            opportunity_id=self._opportunity_id(f"abonement:{abonement_id}"),
             source_system=SOURCE_SYSTEM,
             source_id=f"abonement:{abonement_id}",
             title=title,
@@ -400,6 +407,9 @@ class TallantoPaymentsTimelineNormalizer:
             identity_status=IdentityStatus.PARTIAL,
             confidence=0.55,
         )
+
+    def _opportunity_id(self, source_id: str) -> str:
+        return self._opportunity_lookup.get(source_id) or stable_tallanto_opportunity_id(self.tenant_id, source_id)
 
     def _customer_and_link(
         self,
@@ -531,6 +541,22 @@ def config_from_args(args: argparse.Namespace) -> TallantoPaymentsImportConfig:
     )
 
 
+def assert_tallanto_import_apply_staging_path(path: Path, allowed_root: Path, *, allow_test_paths: bool = False) -> None:
+    resolved = path.resolve(strict=False)
+    if any("customer_timeline_prod_" in part for part in resolved.parts):
+        raise ValueError(f"refusing to apply Tallanto import to prod timeline path: {resolved}")
+    if allow_test_paths:
+        return
+    root = allowed_root.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Tallanto import DB must stay under allowed root: {root}") from exc
+    parts = tuple(part.casefold() for part in resolved.parts)
+    if not any(part == ".codex_local" and parts[index + 1] == "staging" for index, part in enumerate(parts[:-1])):
+        raise ValueError("Tallanto import apply is allowed only for .codex_local/staging paths")
+
+
 def run_tallanto_payments_import(
     config: TallantoPaymentsImportConfig,
     *,
@@ -558,6 +584,11 @@ def run_tallanto_payments_import(
         tenant_id=config.tenant_id,
         customer_lookup=customer_lookup,
         class_lookup=class_lookup,
+        opportunity_lookup=load_tallanto_opportunity_lookup(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            source_ids=tallanto_opportunity_source_ids(records),
+        ),
     )
     idempotency_key = stable_digest(
         {
@@ -679,6 +710,18 @@ def load_snapshot(source: Optional[Path], *, stdin_text: Optional[str]) -> Mappi
     if not isinstance(payload, Mapping):
         raise ValueError("Tallanto snapshot must be a JSON object")
     return payload
+
+
+def stable_tallanto_opportunity_id(tenant_id: str, source_id: str) -> str:
+    return stable_prefixed_id(
+        "customer_opportunity",
+        {
+            "tenant_id": normalize_key(tenant_id, "tenant_id"),
+            "opportunity_type": OpportunityType.TALLANTO_COURSE.value,
+            "source_system": SOURCE_SYSTEM,
+            "source_id": source_id,
+        },
+    )
 
 
 def build_tallanto_records(
@@ -852,6 +895,7 @@ def load_tallanto_customer_lookup(
                     FROM identity_links
                     WHERE tenant_id = ?
                       AND link_type = 'tallanto_student_id'
+                      AND match_class = 'strong_unique'
                       AND link_value IN ({placeholders})
                     """,
                     (tenant_id, *chunk),
@@ -865,6 +909,51 @@ def load_tallanto_customer_lookup(
         unique_customer_ids={contact_id: next(iter(customer_ids)) for contact_id, customer_ids in by_contact.items() if len(customer_ids) == 1},
         ambiguous_customer_ids={contact_id: tuple(sorted(customer_ids)) for contact_id, customer_ids in by_contact.items() if len(customer_ids) > 1},
     )
+
+
+def tallanto_opportunity_source_ids(records: Sequence[TimelineSourceRecord]) -> set[str]:
+    source_ids: set[str] = set()
+    for record in records:
+        module = normalize_key(record.payload.get("_tallanto_module") or record.source_system, "tallanto_module")
+        if module == PAYMENT_MODULE:
+            record_id = optional_text(first_value(record.payload, ("id", "finance_id", "payment_id")))
+            if record_id:
+                source_ids.add(f"payment:{record_id}")
+        elif module == ABONEMENT_MODULE:
+            record_id = optional_text(first_value(record.payload, ("id", "abonement_id", "most_abonements_id")))
+            if record_id:
+                source_ids.add(f"abonement:{record_id}")
+    return source_ids
+
+
+def load_tallanto_opportunity_lookup(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    source_ids: set[str],
+) -> Mapping[str, str]:
+    if not source_ids or not db_path.exists():
+        return {}
+    lookup: dict[str, str] = {}
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "customer_opportunities"):
+            return {}
+        for chunk in chunks(sorted(source_ids), 800):
+            placeholders = ",".join("?" for _ in chunk)
+            for row in con.execute(
+                f"""
+                SELECT source_id, opportunity_id
+                FROM customer_opportunities
+                WHERE tenant_id = ?
+                  AND source_system = ?
+                  AND opportunity_type = ?
+                  AND source_id IN ({placeholders})
+                """,
+                (tenant_id, SOURCE_SYSTEM, OpportunityType.TALLANTO_COURSE.value, *chunk),
+            ):
+                if row["source_id"] and row["opportunity_id"]:
+                    lookup[str(row["source_id"])] = str(row["opportunity_id"])
+    return lookup
 
 
 def count_bot_safe_amount_leaks(db_path: Path) -> int:

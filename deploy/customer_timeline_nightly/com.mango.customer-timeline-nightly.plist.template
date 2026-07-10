@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mango.customer-timeline-nightly</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
+    <string>--task</string>
+    <string>nightly-warehouse</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>
+  <key>StandardOutPath</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/nightly_service/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/nightly_service/launchd.stderr.log</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ThrottleInterval</key>
+  <integer>3600</integer>
+</dict>
+</plist>

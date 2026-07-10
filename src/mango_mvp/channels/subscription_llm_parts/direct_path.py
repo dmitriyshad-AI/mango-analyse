@@ -35,6 +35,12 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     reliable_answerer_prompt_block,
     reliable_answerer_step1_active_for_turn,
 )
+from mango_mvp.customer_timeline.bot_safe_runtime_context import (
+    TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
+    build_customer_memory_for_prompt,
+    scrub_customer_memory_text,
+    strip_unconfirmed_next_step_text_for_bot,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
@@ -111,6 +117,14 @@ SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
 PAYMENT_REFUND_DISPUTE_SPLIT_ENV = "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT"
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
+TIMELINE_MEMORY_SHADOW_ENV = "TELEGRAM_TIMELINE_MEMORY_SHADOW"
+BOT_SAFE_CRM_CONTEXT_ALIASES = (
+    "bot_safe_crm_context",
+    "bot_safe_crm_context_enabled",
+    "bot_safe_summary_context",
+    "bot_safe_summary_context_enabled",
+)
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
 
@@ -347,13 +361,50 @@ def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -
     return _default_off_flag_enabled(
         context,
         BOT_SAFE_CRM_CONTEXT_ENV,
+        aliases=(*BOT_SAFE_CRM_CONTEXT_ALIASES, TIMELINE_MEMORY_IN_PROMPT_ENV, "timeline_memory_in_prompt"),
+    )
+
+
+def _timeline_memory_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if _bot_safe_crm_context_explicitly_disabled(context):
+        return False
+    return _default_off_flag_enabled(
+        context,
+        TIMELINE_MEMORY_SHADOW_ENV,
         aliases=(
-            "bot_safe_crm_context",
-            "bot_safe_crm_context_enabled",
-            "bot_safe_summary_context",
-            "bot_safe_summary_context_enabled",
+            "timeline_memory_shadow",
+            "timeline_memory_shadow_enabled",
+            "bot_safe_crm_context_shadow",
         ),
     )
+
+
+def _timeline_memory_expanded_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if _bot_safe_crm_context_explicitly_disabled(context):
+        return False
+    return _default_off_flag_enabled(
+        context,
+        TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
+        aliases=(
+            "timeline_memory_expanded_shadow",
+            "timeline_memory_expanded_shadow_enabled",
+            "bot_memory_expanded_shadow",
+            "bot_memory_expanded_shadow_enabled",
+            "customer_memory_stage01_shadow",
+            "customer_memory_for_prompt_shadow",
+        ),
+    )
+
+
+def _bot_safe_crm_context_explicitly_disabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (BOT_SAFE_CRM_CONTEXT_ENV, *BOT_SAFE_CRM_CONTEXT_ALIASES):
+            if key in context:
+                return not _truthy_value(context.get(key))
+    if BOT_SAFE_CRM_CONTEXT_ENV in os.environ:
+        return not _truthy_value(os.getenv(BOT_SAFE_CRM_CONTEXT_ENV))
+    return False
+
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
@@ -469,8 +520,15 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
     return dict(list(items.items())[:limit])
 
 
-def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[Mapping[str, Any], ...]:
-    if not _bot_safe_crm_context_enabled(context) or not isinstance(context, Mapping):
+def _direct_path_bot_safe_context_items(
+    context: Optional[Mapping[str, Any]],
+    *,
+    limit: int = 3,
+    require_prompt_enabled: bool = True,
+) -> tuple[Mapping[str, Any], ...]:
+    if require_prompt_enabled and not _bot_safe_crm_context_enabled(context):
+        return ()
+    if not isinstance(context, Mapping):
         return ()
     active_brand = _active_brand(context)
     if active_brand not in {"foton", "unpk"}:
@@ -500,21 +558,36 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
                 continue
             if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
                 continue
-            if str(item.get("chunk_type") or "").strip().casefold() != "bot_safe_summary":
-                continue
+            source_system = str(item.get("source_system") or "").strip().casefold()
+            chunk_type = str(item.get("chunk_type") or "").strip().casefold()
             tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
-            if not _direct_path_bot_safe_item_visible(tags, active_brand=active_brand):
+            if not _direct_path_bot_safe_item_visible(
+                tags,
+                active_brand=active_brand,
+                source_system=source_system,
+                chunk_type=chunk_type,
+            ):
                 continue
-            text = str(item.get("summary") or item.get("text") or "").strip()
+            status = _direct_path_bot_safe_next_step_status(item)
+            text = strip_unconfirmed_next_step_text_for_bot(
+                str(item.get("summary") or item.get("text") or "").strip(),
+                next_step_status=status,
+            )
             if not text or _direct_path_bot_safe_text_has_pii(text):
                 continue
             result.append(
                 {
-                    "chunk_type": "bot_safe_summary",
+                    "source_system": source_system,
+                    "chunk_type": chunk_type,
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),
-                    "next_step_status": _direct_path_bot_safe_next_step_status(item),
-                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
+                    "next_step_status": status,
+                    "relevance_tags": _direct_path_bot_safe_visible_tags(
+                        tags,
+                        active_brand=active_brand,
+                        source_system=source_system,
+                        chunk_type=chunk_type,
+                    ),
                 }
             )
             if len(result) >= max(1, int(limit or 3)):
@@ -533,13 +606,46 @@ def _direct_path_bot_safe_next_step_status(item: Mapping[str, Any]) -> str:
     return status if status in {"active", "needs_manager_review", "empty"} else ""
 
 
-def _direct_path_bot_safe_item_visible(tags: set[str], *, active_brand: str) -> bool:
-    if "bot_safe" not in tags:
+def _direct_path_bot_safe_item_visible(
+    tags: set[str],
+    *,
+    active_brand: str,
+    source_system: str,
+    chunk_type: str,
+) -> bool:
+    if chunk_type == "bot_safe_summary":
+        required_tags = {"bot_safe"}
+        allow_unknown_brand = True
+    elif source_system == "mail_archive_stage2" and chunk_type == "email_message":
+        required_tags = {"email", "bot_visible", "mail_archive_stage2"}
+        allow_unknown_brand = False
+    elif source_system in {"telegram_history", "wappi_telegram", "wappi_max"} and chunk_type == "channel_message":
+        required_tags = {"channel", "bot_visible", source_system}
+        allow_unknown_brand = False
+    else:
+        return False
+    if not required_tags.issubset(tags):
         return False
     known_brand_tags = tags & {"foton", "unpk"}
     if known_brand_tags - {active_brand}:
         return False
-    return active_brand in tags or "unknown" in tags
+    return active_brand in tags or (allow_unknown_brand and "unknown" in tags)
+
+
+def _direct_path_bot_safe_visible_tags(
+    tags: set[str],
+    *,
+    active_brand: str,
+    source_system: str,
+    chunk_type: str,
+) -> list[str]:
+    if chunk_type == "bot_safe_summary":
+        candidates = ("bot_safe", "structured", active_brand, "unknown")
+    elif source_system == "mail_archive_stage2":
+        candidates = ("email", "bot_visible", "mail_archive_stage2", active_brand)
+    else:
+        candidates = ("channel", "bot_visible", source_system, active_brand)
+    return [tag for tag in candidates if tag in tags]
 
 
 def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
@@ -558,7 +664,8 @@ def _direct_path_trim_context_text(text: str, limit: int) -> str:
 
 def _direct_path_bot_safe_memory_prompt_text(text: str) -> str:
     value = _direct_path_trim_context_text(text, 700)
-    return _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+    value = _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+    return scrub_customer_memory_text(value)
 
 
 def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
@@ -597,16 +704,38 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
 
 
 def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    if not _bot_safe_crm_context_enabled(context):
-        return {"enabled": False, "reason": "bot_safe_crm_context_flag_off"}
-    items = _direct_path_bot_safe_context_items(context)
+    prompt_enabled = _bot_safe_crm_context_enabled(context)
+    shadow_enabled = _timeline_memory_shadow_enabled(context)
+    if not prompt_enabled and not shadow_enabled:
+        return {"enabled": False, "shadow": False, "reason": "timeline_memory_flag_off"}
+    items = _direct_path_bot_safe_context_items(context, require_prompt_enabled=False)
     return {
-        "enabled": True,
+        "enabled": prompt_enabled,
+        "shadow": shadow_enabled and not prompt_enabled,
         "visible_items": len(items),
         "active_brand": _active_brand(context),
         "source": "read_only_customer_context.timeline_context.bot_context",
         "next_step_statuses": [str(item.get("next_step_status") or "") for item in items if str(item.get("next_step_status") or "")],
     }
+
+
+def _direct_path_customer_memory_shadow_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not _timeline_memory_expanded_shadow_enabled(context):
+        return {"enabled": False, "reason": "timeline_memory_expanded_shadow_flag_off"}
+    if not isinstance(context, Mapping):
+        return {"enabled": True, "found": False, "reason": "context_missing"}
+    memory = build_customer_memory_for_prompt(
+        context,
+        active_brand=_active_brand(context),
+        item_limit=10,
+        char_budget=8_000,
+        history_limit=20,
+        history_item_chars=500,
+    )
+    payload = dict(memory.to_json_dict())
+    payload["enabled"] = True
+    payload["route_text_shadow_only"] = True
+    return payload
 
 DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "pricing": ("pricing", "price", "стоим", "цен", "дорог", "оплат", "рассроч", "долями", "скидк", "помесяч"),
@@ -742,12 +871,20 @@ def _direct_path_add_slot_provenance(
     confirmed = bool(confirmed)
     if existing and existing.get("confirmed") and not confirmed:
         return
+    status = "assumed_from_context"
+    if confirmed:
+        if source == "crm_known_slots":
+            status = "confirmed_by_crm"
+        elif source in _CONFIRMED_SLOT_SOURCES:
+            status = "confirmed_by_memory"
+        else:
+            status = "confirmed_by_client"
     result[normalized_key] = {
         "value": text,
         "source": str(source or "unknown"),
         "quote": str(quote or "").strip()[:160],
         "confirmed": confirmed,
-        "status": "confirmed_by_client" if confirmed else "assumed_from_context",
+        "status": status,
     }
 
 
@@ -818,7 +955,8 @@ def _direct_path_slot_provenance(context: Optional[Mapping[str, Any]]) -> dict[s
                     value,
                     source=source,
                     quote=str(existing.get("quote") or "") if existing else "",
-                    confirmed=bool(existing and existing.get("confirmed")),
+                    confirmed=bool(existing and existing.get("confirmed"))
+                    or source_key in {"client_confirmed_slots", "crm_known_slots"},
                 )
 
     return result
@@ -2171,6 +2309,31 @@ def _direct_path_slot_label(key: str) -> str:
     return _DIRECT_PATH_QUALIFICATION_SLOT_LABELS.get(key, key)
 
 
+def _direct_path_confirmed_do_not_reask_keys(context: Optional[Mapping[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    for key, data in _direct_path_slot_provenance(context).items():
+        if not data.get("confirmed"):
+            continue
+        canonical = _direct_path_canonical_slot_key(key)
+        if canonical and _presale_prompt_safe_key(canonical):
+            result.add(canonical)
+    return result
+
+
+def _direct_path_confirmed_instruction_slot_map(context: Optional[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    result: dict[str, tuple[str, str]] = {}
+    for key, data in _direct_path_slot_provenance(context).items():
+        if not data.get("confirmed"):
+            continue
+        canonical = _direct_path_canonical_slot_key(key)
+        if not canonical or not _presale_prompt_safe_key(canonical):
+            continue
+        value = _direct_path_safe_slot_value_for_instruction(canonical, data.get("value"))
+        if value:
+            result[canonical] = (_direct_path_slot_label(canonical), value)
+    return result
+
+
 def _direct_path_safe_slot_value_for_instruction(key: object, value: Any) -> str:
     if isinstance(value, Mapping) and "value" in value:
         value = value.get("value")
@@ -2194,6 +2357,8 @@ def _direct_path_merge_instruction_slots(target: dict[str, tuple[str, str]], sou
 
 
 def _direct_path_prompt_instruction_slot_map(context: Optional[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    if _direct_path_known_slots_next_step_prompt_enabled(context):
+        return _direct_path_confirmed_instruction_slot_map(context)
     result: dict[str, tuple[str, str]] = {}
     _direct_path_merge_instruction_slots(result, _direct_path_prompt_known_slots(context))
     if not isinstance(context, Mapping):
@@ -2231,9 +2396,10 @@ def _direct_path_prompt_do_not_reask_keys(context: Optional[Mapping[str, Any]]) 
         elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
             keys.extend(str(item or "") for item in raw)
     result: list[str] = []
+    confirmed = _direct_path_confirmed_do_not_reask_keys(context)
     for key in keys:
         canonical = _direct_path_canonical_slot_key(key)
-        if canonical and _presale_prompt_safe_key(canonical) and canonical not in result:
+        if canonical and canonical in confirmed and _presale_prompt_safe_key(canonical) and canonical not in result:
             result.append(canonical)
     return tuple(result)
 
@@ -2306,12 +2472,14 @@ def _direct_path_known_slots_next_step_prompt_block(context: Optional[Mapping[st
         "- Вопрос про класс/предмет/формат задавай ТОЛЬКО если он реально неизвестен И нет активного следующего шага. "
         "Если параметр уже известен, анкета — ошибка: продвигай разговор по сути."
     )
-    if _direct_path_has_active_next_step(context):
+    has_active_step = _direct_path_has_active_next_step(context)
+    has_known_qualification = _direct_path_has_known_qualification_slot(context)
+    if has_active_step:
         lines.append(
             "- Если статус next_step active — ответ ДОЛЖЕН продвигать шаг ИЛИ прямо отвечать на вопрос клиента; "
             "НЕ задавай квалифицирующих вопросов, если шаг известен."
         )
-    else:
+    elif not has_known_qualification:
         lines.append(
             "- Если класс/предмет/формат действительно неизвестны и без них нельзя помочь, допустим один короткий уточняющий вопрос."
         )
@@ -2618,8 +2786,9 @@ def _build_direct_path_prompt(
     if _assumed_scope_guard_enabled(context):
         assumed_scope_instruction = (
             "Правило неподтверждённых параметров: в «Известных слотах» status=confirmed_by_client означает, "
-            "что клиент сам подтвердил параметр в диалоге. status=assumed_from_context означает CRM/контекстную "
-            "догадку. Не представляй такие класс, предмет, формат или продукт как подтверждённые клиентом. "
+            "что клиент сам подтвердил параметр в диалоге; status=confirmed_by_crm означает read-only CRM; "
+            "status=confirmed_by_memory означает подтверждённую память диалога; status=assumed_from_context означает "
+            "контекстную догадку. Не представляй guessed/assumed класс, предмет, формат или продукт как подтверждённые клиентом. "
             "Не называй итоговые цены, даты или расписание, если число зависит только от assumed_from_context. "
             "В такой ситуации мягко задай один уточняющий вопрос или ответь без привязки к неподтверждённому параметру.\n\n"
         )
@@ -2716,6 +2885,7 @@ def _direct_path_metadata(
         "rubric_reason": "",
         "known_slots_next_step_prompt": dict(_direct_path_known_slots_next_step_prompt_trace(context)),
         "bot_safe_crm_context": dict(_direct_path_bot_safe_context_trace(context)),
+        "customer_memory_for_prompt_shadow": dict(_direct_path_customer_memory_shadow_trace(context)),
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
@@ -2811,7 +2981,12 @@ def _direct_path_do_not_reask_slots(context: Optional[Mapping[str, Any]]) -> set
             values.append(raw)
         elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
             values.extend(raw)
-    result = {str(item or "").strip() for item in values if str(item or "").strip()}
+    confirmed = _direct_path_confirmed_do_not_reask_keys(context)
+    result = {
+        _direct_path_canonical_slot_key(item)
+        for item in values
+        if str(item or "").strip() and _direct_path_canonical_slot_key(item) in confirmed
+    }
     if "grade" in result:
         result.add("class")
     if "class" in result:

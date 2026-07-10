@@ -46,11 +46,15 @@ HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
 SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
 EMAIL_STUB_EVENT_TYPES = {"email_message"}
-MANGO_CALL_MANAGER_HISTORY_FALLBACK_NON_CONVERSATION_RE = re.compile(
+EMAIL_SUMMARY_REVIEW_NEEDED_RE = re.compile(
+    r"^\s*требуется\s+ручная\s+проверка\s+модельной\s+выжимки\b",
+    re.I,
+)
+MANGO_CALL_HISTORY_FALLBACK_NON_CONVERSATION_RE = re.compile(
     r"\b(?:"
     r"нецелев\w+\s+звон\w+|автоответчик|техническ\w+\s+дозвон|коротк\w+\s+техническ\w+|"
     r"нет\s+содержательн\w+\s+диалог\w+|полноценн\w+\s+разговор\w+[^.]{0,80}не\s+состоя|"
-    r"разговор\s+не\s+состоя|не\s+удалось\s+дозвон|абонент\w*\s+недоступ|номер\s+набран\s+ошибочн"
+    r"разговор\s+не\s+состоя|не\s+удалось\s+дозвон\w*|абонент\w*\s+недоступ|номер\s+набран\s+ошибочн"
     r")\b",
     re.I,
 )
@@ -65,6 +69,7 @@ MANAGER_EVENT_LABEL_BY_SOURCE = {
     "whatsapp_history": "Сообщение",
     "amocrm_snapshot": "AMO",
     "amo_incremental": "AMO",
+    "amocrm_price_readonly": "AMO",
     "tallanto_snapshot": "Tallanto",
 }
 MANAGER_EVENT_LABEL_BY_TYPE = {
@@ -342,6 +347,7 @@ def _crm_text_quality_blocker_message(finding: CrmTextQualityFinding) -> str:
         "terminal_lost_without_loss_reason_requires_manual_review": "закрытая проигранная сделка без причины отказа",
         "cross_field_duplicate_information": "поля карточки дублируют один и тот же текст",
         "service_test_marker": "служебный или тестовый текст в поле карточки",
+        "raw_email_thread_artifact": "сырой email-thread или технический мусор письма в поле карточки",
     }
     label = labels.get(finding.risk_type) or finding.risk_type
     field = _safe_text(finding.field)
@@ -760,8 +766,8 @@ def _history_summary_source(
         if event_key and event_key == _event_key(latest_call):
             continue
         event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
-        event_type = _manager_event_label(event)
-        lines = [f"{event_at} {event_type}: {summary}"]
+        event_label = _manager_event_label(event)
+        lines = [f"{event_at} {event_label}: {summary}"]
         lines.extend(_call_analysis_lines(event))
         blocks.append("\n".join(lines))
     for signal in sorted(signals, key=lambda item: _safe_text(item.get("created_at")), reverse=True)[:8]:
@@ -817,7 +823,7 @@ def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
     result: list[Mapping[str, Any]] = []
     for event in events:
         event_type = _safe_text(event.get("event_type"))
-        if event_type in EMAIL_STUB_EVENT_TYPES:
+        if event_type in EMAIL_STUB_EVENT_TYPES and _is_email_stub_event(event):
             continue
         if event_type in SERVICE_SNAPSHOT_EVENT_TYPES:
             continue
@@ -842,9 +848,11 @@ def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, An
 
 def _mango_call_history_eligible(event: Mapping[str, Any]) -> bool:
     explicit = event.get("call_history_eligible")
+    call_analysis = _call_analysis(event)
+    if call_analysis.get("call_history_eligible") is True:
+        return True
     if explicit is False:
         return False
-    call_analysis = _call_analysis(event)
     if call_analysis.get("call_history_eligible") is False:
         return False
     call_type = _safe_text(
@@ -854,33 +862,29 @@ def _mango_call_history_eligible(event: Mapping[str, Any]) -> bool:
     ).casefold()
     if call_type in {"non_conversation", "missed", "missed_call", "no_answer"}:
         return False
-    if explicit is True or call_analysis.get("call_history_eligible") is True:
+    if explicit is True:
         return True
-    if call_analysis:
-        return bool(_event_history_summary(event))
-    return _mango_call_manager_history_fallback_eligible(event)
-
-
-def _mango_call_manager_history_fallback_eligible(event: Mapping[str, Any]) -> bool:
-    if "call_history_eligible" in event or "call_analysis" in event:
-        return False
-    if _safe_text(event.get("event_type")) != "mango_call":
-        return False
-    call_type = _safe_text(event.get("call_type")).casefold()
-    if call_type in {"non_conversation", "technical"} or "technical" in call_type:
-        return False
     summary = _event_history_summary(event)
     if len(summary) < 60:
         return False
-    if MANGO_CALL_MANAGER_HISTORY_FALLBACK_NON_CONVERSATION_RE.search(summary):
+    if MANGO_CALL_HISTORY_FALLBACK_NON_CONVERSATION_RE.search(summary):
         return False
-    return bool(_event_history_summary(event))
+    return bool(summary)
 
 
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
     summary = _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+    if _safe_text(event.get("event_type")) in EMAIL_STUB_EVENT_TYPES and EMAIL_SUMMARY_REVIEW_NEEDED_RE.search(summary):
+        return _email_review_needed_manager_summary(event)
     return _absolutize_relative_dates(summary, _safe_text(event.get("event_at")))
+
+
+def _email_review_needed_manager_summary(event: Mapping[str, Any]) -> str:
+    subject = _safe_text(event.get("subject"))
+    if subject:
+        return f"Письмо «{subject}»: полный текст в базе."
+    return "Письмо: полный текст в базе."
 
 
 def _manager_event_label(event: Mapping[str, Any]) -> str:
@@ -903,6 +907,9 @@ def _is_email_stub_event(event: Mapping[str, Any]) -> bool:
     event_type = _safe_text(event.get("event_type"))
     source = _safe_text(event.get("source_system"))
     summary = _safe_text(event.get("summary") or event.get("text_preview")).casefold()
+    record = _mapping(event.get("record"))
+    if source == "mail_archive_stage2" and _safe_text(record.get("full_clean_text") or event.get("summary") or event.get("text_preview")):
+        return False
     if event_type in EMAIL_STUB_EVENT_TYPES or source == "mail_archive":
         return True
     return "email handoff" in summary and "сообщен" in summary

@@ -5918,15 +5918,24 @@ def union_identity_values(
     columns: Sequence[str],
     extractor: Any,
 ) -> dict[str, list[str]]:
-    values: dict[str, list[str]] = {}
+    row_values_by_source: list[tuple[str, dict[str, list[str]]]] = []
     for row, label in zip(rows, labels):
         row_values = collect_row_identity_values(row, columns=columns, extractor=extractor)
-        for value, source_columns in row_values.items():
-            values.setdefault(value, [])
-            for column in source_columns:
-                tagged_column = f"{label}:{column}"
-                if tagged_column not in values[value]:
-                    values[value].append(tagged_column)
+        if row_values:
+            row_values_by_source.append((label, row_values))
+    if not row_values_by_source:
+        return {}
+
+    # Sources are passed oldest -> freshest. For identity keys, the freshest
+    # non-empty source wins; older values remain in candidate_json._union_values.
+    freshest_label, freshest_values = row_values_by_source[-1]
+    values: dict[str, list[str]] = {}
+    for value, source_columns in freshest_values.items():
+        values.setdefault(value, [])
+        for column in source_columns:
+            tagged_column = f"{freshest_label}:{column}"
+            if tagged_column not in values[value]:
+                values[value].append(tagged_column)
     return values
 
 

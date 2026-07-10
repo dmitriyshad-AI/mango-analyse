@@ -65,6 +65,60 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     assert card["bot_safety"]["money_fields_manager_only"] is True
 
 
+def test_crm_card_replaces_email_summary_review_status_with_manager_text() -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:mail-review",
+        "snapshot_as_of": "2026-07-03T12:00:00+00:00",
+        "last_event_at": "2026-07-03T12:00:00+00:00",
+        "customer": {"customer_id": "customer:mail-review", "identity_status": "strong", "summary": {}},
+        "customer_id_mappings": [],
+        "identity_links": [{"link_type": "amo_contact_id", "link_value": "123", "match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [
+                {
+                    "opportunity_id": "opp1",
+                    "opportunity_type": "amo_deal",
+                    "source_system": "amocrm_snapshot",
+                    "source_id": "456",
+                    "status": "open",
+                }
+            ],
+        },
+        "opportunities": [],
+        "timeline": {
+            "items": [
+                {
+                    "event_id": "mail-1",
+                    "event_type": "email_message",
+                    "event_at": "2026-07-03T11:00:00+00:00",
+                    "source_system": "mail_archive_stage2",
+                    "subject": "Re: Оплата за курс",
+                    "summary": "Требуется ручная проверка модельной выжимки; полный текст письма сохранён в timeline.",
+                    "text_preview": "Требуется ручная проверка модельной выжимки; полный текст письма сохранён в timeline.",
+                    "record": {"full_clean_text": "Полный текст письма хранится в базе."},
+                }
+            ]
+        },
+        "signals": [],
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+        "next_step_resolution": {"status": "active", "display_text": "Позвонить клиенту."},
+        "bot_context": {"items": []},
+    }
+
+    card = build_crm_card_projection(profile, selected_amo_lead_id="456")
+    history = card["contact_card"]["fields"]["История общения"]
+    latest = card["contact_card"]["fields"]["Последняя сводка"]
+
+    assert "Требуется ручная проверка модельной выжимки" not in history
+    assert "Требуется ручная проверка модельной выжимки" not in latest
+    assert "Письмо «Re: Оплата за курс»: полный текст в базе." in history
+    assert "Письмо «Re: Оплата за курс»: полный текст в базе." in latest
+
+
 def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None:
     live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и оплату. " * 20)
     older_summary = "Полный разбор предыдущего звонка: семья выбирала формат и предмет."
@@ -471,6 +525,134 @@ def test_crm_card_accepts_prod_mango_summary_without_legacy_eligibility_flag(tmp
         if item.risk_type == "cross_field_duplicate_information"
     ]
     assert card["workbook"]["ready"] == "да"
+
+
+def test_crm_card_fallback_filters_technical_calls_without_structured_contract() -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:fallback-filter",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:fallback-filter", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-21T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": "Не удалось дозвониться, полноценный разговор с клиентом не состоялся.",
+                },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-20T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": "20.06.2026 менеджер обсудил с клиентом летнюю школу и договорился отправить варианты программ.",
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+
+    assert "Не удалось дозвониться" not in card["contact_card"]["fields"]["Последняя сводка"]
+    assert "летнюю школу" in card["contact_card"]["fields"]["Последняя сводка"]
+
+
+def test_crm_card_includes_enriched_stage2_mail_and_uses_manager_labels() -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:mail-stage2",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:mail-stage2", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "email_message",
+                    "event_at": "2026-06-19T10:00:00+00:00",
+                    "source_system": "mail_archive_stage2",
+                    "summary": "Письмо: клиенту отправили расписание и стоимость курса.",
+                    "record": {"full_clean_text": "Клиенту отправили расписание и стоимость курса."},
+                },
+                {
+                    "event_type": "email_message",
+                    "event_at": "2026-06-18T10:00:00+00:00",
+                    "source_system": "mail_archive",
+                    "summary": "Email handoff: связанная переписка.",
+                },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-17T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": "Менеджер обсудил с клиентом запрос и договорился ждать ответ по расписанию.",
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+    history = card["contact_card"]["fields"]["История общения"]
+
+    assert "Письмо: Письмо: клиенту отправили расписание" in history
+    assert "Email handoff" not in history
+    assert "mail_archive_stage2" not in history
+    assert "mango_processed_summary" not in history
+
+
+def test_crm_card_quality_blockers_make_card_not_ready() -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:quality-blocker",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:quality-blocker", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-20T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": (
+                        "Контакт не подтвердился: менеджер звонил по поводу летней школы, "
+                        "но в разговоре выяснилась путаница с именем и на линии была не та Светлана. "
+                        "Обсуждение программы не состоялось."
+                    ),
+                }
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+
+    assert card["workbook"]["ready"] == "нет"
+    assert any("Текст карточки требует проверки" in item for item in card["contact_card"]["blockers"])
 
 
 def test_crm_card_history_summarizer_accepts_multiline_history_json(tmp_path: Path) -> None:

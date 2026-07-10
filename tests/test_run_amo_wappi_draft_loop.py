@@ -6,6 +6,8 @@ import os
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
 from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_recent_messages
@@ -232,6 +234,41 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
     runner.build_runner(args)
     assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == "pilot_gold_v1"
     os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
+
+
+def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
+    class StopLoop(Exception):
+        pass
+
+    class FakeLoop:
+        calls = 0
+
+        def run_once(self, *, dry_run: bool):
+            assert dry_run is False
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary Wappi failure")
+            return {"status": "ok", "client_sends": 0, "note_written": 0}
+
+    emitted: list[str] = []
+    sleeps: list[float] = []
+
+    def fake_sleep(interval: float) -> None:
+        sleeps.append(interval)
+        if len(sleeps) == 2:
+            raise StopLoop
+
+    with pytest.raises(StopLoop):
+        runner.run_loop_forever(FakeLoop(), dry_run=False, interval_sec=1, sleep=fake_sleep, emit=emitted.append)
+
+    first = json.loads(emitted[0])
+    second = json.loads(emitted[1])
+    assert first["status"] == "cycle_error"
+    assert first["error_type"] == "RuntimeError"
+    assert first["client_sends"] == 0
+    assert first["note_written"] == 0
+    assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
+    assert sleeps == [5, 5]
 
 
 class FakeMcp:

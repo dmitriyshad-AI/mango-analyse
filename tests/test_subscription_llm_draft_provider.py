@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
+import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     AUTONOMY_SCOPE_PRECISION_ENV,
@@ -11330,6 +11331,272 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
+def test_direct_path_rewrites_unconfirmed_contact_data_claim(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Телефон повторно присылать не нужно, он уже есть в диалоге.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Хочу записаться на курс",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "recent_messages": ["Клиент: Хочу записаться на курс"],
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Повторно указывать не обязательно — менеджер сверит по системе."
+    assert "unconfirmed_contact_data_claim_rewritten" in result.safety_flags
+
+
+def test_direct_path_keeps_contact_claim_when_client_sent_phone(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Телефон повторно присылать не нужно, он уже есть в диалоге.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Мой телефон +7 999 123-45-67",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "recent_messages": ["Клиент: Мой телефон +7 999 123-45-67"],
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Телефон повторно присылать не нужно, он уже есть в диалоге."
+    assert "unconfirmed_contact_data_claim_rewritten" not in result.safety_flags
+
+
+def test_direct_path_rewrites_no_memory_better_start_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Лучше начать с класса ученика, чтобы подобрать группу.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что нужно для подбора?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert "лучше начать" not in result.draft_text.casefold()
+    assert "Предлагаю начать с класса ученика" in result.draft_text
+    assert "no_memory_step_frame_rewritten" in result.safety_flags
+
+
+def test_direct_path_rewrites_no_memory_next_step_synonym_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Дальше нужно подобрать онлайн-группу по уровню для 7 класса по математике. "
+                "Онлайн-занятия в Фотоне проходят на SohoLMS."
+            ),
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Онлайн удобнее. Что дальше нужно сделать?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "дальше нужно" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста" in result.draft_text
+    assert "класс ученика" in result.draft_text
+    assert "предмет" in result.draft_text
+    assert "формат" in result.draft_text
+    assert "уровень подготовки" in result.draft_text
+    assert "no_memory_step_frame_rewritten" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+
+def test_direct_path_keeps_no_memory_neutral_wait_frame(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Дальше нужно дождаться ответа менеджера, чтобы не ошибиться.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Дальше нужно дождаться ответа менеджера, чтобы не ошибиться."
+    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+
+
+def test_direct_path_does_not_rewrite_no_memory_payment_frame_as_step_question(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Дальше нужно оплатить курс до завтра.",
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+        },
+    )
+
+    assert provider.calls == 1
+    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+    assert "Уточните, пожалуйста, оплатить курс" not in result.draft_text
+
+
+def test_direct_path_memory_step_guard_rewrites_synonym_frame_for_review_status(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Следующий шаг — понять класс ребёнка, чтобы подобрать подходящую онлайн-группу "
+                "по 4 предметам. Подскажите, пожалуйста, в каком классе ребёнок?"
+            ),
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Тогда какой сейчас следующий шаг?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Бренд: Фотон. Следующий шаг требует проверки менеджером.",
+                            "next_step_status": "needs_manager_review",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста" in result.draft_text
+    assert "класс ученика" in result.draft_text
+    assert "предмет" in result.draft_text
+    assert "формат" in result.draft_text
+    assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+
+def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Подскажите, пожалуйста, класс ученика.",
+            metadata={"direct_path": {"model_response": "raw"}},
+            safety_flags=(),
+        )
+    )
+
+    def late_soft_step(result: SubscriptionDraftResult, *, client_message: str, context: Mapping[str, object] | None = None) -> SubscriptionDraftResult:
+        return replace(result, draft_text=result.draft_text + " Следующий шаг — уточнить класс ученика.")
+
+    monkeypatch.setattr(subscription_provider, "apply_tone_close_detect_layer", late_soft_step)
+
+    result = provider.build_draft(
+        "Что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Фотон: клиент обсуждал запись.",
+                            "next_step_status": "empty",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "следующий шаг" not in result.draft_text.casefold()
+    assert "Уточните, пожалуйста, класс ученика" in result.draft_text
+    assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
+
+
 def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -12269,7 +12536,7 @@ def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selecti
     assert pack["llm_retrieve"]["scope_demoted_ids"] == ["foton.physics9.online.price"]
 
 
-def test_tz119_unconfirmed_crm_grade_is_soft_scope_not_hard_demotion(tmp_path: Path) -> None:
+def test_tz119_unconfirmed_context_grade_is_soft_scope_not_hard_demotion(tmp_path: Path) -> None:
     snapshot = {
         "facts": [
             {
@@ -12318,7 +12585,7 @@ def test_tz119_unconfirmed_crm_grade_is_soft_scope_not_hard_demotion(tmp_path: P
         LLM_RETRIEVE_ENV: "1",
         RETRIEVER_NEED_SHADOW_ENV: "1",
         ASSUMED_SCOPE_GUARD_ENV: "1",
-        "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "subject": "физика"}},
+        "dialogue_memory_view": {"known_slots": {"grade": "4", "subject": "физика"}},
     }
 
     pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
@@ -12384,7 +12651,7 @@ def test_tz119_confirmed_grade_still_scope_demotes_wrong_fact(tmp_path: Path) ->
     assert subscription_llm._direct_path_slot_provenance(context)["grade"]["source"] == "memory_provenance"
 
 
-def test_tz119_assumed_scope_guard_reasks_without_manager_handoff() -> None:
+def test_tz119_assumed_context_scope_guard_reasks_without_manager_handoff() -> None:
     result = subscription_llm.apply_assumed_scope_guard(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -12392,7 +12659,7 @@ def test_tz119_assumed_scope_guard_reasks_without_manager_handoff() -> None:
         ),
         context={
             ASSUMED_SCOPE_GUARD_ENV: "1",
-            "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "format": "онлайн"}},
+            "dialogue_memory_view": {"known_slots": {"grade": "4", "format": "онлайн"}},
         },
     )
 
@@ -15020,6 +15287,88 @@ def test_direct_path_gate_allows_manager_contact_without_deadline() -> None:
     assert gated.route == "bot_answer_self_for_pilot"
     assert gated.draft_text == result.draft_text
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_direct_path_gate_downgrades_future_booking_commitment_but_keeps_text() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Запишем вас в группу и закрепим место.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Что дальше?", context={"active_brand": "foton"})
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == result.draft_text
+    assert gate["action"] == "downgrade_keep_text"
+    assert "unsafe_future_commitment" in {item["code"] for item in gate["findings"]}
+    assert "direct_path_gate_text_preserved" in gated.safety_flags
+
+
+@pytest.mark.parametrize(
+    "draft_text",
+    (
+        "Я запишу вас в группу и закреплю место.",
+        "Забронирую вам место в группе.",
+        "Я верну вам деньги за оплату.",
+        "Оформлю возврат оплаты.",
+        "Выставлю счет.",
+    ),
+)
+def test_direct_path_gate_downgrades_first_person_future_commitments(draft_text: str) -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=draft_text,
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Что дальше?", context={"active_brand": "foton"})
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route in {"draft_for_manager", "manager_only"}
+    assert gate["action"] in {"downgrade_keep_text", "block"}
+    assert {"unsafe_future_commitment", "p0_promise"} & {item["code"] for item in gate["findings"]}
+
+
+def test_direct_path_gate_keeps_safe_manager_check_before_booking() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Сначала менеджер проверит наличие. Если место есть, он подскажет оформление заявки.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Есть места?", context={"active_brand": "foton"})
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.draft_text == result.draft_text
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_brand_guard_blocks_any_brand_token_when_active_brand_unknown() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Фотон поможет подобрать группу по математике.",
+    )
+
+    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "unknown"})
+
+    assert guarded.route == "manager_only"
+    assert "brand_unknown_client_text_blocked" in guarded.safety_flags
+    assert guarded.metadata["forbidden_brand_terms"] == ["foton"]
+
+
+def test_brand_guard_blocks_two_brands_even_when_active_brand_known() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В Фотоне и УНПК МФТИ условия похожи, можно выбрать любой вариант.",
+    )
+
+    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "foton"})
+
+    assert guarded.route == "manager_only"
+    assert "cross_brand_client_text_blocked" in guarded.safety_flags
+    assert set(guarded.metadata["forbidden_brand_terms"]) == {"foton", "unpk"}
 
 
 def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:

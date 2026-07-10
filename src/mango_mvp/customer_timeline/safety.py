@@ -67,6 +67,10 @@ def is_stable_runtime_path(path: Path | str) -> bool:
     return any(part.casefold() == "stable_runtime" for part in Path(path).parts)
 
 
+def is_customer_timeline_prod_path(path: Path | str) -> bool:
+    return any("customer_timeline_prod_" in part.casefold() for part in Path(path).parts)
+
+
 def guard_customer_timeline_output_path(path: Path | str, allowed_root: Path | str) -> Path:
     resolved = Path(path).resolve(strict=False)
     root = Path(allowed_root).resolve(strict=False)

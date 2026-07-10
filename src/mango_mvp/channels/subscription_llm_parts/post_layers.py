@@ -882,6 +882,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "derived_product_number": "downgrade_keep_text",
     "derived_product_claim": "downgrade_keep_text",
     "individual_diagnosis": "downgrade_keep_text",
+    "unsafe_future_commitment": "downgrade_keep_text",
     "invented_generalization": "annotate",
 }
 
@@ -1022,6 +1023,7 @@ CONTENT_DELIVERY_ACTION_RE = re.compile(
 
 
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 BOT_SAFE_MEMORY_STEP_GUARD_FLAG = "bot_safe_memory_unconfirmed_step_detected"
 BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT = "Уточню актуальный шаг с менеджером и вернусь с ответом."
 BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES = frozenset({"active", "needs_manager_review", "empty"})
@@ -1049,8 +1051,52 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r")",
     re.I,
 )
-
-
+NEXT_STEP_SOFT_ACTION_RE_FRAGMENT = (
+    r"(?:уточн\w*|указ\w*|спрос\w*|узна\w*|выясн\w*|поня\w*|"
+    r"подтверд\w*|подбер\w*|подобр\w*|провер\w*|напиш\w*|сообщ\w*)"
+)
+BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE = re.compile(
+    r"(?:"
+    r"\bследующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[:—-]|\b(?:будет|это)\b)\s*"
+    r"|"
+    r"\bдальше\s+(?:нужно|по\s+плану)\s+"
+    r")"
+    r"[^.!?\n]{0,120}?"
+    rf"\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b"
+    r"[^.!?\n]{0,120}(?:[.!?]|$)",
+    re.I,
+)
+UNSAFE_FUTURE_COMMITMENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:верн(?:[её]м|у)|возврат(?:им|у)|оформ(?:им|лю)\s+возврат|перевед(?:[её]м|у)|компенсир(?:уем|ую))\b"
+    r"[^.!?\n]{0,100}?\b(?:деньг\w*|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*|руб|₽)\b"
+    r"|"
+    r"\b(?:пришл(?:ю|[её]м)|отправ(?:лю|им)|выстав(?:лю|им)|подготов(?:лю|им))\b"
+    r"[^.!?\n]{0,90}?\b(?:ссылк\w*\s+на\s+оплат|сч[её]т|квитанц\w*)\b"
+    r"|"
+    r"\b(?:дад(?:им|у)|сдела(?:ем|ю)|оформ(?:им|лю)|закреп(?:им|лю)|примен(?:им|ю))\b"
+    r"[^.!?\n]{0,80}?\b(?:скидк\w*|\d+\s*%)\b"
+    r"|"
+    r"\b(?:забронир(?:уем|ую)|закреп(?:им|лю)|сохран(?:им|ю)|оформ(?:им|лю)|запиш(?:ем|у)|зачисл(?:им|ю))\b"
+    r"[^.!?\n]{0,90}?\b(?:место|брон\w*|заявк\w*|запис\w*|групп\w*)\b"
+    r"|"
+    r"\b(?:место|брон\w*|заявк\w*|запис\w*|групп\w*)\b"
+    r"[^.!?\n]{0,90}?\b(?:забронир(?:уем|ую)|закреп(?:им|лю)|сохран(?:им|ю)|оформ(?:им|лю)|запиш(?:ем|у)|зачисл(?:им|ю))\b"
+    r")",
+    re.I,
+)
+SAFE_FUTURE_COMMITMENT_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"не\s+(?:обещаю|гарантирую|могу\s+обещать|буду\s+обещать)"
+    r"|без\s+проверки"
+    r"|после\s+проверки"
+    r"|сначала\s+менеджер\s+проверит"
+    r"|если\s+(?:место|группа|вариант)\s+(?:есть|будет)"
+    r"|менеджер\s+(?:проверит|уточнит|подскажет|сверит)"
+    r"|передам\s+(?:вопрос\s+)?менеджеру"
+    r")\b",
+    re.I,
+)
 def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
     rules = metadata.get("rules_engine") if isinstance(metadata.get("rules_engine"), Mapping) else {}
     applied = str(rules.get("applied") or "").strip()
@@ -2796,7 +2842,13 @@ def apply_authoritative_output_gate(
     if not actionable:
         return apply_night_hours_note(replace(result, metadata=metadata), context=context)
 
-    route = "draft_for_manager" if direct_path_keep_text else _authoritative_gate_downgraded_route(result.route, actions)
+    route = (
+        result.route
+        if direct_path_keep_text and result.route == "manager_only"
+        else "draft_for_manager"
+        if direct_path_keep_text
+        else _authoritative_gate_downgraded_route(result.route, actions)
+    )
     metadata["authoritative_output_gate"]["route_after"] = route
     codes = tuple(dict.fromkeys(str(item["code"]) for item in actionable))
     flags = tuple(
@@ -3685,6 +3737,7 @@ def _authoritative_gate_findings(
             facts=facts,
         )
     )
+    findings.extend(_authoritative_gate_unsafe_future_commitment_findings(result))
     contract = _pipeline_contract(result, active_brand=_active_brand(gate_context), fact_keys=tuple(facts.keys()))
     previous_bot_texts = _humanity_previous_bot_texts(gate_context)
     p0_already_guarded = _authoritative_gate_p0_already_guarded(result)
@@ -3791,6 +3844,37 @@ def _manager_deadline_promise_detail(text: str) -> str:
         ):
             return value[:240]
     return ""
+
+
+def _authoritative_gate_unsafe_future_commitment_findings(result: SubscriptionDraftResult) -> list[dict[str, str]]:
+    details = _unsafe_future_commitment_details(result.draft_text)
+    return [
+        _authoritative_gate_finding(
+            "unsafe_future_commitment",
+            detail=detail,
+            source="draft_future_commitment_gate",
+        )
+        for detail in details
+    ]
+
+
+def _unsafe_future_commitment_details(text: str) -> tuple[str, ...]:
+    details: list[str] = []
+    for sentence in _guard_sentences(text):
+        if not UNSAFE_FUTURE_COMMITMENT_RE.search(sentence):
+            continue
+        if SAFE_FUTURE_COMMITMENT_CONTEXT_RE.search(sentence):
+            continue
+        details.append(sentence[:240])
+    return tuple(dict.fromkeys(details))
+
+
+def _guard_sentences(text: str) -> tuple[str, ...]:
+    return tuple(
+        " ".join(part.split())
+        for part in re.split(r"(?<=[.?!])\s+|\n+", str(text or ""))
+        if part.strip()
+    )
 
 
 def _authoritative_gate_a2_findings(
@@ -4472,7 +4556,9 @@ def apply_bot_safe_memory_step_guard(
     if not review_statuses:
         return result
     guard_context = _context_with_dialogue_contract_retrieved_facts(context, result)
-    claims = find_bot_safe_memory_disputed_step_claims(result.draft_text, context=guard_context)
+    hard_claims = _bot_safe_memory_hard_step_claims(result.draft_text, context=guard_context)
+    soft_claims = _bot_safe_memory_soft_step_claims(result.draft_text, context=guard_context)
+    claims = tuple(dict.fromkeys([*hard_claims, *soft_claims]))
     if not claims:
         return result
     metadata = dict(result.metadata)
@@ -4483,6 +4569,24 @@ def apply_bot_safe_memory_step_guard(
         "claims": list(claims),
         "source": "deterministic_output_guard",
     }
+    if soft_claims and not hard_claims:
+        rewritten_text = _rewrite_bot_safe_memory_soft_step_frame(result.draft_text)
+        if rewritten_text and rewritten_text != result.draft_text:
+            return replace(
+                result,
+                draft_text=rewritten_text,
+                forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+                safety_flags=tuple(dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG])),
+                manager_checklist=tuple(
+                    dict.fromkeys(
+                        [
+                            *result.manager_checklist,
+                            "Не называть уточняющий вопрос «следующим шагом» без active next_step.",
+                        ]
+                    )
+                ),
+                metadata=metadata,
+            )
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     return replace(
         result,
@@ -4504,12 +4608,267 @@ def apply_bot_safe_memory_step_guard(
     )
 
 
+UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG = "unconfirmed_contact_data_claim_rewritten"
+
+UNCONFIRMED_CONTACT_DATA_SAFE_TEXT = "Повторно указывать не обязательно — менеджер сверит по системе."
+
+CONTACT_DATA_EVIDENCE_RE = re.compile(
+    r"(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:мой|моя|наш|наш[аи]|указал[аи]?|пишу|оставляю)\b[^.?!\n]{0,80}"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)",
+    re.I,
+)
+
+CLIENT_CONTACT_FACT_EVIDENCE_RE = re.compile(
+    r"(?:\b(?:клиент|родител[ьяюем]?|мам[аы]?|пап[аы]?|заявител[ьяюем]?|контакт\s+клиент[а-яё]*)\b"
+    r"[^.?!\n]{0,120}(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)"
+    r"|(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:телефон|номер|почт[ауеы]|email|e-mail|адрес|контакт)\b)"
+    r"[^.?!\n]{0,120}\b(?:клиент|родител[ьяюем]?|мам[аы]?|пап[аы]?|заявител[ьяюем]?)\b)",
+    re.I,
+)
+
+UNCONFIRMED_CONTACT_DATA_CLAIM_RE = re.compile(
+    r"(?P<sentence>[^.?!\n]{0,180}(?:"
+    r"(?:телефон|номер(?:\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\s+данные)?)"
+    r"[^.?!\n]{0,180}"
+    r"(?:уже\s+(?:есть|вижу|указан[аоы]?)|есть\s+(?:у\s+нас|у\s+центра|в\s+диалоге|в\s+системе)|"
+    r"повторно\s+(?:указывать|присылать|отправлять)\s+не\s+нужно|"
+    r"(?:указывать|присылать|отправлять)\s+повторно\s+не\s+нужно|"
+    r"не\s+нужно\s+(?:повторно\s+)?(?:указывать|присылать|отправлять))"
+    r"|"
+    r"(?:уже\s+(?:есть|вижу)|есть\s+(?:у\s+нас|у\s+центра|в\s+диалоге|в\s+системе))"
+    r"[^.?!\n]{0,180}"
+    r"(?:телефон|номер(?:\s+телефона)?|почт[ауеы]|email|e-mail|адрес|контакт(?:ы|ные\s+данные)?)"
+    r")[^.?!\n]*(?:[.?!]|$))",
+    re.I,
+)
+
+NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_rewritten"
+
+NO_MEMORY_STEP_FRAME_RE = re.compile(
+    r"(?P<sentence>[^.?!\n]{0,120}(?:"
+    r"следующ(?:ий|им)\s+шаг(?:ом)?\s*(?:[—:-]|\b(?:будет|это)\b)\s*"
+    r"|лучше\s+начать\s+с\s+"
+    rf"|дальше\s+(?:нужно|по\s+плану)\s+(?=[^.?!\n]{{0,120}}\b{NEXT_STEP_SOFT_ACTION_RE_FRAGMENT}\b)"
+    r")"
+    r"(?P<body>[^.?!\n]{1,180})(?:[.?!]|$))",
+    re.I,
+)
+
+
+def apply_unconfirmed_contact_data_claim_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    claims = find_unconfirmed_contact_data_claims(result.draft_text)
+    if not claims or _contact_data_claim_has_evidence(client_message=client_message, context=context):
+        return result
+
+    rewritten = _rewrite_unconfirmed_contact_data_claims(result.draft_text)
+    if not rewritten or rewritten == result.draft_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["unconfirmed_contact_data_claim_guard"] = {
+        "applied": True,
+        "claims": list(claims),
+        "source": "deterministic_output_guard",
+    }
+    return replace(
+        result,
+        draft_text=rewritten,
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG])),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Не утверждать, что контактные данные уже есть, без client-safe факта или реплики клиента в этом диалоге.",
+                ]
+            )
+        ),
+        metadata=metadata,
+    )
+
+
+def find_unconfirmed_contact_data_claims(draft_text: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            " ".join(match.group("sentence").split())
+            for match in UNCONFIRMED_CONTACT_DATA_CLAIM_RE.finditer(str(draft_text or ""))
+            if match.group("sentence").strip()
+        )
+    )
+
+
+def _rewrite_unconfirmed_contact_data_claims(draft_text: str) -> str:
+    return " ".join(
+        UNCONFIRMED_CONTACT_DATA_CLAIM_RE.sub(UNCONFIRMED_CONTACT_DATA_SAFE_TEXT, str(draft_text or "")).split()
+    )
+
+
+def _contact_data_claim_has_evidence(
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    evidence_texts: list[str] = []
+    if str(client_message or "").strip():
+        evidence_texts.append(str(client_message))
+    if isinstance(context, Mapping):
+        evidence_texts.extend(_client_dialogue_texts_from_context(context))
+        if any(CONTACT_DATA_EVIDENCE_RE.search(text) for text in evidence_texts):
+            return True
+        return any(CLIENT_CONTACT_FACT_EVIDENCE_RE.search(text) for text in _fresh_fact_texts(context))
+    return any(CONTACT_DATA_EVIDENCE_RE.search(text) for text in evidence_texts)
+
+
+def _client_dialogue_texts_from_context(context: Mapping[str, Any]) -> tuple[str, ...]:
+    texts: list[str] = []
+    for key in ("recent_messages", "conversation", "messages", "dialogue_messages"):
+        _append_client_dialogue_texts(texts, context.get(key))
+    return tuple(texts)
+
+
+def _append_client_dialogue_texts(result: list[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.match(r"^(?:клиент|client|user|пользователь|родитель)\s*[:：-]", stripped, re.I):
+            result.append(stripped)
+        return
+    if isinstance(value, Mapping):
+        role = str(value.get("role") or value.get("speaker") or value.get("author") or "").strip().casefold()
+        if role in {"client", "customer", "user", "parent", "клиент", "родитель", "пользователь"}:
+            text = value.get("text") or value.get("content") or value.get("message")
+            if str(text or "").strip():
+                result.append(str(text))
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            _append_client_dialogue_texts(result, item)
+
+
+def apply_no_memory_step_frame_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    statuses = _bot_safe_memory_next_step_statuses(result, context)
+    if "active" in statuses:
+        return result
+    claims = find_no_memory_step_frame_claims(result.draft_text)
+    if not claims:
+        return result
+    rewritten = _rewrite_no_memory_step_frame(result.draft_text)
+    if not rewritten or rewritten == result.draft_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["no_memory_step_frame_guard"] = {
+        "applied": True,
+        "claims": list(claims),
+        "next_step_statuses": list(statuses),
+        "source": "deterministic_output_guard",
+    }
+    return replace(
+        result,
+        draft_text=rewritten,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, NO_MEMORY_STEP_FRAME_GUARD_FLAG])),
+        manager_checklist=tuple(
+            dict.fromkeys([*result.manager_checklist, "Не называть уточняющий вопрос «следующим шагом» без active next_step."])
+        ),
+        metadata=metadata,
+    )
+
+
+def find_no_memory_step_frame_claims(draft_text: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            " ".join(match.group("sentence").split())
+            for match in NO_MEMORY_STEP_FRAME_RE.finditer(str(draft_text or ""))
+            if match.group("sentence").strip()
+        )
+    )
+
+
+def _rewrite_no_memory_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        body = " ".join(match.group("body").split()).strip(" .?!:;—-")
+        normalized = body.casefold().replace("ё", "е")
+        sentence_normalized = match.group("sentence").casefold().replace("ё", "е")
+        details: list[str] = []
+        if "класс" in normalized or "клас" in normalized:
+            details.append("класс ученика")
+        if "предмет" in normalized or any(subject in normalized for subject in ("математ", "физик", "информат", "хими")):
+            details.append("предмет")
+        if "формат" in normalized or "очно" in normalized or "онлайн" in normalized:
+            details.append("формат")
+        if "уров" in normalized:
+            details.append("уровень подготовки")
+        if (
+            "следующ" in sentence_normalized
+            or "дальше нужно" in sentence_normalized
+            or "дальше по плану" in sentence_normalized
+        ):
+            target = ", ".join(dict.fromkeys(details)) or body or "недостающие детали"
+            return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+        target = body or "уточнения деталей"
+        return f"Предлагаю начать с {target}."
+
+    return " ".join(NO_MEMORY_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
+
+
 def find_bot_safe_memory_disputed_step_claims(
     draft_text: str,
     *,
     context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [
+                *_bot_safe_memory_hard_step_claims(draft_text, context=context),
+                *_bot_safe_memory_soft_step_claims(draft_text, context=context),
+            ]
+        )
+    )
+
+
+def _bot_safe_memory_hard_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
     return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_CONCRETE_STEP_RE, context=context)
+
+
+def _bot_safe_memory_soft_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE, context=context)
+
+
+def _rewrite_bot_safe_memory_soft_step_frame(draft_text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        claim = " ".join(match.group(0).split()).casefold()
+        details: list[str] = []
+        if "класс" in claim or "клас" in claim:
+            details.append("класс ученика")
+        if "предмет" in claim or any(subject in claim for subject in ("математ", "физик", "информат", "хими")):
+            details.append("предмет")
+        if "формат" in claim or "очно" in claim or "онлайн" in claim:
+            details.append("формат")
+        if "уров" in claim:
+            details.append("уровень подготовки")
+        target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
+        return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
+
+    return " ".join(BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
 
 
 def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) -> bool:
@@ -4522,6 +4881,8 @@ def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) ->
                 "bot_safe_crm_context_enabled",
                 "bot_safe_summary_context",
                 "bot_safe_summary_context_enabled",
+                TIMELINE_MEMORY_IN_PROMPT_ENV,
+                "timeline_memory_in_prompt",
             ),
         )
         is True
@@ -4548,6 +4909,10 @@ def _bot_safe_memory_next_step_statuses(
 
 def _bot_safe_memory_add_statuses_from_metadata(metadata: Mapping[str, Any], add: Callable[[Any], None]) -> None:
     direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    next_step = metadata.get("next_step") if isinstance(metadata.get("next_step"), Mapping) else {}
+    add(next_step.get("status"))
+    direct_next_step = direct_path.get("next_step") if isinstance(direct_path.get("next_step"), Mapping) else {}
+    add(direct_next_step.get("status"))
     for container in (
         metadata.get("bot_safe_crm_context"),
         direct_path.get("bot_safe_crm_context"),
@@ -4596,7 +4961,26 @@ def _bot_safe_memory_add_statuses_from_bot_context(bot_context: Any, add: Callab
             continue
         if item.get("requires_manager_review") is True:
             continue
-        add(item.get("next_step_status"))
+        add(_bot_safe_memory_item_next_step_status(item) or "empty")
+
+
+def _bot_safe_memory_item_next_step_status(item: Mapping[str, Any]) -> str:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_bot_safe_next_step_status
+
+        status = _direct_path_bot_safe_next_step_status(item)
+        if status:
+            return status
+    except Exception:
+        pass
+    status = str(item.get("next_step_status") or "").strip().casefold()
+    if not status:
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            next_step = metadata.get("next_step")
+            if isinstance(next_step, Mapping):
+                status = str(next_step.get("status") or "").strip().casefold()
+    return status if status in BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES else ""
 
 
 def apply_humanity_guards(

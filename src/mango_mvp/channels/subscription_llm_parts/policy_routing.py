@@ -571,6 +571,11 @@ BRAND_FORBIDDEN_TERMS = {
     "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями", "рассрочка через банк", "через банк"),
 }
 
+BRAND_OUTPUT_MARKERS = {
+    "foton": ("фотон", "foton", "цдпо", "црдо", "cdpofoton"),
+    "unpk": ("унпк", "унпк мфти", "unpk", "мфти", "kmipt"),
+}
+
 _BARE_N_POINTS_RE = re.compile(r"\b\d{1,3}\+?\s*балл\w*", re.I)
 
 _N_POINTS_PROMISE_CONTEXT_RE = re.compile(
@@ -3848,7 +3853,20 @@ def apply_brand_separation_guard(
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     active_brand = _active_brand(context)
+    mentioned_brands = _brand_markers_in_output(result.draft_text)
+    if len(mentioned_brands) > 1:
+        return _brand_guarded_result(
+            result,
+            reason="cross_brand_client_text_blocked",
+            leaked_terms=tuple(mentioned_brands),
+        )
     if active_brand == "unknown":
+        if mentioned_brands:
+            return _brand_guarded_result(
+                result,
+                reason="brand_unknown_client_text_blocked",
+                leaked_terms=tuple(mentioned_brands),
+            )
         if PRECISE_CONDITION_RE.search(result.draft_text):
             return _brand_guarded_result(result, reason="brand_unknown_precise_condition_blocked")
         return result
@@ -3862,6 +3880,15 @@ def apply_brand_separation_guard(
     if not leaked:
         return result
     return _brand_guarded_result(result, reason="cross_brand_client_text_blocked", leaked_terms=leaked)
+
+
+def _brand_markers_in_output(text: str) -> tuple[str, ...]:
+    lowered = str(text or "").casefold()
+    return tuple(
+        brand
+        for brand, markers in BRAND_OUTPUT_MARKERS.items()
+        if any(marker in lowered for marker in markers)
+    )
 
 def _is_unpk_bank_installment_question(
     result: SubscriptionDraftResult,

@@ -130,6 +130,8 @@ def seed_timeline(tmp_path: Path) -> tuple[Path, dict[str, str]]:
                 source_ref=event.source_ref,
                 event_at=NOW,
                 relevance_tags=tags,
+                allowed_for_bot=False,
+                requires_manager_review=True,
                 metadata={"brand": "unknown", "channel": channel},
                 created_at=NOW,
             )

@@ -26,8 +26,18 @@ from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH  # no
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AMO-only incremental Customer Timeline test-copy runner.")
     parser.add_argument("--source-db", default=str(DEFAULT_SOURCE_DB), help="Absolute source customer_timeline.sqlite.")
+    parser.add_argument("--timeline-db", help="Existing target timeline DB. Requires --use-existing-copy.")
+    parser.add_argument(
+        "--allowed-root",
+        help="Explicit safety root containing both --timeline-db and --out-root when they differ.",
+    )
     parser.add_argument("--out-root", required=True, help="Output folder for the test copy and reports.")
     parser.add_argument("--mcp-env", default=str(DEFAULT_ENV_PATH), help="Read-only AMO connector env file.")
+    parser.add_argument(
+        "--mcp-transport",
+        choices=("urllib", "curl"),
+        help="Override AMO MCP transport for this run; defaults to the env reader default.",
+    )
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--safety-overlap-seconds", type=int, default=300)
     parser.add_argument("--page-limit", type=int, default=20)
@@ -41,11 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.timeline_db and not args.use_existing_copy:
+        raise SystemExit("--timeline-db requires --use-existing-copy")
     report = run_amo_incremental(
         AmoIncrementalConfig(
             source_db=Path(args.source_db),
             out_root=Path(args.out_root),
             mcp_env=Path(args.mcp_env),
+            timeline_db=Path(args.timeline_db) if args.timeline_db else None,
+            mcp_transport=args.mcp_transport,
+            allowed_root=Path(args.allowed_root) if args.allowed_root else None,
             tenant_id=args.tenant_id,
             safety_overlap_seconds=args.safety_overlap_seconds,
             page_limit=args.page_limit,

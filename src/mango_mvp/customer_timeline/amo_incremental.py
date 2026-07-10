@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -45,6 +45,9 @@ class AmoIncrementalConfig:
     source_db: Path
     out_root: Path
     mcp_env: Path
+    timeline_db: Optional[Path] = None
+    mcp_transport: Optional[str] = None
+    allowed_root: Optional[Path] = None
     tenant_id: str = "foton"
     safety_overlap_seconds: int = 300
     page_limit: int = 20
@@ -58,13 +61,27 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     out_root = config.out_root.expanduser().resolve(strict=False)
     out_root.mkdir(parents=True, exist_ok=True)
-    timeline_db = out_root / "customer_timeline.sqlite"
+    timeline_db = (
+        config.timeline_db.expanduser().resolve(strict=False)
+        if config.timeline_db is not None
+        else out_root / "customer_timeline.sqlite"
+    )
+    if config.timeline_db is not None and config.copy_db:
+        raise ValueError("explicit timeline_db requires copy_db=False; refusing to overwrite target DB")
     if config.copy_db:
         backup_sqlite(config.source_db, timeline_db)
     if not timeline_db.exists():
         raise FileNotFoundError(f"timeline DB does not exist: {timeline_db}")
+    allowed_root = (
+        config.allowed_root.expanduser().resolve(strict=False)
+        if config.allowed_root is not None
+        else out_root
+    )
 
-    client = AmoMcpClient(read_mcp_env(config.mcp_env))
+    mcp_config = read_mcp_env(config.mcp_env)
+    if config.mcp_transport:
+        mcp_config = replace(mcp_config, transport=config.mcp_transport)
+    client = AmoMcpClient(mcp_config)
     link_index_before = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
     cursor_before = load_cursor_snapshot(timeline_db, config.tenant_id)
     lower_bound = resolve_lower_bounds(cursor_before, config)
@@ -104,6 +121,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     cards_config = nightly_config_for_sources(
         timeline_db=timeline_db,
         out_root=out_root,
+        allowed_root=allowed_root,
         tenant_id=config.tenant_id,
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
@@ -130,6 +148,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     events_config = nightly_config_for_sources(
         timeline_db=timeline_db,
         out_root=out_root,
+        allowed_root=allowed_root,
         tenant_id=config.tenant_id,
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
@@ -139,6 +158,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     all_config = nightly_config_for_sources(
         timeline_db=timeline_db,
         out_root=out_root,
+        allowed_root=allowed_root,
         tenant_id=config.tenant_id,
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
@@ -199,6 +219,7 @@ def nightly_config_for_sources(
     *,
     timeline_db: Path,
     out_root: Path,
+    allowed_root: Path,
     tenant_id: str,
     overlap_seconds: int,
     paths: Mapping[str, Path],
@@ -233,7 +254,7 @@ def nightly_config_for_sources(
         )
     return NightlyIncrementalConfig(
         timeline_db=timeline_db,
-        allowed_root=out_root,
+        allowed_root=allowed_root,
         tenant_id=tenant_id,
         journal_path=out_root / "amo_incremental_journal.jsonl",
         safety_margin_seconds=overlap_seconds,
@@ -337,7 +358,7 @@ def fetch_cards_source(
     link_index: Mapping[tuple[str, str], tuple[str, ...]],
     config: AmoIncrementalConfig,
 ) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
-    items, pages = fetch_collection(
+    items, pages, page_cap_hit = fetch_collection(
         client,
         path=path,
         embedded_key=embedded_key,
@@ -387,6 +408,8 @@ def fetch_cards_source(
     return rows, {
         "endpoint": f"/api/v4/{path}",
         "pages": pages,
+        "max_pages": max(1, int(config.max_pages)),
+        "page_cap_hit": page_cap_hit,
         "fetched": len(items),
         "fetched_entity_count": len(fetched_entity_ids),
         "normalized": len(rows),
@@ -445,7 +468,7 @@ def fetch_events_source(
     fetched_entity_ids: Optional[Mapping[str, set[str]]] = None,
     config: AmoIncrementalConfig,
 ) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
-    items, pages = fetch_collection(
+    items, pages, page_cap_hit = fetch_collection(
         client,
         path="events",
         embedded_key="events",
@@ -555,6 +578,8 @@ def fetch_events_source(
     return rows, {
         "endpoint": "/api/v4/events",
         "pages": pages,
+        "max_pages": max(1, int(config.max_pages)),
+        "page_cap_hit": page_cap_hit,
         "fetched": len(items),
         "normalized": len(rows),
         "skipped": dict(skipped),
@@ -634,14 +659,17 @@ def fetch_collection(
     embedded_key: str,
     params: Mapping[str, Any],
     config: AmoIncrementalConfig,
-) -> tuple[list[Mapping[str, Any]], int]:
+) -> tuple[list[Mapping[str, Any]], int, bool]:
     items: list[Mapping[str, Any]] = []
     pages = 0
-    for page in range(1, max(1, config.max_pages) + 1):
+    max_pages = max(1, int(config.max_pages))
+    page_cap_hit = False
+    for page in range(1, max_pages + 1):
         try:
             payload = client.amo_api_get(path=path, params={**dict(params), "page": page}, limit=config.page_limit)
         except AmoMcpError as exc:
-            if "429" in str(exc):
+            text = str(exc).lower()
+            if "429" in text or "timed out" in text or "timeout" in text:
                 time.sleep(max(2.0, config.sleep_sec * 3))
                 payload = client.amo_api_get(path=path, params={**dict(params), "page": page}, limit=config.page_limit)
             else:
@@ -654,8 +682,11 @@ def fetch_collection(
         links = payload.get("_links") if isinstance(payload, Mapping) else {}
         if not isinstance(links, Mapping) or not isinstance(links.get("next"), Mapping):
             break
+        if page >= max_pages:
+            page_cap_hit = True
+            break
         time.sleep(config.sleep_sec)
-    return items, pages
+    return items, pages, page_cap_hit
 
 
 def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:

@@ -849,6 +849,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     apply_bot_safe_memory_step_guard,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
+    apply_no_memory_step_frame_guard,
     apply_night_hours_note,
     apply_output_sanitizer,
     apply_phase2_tone_layer,
@@ -856,6 +857,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     apply_semantic_output_verifier,
     apply_tone_close_detect_layer,
     apply_tone_sell_prompt_observer,
+    apply_unconfirmed_contact_data_claim_guard,
     apply_unconfirmed_operational_specificity_guard,
     apply_unsupported_promise_guard,
     build_semantic_diagnosis_prompt,
@@ -967,11 +969,14 @@ class SubscriptionLlmDraftProvider:
             )
             reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
             closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
-            return scrub_direct_path_p0_text(
+            scrubbed = scrub_direct_path_p0_text(
                 closed,
                 context=context,
                 client_message=client_message,
             )
+            guarded = apply_bot_safe_memory_step_guard(scrubbed, context=context)
+            guarded = apply_unconfirmed_contact_data_claim_guard(guarded, client_message=client_message, context=context)
+            return apply_no_memory_step_frame_guard(guarded, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -1215,6 +1220,12 @@ class SubscriptionLlmDraftProvider:
             regen_fn=self._semantic_output_regen_runner,
         )
         semantic_checked = apply_bot_safe_memory_step_guard(semantic_checked, context=context)
+        semantic_checked = apply_unconfirmed_contact_data_claim_guard(
+            semantic_checked,
+            client_message=client_message,
+            context=context,
+        )
+        semantic_checked = apply_no_memory_step_frame_guard(semantic_checked, context=context)
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
         return _direct_path_finalize_metadata(

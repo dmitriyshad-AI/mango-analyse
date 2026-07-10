@@ -6,6 +6,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     IdentityLink,
@@ -61,7 +63,7 @@ def test_dry_run_stdin_mcp_snapshot_imports_payments_and_abonements_without_crea
 def test_apply_links_existing_tallanto_customer_is_idempotent_and_keeps_amounts_out_of_bot_safe_chunks(
     tmp_path: Path,
 ) -> None:
-    timeline_db = tmp_path / "customer_timeline.sqlite"
+    timeline_db = staging_timeline_db(tmp_path)
     existing_customer_id = seed_customer_with_tallanto_link(timeline_db, tmp_path, customer_id="existing-1", tallanto_id="contact-1")
     config = TallantoPaymentsImportConfig(
         source=None,
@@ -103,7 +105,7 @@ def test_apply_links_existing_tallanto_customer_is_idempotent_and_keeps_amounts_
 
 
 def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merge(tmp_path: Path) -> None:
-    timeline_db = tmp_path / "customer_timeline.sqlite"
+    timeline_db = staging_timeline_db(tmp_path)
     first_id = seed_customer_with_tallanto_link(timeline_db, tmp_path, customer_id="existing-1", tallanto_id="contact-1")
     second_id = seed_customer_with_tallanto_link(
         timeline_db,
@@ -113,16 +115,16 @@ def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merg
         source_ref="seed-2",
     )
 
-    report = run_tallanto_payments_import(
-        TallantoPaymentsImportConfig(
-            source=None,
-            timeline_db=timeline_db,
-            allowed_root=tmp_path,
-            tenant_id="foton",
-            apply=True,
-        ),
-        stdin_text=json.dumps({"most_finances": mcp_response("most_finances", [payment_row()])}, ensure_ascii=False),
+    config = TallantoPaymentsImportConfig(
+        source=None,
+        timeline_db=timeline_db,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        apply=True,
     )
+    payload = json.dumps({"most_finances": mcp_response("most_finances", [payment_row()])}, ensure_ascii=False)
+    report = run_tallanto_payments_import(config, stdin_text=payload)
+    repeat = run_tallanto_payments_import(config, stdin_text=payload)
 
     event = fetch_one_json(timeline_db, "timeline_events")
     links = fetch_all_json(timeline_db, "identity_links")
@@ -134,12 +136,39 @@ def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merg
     )
 
     assert report["validation_ok"] is True
+    assert repeat["validation_ok"] is True
     assert report["links"]["ambiguous_tallanto_matches"] == 1
+    assert repeat["links"]["ambiguous_tallanto_matches"] == 1
+    assert repeat["import_report"]["write_status_counts"].get("created", 0) == 0
     assert event["match_status"] == "ambiguous"
     assert event["customer_id"] not in {first_id, second_id}
     assert ambiguous_link["match_class"] == "ambiguous"
     assert conflicts
     assert any(item["conflict_type"] == "tallanto_identity_ambiguous" for item in conflicts)
+    assert len(conflicts) == 1
+
+
+def test_apply_refuses_non_staging_and_prod_paths(tmp_path: Path) -> None:
+    non_staging = tmp_path / "customer_timeline.sqlite"
+    prod_path = tmp_path / "customer_timeline_prod_20260621" / "customer_timeline.sqlite"
+    prod_path.parent.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match=".codex_local/staging"):
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=non_staging,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    with pytest.raises(ValueError, match="prod timeline"):
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=prod_path,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
 
 
 def test_cli_stdin_defaults_to_dry_run_and_does_not_create_db(tmp_path: Path, capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -316,6 +345,12 @@ def seed_customer_with_tallanto_link(
     finally:
         store.close()
     return customer.customer_id
+
+
+def staging_timeline_db(tmp_path: Path) -> Path:
+    path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def fetch_all_json(db_path: Path, table: str) -> list[dict[str, object]]:

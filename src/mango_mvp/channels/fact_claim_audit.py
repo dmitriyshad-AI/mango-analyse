@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-FACT_AUDIT_VERSION = "judge_v2_j3_memory_grounded"
+FACT_AUDIT_VERSION = "judge_v2_j4_verified_by_memory"
 
 
 def audit_fact_claims(
@@ -90,7 +90,7 @@ def audit_fact_claims(
             matched_brand = "other"
             matched_keys = [*other_brand_matches, *memory_other_brand_matches][:8]
         elif memory_matches and _claim_allows_memory_grounding(claim):
-            level = "memory_grounded"
+            level = "verified_by_memory"
             matched_brand = brand
             matched_keys = [str(item.get("key") or "") for item in memory_matches[:8]]
         else:

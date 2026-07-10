@@ -38,7 +38,7 @@ def test_memory_measure_scenario_payload_has_no_raw_pii_and_keeps_resolver_id(tm
     assert "test@example.com" not in payload
 
 
-def test_memory_measure_off_on_commands_use_same_set_and_flip_only_memory_env(tmp_path: Path) -> None:
+def test_memory_measure_off_on_commands_use_same_set_and_enable_e4b_sources_for_on(tmp_path: Path) -> None:
     commands = off_on.build_commands(
         scenarios=tmp_path / "scenarios.jsonl",
         snapshot=tmp_path / "snapshot.json",
@@ -54,6 +54,12 @@ def test_memory_measure_off_on_commands_use_same_set_and_flip_only_memory_env(tm
     assert off["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "0"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT"] == "1"
     assert on["env"]["TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"] == str(tmp_path / "customer_timeline.sqlite")
+    assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE"] == "1"
+    assert on["env"]["CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS"] == "1"
+    assert on["env"]["CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE"] == "1"
+    assert on["env"]["CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS"] == "1"
+    assert "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE" not in off["env"]
+    assert "CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE" not in off["env"]
     assert "--parallel" in on["argv"]
     assert "4" in on["argv"]
     assert "--judge-prompt-version" in on["argv"]

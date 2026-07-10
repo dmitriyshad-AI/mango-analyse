@@ -22,6 +22,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, stable_digest
 from mango_mvp.customer_timeline.ingestion import (
     AmoSnapshotNormalizer,
+    MangoCallSummaryNormalizer,
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineNormalizer,
@@ -43,6 +44,7 @@ class IncrementalSourceConfig:
     tenant_id: str = "foton"
     source_ref: Optional[str] = None
     normalizer: str = "jsonl"
+    required: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_key(self.name, "source name"))
@@ -122,6 +124,10 @@ class SourceLoadResult:
             "affected_customer_ids": list(self.affected_customer_ids),
             "would_change_customer_ids": list(self.would_change_customer_ids),
             "skipped_reason": self.skipped_reason,
+            "required": self.source.required,
+            "status": "failed" if self.skipped_reason and self.source.required else (
+                "skipped" if self.skipped_reason else "ok"
+            ),
         }
 
 
@@ -185,6 +191,110 @@ class JsonlTimelineNormalizer(TimelineNormalizer):
                     relevance_tags=tuple(str(item) for item in payload.get("relevance_tags") or ()),
                     allowed_for_bot=allowed_for_bot,
                     requires_manager_review=requires_manager_review,
+                    created_at=event.created_at,
+                )
+            )
+        return TimelineNormalizedBatch(source_record=record, events=(event,), bot_context_chunks=tuple(chunks))
+
+
+class MailArchiveStage2IncrementalNormalizer(TimelineNormalizer):
+    source_system = "mail_archive_stage2"
+
+    def __init__(self, *, tenant_id: str) -> None:
+        self.tenant_id = normalize_key(tenant_id, "tenant_id")
+
+    def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
+        payload = dict(record.payload)
+        message_sha = optional_string(
+            payload.get("message_sha256")
+            or payload.get("sha256")
+            or payload.get("sha")
+            or payload.get("source_id")
+            or payload.get("id")
+        )
+        if not message_sha:
+            message_sha = stable_digest(
+                {
+                    "source_ref": record.source_ref,
+                    "subject": payload.get("subject"),
+                    "event_at": normalized_timestamp(payload),
+                }
+            )
+        event_at = parse_datetime(normalized_timestamp(payload), "event_at")
+        customer_id = optional_string(payload.get("customer_id") or payload.get("resolved_customer_id"))
+        subject = optional_string(payload.get("subject")) or "Email message"
+        summary = optional_string(
+            payload.get("summary")
+            or payload.get("thread_summary")
+            or payload.get("text_preview")
+            or payload.get("body_preview")
+            or payload.get("full_clean_text")
+            or subject
+        )
+        preview = optional_string(payload.get("text_preview") or payload.get("body_preview") or summary)
+        direction = mail_direction(payload)
+        match_status = IdentityMatchClass(
+            optional_string(payload.get("match_status"))
+            or (IdentityMatchClass.STRONG_UNIQUE.value if customer_id else IdentityMatchClass.UNMATCHED.value)
+        )
+        confidence = float(payload.get("confidence") if payload.get("confidence") is not None else (0.9 if customer_id else 0.0))
+        pending_attribution = payload.get("pending_attribution")
+        if pending_attribution is None:
+            pending_attribution = not bool(customer_id)
+        metadata = {
+            "source_updated_at": normalized_timestamp(payload),
+            "brand": optional_string(payload.get("brand")),
+            "summary_status": optional_string(payload.get("summary_status")) or "needs_summary_later",
+            "needs_summary_later": bool(payload.get("needs_summary_later", True)),
+            "incremental_source": True,
+            "pending_attribution": bool(pending_attribution),
+        }
+        if payload.get("pending_reason"):
+            metadata["pending_reason"] = optional_string(payload.get("pending_reason"))
+        if payload.get("fresh_relink") is not None:
+            metadata["fresh_relink"] = bool(payload.get("fresh_relink"))
+        if isinstance(payload.get("mail_link_enrich"), Mapping):
+            metadata["mail_link_enrich"] = dict(payload["mail_link_enrich"])
+        event = TimelineEvent(
+            tenant_id=self.tenant_id,
+            customer_id=customer_id,
+            event_type=TimelineEventType.EMAIL_MESSAGE,
+            event_at=event_at,
+            source_system=self.source_system,
+            source_id=message_sha,
+            source_ref=record.source_ref,
+            direction=direction,
+            subject=subject,
+            text_preview=preview[:240] if preview else None,
+            summary=summary[:1200] if summary else None,
+            match_status=match_status,
+            confidence=confidence,
+            record={"payload": payload},
+            metadata=metadata,
+            created_at=event_at,
+        )
+        chunks: list[BotContextChunk] = []
+        chunk_text = optional_string(payload.get("bot_context_text") or summary)
+        if customer_id and chunk_text:
+            chunks.append(
+                BotContextChunk(
+                    tenant_id=self.tenant_id,
+                    customer_id=customer_id,
+                    event_id=event.event_id,
+                    source_system=self.source_system,
+                    source_ref=event.source_ref,
+                    chunk_type="email_message",
+                    text=chunk_text,
+                    summary=chunk_text[:500],
+                    event_at=event.event_at,
+                    freshness_score=0.7,
+                    relevance_tags=("email", "mail_archive_stage2", "manager_only"),
+                    allowed_for_bot=False,
+                    requires_manager_review=True,
+                    metadata={
+                        "message_sha256": message_sha,
+                        "needs_summary_later": bool(payload.get("needs_summary_later", True)),
+                    },
                     created_at=event.created_at,
                 )
             )
@@ -270,6 +380,10 @@ def normalizer_for_source(source: IncrementalSourceConfig) -> TimelineNormalizer
         return AmoSnapshotNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "amo_event":
         return AmoEventNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "mango_processed_summary":
+        return MangoCallSummaryNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "mail_archive_stage2":
+        return MailArchiveStage2IncrementalNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "jsonl":
         return JsonlTimelineNormalizer(source.source_system)
     raise ValueError(f"unsupported incremental normalizer: {source.normalizer}")
@@ -314,44 +428,74 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
             import_reports: list[Mapping[str, Any]] = []
             cursor_updates: list[Mapping[str, Any]] = []
             for source in config.sources:
-                loaded = load_incremental_jsonl_source(store, source, safety_margin_seconds=config.safety_margin_seconds)
+                try:
+                    loaded = load_incremental_jsonl_source(
+                        store,
+                        source,
+                        safety_margin_seconds=config.safety_margin_seconds,
+                    )
+                except Exception as exc:  # fail-soft per source; the service gate decides whether this is blocking.
+                    reason = f"source_exception:{type(exc).__name__}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["sources"].append(source_failure_report(source, reason=reason, error=exc))
+                    report["source_errors"].append(source_error(source, reason=reason, error=exc))
+                    continue
                 report["sources"].append(loaded.to_json_dict())
                 if loaded.skipped_reason:
                     update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
-                    report["source_errors"].append({"source": source.name, "reason": loaded.skipped_reason})
+                    report["source_errors"].append(source_error(source, reason=loaded.skipped_reason))
+                    continue
+                if not loaded.records:
+                    affected.update(loaded.affected_customer_ids)
+                    continue
+                try:
+                    imported = TimelineImportService(store).import_records(
+                        loaded.records,
+                        normalizer=normalizer_for_source(source),
+                        tenant_id=source.tenant_id,
+                        source_ref=source.effective_source_ref,
+                        idempotency_key=stable_digest(
+                            {
+                                "schema_version": NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
+                                "source": source.effective_source_ref,
+                                "records": [record.payload_hash for record in loaded.records],
+                            }
+                        ),
+                        dry_run=False,
+                        actor=config.actor,
+                    )
+                except Exception as exc:  # keep other sources running if one importer breaks.
+                    reason = f"import_exception:{type(exc).__name__}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
                 affected.update(loaded.affected_customer_ids)
                 would_change.update(loaded.would_change_customer_ids)
-                if not loaded.records:
+                imported_payload = imported.to_json_dict()
+                import_reports.append(imported_payload)
+                if not imported.validation_ok:
+                    reason = f"import_validation_failed:rejected_count={imported.rejected_count}"
+                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    report["source_errors"].append(source_error(source, reason=reason))
                     continue
-                imported = TimelineImportService(store).import_records(
-                    loaded.records,
-                    normalizer=normalizer_for_source(source),
-                    tenant_id=source.tenant_id,
-                    source_ref=source.effective_source_ref,
-                    idempotency_key=stable_digest(
-                        {
-                            "schema_version": NIGHTLY_INCREMENTAL_SCHEMA_VERSION,
-                            "source": source.effective_source_ref,
-                            "records": [record.payload_hash for record in loaded.records],
-                        }
-                    ),
-                    dry_run=False,
-                    actor=config.actor,
-                )
-                import_reports.append(imported.to_json_dict())
                 if loaded.max_source_ts is not None:
                     cursor_ts = loaded.max_source_ts - timedelta(seconds=config.safety_margin_seconds)
+                    existing_cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
+                    persisted_cursor_ts = cursor_ts
+                    if existing_cursor is not None and existing_cursor.last_cursor_ts > persisted_cursor_ts:
+                        persisted_cursor_ts = existing_cursor.last_cursor_ts
                     cursor = store.upsert_ingestion_cursor(
                         source.tenant_id,
                         source.source_system,
-                        last_cursor_ts=cursor_ts,
-                        metadata={
-                            "max_source_ts": loaded.max_source_ts.isoformat(),
-                            "source_ref": source.effective_source_ref,
-                            "last_status": "ok",
-                            "consecutive_failures": 0,
-                        },
+                        last_cursor_ts=persisted_cursor_ts,
+                        metadata=merge_cursor_metadata(
+                            existing_cursor.metadata if existing_cursor else {},
+                            source,
+                            last_status="ok",
+                            last_cursor_ts=cursor_ts,
+                            max_source_ts=loaded.max_source_ts,
+                        )
+                        | {"max_source_ts": loaded.max_source_ts.isoformat(), "consecutive_failures": 0},
                         actor=config.actor,
                         ingestion_run_id=imported.run_id,
                     )
@@ -364,6 +508,16 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
             report["changed_customer_count"] = len(selected_customers)
             report["imports"] = import_reports
             report["cursor_updates"] = cursor_updates
+            failed_required_sources = [
+                str(item.get("source"))
+                for item in report["source_errors"]
+                if item.get("required") is True
+            ]
+            report["failed_required_sources"] = failed_required_sources
+            report["overall_status"] = "ok" if not report["source_errors"] else (
+                "partial" if failed_required_sources else "ok_with_skipped_optional"
+            )
+            report["gate_passed"] = not failed_required_sources
     recalc_started = time.monotonic()
     report["rebuild"] = rebuild_affected_outputs(config, customer_ids=report["changed_customer_ids"])
     report["phase_seconds"]["rebuild"] = round(time.monotonic() - recalc_started, 3)
@@ -374,6 +528,57 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
     return report
 
 
+def source_error(
+    source: IncrementalSourceConfig,
+    *,
+    reason: str,
+    error: Exception | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "source": source.name,
+        "source_system": source.source_system,
+        "required": source.required,
+        "reason": reason,
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_message"] = safe_error_message(error)
+    return payload
+
+
+def source_failure_report(
+    source: IncrementalSourceConfig,
+    *,
+    reason: str,
+    error: Exception | None = None,
+) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
+        "source": asdict(source) | {"path": str(source.path)},
+        "cursor_before": None,
+        "fetch_from": None,
+        "rows_total": 0,
+        "rows_selected": 0,
+        "records": 0,
+        "max_source_ts": None,
+        "affected_customer_ids": [],
+        "would_change_customer_ids": [],
+        "skipped_reason": reason,
+        "required": source.required,
+        "status": "failed" if source.required else "skipped",
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_message"] = safe_error_message(error)
+    return payload
+
+
+def safe_error_message(error: Exception) -> str:
+    text = " ".join(str(error or "").replace("\n", " ").split())
+    if len(text) > 240:
+        text = text[:240].rstrip()
+    return text
+
+
 def load_incremental_jsonl_source(
     store: CustomerTimelineSQLiteStore,
     source: IncrementalSourceConfig,
@@ -381,7 +586,9 @@ def load_incremental_jsonl_source(
     safety_margin_seconds: int,
 ) -> SourceLoadResult:
     cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
-    fetch_from = cursor.last_cursor_ts if cursor else None
+    fetch_from = cursor_ts_for_source_ref(cursor.metadata if cursor else None, source) if cursor else None
+    if fetch_from is None and cursor is not None and not has_source_ref_cursors(cursor.metadata):
+        fetch_from = cursor.last_cursor_ts
     if not source.path.exists():
         return SourceLoadResult(
             source=source,
@@ -448,17 +655,20 @@ def update_source_failure_cursor(
     cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
     failures = int(((cursor.metadata if cursor else {}) or {}).get("consecutive_failures") or 0) + 1
     last_cursor = cursor.last_cursor_ts if cursor else datetime.fromtimestamp(0, timezone.utc)
+    metadata = merge_cursor_metadata(
+        cursor.metadata if cursor else {},
+        source,
+        last_status="skipped",
+        skipped_reason=skipped_reason,
+        last_cursor_ts=last_cursor,
+    )
+    metadata["consecutive_failures"] = failures
+    metadata["alert"] = failures >= 2
     store.upsert_ingestion_cursor(
         source.tenant_id,
         source.source_system,
         last_cursor_ts=last_cursor,
-        metadata={
-            **(dict(cursor.metadata) if cursor else {}),
-            "last_status": "skipped",
-            "skipped_reason": skipped_reason,
-            "consecutive_failures": failures,
-            "alert": failures >= 2,
-        },
+        metadata=metadata,
         actor=actor,
     )
 
@@ -557,7 +767,79 @@ def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:
 
 
 def normalized_timestamp(row: Mapping[str, Any]) -> str:
-    return str(row.get("updated_at") or row.get("created_at") or row.get("event_at") or "").strip()
+    return str(
+        row.get("updated_at")
+        or row.get("created_at")
+        or row.get("event_at")
+        or row.get("date_last")
+        or row.get("date_first")
+        or row.get("date_iso")
+        or row.get("message_date_iso")
+        or row.get("first_ingested_at")
+        or ""
+    ).strip()
+
+
+def mail_direction(row: Mapping[str, Any]) -> TimelineDirection:
+    raw = str(row.get("direction") or row.get("message_kind") or row.get("mailbox") or row.get("folder") or "").casefold()
+    if any(token in raw for token in ("sent", "out", "исход")):
+        return TimelineDirection.OUTBOUND
+    if any(token in raw for token in ("internal", "draft")):
+        return TimelineDirection.INTERNAL
+    return TimelineDirection.INBOUND
+
+
+def cursor_ts_for_source_ref(metadata: Mapping[str, Any] | None, source: IncrementalSourceConfig) -> datetime | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    source_refs = metadata.get("source_refs")
+    if not isinstance(source_refs, Mapping):
+        return None
+    state = source_refs.get(source.effective_source_ref)
+    if not isinstance(state, Mapping):
+        return None
+    raw = optional_string(state.get("last_cursor_ts"))
+    if not raw:
+        return None
+    try:
+        return parse_datetime(raw, "source_ref_cursor")
+    except ValueError:
+        return None
+
+
+def has_source_ref_cursors(metadata: Mapping[str, Any] | None) -> bool:
+    return isinstance(metadata, Mapping) and isinstance(metadata.get("source_refs"), Mapping)
+
+
+def merge_cursor_metadata(
+    metadata: Mapping[str, Any] | None,
+    source: IncrementalSourceConfig,
+    *,
+    last_status: str,
+    last_cursor_ts: datetime,
+    max_source_ts: datetime | None = None,
+    skipped_reason: str | None = None,
+) -> dict[str, Any]:
+    merged = dict(metadata or {})
+    source_refs = dict(merged.get("source_refs") or {})
+    state = dict(source_refs.get(source.effective_source_ref) or {})
+    state["last_status"] = last_status
+    state["last_cursor_ts"] = last_cursor_ts.isoformat()
+    if max_source_ts is not None:
+        state["max_source_ts"] = max_source_ts.isoformat()
+    if skipped_reason:
+        state["skipped_reason"] = skipped_reason
+    else:
+        state.pop("skipped_reason", None)
+    source_refs[source.effective_source_ref] = state
+    merged["source_refs"] = source_refs
+    merged["source_ref"] = source.effective_source_ref
+    merged["last_status"] = last_status
+    if skipped_reason:
+        merged["skipped_reason"] = skipped_reason
+    else:
+        merged.pop("skipped_reason", None)
+    return merged
 
 
 def parse_datetime(value: Any, field_name: str) -> datetime:
@@ -584,9 +866,12 @@ def append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
-    source_statuses = Counter("skipped" if item.get("skipped_reason") else "ok" for item in report.get("sources", ()))
+    source_statuses = Counter(str(item.get("status") or ("skipped" if item.get("skipped_reason") else "ok")) for item in report.get("sources", ()))
     return {
         "schema_version": report.get("schema_version"),
+        "overall_status": report.get("overall_status"),
+        "gate_passed": report.get("gate_passed"),
+        "failed_required_sources": report.get("failed_required_sources"),
         "duration_seconds": report.get("duration_seconds"),
         "source_statuses": dict(source_statuses),
         "affected_customer_count": report.get("affected_customer_count"),

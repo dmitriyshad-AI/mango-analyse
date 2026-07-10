@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib import parse as url_parse
 
 from mango_mvp.channels.subscription_llm import (
@@ -845,6 +845,35 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     )
 
 
+def _loop_error_report(exc: BaseException) -> dict[str, Any]:
+    return {
+        "status": "cycle_error",
+        "error_type": type(exc).__name__,
+        "client_sends": 0,
+        "note_written": 0,
+    }
+
+
+def run_loop_forever(
+    runner: AmoWappiDraftLoop,
+    *,
+    dry_run: bool,
+    interval_sec: int,
+    sleep: Callable[[float], None] = time.sleep,
+    emit: Callable[[str], None] = print,
+) -> None:
+    interval = max(5, int(interval_sec))
+    while True:
+        try:
+            summary = runner.run_once(dry_run=dry_run)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # keep the live manager-draft reader from dying silently
+            summary = _loop_error_report(exc)
+        emit(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        sleep(interval)
+
+
 def main() -> int:
     args = parse_args()
     dry_run = not bool(args.live_write)
@@ -864,11 +893,7 @@ def main() -> int:
         summary = runner.run_once(dry_run=dry_run)
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
-    interval = max(5, int(args.interval_sec))
-    while True:
-        summary = runner.run_once(dry_run=dry_run)
-        print(json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
-        time.sleep(interval)
+    run_loop_forever(runner, dry_run=dry_run, interval_sec=args.interval_sec, emit=lambda line: print(line, flush=True))
 
 
 if __name__ == "__main__":

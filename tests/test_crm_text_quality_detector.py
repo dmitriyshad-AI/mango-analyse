@@ -68,6 +68,44 @@ def test_service_test_marker_does_not_match_test_history_in_auto_field() -> None
     assert detect_crm_text_quality_risks(row) == []
 
 
+def test_blocks_raw_email_thread_artifacts_in_target_fields() -> None:
+    row = {
+        "Авто история общения": (
+            "2026-06-09 Письмо: Спасибо, записали Вас.\n"
+            "--- part ---\n"
+            "Links: https://example.invalid/unsubscribe\n"
+            "mailto:client@example.invalid"
+        )
+    }
+
+    findings = detect_crm_text_quality_risks(row)
+    risks = {finding.risk_type for finding in findings}
+
+    assert risks == {"raw_email_thread_artifact"}
+    assert {finding.class_id for finding in findings} == {"Q-email-raw-thread"}
+    assert {finding.severity for finding in findings} == {"P1"}
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_blocks_russian_raw_email_thread_artifacts_in_target_fields() -> None:
+    row = {
+        "AI-история по сделке": (
+            "2026-06-09 Письмо: Спасибо, записали Вас.\n"
+            "Иван Иванов писал(а) 10.06.2026 00:11:\n"
+            "> Доброй ночи.\n"
+            "Кому: edu@example.invalid\n"
+            "Тема: Подготовительные курсы\n"
+            "Отправлено из Mail.ru"
+        )
+    }
+
+    findings = detect_crm_text_quality_risks(row)
+    risks = {finding.risk_type for finding in findings}
+
+    assert risks == {"raw_email_thread_artifact"}
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
 def test_detects_duplicate_raw_label_and_count_label() -> None:
     row = {"Авто история общения": "Продукты интереса: летний лагерь | летний лагерь: 14 | математика"}
 

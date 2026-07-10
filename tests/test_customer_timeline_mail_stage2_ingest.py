@@ -343,3 +343,56 @@ def test_mail_stage2_procedure_requires_backup_and_is_idempotent_then_restores(t
     assert Path(str(restore["timeline_db_path"])) == config.timeline_db_path
     assert _count_rows(config.timeline_db_path, "timeline_events") == 0
     assert _count_rows(config.timeline_db_path, "bot_context_chunks") == 0
+
+
+def test_mail_stage2_content_duplicate_skips_second_chunk(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    linked_text = tmp_path / "_external_handoffs" / "mail" / "extracted_text" / "linked.txt"
+    duplicate_events_path = _write_jsonl(
+        tmp_path / "_external_handoffs" / "mail" / "stage2_content_duplicates.jsonl",
+        [
+            {
+                "message_sha256": "c" * 64,
+                "date_iso": "2026-06-20T10:00:00+00:00",
+                "subject": "Физика 8 класс",
+                "from": [{"email": "parent@example.com"}],
+                "to": [{"email": "school@kmipt.ru"}],
+                "brand": "foton",
+                "brand_source": "mailbox",
+                "extracted_text_path": str(linked_text),
+            },
+            {
+                "message_sha256": "d" * 64,
+                "date_iso": "2026-06-20T10:00:30+00:00",
+                "subject": "  физика   8 класс ",
+                "from": [{"email": "parent@example.com"}],
+                "to": [{"email": "school@kmipt.ru"}],
+                "brand": "foton",
+                "brand_source": "mailbox",
+                "extracted_text_path": str(linked_text),
+            },
+        ],
+    )
+    config = MailStage2IngestConfig(
+        timeline_db_path=config.timeline_db_path,
+        allowed_root=config.allowed_root,
+        identity_db_path=config.identity_db_path,
+        event_jsonl_paths=(duplicate_events_path,),
+        out_dir=config.out_dir,
+        backup_root=config.backup_root,
+        tenant_id=config.tenant_id,
+        source_ref=config.source_ref,
+    )
+
+    dry_run = dry_run_stage2_mail_ingest(config)
+    backup = create_timeline_backup(config, label="content-duplicate")
+    applied = apply_stage2_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert dry_run["counts"]["would_create_events"] == 1
+    assert dry_run["counts"]["duplicate_content_events_in_input"] == 1
+    assert applied["counts"]["selected_new_events"] == 1
+    assert applied["counts"]["created_events"] == 1
+    assert applied["counts"]["created_chunks"] == 1
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT count(*) FROM timeline_events").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == 1

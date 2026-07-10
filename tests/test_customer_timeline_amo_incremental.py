@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 
+import pytest
+
 from mango_mvp.customer_timeline.amo_incremental import (
+    AmoIncrementalConfig,
     event_summary,
     fetch_cards_source,
+    fetch_collection,
     fetch_events_source,
+    run_amo_incremental,
 )
+from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpError
 from mango_mvp.customer_timeline.ingestion import TimelineSourceRecord
 from mango_mvp.customer_timeline.nightly_incremental import (
     AmoEventNormalizer,
@@ -16,6 +23,23 @@ from mango_mvp.customer_timeline.nightly_incremental import (
 
 
 NOW = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
+
+
+def test_run_amo_incremental_refuses_to_copy_over_explicit_timeline_db(tmp_path):
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "staging.sqlite"
+    sqlite3.connect(source).close()
+    sqlite3.connect(target).close()
+
+    with pytest.raises(ValueError, match="explicit timeline_db requires copy_db=False"):
+        run_amo_incremental(
+            AmoIncrementalConfig(
+                source_db=source,
+                out_root=tmp_path / "out",
+                mcp_env=tmp_path / "missing.env",
+                timeline_db=target,
+            )
+        )
 
 
 class FakeAmoClient:
@@ -29,6 +53,18 @@ class FakeAmoClient:
             assert "filter[created_at][from]" in (params or {})
         else:
             assert "filter[updated_at][from]" in (params or {})
+        return self.payload
+
+
+class FlakyAmoClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = 0
+
+    def amo_api_get(self, *, path, params=None, limit=50):
+        self.calls += 1
+        if self.calls == 1:
+            raise AmoMcpError('MCP tool error: {"error": "Tool call timed out."}')
         return self.payload
 
 
@@ -59,6 +95,23 @@ def test_amo_event_normalizer_creates_manager_review_raw_chunk() -> None:
     assert len(batch.bot_context_chunks) == 1
     assert batch.bot_context_chunks[0].allowed_for_bot is False
     assert batch.bot_context_chunks[0].requires_manager_review is True
+
+
+def test_fetch_collection_retries_transient_mcp_timeout() -> None:
+    payload = {"_embedded": {"leads": [{"id": 42}]}}
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, pages, page_cap_hit = fetch_collection(
+        FlakyAmoClient(payload),
+        path="leads",
+        embedded_key="leads",
+        params={"filter[updated_at][from]": 1},
+        config=config,
+    )
+
+    assert pages == 1
+    assert page_cap_hit is False
+    assert rows == [{"id": 42}]
 
 
 def test_amo_event_normalizer_requires_customer_id() -> None:
@@ -167,6 +220,30 @@ def test_fetch_cards_source_maps_lead_via_embedded_contact_identity() -> None:
     assert len(rows) == 1
     assert rows[0]["customer_id"] == "customer:known-contact"
     assert stats["resolution_counts"]["embedded_contact_identity_link"] == 1
+    assert stats["page_cap_hit"] is False
+
+
+def test_fetch_cards_source_reports_page_cap_hit() -> None:
+    payload = {
+        "_embedded": {"leads": [{"id": 42, "updated_at": 1782250001, "_embedded": {"contacts": [{"id": 30}]}}]},
+        "_links": {"next": {"href": "/api/v4/leads?page=2"}},
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    _rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="leads"),
+        path="leads",
+        embedded_key="leads",
+        entity_type="lead",
+        cursor_name="amo_leads_updated_at",
+        from_ts=NOW,
+        link_index={("amo_contact_id", "30"): ("customer:known-contact",)},
+        config=config,
+    )
+
+    assert stats["pages"] == 1
+    assert stats["max_pages"] == 1
+    assert stats["page_cap_hit"] is True
 
 
 def test_fetch_events_source_marks_mapping_after_card_import() -> None:

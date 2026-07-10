@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -133,6 +134,168 @@ def test_nightly_incremental_uses_updated_at_not_only_created_at(tmp_path: Path)
     assert event_count(tmp_path) == 1
 
 
+def test_nightly_incremental_tracks_cursor_per_source_ref(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    first_path = tmp_path / "mail_first.jsonl"
+    second_path = tmp_path / "mail_second.jsonl"
+    write_jsonl(
+        first_path,
+        [
+            {
+                "source_id": "first",
+                "customer_id": "customer:test-1",
+                "event_type": "system_note",
+                "event_at": "2026-06-21T10:00:00+00:00",
+                "updated_at": "2026-06-21T10:00:00+00:00",
+                "summary": "Первый файл.",
+            }
+        ],
+    )
+    write_jsonl(
+        second_path,
+        [
+            {
+                "source_id": "second",
+                "customer_id": "customer:test-1",
+                "event_type": "system_note",
+                "event_at": "2026-06-21T09:00:00+00:00",
+                "updated_at": "2026-06-21T09:00:00+00:00",
+                "summary": "Второй файл старше первого, но новый для своего source_ref.",
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_ref_a",
+                source_system="mail_archive_stage2",
+                path=first_path,
+                source_ref="mail:ref-a",
+            ),
+            IncrementalSourceConfig(
+                name="mail_ref_b",
+                source_system="mail_archive_stage2",
+                path=second_path,
+                source_ref="mail:ref-b",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert [source["rows_selected"] for source in report["sources"]] == [1, 1]
+    assert event_count(tmp_path) == 2
+
+
+def test_nightly_incremental_imports_mail_archive_stage2_manager_only(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail_stage2.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "message_sha256": "a" * 64,
+                "customer_id": "customer:test-1",
+                "date_last": "2026-06-21T11:00:00+00:00",
+                "subject": "Вопрос по расписанию",
+                "summary": "Клиент уточнил расписание.",
+                "brand": "foton",
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                source_ref="nightly-test:mail",
+                normalizer="mail_archive_stage2",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+    )
+
+    first = run_nightly_incremental(config)
+    second = run_nightly_incremental(config)
+
+    assert first["changed_customer_ids"] == ["customer:test-1"]
+    assert second["changed_customer_ids"] == []
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        event = con.execute(
+            "SELECT event_type, source_system, source_id FROM timeline_events WHERE source_id = ?",
+            ("a" * 64,),
+        ).fetchone()
+        chunk = con.execute(
+            "SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks"
+        ).fetchone()
+    assert event == ("email_message", "mail_archive_stage2", "a" * 64)
+    assert chunk == (0, 1)
+
+
+def test_nightly_incremental_preserves_mail_link_enrich_pending_state(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mail_stage2_pending.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "message_sha256": "c" * 64,
+                "date_last": "2026-06-21T11:00:00+00:00",
+                "subject": "Вопрос по расписанию",
+                "summary": "Клиент уточнил расписание.",
+                "brand": "unknown",
+                "match_status": "unmatched",
+                "pending_attribution": True,
+                "pending_reason": "no_strong_identity_match",
+                "fresh_relink": True,
+                "mail_link_enrich": {
+                    "schema_version": "mail_link_enrich_v1",
+                    "outcome": "unmatched",
+                    "reason": "no_strong_identity_match",
+                },
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mail_stage2",
+                source_system="mail_archive_stage2",
+                path=source_path,
+                source_ref="nightly-test:mail",
+                normalizer="mail_archive_stage2",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+    )
+
+    run_nightly_incremental(config)
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute(
+            "SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id = ?",
+            ("c" * 64,),
+        ).fetchone()
+    payload = json.loads(event["record_json"])
+    assert event["customer_id"] is None
+    assert event["match_status"] == "unmatched"
+    assert payload["metadata"]["pending_reason"] == "no_strong_identity_match"
+    assert payload["metadata"]["fresh_relink"] is True
+    assert payload["metadata"]["mail_link_enrich"]["outcome"] == "unmatched"
+
+
 def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failures(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     missing = tmp_path / "missing.jsonl"
@@ -141,13 +304,71 @@ def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failu
     first = run_nightly_incremental(config)
     second = run_nightly_incremental(config)
 
-    assert first["source_errors"] == [{"source": "amo_updates", "reason": "source_unavailable"}]
-    assert second["source_errors"] == [{"source": "amo_updates", "reason": "source_unavailable"}]
+    expected_error = {
+        "source": "amo_updates",
+        "source_system": "amocrm_snapshot",
+        "required": True,
+        "reason": "source_unavailable",
+    }
+    assert first["source_errors"] == [expected_error]
+    assert second["source_errors"] == [expected_error]
     with CustomerTimelineSQLiteStore.open_read_only(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path) as store:
         cursor = store.get_ingestion_cursor("foton", "amocrm_snapshot")
     assert cursor is not None
     assert cursor.metadata["consecutive_failures"] == 2
     assert cursor.metadata["alert"] is True
+
+
+def test_nightly_incremental_fail_soft_keeps_other_sources_running(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    bad_path = tmp_path / "bad.jsonl"
+    good_path = tmp_path / "good.jsonl"
+    bad_path.write_text("{not-json}\n", encoding="utf-8")
+    write_jsonl(
+        good_path,
+        [
+            {
+                "source_id": "good-event-1",
+                "customer_id": "customer:test-1",
+                "event_type": "system_note",
+                "event_at": "2026-06-21T10:00:00+00:00",
+                "updated_at": "2026-06-21T10:00:00+00:00",
+                "direction": "system",
+                "summary": "Второй источник должен импортироваться.",
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="bad_json",
+                source_system="bad_json_source",
+                path=bad_path,
+                source_ref="test:bad-json",
+            ),
+            IncrementalSourceConfig(
+                name="good_json",
+                source_system="good_json_source",
+                path=good_path,
+                source_ref="test:good-json",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=0,
+        lock_timeout_seconds=2,
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["overall_status"] == "partial"
+    assert report["failed_required_sources"] == ["bad_json"]
+    assert report["source_errors"][0]["reason"] == "source_exception:JSONDecodeError"
+    assert report["sources"][0]["status"] == "failed"
+    assert report["sources"][1]["status"] == "ok"
+    assert report["changed_customer_ids"] == ["customer:test-1"]
+    assert event_count(tmp_path) == 1
 
 
 def test_single_run_lock_waits_for_existing_holder(tmp_path: Path) -> None:
@@ -180,4 +401,3 @@ def test_single_run_lock_waits_for_existing_holder(tmp_path: Path) -> None:
 
     assert time.monotonic() - started >= 0.1
     assert result["waited"] > 0
-

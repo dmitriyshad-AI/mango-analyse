@@ -19,6 +19,12 @@ MAIN_FOLDER_TIMELINE_DB = Path(
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
 READY_ENV = "MEMORY_MEASURE_STREAMS_1_2_READY"
+E4B_MEMORY_SOURCE_POLICY_ENV = {
+    "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE": "1",
+    "CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS": "1",
+    "CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE": "1",
+    "CUSTOMER_TIMELINE_E4B_CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS": "1",
+}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -123,6 +129,7 @@ def build_commands(
                 **common_env,
                 "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
                 "TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB": str(timeline_db),
+                **E4B_MEMORY_SOURCE_POLICY_ENV,
             },
             "argv": [*base, "--out-dir", str(out_root / "memory_on")],
         },

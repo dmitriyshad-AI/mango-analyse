@@ -931,7 +931,7 @@ def test_judge_fact_audit_generic_claims_are_v9_only(tmp_path):
     assert v9_audit["has_unverified_claim"] is False
 
 
-def test_judge_fact_audit_allows_memory_grounded_context_only(tmp_path):
+def test_judge_fact_audit_allows_verified_by_memory_context_only(tmp_path):
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
 
@@ -951,7 +951,7 @@ def test_judge_fact_audit_allows_memory_grounded_context_only(tmp_path):
     )
 
     levels = {item["claim_type"]: item["level"] for item in audit["items"]}
-    assert levels["generic_judge_fact_claim"] == "memory_grounded"
+    assert levels["generic_judge_fact_claim"] == "verified_by_memory"
     assert audit["has_unverified_claim"] is False
 
 

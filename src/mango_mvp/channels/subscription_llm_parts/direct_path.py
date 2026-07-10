@@ -41,6 +41,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
     build_customer_memory_for_prompt,
+    person_context_has_name_value,
     scrub_customer_memory_text,
     strip_unconfirmed_next_step_text_for_bot,
 )
@@ -860,13 +861,8 @@ def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
         _A2_PHONE_RE.search(text)
         or _CLIENT_EMAIL_RE.search(text)
         or _BOT_SAFE_SERVICE_ID_RE.search(text)
-        or (person_match and _direct_path_person_match_has_capitalized_value(person_match.group(0)))
+        or (person_match and person_context_has_name_value(text, start=person_match.start()))
     )
-
-
-def _direct_path_person_match_has_capitalized_value(value: str) -> bool:
-    words = str(value or "").replace(":", " ").replace("—", " ").replace("-", " ").split()
-    return any(word[:1].isupper() for word in words[1:])
 
 
 def _direct_path_trim_context_text(text: str, limit: int) -> str:

@@ -43,9 +43,10 @@ _SERVICE_ID_RE = re.compile(
     re.I,
 )
 _PERSON_CONTEXT_RE = re.compile(
-    r"(?i:\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа))\s*[:—-]?\s*"
+    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа)\s*[:—-]?\s*"
     r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
+    re.I,
 )
 _ADDRESS_RE = re.compile(
     r"\b(?:адрес|ул\.|улица|проспект|пр-т|шоссе|переулок|пер\.|дом|д\.|квартира|кв\.|подъезд)\s*"
@@ -110,6 +111,12 @@ _NON_PERSON_NAME_WORDS = {
     "физтех",
     "фотон",
 }
+_PERSON_CONTEXT_WORDS = {
+    "менеджер", "куратор", "преподаватель", "ребенок", "ребенка", "ребенку",
+    "сын", "сына", "дочь", "дочка", "дочку", "дочери", "ученик", "ученика",
+    "ученица", "фио", "зовут", "имя", "родитель", "родители", "мама", "папа",
+}
+_EXPLICIT_PERSON_LABELS = {"фио", "зовут", "имя"}
 _JUNK_PHRASE_MARKERS = (
     "не определен",
     "не определена",
@@ -294,11 +301,28 @@ def scan_bot_safe_context_pii(text: object) -> tuple[str, ...]:
         placeholder_scrubbed,
         flags=re.I,
     )
-    if _PERSON_CONTEXT_RE.search(placeholder_scrubbed):
+    person_match = _PERSON_CONTEXT_RE.search(placeholder_scrubbed)
+    if person_match and person_context_has_name_value(placeholder_scrubbed, start=person_match.start()):
         findings.append("person_name")
     if _ADDRESS_RE.search(placeholder_scrubbed):
         findings.append("address")
     return tuple(findings)
+
+
+def person_context_has_name_value(value: str, *, start: int) -> bool:
+    segment = str(value or "")[max(0, int(start or 0)) :]
+    for separator in (".", "!", "?", "\n"):
+        segment = segment.split(separator, 1)[0]
+    words = segment.replace(":", " ").replace("—", " ").replace("-", " ").split()
+    if len(words) < 2:
+        return False
+    explicit_label = words[0].casefold().replace("ё", "е") in _EXPLICIT_PERSON_LABELS
+    for word in words[1:]:
+        normalized = word.strip(" ,;()[]{}<>\"'").casefold().replace("ё", "е")
+        if not normalized or normalized in _PERSON_CONTEXT_WORDS:
+            continue
+        return explicit_label or word[:1].isupper()
+    return False
 
 
 def build_customer_memory_for_prompt(

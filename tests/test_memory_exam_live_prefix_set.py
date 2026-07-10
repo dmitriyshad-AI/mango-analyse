@@ -58,6 +58,39 @@ def test_generated_commands_use_requested_db_limit_and_quote_paths() -> None:
     assert "--semantic-verifier-mode off" not in command
 
 
+def test_main_caps_generated_micro_command_at_five(monkeypatch, tmp_path: Path) -> None:
+    db = tmp_path / "timeline.sqlite"
+    db.write_bytes(b"placeholder")
+    selected = [
+        {
+            "dialog_id": f"dialog-{index}",
+            "brand": "foton",
+            "source_system": "telegram_history",
+            "customer_id": f"customer:{index}",
+            "dialog_key": f"chat-{index}",
+            "message_count": 2,
+            "inbound_count": 1,
+            "outbound_count": 1,
+            "allowed_context_items": 1,
+            "allowed_call_context_items": 1,
+            "visible_context_by_type": {"mango_call_summary": 1},
+            "stored_allowed_context_items": 1,
+            "turns": [{"turn": 1, "client_message": "Вопрос", "reference_manager_reply": "Ответ", "client_stop": True}],
+        }
+        for index in range(9)
+    ]
+    monkeypatch.setattr(builder, "load_messages", lambda _path: [])
+    monkeypatch.setattr(builder, "group_messages", lambda _messages: {})
+    monkeypatch.setattr(builder, "build_dialog_candidates", lambda *_args, **_kwargs: selected)
+    monkeypatch.setattr(builder, "select_dialogs", lambda *_args, **_kwargs: selected)
+
+    assert builder.main(["--timeline-db", str(db), "--out-dir", str(tmp_path / "out")]) == 0
+
+    command = (tmp_path / "out" / "memory_exam_micro_commands.sh").read_text(encoding="utf-8")
+    assert "--limit 5" in command
+    assert "--limit 9" not in command
+
+
 def test_select_dialogs_honors_brand_targets_before_source_targets() -> None:
     candidates = [
         {

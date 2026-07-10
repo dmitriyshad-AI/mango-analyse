@@ -121,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             replay_path,
             args.out_dir,
             timeline_db=db_path,
-            limit=len(selected),
+            limit=min(5, len(selected)),
         ),
         encoding="utf-8",
     )

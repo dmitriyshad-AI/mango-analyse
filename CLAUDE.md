@@ -89,6 +89,7 @@
 
 ## Операционный контур пилота (с 12.06.2026)
 
+- **Wappi/AMO draft-loop live с 10.07.2026 14:35 МСК:** launchd `com.mango.wappi-draft-loop` работает из detached worktree `/Users/dmitrijfabarisov/Projects/Mango_live_next_step_phase1b` на `2cc82b1355efd911bd16357fa954584a89ff5763`. Включены bot-safe CRM/timeline memory, `TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD=1` и `TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE=1`; Part A `TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD=0` до M1-приёмки. Startup-manifest: `~/.mango_local/draft_loop/phase1b_startup_manifest.json`. Откат: старый EPR plist/wrapper в `~/.mango_local/draft_loop/rollback_20260710T113252Z/` и неизменённая `Mango_email_pipeline_restore`.
 - Черновиковый контур: пары «профиль+чат → сделка» в `~/.mango_secrets/draft_loop_pairs.json` (разрешена одна тестовая: чат 290027369 → сделка 47854947, Фотон). Стоп-файл `~/.mango_secrets/STOP_DRAFT_LOOP`; журнал `~/.mango_local/draft_loop/journal.jsonl`; сердцебиение `~/.mango_local/draft_loop/heartbeat.json`. Запись примечаний — через AI Office `POST /api/integrations/amocrm/leads/{id}/notes`, только по allowlist.
 - Wappi-профили (карта 12.06): Фотон TG `ec2eed50-b55f`, УНПК TG `18b255b8-7a67`, Фотон Max `2952990f-9e4c`, УНПК Max `152b441d-81a2`. Чаты без пары в allowlist намеренно пропускаются (`pair_missing` в журнале — норма до выдачи пар Дмитрием).
 - Публичные TG-боты (внутренний тест): самопроверка `scripts/check_public_bot_live.py` после каждого рестарта; журнал `.codex_local/telegram_pilot/telegram_pilot.sqlite`.

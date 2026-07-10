@@ -96,11 +96,8 @@
         "scripts/stop_wappi_draft_loop_live.sh"
       ],
       "start_command": [
-        "screen",
-        "-dmS",
-        "mango_draft_loop",
         "bash",
-        "scripts/start_wappi_draft_loop_live.sh"
+        "scripts/start_wappi_draft_loop_launchd.sh"
       ],
       "smoke_command": [
         "python3",

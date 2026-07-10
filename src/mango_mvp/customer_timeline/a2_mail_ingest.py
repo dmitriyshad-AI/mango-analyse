@@ -1090,7 +1090,7 @@ def _plans_with_existing_a2v3_events(
             source_system=str(row["source_system"]),
             source_ref=str(row["source_ref"] or plan.event.source_ref),
             direction=str(row["direction"] or plan.event.direction.value),
-            match_status=str(row["match_status"] or plan.event.match_status.value),
+            match_status=_safe_existing_match_status(row["match_status"], fallback=plan.event.match_status),
             confidence=float(row["confidence"] if row["confidence"] is not None else plan.event.confidence),
             created_at=parse_datetime(str(row["created_at"]), "created_at"),
         )
@@ -1104,6 +1104,16 @@ def _plans_with_existing_a2v3_events(
             )
         reconciled.append(replace(plan, event=event, resolution=resolution))
     return reconciled
+
+
+def _safe_existing_match_status(value: object, *, fallback: IdentityMatchClass) -> IdentityMatchClass:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    try:
+        return IdentityMatchClass(text)
+    except ValueError:
+        return IdentityMatchClass.AMBIGUOUS
 
 
 def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connection | None = None) -> None:
@@ -2141,6 +2151,8 @@ def _resolution_from_direct_links(
     customer_id = next(iter(customer_ids))
     if any(str(item.get("match_class")) == "ambiguous" for item in links):
         return CustomerResolution("blocked", f"direct_{kind}_ambiguous_link", blocked=True, ambiguous=True)
+    if not any(str(item.get("match_class")) in {"strong_unique", "manual"} for item in links):
+        return CustomerResolution("unmatched", f"direct_{kind}_no_authoritative_link")
     if _customer_is_ambiguous(customer_id, snapshot):
         return CustomerResolution("blocked", "customer_identity_ambiguous", customer_id=customer_id, blocked=True, ambiguous=True)
     return CustomerResolution("linked", f"direct_{kind}_identity_link", customer_id=customer_id, method=f"direct_{kind}")
@@ -2215,10 +2227,11 @@ def _identity_links_for_row(
             link_value=email,
             source_system=A2V3_MAIL_SOURCE_SYSTEM,
             source_ref=stable_source_ref,
-            match_class=IdentityMatchClass.STRONG_UNIQUE,
-            confidence=0.9,
+            match_class=IdentityMatchClass.INFERRED,
+            confidence=0.6,
             evidence={
                 "source": "a2v3_contact_email_tallanto_bridge",
+                "link_strength": "weak_corroborating_only",
                 "message_sha256": _message_sha(row),
                 "tallanto_id_hash": _sha16(resolution.tallanto_id or ""),
             },

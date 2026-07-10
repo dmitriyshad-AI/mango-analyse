@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LABEL="${DRAFT_LOOP_LAUNCHD_LABEL:-com.mango.wappi-draft-loop}"
+PLIST_TARGET="${DRAFT_LOOP_LAUNCHD_PLIST:-${HOME}/Library/LaunchAgents/${LABEL}.plist}"
+
+launchctl bootout "gui/$(id -u)" "${PLIST_TARGET}" >/dev/null 2>&1 || true
 screen -S mango_draft_loop -X quit >/dev/null 2>&1 || true
 sleep 2
 

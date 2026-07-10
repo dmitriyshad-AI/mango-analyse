@@ -14,6 +14,7 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SO
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
+    MANGO_PROCESSED_SOURCE_SYSTEM,
     TELEGRAM_HISTORY_SOURCE_SYSTEM,
     WAPPI_MAX_SOURCE_SYSTEM,
     WAPPI_TELEGRAM_SOURCE_SYSTEM,
@@ -25,6 +26,7 @@ STAGE4B_BOT_OPENING_SCHEMA_VERSION = "stage4b_rich_bot_opening_v2"
 STAGE4B_OPENING_POLICY_VERSION = "e4b_owner_policy_linked_rich_context_v2"
 OPENABLE_SOURCE_SYSTEMS = (
     MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
+    MANGO_PROCESSED_SOURCE_SYSTEM,
     TELEGRAM_HISTORY_SOURCE_SYSTEM,
     WAPPI_TELEGRAM_SOURCE_SYSTEM,
     WAPPI_MAX_SOURCE_SYSTEM,
@@ -123,6 +125,7 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
             "foreign_key_check_rows": len(con.execute("PRAGMA foreign_key_check").fetchall()),
             "candidate_review_violations_after": _candidate_review_violations_count(con, tenant_id=config.tenant_id),
             "opened_disallowed_identity_after": _opened_disallowed_identity_count(con, tenant_id=config.tenant_id),
+            "opened_mango_processed_non_strong_after": _opened_mango_non_strong_count(con, tenant_id=config.tenant_id),
             "opened_unknown_brand_after": _opened_unknown_brand_count(con, tenant_id=config.tenant_id),
         }
         report["elapsed_seconds"] = round(time.monotonic() - started, 3)
@@ -136,8 +139,9 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
 
 
 def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, Any]:
+    source_placeholders = ",".join("?" for _ in OPENABLE_SOURCE_SYSTEMS)
     raw_rows = con.execute(
-        """
+        f"""
         SELECT
           c.chunk_id,
           c.customer_id,
@@ -146,13 +150,14 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           c.record_hash,
           c.allowed_for_bot,
           c.requires_manager_review,
+          e.record_json AS event_record_json,
           e.match_status,
           ci.identity_status
         FROM bot_context_chunks c
         JOIN timeline_events e ON e.event_id = c.event_id
         JOIN customer_identities ci ON ci.tenant_id = c.tenant_id AND ci.customer_id = c.customer_id
         WHERE c.tenant_id = ?
-          AND c.source_system IN (?, ?, ?, ?)
+          AND c.source_system IN ({source_placeholders})
           AND c.superseded_by IS NULL
           AND e.superseded_by IS NULL
           AND ci.identity_status = 'strong'
@@ -180,6 +185,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           AND (
             (c.source_system = ? AND e.match_status = 'strong_unique')
             OR (c.source_system = ? AND e.match_status = 'strong_unique')
+            OR (c.source_system = ? AND e.match_status = 'strong_unique')
             OR (c.source_system IN (?, ?) AND e.match_status IN ('manual', 'strong_unique'))
           )
         ORDER BY c.event_at, c.chunk_id
@@ -190,6 +196,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
         ),
@@ -202,7 +209,8 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
     to_update = 0
     for row in raw_rows:
         payload = json_loads(row["record_json"])
-        brand = _content_brand(payload)
+        event_payload = json_loads(row["event_record_json"]) if row["event_record_json"] else {}
+        brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
         if brand not in {"foton", "unpk"}:
             unknown_brand_chunks += 1
@@ -248,10 +256,11 @@ def _apply_opening_plan(
     for row in rows:
         source_system = str(row["source_system"])
         payload = json_loads(row["record_json"])
+        event_payload = json_loads(row["event_record_json"]) if row["event_record_json"] else {}
         payload["allowed_for_bot"] = True
         payload["requires_manager_review"] = False
         metadata = dict(payload.get("metadata") or {})
-        brand = _content_brand(payload)
+        brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
         tags = _opening_tags(payload, metadata=metadata, source_system=source_system, brand=brand)
         sensitivity_counts.update(tags)
@@ -371,6 +380,36 @@ def _metrics(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, int]:
             """,
             (tenant_id, source_system),
         )
+    metrics["mango_processed_summary_chunks_total"] = _scalar(
+        con,
+        "SELECT count(*) FROM bot_context_chunks WHERE tenant_id = ? AND source_system = ?",
+        (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
+    )
+    metrics["mango_processed_summary_chunks_bot_visible"] = _scalar(
+        con,
+        """
+        SELECT count(*)
+        FROM bot_context_chunks
+        WHERE tenant_id = ?
+          AND source_system = ?
+          AND superseded_by IS NULL
+          AND allowed_for_bot = 1
+          AND requires_manager_review = 0
+        """,
+        (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
+    )
+    metrics["mango_processed_summary_unmatched_or_ambiguous_events"] = _scalar(
+        con,
+        """
+        SELECT count(*)
+        FROM timeline_events
+        WHERE tenant_id = ?
+          AND source_system = ?
+          AND superseded_by IS NULL
+          AND match_status != 'strong_unique'
+        """,
+        (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
+    )
     return metrics
 
 
@@ -419,7 +458,7 @@ def _skipped_counts(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, 
         SELECT count(*)
         FROM timeline_events
         WHERE tenant_id = ?
-          AND source_system IN (?, ?, ?)
+          AND source_system IN (?, ?, ?, ?)
           AND superseded_by IS NULL
           AND (
             customer_id IS NULL
@@ -434,6 +473,10 @@ def _skipped_counts(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, 
               AND match_status != 'strong_unique'
             )
             OR (
+              source_system = ?
+              AND match_status != 'strong_unique'
+            )
+            OR (
               source_system IN (?, ?)
               AND match_status NOT IN ('manual', 'strong_unique')
             )
@@ -442,9 +485,11 @@ def _skipped_counts(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, 
         (
             tenant_id,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
         ),
@@ -457,6 +502,8 @@ def _opening_reason(source_system: str) -> str:
         return "e4b_owner_policy_linked_strong_unique_non_empty_mail_stage2"
     if source_system == TELEGRAM_HISTORY_SOURCE_SYSTEM:
         return "e4b_owner_policy_linked_strong_unique_non_empty_telegram_history"
+    if source_system == MANGO_PROCESSED_SOURCE_SYSTEM:
+        return "e4b_owner_policy_linked_strong_unique_non_empty_mango_processed_summary"
     if source_system in {WAPPI_TELEGRAM_SOURCE_SYSTEM, WAPPI_MAX_SOURCE_SYSTEM}:
         return "e4b_owner_policy_linked_manual_non_empty_wappi_history"
     return "e4b_owner_policy_linked_non_empty_rich_context"
@@ -473,12 +520,14 @@ def _opening_tags(
     source_tags = (source_system,)
     if source_system == MAIL_STAGE2_INGEST_SOURCE_SYSTEM:
         source_tags = ("email", MAIL_STAGE2_INGEST_SOURCE_SYSTEM)
+    elif source_system == MANGO_PROCESSED_SOURCE_SYSTEM:
+        source_tags = ("call", MANGO_PROCESSED_SOURCE_SYSTEM)
     elif source_system in CHANNEL_HISTORY_SOURCE_SYSTEMS:
         source_tags = ("channel", source_system)
     return tuple(
         dict.fromkeys(
             (
-                *(tag for tag in _metadata_tags(metadata) if tag != "manager_review"),
+                *(tag for tag in _metadata_tags(metadata) if tag not in {"manager_review", "brand_unknown"}),
                 *brand_tags,
                 *_sensitivity_tags(payload),
                 "bot_visible",
@@ -489,15 +538,16 @@ def _opening_tags(
 
 
 def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    source_placeholders = ",".join("?" for _ in OPENABLE_SOURCE_SYSTEMS)
     return _scalar(
         con,
-        """
+        f"""
         SELECT count(*)
         FROM bot_context_chunks c
         JOIN timeline_events e ON e.event_id = c.event_id
         LEFT JOIN customer_identities ci ON ci.tenant_id = c.tenant_id AND ci.customer_id = c.customer_id
         WHERE c.tenant_id = ?
-          AND c.source_system IN (?, ?, ?, ?)
+          AND c.source_system IN ({source_placeholders})
           AND c.superseded_by IS NULL
           AND e.superseded_by IS NULL
           AND c.allowed_for_bot = 1
@@ -523,6 +573,10 @@ def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str
               AND e.match_status != 'strong_unique'
             )
             OR (
+              c.source_system = ?
+              AND e.match_status != 'strong_unique'
+            )
+            OR (
               c.source_system IN (?, ?)
               AND e.match_status NOT IN ('manual', 'strong_unique')
             )
@@ -533,9 +587,29 @@ def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str
             *OPENABLE_SOURCE_SYSTEMS,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
         ),
+    )
+
+
+def _opened_mango_non_strong_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    return _scalar(
+        con,
+        """
+        SELECT count(*)
+        FROM bot_context_chunks c
+        JOIN timeline_events e ON e.event_id = c.event_id
+        WHERE c.tenant_id = ?
+          AND c.source_system = ?
+          AND c.superseded_by IS NULL
+          AND e.superseded_by IS NULL
+          AND c.allowed_for_bot = 1
+          AND c.requires_manager_review = 0
+          AND e.match_status != 'strong_unique'
+        """,
+        (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
     )
 
 
@@ -549,13 +623,14 @@ def _candidate_review_violations_count(con: sqlite3.Connection, *, tenant_id: st
 
 
 def _opened_unknown_brand_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    source_placeholders = ",".join("?" for _ in OPENABLE_SOURCE_SYSTEMS)
     rows = con.execute(
-        """
-        SELECT c.record_json
+        f"""
+        SELECT c.record_json, e.record_json AS event_record_json
         FROM bot_context_chunks c
         JOIN timeline_events e ON e.event_id = c.event_id
         WHERE c.tenant_id = ?
-          AND c.source_system IN (?, ?, ?, ?)
+          AND c.source_system IN ({source_placeholders})
           AND c.superseded_by IS NULL
           AND e.superseded_by IS NULL
           AND c.allowed_for_bot = 1
@@ -563,7 +638,15 @@ def _opened_unknown_brand_count(con: sqlite3.Connection, *, tenant_id: str) -> i
         """,
         (tenant_id, *OPENABLE_SOURCE_SYSTEMS),
     ).fetchall()
-    return sum(1 for row in rows if _content_brand(json_loads(row["record_json"])) not in {"foton", "unpk"})
+    return sum(
+        1
+        for row in rows
+        if _content_brand(
+            json_loads(row["record_json"]),
+            json_loads(row["event_record_json"]) if row["event_record_json"] else {},
+        )
+        not in {"foton", "unpk"}
+    )
 
 
 def _retract_non_openable_chunks(
@@ -817,25 +900,33 @@ def _normalize_conflict_entity_ref(value: object) -> str:
     return ""
 
 
-def _content_brand(payload: Mapping[str, Any]) -> str:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
-    for value in (
-        payload.get("customer_brand"),
-        payload.get("email_brand"),
-        payload.get("brand"),
-        metadata.get("customer_brand") if isinstance(metadata, Mapping) else None,
-        metadata.get("email_brand") if isinstance(metadata, Mapping) else None,
-        metadata.get("brand") if isinstance(metadata, Mapping) else None,
-    ):
-        brand = str(value or "").strip().casefold()
-        if brand in {"foton", "unpk"}:
-            return brand
+def _content_brand(payload: Mapping[str, Any], *extra_payloads: Mapping[str, Any]) -> str:
+    payloads = (payload, *extra_payloads)
+    for item in payloads:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
+        record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
+        for value in (
+            item.get("customer_brand"),
+            item.get("email_brand"),
+            item.get("brand"),
+            metadata.get("customer_brand") if isinstance(metadata, Mapping) else None,
+            metadata.get("email_brand") if isinstance(metadata, Mapping) else None,
+            metadata.get("brand") if isinstance(metadata, Mapping) else None,
+            record.get("customer_brand") if isinstance(record, Mapping) else None,
+            record.get("email_brand") if isinstance(record, Mapping) else None,
+            record.get("brand") if isinstance(record, Mapping) else None,
+        ):
+            brand = str(value or "").strip().casefold()
+            if brand in {"foton", "unpk"}:
+                return brand
     inferred = str(
         infer_offline_brand(
             {
-                "text": payload.get("text"),
-                "summary": payload.get("summary"),
-                "subject": payload.get("subject_full") or payload.get("subject"),
+                "text": "\n".join(str(item.get("text") or item.get("text_preview") or "") for item in payloads),
+                "summary": "\n".join(str(item.get("summary") or "") for item in payloads),
+                "subject": "\n".join(
+                    str(item.get("subject_full") or item.get("subject") or "") for item in payloads
+                ),
             }
         )
         or ""

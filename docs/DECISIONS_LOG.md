@@ -1602,3 +1602,29 @@ summary/quality слой заметно оптимистичнее. Строги
 `service_notification=121`, `real_correspondence=118`; owner buckets:
 `broadcast_or_internal_skip=8544`, `delivery_failure_skip=543`,
 `service_auto_skip=121`, `real_candidate=89`, `real_manager_review=29`.
+
+### D-080. Owner-go: open strong_unique processed call summaries to bot context in SWAP #4
+
+Решение владельца 2026-07-10: для SWAP #4 открыть боту обработанные звонки
+`mango_processed_summary` как часть rich memory. Гейт идентичности такой же
+строгий, как для Telegram: открывать только события `match_status='strong_unique'`
+и только при strong customer identity; `ambiguous`/`unmatched` не открывать.
+
+Реализация в staging: `mango_processed_summary` добавлен в
+`stage4b_bot_opening.OPENABLE_SOURCE_SYSTEMS`; stage4b также читает бренд из
+`timeline_events.record_json`/`metadata`, потому что у call chunks бренд часто
+лежит на событии, а не в самом chunk. Бренд-гейт не ослаблялся: chunks с
+`brand=unknown`, который нельзя восстановить из события/текста, остаются
+закрытыми.
+
+Приёмка staging 2026-07-10:
+
+- `mango_processed_summary` bot-visible chunks: `14172`;
+- открытые call chunks по `match_status`: `strong_unique=14172`;
+- открытые `ambiguous`/`unmatched`: `0`;
+- `opened_mango_processed_non_strong_after=0`;
+- `opened_disallowed_identity_after=0`;
+- `opened_unknown_brand_after=0`;
+- `quick_check=ok`, `foreign_key_check_rows=0`.
+
+Это staging-подготовка к SWAP #4. Прод-снимок этим решением не публиковался.

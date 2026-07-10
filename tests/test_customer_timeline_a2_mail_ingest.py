@@ -291,6 +291,32 @@ def test_resolve_customer_uses_existing_event_customer_id_when_identity_is_stron
     assert resolution.method == "existing_event_customer_id"
 
 
+def test_resolve_customer_does_not_trust_inferred_direct_email_link() -> None:
+    resolution = _resolve_customer(
+        {"customer_id": None, "contact_email": "weak@example.com", "contact_phone": None},
+        snapshot={
+            "customer_payload_by_id": {"customer:known": {"identity_status": "strong"}},
+            "direct_links": {
+                "email": {
+                    "weak@example.com": [
+                        {
+                            "customer_id": "customer:known",
+                            "match_class": "inferred",
+                            "record": {},
+                        }
+                    ]
+                },
+                "phone": {},
+            },
+            "tallanto_to_customers": {},
+        },
+        tallanto_matches={"matches": {"email": {}, "phone": {}}},
+    )
+
+    assert resolution.outcome == "unmatched"
+    assert resolution.reason == "direct_email_no_authoritative_link"
+
+
 def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
@@ -303,6 +329,9 @@ def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path
     assert report["counts"]["linked"] == 1
     assert plans[0].resolution.method == "tallanto_email"
     assert plans[0].identity_links[0].link_type.value == "email"
+    assert plans[0].identity_links[0].match_class.value == "inferred"
+    assert plans[0].identity_links[0].confidence == 0.6
+    assert plans[0].identity_links[0].evidence["link_strength"] == "weak_corroborating_only"
     assert plans[0].bot_eligible_candidate is True
 
     backup = create_test_db_backup(config)
@@ -467,6 +496,33 @@ def test_reconcile_a2v3_event_facts_is_idempotent(tmp_path: Path) -> None:
     assert second == {"plans": 1, "events_found": 1, "facts_upserted": 1}
     with sqlite3.connect(config.timeline_db_path) as con:
         assert con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0] == 1
+
+
+def test_reconcile_a2v3_event_facts_handles_internal_needs_review_match_status(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("v" * 64, email="parent@example.com")])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+    plans, _ = plan_a2v3_mail_ingest(config)
+    plan = plans[0]
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path)
+    try:
+        assert plan.customer is not None
+        store.upsert_customer(plan.customer)
+        assert plan.opportunity is not None
+        store.upsert_opportunity(plan.opportunity)
+        store.upsert_event(plan.event)
+        store._con.execute(  # noqa: SLF001 - regression fixture for legacy/internal staging status.
+            "UPDATE timeline_events SET match_status = 'needs_review' WHERE event_id = ?",
+            (plan.event.event_id,),
+        )
+        store._con.commit()  # noqa: SLF001
+    finally:
+        store.close()
+
+    result = reconcile_a2v3_event_facts(config.timeline_db_path, plans, allowed_root=config.allowed_root)
+
+    assert result == {"plans": 1, "events_found": 1, "facts_upserted": 1}
+    with sqlite3.connect(config.timeline_db_path) as con:
+        assert con.execute("SELECT identity_outcome FROM a2v3_mail_event_facts").fetchone()[0] == "linked"
 
 
 def test_a2v3_mail_ingest_rich_chunk_keeps_thread_context_without_manager_note(tmp_path: Path) -> None:

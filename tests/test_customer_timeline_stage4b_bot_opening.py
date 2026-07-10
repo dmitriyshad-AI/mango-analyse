@@ -209,6 +209,98 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
     assert rows[pending_event.event_id]["requires_manager_review"] == 1
 
 
+def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:mango-strong",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        partial_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="partial",
+            customer_id="customer:mango-partial",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        store.upsert_customer(customer)
+        store.upsert_customer(partial_customer)
+        strong_event = _mango_call_event(
+            customer,
+            "mango-strong",
+            match_status="strong_unique",
+            text="Звонок: клиент обсуждал курс по физике для 8 класса.",
+            brand="foton",
+        )
+        ambiguous_event = _mango_call_event(
+            customer,
+            "mango-ambiguous",
+            match_status="ambiguous",
+            text="Фотон. Неоднозначный звонок не должен открыться.",
+            brand="foton",
+        )
+        unmatched_event = _mango_call_event(
+            customer,
+            "mango-unmatched",
+            match_status="unmatched",
+            text="Фотон. Непривязанный звонок не должен открыться.",
+            brand="foton",
+        )
+        partial_event = _mango_call_event(
+            partial_customer,
+            "mango-partial",
+            match_status="strong_unique",
+            text="Фотон. Partial identity не должен открыться даже при strong_unique event.",
+            brand="foton",
+        )
+        unknown_brand_event = _mango_call_event(
+            customer,
+            "mango-unknown-brand",
+            match_status="strong_unique",
+            text="Звонок без бренда не должен открыться.",
+            brand="unknown",
+        )
+        for event in (strong_event, ambiguous_event, unmatched_event, partial_event, unknown_brand_event):
+            store.upsert_event(event)
+            store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
+
+    report = run_stage4b_bot_opening(
+        Stage4BBotOpeningConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+            allow_test_paths=True,
+        )
+    )
+
+    assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 1}
+    assert report["apply"]["chunks_updated"] == 1
+    assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 1
+    assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
+    assert report["final_checks"]["opened_disallowed_identity_after"] == 0
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = {
+            row["event_id"]: row
+            for row in con.execute(
+                "SELECT event_id, allowed_for_bot, requires_manager_review, record_json FROM bot_context_chunks"
+            )
+        }
+    assert rows[strong_event.event_id]["allowed_for_bot"] == 1
+    assert rows[strong_event.event_id]["requires_manager_review"] == 0
+    payload = json.loads(rows[strong_event.event_id]["record_json"])
+    assert {"call", "mango_processed_summary", "bot_visible", "foton"}.issubset(set(payload["relevance_tags"]))
+    assert "brand_unknown" not in set(payload["relevance_tags"])
+    assert rows[ambiguous_event.event_id]["allowed_for_bot"] == 0
+    assert rows[unmatched_event.event_id]["allowed_for_bot"] == 0
+    assert rows[partial_event.event_id]["allowed_for_bot"] == 0
+    assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 0
+
+
 def test_stage4b_retracts_previously_opened_non_strong_or_conflicted_chunks(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
@@ -509,6 +601,7 @@ def _mail_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
         event_at=event.event_at,
         allowed_for_bot=False,
         requires_manager_review=True,
+        metadata={"sensitivity_tags": ["brand_unknown", "manager_review"]},
         created_at=event.created_at,
     )
 
@@ -546,6 +639,48 @@ def _channel_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
         source_ref=event.source_ref,
         source_system=event.source_system,
         chunk_type="channel_message",
+        text=text,
+        summary=event.summary or "",
+        event_at=event.event_at,
+        allowed_for_bot=False,
+        requires_manager_review=True,
+        created_at=event.created_at,
+    )
+
+
+def _mango_call_event(
+    customer: CustomerIdentity,
+    suffix: str,
+    *,
+    match_status: str,
+    text: str,
+    brand: str = "unknown",
+) -> TimelineEvent:
+    return TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type="mango_call",
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id=f"{suffix:0<64}"[:64],
+        direction="inbound",
+        summary=text,
+        text_preview=text,
+        match_status=match_status,
+        created_at=NOW,
+        metadata={"brand": brand},
+        record={"call_id": suffix, "brand": brand},
+    )
+
+
+def _mango_call_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
+    return BotContextChunk(
+        tenant_id=event.tenant_id,
+        customer_id=event.customer_id or "",
+        event_id=event.event_id,
+        source_ref=event.source_ref,
+        source_system=event.source_system,
+        chunk_type="mango_call_summary",
         text=text,
         summary=event.summary or "",
         event_at=event.event_at,

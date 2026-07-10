@@ -84,6 +84,7 @@ class M1MailMergeConfig:
     prod_timeline_db: Path
     allowed_root: Path
     out_dir: Path
+    tallanto_identity_db: Path | None = None
     tenant_id: str = "foton"
     apply: bool = False
     expected_archive_sha256: str = DEFAULT_EXPECTED_ARCHIVE_SHA
@@ -91,6 +92,8 @@ class M1MailMergeConfig:
     def __post_init__(self) -> None:
         for field in ("archive", "external_manifest", "timeline_db", "prod_timeline_db", "allowed_root", "out_dir"):
             object.__setattr__(self, field, Path(getattr(self, field)).expanduser())
+        if self.tallanto_identity_db is not None:
+            object.__setattr__(self, "tallanto_identity_db", Path(self.tallanto_identity_db).expanduser())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -102,6 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prod_timeline_db=args.prod_timeline_db,
         allowed_root=args.allowed_root,
         out_dir=args.out_dir,
+        tallanto_identity_db=args.tallanto_identity_db,
         tenant_id=args.tenant_id,
         apply=args.apply,
         expected_archive_sha256=args.expected_archive_sha256,
@@ -136,6 +140,7 @@ def run_m1_mail_summary_merge(config: M1MailMergeConfig) -> Mapping[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "timeline_db": str(config.timeline_db),
         "prod_timeline_db": str(config.prod_timeline_db),
+        "tallanto_identity_db": str(config.tallanto_identity_db) if config.tallanto_identity_db else "",
         "archive": archive_report,
         "external_manifest": {
             "path": str(config.external_manifest),
@@ -162,6 +167,7 @@ def run_m1_mail_summary_merge(config: M1MailMergeConfig) -> Mapping[str, Any]:
         timeline_db_path=config.timeline_db,
         allowed_root=config.allowed_root,
         out_dir=config.out_dir / "a2v3_apply",
+        tallanto_identity_db=config.tallanto_identity_db,
         tenant_id=config.tenant_id,
         source_ref=f"m1_full_mail_summary_{external_manifest.get('run_id') or '20260708'}",
         enrich_existing=True,
@@ -279,6 +285,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--prod-timeline-db", type=Path, required=True)
     parser.add_argument("--allowed-root", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--tallanto-identity-db", type=Path)
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args(argv)

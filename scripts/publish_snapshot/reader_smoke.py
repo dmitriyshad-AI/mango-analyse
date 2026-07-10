@@ -30,6 +30,7 @@ from scripts.publish_snapshot.common import (  # noqa: E402
 )
 
 _MAIL_FORBIDDEN_PRIMARY_REASONS = frozenset({"manager_action_required", "has_manager_note"})
+_KNOWN_BRANDS = frozenset({"foton", "unpk"})
 
 
 def control_customer_counts(db_path: Path, tenant_id: str, customer_id: str) -> dict[str, int]:
@@ -194,6 +195,86 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
     }
 
 
+def mango_processed_allowed_safety_gate(db_path: Path) -> dict[str, object]:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as con:
+        if not _table_exists(con, "timeline_events") or not _table_exists(con, "bot_context_chunks"):
+            return {"ok": True, "skipped": True, "reason": "timeline_events_or_chunks_table_missing"}
+        brand_placeholders = ",".join("?" for _ in _KNOWN_BRANDS)
+        counts = {
+            "allowed_mango_processed_chunks": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks
+                    WHERE source_system = 'mango_processed_summary'
+                      AND allowed_for_bot = 1
+                      AND requires_manager_review = 0
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_non_strong_match": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    LEFT JOIN timeline_events AS e ON e.event_id = b.event_id
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND COALESCE(e.match_status, '') != 'strong_unique'
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_non_strong_identity": int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    LEFT JOIN timeline_events AS e ON e.event_id = b.event_id
+                    LEFT JOIN customer_identities AS ci
+                      ON ci.tenant_id = b.tenant_id AND ci.customer_id = b.customer_id
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND (
+                        b.customer_id IS NULL OR b.customer_id = ''
+                        OR e.customer_id IS NULL OR e.customer_id = ''
+                        OR ci.identity_status IS NULL OR ci.identity_status != 'strong'
+                      )
+                    """
+                ).fetchone()[0]
+            ),
+            "allowed_mango_processed_unknown_brand": int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM bot_context_chunks AS b
+                    WHERE b.source_system = 'mango_processed_summary'
+                      AND b.allowed_for_bot = 1
+                      AND b.requires_manager_review = 0
+                      AND LOWER(COALESCE(json_extract(b.record_json, '$.metadata.content_brand'), '')) NOT IN ({brand_placeholders})
+                    """,
+                    tuple(sorted(_KNOWN_BRANDS)),
+                ).fetchone()[0]
+            ),
+        }
+    violations = {
+        key: value
+        for key, value in counts.items()
+        if key != "allowed_mango_processed_chunks" and int(value) > 0
+    }
+    return {
+        "ok": not violations,
+        "skipped": False,
+        "counts": counts,
+        "violations": violations,
+        "policy": (
+            "opened mango_processed_summary chunks require strong_unique event match, "
+            "strong customer identity, and content_brand in {foton, unpk}"
+        ),
+    }
+
+
 def run_internal_smoke(db_path: Path, allowed_root: Path, tenant_id: str, control_customers: tuple[dict, ...]) -> list[dict]:
     results = []
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=allowed_root)) as api:
@@ -246,6 +327,8 @@ def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
         ok = ok and all(item["ok"] for item in internal_results)
     mail_safety = mail_allowed_safety_gate(db_path)
     ok = ok and bool(mail_safety["ok"])
+    mango_safety = mango_processed_allowed_safety_gate(db_path)
+    ok = ok and bool(mango_safety["ok"])
     report.update(
         {
             "snapshot_db": str(db_path),
@@ -253,6 +336,7 @@ def smoke(config_path: Path, *, snapshot_db: Path) -> tuple[dict, bool]:
             "reader_results": reader_results,
             "internal_control_customers": internal_results,
             "mail_allowed_safety_gate": mail_safety,
+            "mango_processed_allowed_safety_gate": mango_safety,
             "status": "ok" if ok else "failed",
         }
     )

@@ -42,8 +42,8 @@
       "expected_counts": {
         "events_total": 331,
         "bot_context_chunks_total": 346,
-        "allowed_chunks": 6,
-        "review_required_chunks": 340,
+        "allowed_chunks": 13,
+        "review_required_chunks": 333,
         "derived_signals_total": 0
       }
     },

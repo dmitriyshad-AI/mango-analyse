@@ -23,6 +23,7 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_live_4caa5eb_release_venue_autonomy` | `4caa5eb` | detached | Резерв отката старого live-кода. | Не трогать без отдельного катовер/cleanup ТЗ. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_deploy` | `c262b95` | detached | Live deploy worktree / исторический deploy-снимок. | Не трогать без live-чеклиста и явного решения Дмитрия. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_rollback_eb6fa0b` | `eb6fa0b` | detached | Live rollback worktree. | Не трогать без live-чеклиста и явного решения Дмитрия. |
+| `/Users/dmitrijfabarisov/Projects/Mango_live_next_step_phase1b` | `5ec19b7+` | detached candidate | Чистый live-кандидат Phase 1b next-step/format; фактический SHA фиксируется startup-manifest. | Менять только по live-swap ТЗ; Part A overclaim остаётся OFF. |
 | `/Users/dmitrijfabarisov/Projects/Mango_wappi_controlled_watch_observe` | `4c90081` | `codex/wappi-controlled-watch-observe` | Wappi observe / controlled watch. | Не трогать в ADR-003 задачах. |
 | `/Users/dmitrijfabarisov/Projects/Mango_botsafe_slot_builder_port` | `b92bf4c` | `codex/port-botsafe-slot-builder` | Отдельная рабочая ветка botsafe slot builder port. | Не трогать в ADR-003 Ф2b; разбирать отдельным аудитом. |
 | `/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore` | `b7648ac` | `codex/email-pipeline-restore` | Отдельная рабочая ветка восстановления email pipeline; источник next-step фикса только для точечного порта. | Не вливать целиком; читать/портировать только по отдельному ТЗ. |

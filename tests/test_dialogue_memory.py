@@ -5,9 +5,16 @@ import json
 import pytest
 
 from mango_mvp.channels.dialogue_memory import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    DIALOG_SUMMARY_ROLLING_ENV,
+    MEMORY_PROFILE_DEFAULT_ON_FLAGS,
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     MEMORY_CHILD_IDENTITY_MODEL_ENV,
+    P0_LATCH_AUTORELEASE_V2_ENV,
+    _dialog_summary_rolling_enabled,
+    _p0_latch_autorelease_v2_enabled,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
@@ -17,6 +24,16 @@ from mango_mvp.channels.pilot_context import MEMORY_PROVENANCE_COMPACT_ENV, comp
 
 def _trace_rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_p0_latch_autorelease_v2_profile_default_on_and_explicit_override() -> None:
+    context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert P0_LATCH_AUTORELEASE_V2_ENV in MEMORY_PROFILE_DEFAULT_ON_FLAGS
+    assert _p0_latch_autorelease_v2_enabled({}) is False
+    assert _p0_latch_autorelease_v2_enabled(context) is True
+    assert _p0_latch_autorelease_v2_enabled({**context, P0_LATCH_AUTORELEASE_V2_ENV: "0"}) is False
+    assert _p0_latch_autorelease_v2_enabled({P0_LATCH_AUTORELEASE_V2_ENV: "1"}) is True
 
 
 def test_dialogue_memory_extracts_slots_and_open_question_from_multiturn_context() -> None:
@@ -228,6 +245,145 @@ def test_dialogue_memory_summary_falls_back_to_slot_glue_without_model() -> None
     assert "формат: онлайн" in updated.conversation_summary_short
 
 
+def test_dialogue_summary_rolling_preserves_previous_summary_only_when_enabled(monkeypatch) -> None:
+    previous = {
+        "session_id": "s-summary",
+        "active_brand": "foton",
+        "conversation_summary_short": "Клиент ранее сказал: ребёнок в 7 классе, интересует физика.",
+    }
+
+    monkeypatch.delenv(DIALOG_SUMMARY_ROLLING_ENV, raising=False)
+    off = build_dialogue_memory(
+        current_message="А сколько стоит онлайн?",
+        active_brand="foton",
+        previous_memory=previous,
+    )
+    assert off.conversation_summary_short != previous["conversation_summary_short"]
+
+    on = build_dialogue_memory(
+        current_message="А сколько стоит онлайн?",
+        active_brand="foton",
+        previous_memory=previous,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+    assert on.conversation_summary_short == previous["conversation_summary_short"]
+
+
+def test_dialogue_summary_rolling_enabled_by_pilot_profile_with_explicit_override(monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(DIALOG_SUMMARY_ROLLING_ENV, raising=False)
+
+    profile = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert DIALOG_SUMMARY_ROLLING_ENV in MEMORY_PROFILE_DEFAULT_ON_FLAGS
+    assert _dialog_summary_rolling_enabled({}) is False
+    assert _dialog_summary_rolling_enabled(profile) is True
+    assert _dialog_summary_rolling_enabled({**profile, DIALOG_SUMMARY_ROLLING_ENV: "0"}) is False
+
+
+def test_dialogue_summary_rolling_empty_previous_uses_slot_fallback() -> None:
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика, онлайн",
+        active_brand="foton",
+        previous_memory={"session_id": "s-empty", "active_brand": "foton"},
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert "класс: 8" in memory.conversation_summary_short
+    assert "предмет: физика" in memory.conversation_summary_short
+
+
+def test_dialogue_summary_rolling_writes_safe_inline_candidate() -> None:
+    memory = build_dialogue_memory(
+        current_message="Сын в 7 классе, интересует физика очно.",
+        active_brand="foton",
+        session_id="s-summary-write",
+    )
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент ищет очную физику для ребёнка в 7 классе; ждёт следующий шаг от менеджера.",
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert "7 классе" in updated.conversation_summary_short
+    assert "физик" in updated.conversation_summary_short
+    assert "менеджер" in updated.conversation_summary_short
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Клиенту назвали цену 9 900 ₽ и дату 12 июля.",
+        "Клиенту назвали цену 9900 и дату 12.07.2026.",
+        "Клиенту назвали цену 9 900 без валюты.",
+        "Клиенту обещали скидку десять процентов.",
+        "Клиент Фотона сравнивает с УНПК МФТИ.",
+        "Клиент оставил телефон +7 999 123-45-67 и email test@example.com.",
+    ],
+)
+def test_dialogue_summary_rolling_rejects_unsafe_candidates(candidate: str) -> None:
+    memory = build_dialogue_memory(
+        current_message="Сын в 7 классе, интересует физика очно.",
+        active_brand="foton",
+        session_id="s-summary-unsafe",
+    )
+    previous_summary = memory.conversation_summary_short
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary=candidate,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert updated.conversation_summary_short == previous_summary
+
+
+def test_dialogue_summary_rolling_trims_to_500_chars() -> None:
+    memory = build_dialogue_memory(
+        current_message="Хочу подобрать занятия.",
+        active_brand="foton",
+        session_id="s-summary-trim",
+    )
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент обсуждает подбор курса. " * 40,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert len(updated.conversation_summary_short) == 500
+
+
+def test_dialogue_summary_rolling_updates_before_memory_provenance_return(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    memory = build_dialogue_memory(
+        current_message="Хочу подобрать занятия.",
+        active_brand="foton",
+        session_id="s-summary-provenance",
+    )
+
+    def fail_if_called(_prompt: str):
+        raise AssertionError("memory LLM must not be called")
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру.",
+        route="draft_for_manager",
+        dialog_summary="Клиент выбирает курс; менеджер должен помочь с подбором.",
+        memory_llm_fn=fail_if_called,
+        context={DIALOG_SUMMARY_ROLLING_ENV: "1"},
+    )
+
+    assert updated.conversation_summary_short.startswith("Клиент выбирает курс")
+    assert updated.to_prompt_view()["memory_provenance"]["enabled"] is True
+
+
 def test_dialogue_memory_llm_is_optional_and_regex_fallback_stays_unchanged() -> None:
     memory = build_dialogue_memory(
         current_message="Айти-ЕГЭ дистанционно, сколько стоит?",
@@ -293,6 +449,30 @@ def test_memory_provenance_extracts_only_client_slots_with_quote(monkeypatch) ->
     assert "9" not in view["known_slots"].values()
     assert view["slot_provenance"]["grade"]["quote"]
     assert view["slot_provenance"]["grade"]["turn_index"] == 1
+
+
+def test_memory_provenance_does_not_treat_zapisi_as_child_name(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Что нужно для Записи на курс?",
+        active_brand="foton",
+        session_id="s-provenance-zapisi",
+    )
+
+    assert "child_name" not in memory.to_prompt_view()["known_slots"]
+
+
+def test_memory_provenance_keeps_real_child_name_after_for_marker(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Для Артёма нужна физика, 7 класс.",
+        active_brand="foton",
+        session_id="s-provenance-real-child-name",
+    )
+
+    assert memory.to_prompt_view()["known_slots"]["child_name"] == "Артёма"
 
 
 def test_memory_provenance_hides_quote_less_slot_from_prompt(monkeypatch) -> None:
@@ -869,6 +1049,176 @@ def _build_memory_sequence(messages: list[str], *, session_id: str = "s-p0-auto-
         )
     assert memory is not None
     return memory
+
+
+_SAFE_INLINE_FRAME = {
+    "source": "inline",
+    "requested_action": "answer_question",
+    "risk_class": "safe",
+    "answerability": "answer_self",
+    "must_handoff": False,
+    "confidence": 0.95,
+}
+
+
+_SAFE_INLINE_READING = {
+    "source": "inline",
+    "requested_action": "answer_question",
+    "frame_confidence": 0.95,
+}
+
+
+def _client_turn_with_safe_frame(
+    previous,
+    message: str,
+    *,
+    session_id: str,
+    trace_dir=None,
+):
+    context = {P0_LATCH_AUTORELEASE_V2_ENV: "1"}
+    if trace_dir is not None:
+        context["dialogue_contract_debug_trace"] = {
+            "enabled": True,
+            "run_dir": str(trace_dir),
+            "dialog_id": session_id,
+            "turn": len(previous.turns) + 1 if previous is not None else 1,
+        }
+    memory = build_dialogue_memory(
+        current_message=message,
+        active_brand="foton",
+        previous_memory=previous,
+        session_id=session_id,
+        context=context,
+    )
+    return update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Отвечаю по справочному вопросу.",
+        route="bot_answer_self_for_pilot",
+        semantic_reading=_SAFE_INLINE_READING,
+        semantic_frame=_SAFE_INLINE_FRAME,
+        context=context,
+    )
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_releases_false_complaint_after_safe_frame(tmp_path) -> None:
+    memory = build_dialogue_memory(
+        current_message="Преподаватель ужасно ведёт занятия, я недовольна.",
+        active_brand="foton",
+        session_id="s-p0-v2-false-complaint",
+    )
+    assert memory.p0_latch.active is True
+    assert "complaint" in memory.p0_latch.codes
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Нет претензий, всё нравится, продлеваем.",
+    ):
+        memory = _client_turn_with_safe_frame(
+            memory,
+            message,
+            session_id="s-p0-v2-false-complaint",
+            trace_dir=tmp_path,
+        )
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "p0_latch_autorelease_v2"
+    assert "p0" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+    rows = _trace_rows(tmp_path / "debug_trace.jsonl")
+    release = [row for row in rows if row["node"] == "p0_latch_autorelease_v2" and row["values"].get("released")]
+    assert release
+    assert release[-1]["values"]["reason"] == "safe_frame_after_three_neutral_client_turns"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_keeps_real_refund_repeat() -> None:
+    memory = build_dialogue_memory(
+        current_message="Верните деньги за курс.",
+        active_brand="foton",
+        session_id="s-p0-v2-refund",
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Верните деньги, пожалуйста.",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-refund")
+
+    assert memory.p0_latch.active is True
+    assert "refund" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+@pytest.mark.parametrize(
+    ("first_message", "expected_code", "session_id"),
+    (
+        ("Верните деньги за курс.", "refund", "s-p0-v2-refund-clean"),
+        ("Деньги списали, а платежа в системе нет.", "payment_dispute", "s-p0-v2-payment-clean"),
+    ),
+)
+def test_dialogue_memory_p0_latch_autorelease_v2_keeps_refund_and_payment_dispute_after_clean_tail(
+    first_message: str,
+    expected_code: str,
+    session_id: str,
+) -> None:
+    memory = build_dialogue_memory(
+        current_message=first_message,
+        active_brand="foton",
+        session_id=session_id,
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id=session_id)
+
+    assert memory.p0_latch.active is True
+    assert expected_code in memory.p0_latch.codes
+    assert memory.p0_latch.release_event_id == ""
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_never_releases_legal_threat() -> None:
+    memory = build_dialogue_memory(
+        current_message="Пойду в суд, если вопрос не решите.",
+        active_brand="foton",
+        session_id="s-p0-v2-legal",
+    )
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-legal")
+
+    assert memory.p0_latch.active is True
+    assert "legal_threat" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_p0_latch_autorelease_v2_releases_bonfire_false_complaint() -> None:
+    memory = build_dialogue_memory(
+        current_message="Разводят костёр?",
+        active_brand="foton",
+        session_id="s-p0-v2-bonfire",
+    )
+    assert memory.p0_latch.active is True
+    assert "complaint" in memory.p0_latch.codes
+
+    for message in (
+        "А по каким дням занятия?",
+        "Можно онлайн?",
+        "Какая цена за семестр?",
+    ):
+        memory = _client_turn_with_safe_frame(memory, message, session_id="s-p0-v2-bonfire")
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "p0_latch_autorelease_v2"
+    assert "p0" not in memory.risk_flags
 
 
 def test_dialogue_memory_keeps_refund_latch_after_five_neutral_turns() -> None:

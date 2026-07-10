@@ -1,0 +1,7 @@
+src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
+tests/test_direct_p0_text_hygiene.py
+tests/test_adr003_paymentfix_acceptance_set.py
+tests/test_direct_path_payment_refund_split.py
+tests/test_adr003_regex_understanding_moratorium.py
+tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
+tasks/_running/2026-07-06_TZ_FINAL_dovesti_ADR003_do_deploya_repo_wrapper.md

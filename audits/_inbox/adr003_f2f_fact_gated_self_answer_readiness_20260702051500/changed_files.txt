@@ -1,0 +1,5 @@
+scripts/report_adr003_existence_fact_verification.py
+scripts/report_adr003_fact_gated_self_answer_readiness.py
+tests/test_report_adr003_fact_gated_self_answer_readiness.py
+tasks/_done/2026-07-02_TZ_ADR003_F2f_fact_gated_self_answer_readiness_dlya_D1.md
+audits/_inbox/adr003_f2f_fact_gated_self_answer_readiness_20260702051500/

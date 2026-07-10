@@ -1,0 +1,32 @@
+# Тесты
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_direct_p0_text_hygiene.py \
+  tests/test_adr003_paymentfix_acceptance_set.py \
+  tests/test_direct_path_payment_refund_split.py \
+  tests/test_answer_safety_classifier.py \
+  tests/test_dialogue_contract_pipeline.py::test_p0_pre_gate_forces_only_hard_codes_and_leaves_soft_reputation_to_model \
+  tests/test_adr003_regex_understanding_moratorium.py \
+  tests/test_subscription_llm_draft_provider.py \
+  -k 'payment_dispute or refund or p0_latch or direct_path_model_p0 or correct_route_wrong or text_hygiene'
+
+152 passed, 622 deselected in 2.79s
+```
+
+Deploy smoke:
+
+```text
+paymentfix_after_p0_text_fix:
+dialogs=20 turns=40 pass=9 pass_with_notes=11 fail=0 hard_gate_failures=0
+
+p0_micro_final:
+dialogs=11 turns=12 pass=8 pass_with_notes=3 fail=0 hard_gate_failures=0
+```
+
+Smoke artifacts:
+
+```text
+/Users/dmitrijfabarisov/Claude Projects/Foton/2026-07-06_ADR003_deploy_ready_p0_smoke_20260707_000157/paymentfix_after_p0_text_fix
+/Users/dmitrijfabarisov/Claude Projects/Foton/2026-07-06_ADR003_deploy_ready_p0_smoke_20260707_000157/p0_micro_final
+```

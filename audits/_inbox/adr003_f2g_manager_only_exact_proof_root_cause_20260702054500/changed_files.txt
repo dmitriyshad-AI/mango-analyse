@@ -1,0 +1,4 @@
+scripts/report_adr003_manager_only_exact_proof_root_cause.py
+tests/test_report_adr003_manager_only_exact_proof_root_cause.py
+tasks/_done/2026-07-02_TZ_ADR003_F2g_manager_only_exact_proof_root_cause_dlya_D1.md
+audits/_inbox/adr003_f2g_manager_only_exact_proof_root_cause_20260702054500/

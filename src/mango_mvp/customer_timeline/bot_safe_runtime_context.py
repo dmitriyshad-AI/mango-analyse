@@ -18,6 +18,7 @@ BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 TIMELINE_MEMORY_SHADOW_ENV = "TELEGRAM_TIMELINE_MEMORY_SHADOW"
 TIMELINE_MEMORY_EXPANDED_SHADOW_ENV = "TELEGRAM_TIMELINE_MEMORY_EXPANDED_SHADOW"
+BOT_MEMORY_EXPANDED_SHADOW_ENV = "TELEGRAM_BOT_MEMORY_EXPANDED_SHADOW"
 BOT_SAFE_CRM_CONTEXT_DB_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB"
 BOT_SAFE_CRM_CONTEXT_TENANT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT_TENANT"
 BOT_SAFE_CRM_CONTEXT_SCHEMA_VERSION = "bot_safe_crm_context_v1_2026_06_21"
@@ -38,6 +39,21 @@ _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9.-]+\.(?:ru|рф|com|org|
 _LONG_DIGIT_TOKEN_RE = re.compile(r"(?<!\d)\d{10,}(?!\d)")
 _SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
+    re.I,
+)
+_PERSON_CONTEXT_RE = re.compile(
+    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа)\s*[:—-]?\s*"
+    r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
+    re.I,
+)
+_ADDRESS_RE = re.compile(
+    r"\b(?:адрес|ул\.|улица|проспект|пр-т|шоссе|переулок|пер\.|дом|д\.|квартира|кв\.|подъезд)\s*"
+    r"[:—-]?\s*[\wА-Яа-яЁё0-9 .,/\\-]{4,}",
+    re.I,
+)
+_SAFE_PLACEHOLDER_RE = re.compile(
+    r"\[(?:контактные данные у менеджера|персона у менеджера|имя ученика/клиента у менеджера|имя клиента у менеджера|ссылка скрыта|служебный номер скрыт)\]",
     re.I,
 )
 _EXACT_DETAIL_RE = re.compile(
@@ -167,6 +183,15 @@ def bot_safe_crm_context_enabled(value: object = None) -> bool:
     return str(value or "").strip().casefold() in _TRUTHY_VALUES
 
 
+def bot_memory_expanded_shadow_enabled(value: object = None) -> bool:
+    if value is None:
+        if TIMELINE_MEMORY_EXPANDED_SHADOW_ENV in os.environ:
+            value = os.getenv(TIMELINE_MEMORY_EXPANDED_SHADOW_ENV)
+        else:
+            value = os.getenv(BOT_MEMORY_EXPANDED_SHADOW_ENV)
+    return str(value or "").strip().casefold() in _TRUTHY_VALUES
+
+
 def bot_safe_timeline_db_from_env() -> Optional[Path]:
     raw = str(os.getenv(BOT_SAFE_CRM_CONTEXT_DB_ENV) or "").strip()
     if not raw:
@@ -185,6 +210,7 @@ def build_bot_safe_crm_context(
     active_brand: str,
     lookup: BotSafeLookup,
     limit: int = 3,
+    allow_explicit_customer_id: bool = False,
 ) -> Mapping[str, Any]:
     """Build the only CRM context allowed for the bot draft prompt.
 
@@ -205,7 +231,11 @@ def build_bot_safe_crm_context(
     tenant_id = _clean_text(lookup.tenant_id) or DEFAULT_BOT_SAFE_TENANT_ID
 
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=root)) as api:
-        customer_id, warnings = _resolve_customer_id(api, lookup)
+        customer_id, warnings = _resolve_customer_id(
+            api,
+            lookup,
+            allow_explicit_customer_id=allow_explicit_customer_id,
+        )
         if not customer_id:
             return _empty_context(*(warnings or ("customer_not_resolved",)), active_brand=brand)
         bot_context = api.bot_context(tenant_id, customer_id, allowed_only=True, limit=max(1, min(int(limit or 3) * 4, 50)))
@@ -257,6 +287,17 @@ def scan_bot_safe_context_pii(text: object) -> tuple[str, ...]:
         findings.append("email")
     if _SERVICE_ID_RE.search(value):
         findings.append("service_id")
+    placeholder_scrubbed = _SAFE_PLACEHOLDER_RE.sub("", value)
+    placeholder_scrubbed = re.sub(
+        r"\b(?:запасн(?:ой|ый)?\s+)?адрес\s*[.?!,;:—-]*",
+        " ",
+        placeholder_scrubbed,
+        flags=re.I,
+    )
+    if _PERSON_CONTEXT_RE.search(placeholder_scrubbed):
+        findings.append("person_name")
+    if _ADDRESS_RE.search(placeholder_scrubbed):
+        findings.append("address")
     return tuple(findings)
 
 
@@ -307,11 +348,18 @@ def build_customer_memory_for_prompt(
     )
 
 
-def _resolve_customer_id(api: CustomerTimelineReadApi, lookup: BotSafeLookup) -> tuple[str, tuple[str, ...]]:
+def _resolve_customer_id(
+    api: CustomerTimelineReadApi,
+    lookup: BotSafeLookup,
+    *,
+    allow_explicit_customer_id: bool = False,
+) -> tuple[str, tuple[str, ...]]:
     candidates: dict[str, set[str]] = {}
     tenant_id = _clean_text(lookup.tenant_id) or DEFAULT_BOT_SAFE_TENANT_ID
     explicit_customer_id = _clean_text(lookup.customer_id)
     if explicit_customer_id:
+        if not allow_explicit_customer_id:
+            return "", ("explicit_customer_id_not_allowed",)
         customer = api.store.get_customer(tenant_id, explicit_customer_id)
         if customer is None:
             return "", ("customer_not_found",)
@@ -614,7 +662,7 @@ def _sanitize_mail_stage2_text_for_bot(text: object) -> str:
     value = _PHONE_RE.sub(_PII_PLACEHOLDER, value)
     value = _LONG_DIGIT_TOKEN_RE.sub("[служебный номер скрыт]", value)
     value = _SERVICE_ID_RE.sub(_PII_PLACEHOLDER, value)
-    value = _EMAIL_FROM_NAME_RE.sub(r"\1[имя клиента у менеджера]\2", value)
+    value = _EMAIL_FROM_NAME_RE.sub(r"\1[персона у менеджера]\2", value)
     value = _mask_russian_person_names(value)
     value = value.replace("mailto:", "").replace("tel:", "")
     return _clean_text(value)
@@ -629,7 +677,7 @@ def _mask_russian_person_names(text: str) -> str:
         words = [word.casefold().replace("ё", "е") for word in match.group(0).split()]
         if any(word in _NON_PERSON_NAME_WORDS for word in words):
             return match.group(0)
-        return "[имя ученика/клиента у менеджера]"
+        return "[персона у менеджера]"
 
     return _RUSSIAN_PERSON_NAME_RE.sub(replacement, text)
 

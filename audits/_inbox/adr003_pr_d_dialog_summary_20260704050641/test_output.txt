@@ -1,0 +1,49 @@
+Targeted tests:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py
+55 passed in 0.80s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'dialog_summary or presale_direct_path_prompt_filters_pii_slots'
+5 passed, 562 deselected in 1.22s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_draft_loop.py -k 'prompt_history_uses_rolling or prompt_history_falls_back'
+3 passed, 31 deselected in 0.49s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dynamic_client_sim_semantic_reading_memory.py tests/test_adr003_regex_understanding_moratorium.py
+9 passed in 2.60s
+```
+
+Auditor-fix targeted tests:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile scripts/run_telegram_public_pilot_bots.py scripts/check_public_bot_live.py scripts/run_telegram_dynamic_client_sim.py
+passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py -k 'dialogue_summary_rolling'
+11 passed, 47 deselected in 0.53s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_telegram_public_pilot_bots.py -k 'dialog_summary_from_result or public_reply_text'
+3 passed, 56 deselected in 0.48s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_check_public_bot_live.py
+13 passed in 0.49s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py tests/test_subscription_llm_draft_provider.py tests/test_draft_loop.py tests/test_dynamic_client_sim_semantic_reading_memory.py tests/test_adr003_regex_understanding_moratorium.py tests/test_telegram_public_pilot_bots.py tests/test_check_public_bot_live.py
+740 passed in 34.83s
+```
+
+Final full test suite after auditor fixes:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+4052 passed, 5 skipped, 1 warning in 82.15s
+```
+
+Warning:
+
+```
+urllib3 v2 only supports OpenSSL 1.1.1+, current ssl module is LibreSSL 2.8.3
+```
+
+The warning is pre-existing environment noise and is not related to PR-D.

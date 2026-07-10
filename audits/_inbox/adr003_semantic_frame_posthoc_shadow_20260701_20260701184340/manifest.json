@@ -1,0 +1,14 @@
+{
+  "audit_pack": "adr003_semantic_frame_posthoc_shadow_20260701_20260701184340",
+  "branch": "codex/adr003-semanticframe-migration",
+  "created_at_msk": "2026-07-01T18:43:40+03:00",
+  "scope": "ADR-003 post-hoc SemanticFrame shadow",
+  "status": "formal_pass_with_measurement_note",
+  "semantic_review": "PASS_WITH_NOTES",
+  "tests": {
+    "targeted": "137 passed in 2.27s",
+    "full_pytest": "3780 passed, 5 skipped, 1 warning in 77.17s"
+  },
+  "live_touched": false,
+  "external_writes": false
+}

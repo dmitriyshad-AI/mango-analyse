@@ -46,6 +46,9 @@ DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV = "TELEGRAM_DIRECT_PATH_KNOWN_SLOTS
 TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
 
 
+TONE_CLOSE_FRAME_VETO_ENV = "TELEGRAM_TONE_CLOSE_FRAME_VETO"
+
+
 TONE_RICH_FORMAT_ENV = "TELEGRAM_TONE_RICH_FORMAT"
 
 
@@ -120,6 +123,11 @@ DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 
+SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT = (
+    "На регулярные группы сейчас идёт набор на 2026/27. "
+    "Помогу записаться: подскажите класс, предмет и формат."
+)
+
 
 DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_ENV,
@@ -129,7 +137,15 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_MODEL_P0_ENV,
     INTENT_MODEL_LED_ENV,
     P0_MODEL_CLASSES_V2_ENV,
+    P0_MODEL_LED_ENV,
     DIRECT_P0_TEXT_HYGIENE_ENV,
+    "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX",
+    TONE_CLOSE_FRAME_VETO_ENV,
+    PROSE_MODEL_LED_ENV,
+    "TELEGRAM_FACT_SELECT_FRAME",
+    "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT",
+    "TELEGRAM_SEATS_DEFAULT_OPEN",
+    "TELEGRAM_SEMANTIC_FRAME_SHADOW",
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
     ROUTE_RUBRIC_ENV,
@@ -405,6 +421,22 @@ def _truthy_value(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
 
 
+def _seats_default_open_allowlisted_result(result: Any) -> bool:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return False
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    flags = {str(flag or "") for flag in getattr(result, "safety_flags", ())}
+    return (
+        str(getattr(result, "route", "") or "") == "bot_answer_self_for_pilot"
+        and str(getattr(result, "draft_text", "") or "") == SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT
+        and "seats_default_open_regular_groups" in flags
+        and bool(metadata.get("seats_default_open_regular_groups"))
+        and str(metadata.get("availability_promise_allowlist") or "") == "seats_default_open_regular_groups"
+        and bool(direct.get("seats_default_open_regular_groups"))
+    )
+
+
 def _explicit_truthy_setting(
     context: Optional[Mapping[str, Any]],
     env_name: str,
@@ -486,7 +518,7 @@ def _p0_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
         P0_MODEL_LED_ENV,
         aliases=("p0_model_led", "p0_model_led_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, P0_MODEL_LED_ENV)
 
 
 def _intent_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -506,7 +538,7 @@ def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> boo
         PROSE_MODEL_LED_ENV,
         aliases=("prose_model_led", "prose_model_led_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, PROSE_MODEL_LED_ENV)
 
 
 _P0_MODEL_LED_NON_COMPLAINT_HARD_CODES = frozenset({"refund", "legal", "payment_dispute"})
@@ -521,6 +553,9 @@ _P0_MODEL_LED_COMPLAINT_BACKSTOP_RE = re.compile(
     r"|накричал\w*\s+на\s+реб[её]нк\w*"
     r"|(?:унизил\w*|оскорбил\w*|высмеял\w*|издевал\w*)\s+.*?реб[её]нк\w*"
     r"|реб[её]нок\s+один\s+остал\w*"
+    r"|после\s+заняти\w*.*?оставил\w*\s+одн\w*"
+    r"|реб[её]нк\w*.*?никто\s+не\s+встретил\w*"
+    r"|никто\s+не\s+встретил\w*.*?реб[её]нк\w*"
     r"|никто\s+не\s+подош[её]л"
     r"|напишу\s+везде\s+какие\s+вы"
     r")"

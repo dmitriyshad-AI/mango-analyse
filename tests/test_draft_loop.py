@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
-from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV
+from mango_mvp.channels.dialogue_memory import DIALOG_SUMMARY_ROLLING_ENV, MEMORY_PROVENANCE_ENV
 from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiHttpError
 from mango_mvp.integrations.draft_loop import (
     AmoWappiDraftLoop,
@@ -20,6 +20,8 @@ from mango_mvp.integrations.draft_loop import (
     DraftLoopState,
     DraftWindow,
     OutgoingWindowMessage,
+    WappiHistoryMessage,
+    _prompt_history_lines,
     build_draft_loop_config_fingerprint,
     classify_manager_edit_windows,
     load_pairs_file,
@@ -103,6 +105,84 @@ def _message(message_id: str, *, chat_id: str = "chat-1", text: str = "Цена?
         "fromMe": from_me,
         "contact_name": "Client",
     }
+
+
+def test_prompt_history_uses_rolling_dialog_summary_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv(DIALOG_SUMMARY_ROLLING_ENV, "1")
+    messages = tuple(
+        WappiHistoryMessage(
+            profile_id="profile-foton",
+            chat_id="chat-1",
+            message_id=f"m{idx}",
+            text=f"старое сообщение {idx}",
+            message_type="text",
+            timestamp=idx,
+            from_me=False,
+        )
+        for idx in range(20)
+    )
+
+    lines = _prompt_history_lines(
+        messages,
+        recent_limit=3,
+        brand="foton",
+        dialogue_memory={
+            "conversation_summary_short": "Клиент выбирает физику для 7 класса; ждёт следующий шаг.",
+        },
+    )
+
+    assert lines[0] == "Ранее в диалоге: Клиент выбирает физику для 7 класса; ждёт следующий шаг."
+    assert "старое сообщение 0" not in " ".join(lines)
+
+
+def test_prompt_history_falls_back_to_raw_summary_when_rolling_memory_empty(monkeypatch) -> None:
+    monkeypatch.setenv(DIALOG_SUMMARY_ROLLING_ENV, "1")
+    messages = tuple(
+        WappiHistoryMessage(
+            profile_id="profile-foton",
+            chat_id="chat-1",
+            message_id=f"m{idx}",
+            text=f"старое сообщение {idx}",
+            message_type="text",
+            timestamp=idx,
+            from_me=False,
+        )
+        for idx in range(20)
+    )
+
+    lines = _prompt_history_lines(
+        messages,
+        recent_limit=3,
+        brand="foton",
+        dialogue_memory={},
+    )
+
+    assert lines[0].startswith("Ранее в диалоге: Клиент: старое сообщение 0")
+
+
+def test_prompt_history_falls_back_when_rolling_summary_has_foreign_brand(monkeypatch) -> None:
+    monkeypatch.setenv(DIALOG_SUMMARY_ROLLING_ENV, "1")
+    messages = tuple(
+        WappiHistoryMessage(
+            profile_id="profile-foton",
+            chat_id="chat-1",
+            message_id=f"m{idx}",
+            text=f"старое сообщение {idx}",
+            message_type="text",
+            timestamp=idx,
+            from_me=False,
+        )
+        for idx in range(20)
+    )
+
+    lines = _prompt_history_lines(
+        messages,
+        recent_limit=3,
+        brand="foton",
+        dialogue_memory={"conversation_summary_short": "Клиент сравнивает Фотон и УНПК МФТИ."},
+    )
+
+    assert lines[0].startswith("Ранее в диалоге: Клиент: старое сообщение 0")
 
 
 def _loop(tmp_path: Path, *, messages, pairs=None, stop: bool = False, auto_resolver=None, amo=None, bot=None) -> AmoWappiDraftLoop:
@@ -411,8 +491,27 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
-    bot = FakeBot()
     calls: list[dict] = []
+
+    class SemanticFrameBot(FakeBot):
+        def build_draft(self, client_message: str, *, context=None):
+            self.calls.append({"client_message": client_message, "context": context})
+            return SubscriptionDraftResult(
+                route="bot_answer_self",
+                draft_text=f"Черновик: {client_message}",
+                safety_flags=("client_safe_fact_verified",),
+                metadata={
+                    "direct_path_model_intent": {"primary_intent": "schedule", "sense": "schedule", "confidence": 0.9},
+                    "semantic_frame": {
+                        "source": "inline",
+                        "requested_action": "answer_question",
+                        "requested_product": {"grade": "7 класс", "subject": "физика", "format": "онлайн"},
+                        "confidence": 0.88,
+                    },
+                },
+            )
+
+    bot = SemanticFrameBot()
 
     def context_builder(key, history, client_message, brand, *, dialogue_memory=None, current_message_id=""):
         from mango_mvp.channels.dialogue_memory import build_dialogue_memory
@@ -449,6 +548,9 @@ def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_
     stored = state["dialogue_memory"][key.value]
     assert stored["known_slots"]["grade"]["value"] == "7"
     assert stored["known_slots"]["grade"]["message_id"] == "m1"
+    assert stored["last_semantic_reading"]["source"] == "inline"
+    assert stored["last_semantic_reading"]["product_subject"] == "физика"
+    assert "last_semantic_reading" not in calls[0]["payload"]["dialogue_memory_view"]
     assert calls[0]["message_id"] == "m1"
 
 

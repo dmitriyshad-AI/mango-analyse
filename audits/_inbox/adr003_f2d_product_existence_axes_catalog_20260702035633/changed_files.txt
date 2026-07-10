@@ -1,0 +1,3 @@
+?? src/mango_mvp/knowledge_base/product_existence_axes_catalog.py
+?? tasks/_done/2026-07-02_TZ_ADR003_F2d_product_existence_axes_catalog_dlya_D1.md
+?? tests/test_kb_product_existence_axes_catalog.py

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    BOT_MEMORY_EXPANDED_SHADOW_ENV,
     BOT_SAFE_CRM_CONTEXT_ENV,
     TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
     TIMELINE_MEMORY_IN_PROMPT_ENV,
@@ -56,6 +57,19 @@ def test_timeline_memory_expanded_shadow_is_metadata_only() -> None:
     assert trace["stats"]["visible_items"] == 1
     assert "СПРАВКА о клиенте из истории" in trace["prompt_text"]
     assert metadata["customer_memory_for_prompt_shadow"]["enabled"] is True
+
+
+def test_bot_memory_expanded_shadow_alias_is_metadata_only() -> None:
+    context = _context(flag=False)
+    context.pop(BOT_SAFE_CRM_CONTEXT_ENV)
+    context[BOT_MEMORY_EXPANDED_SHADOW_ENV] = "1"
+    context["recent_messages"] = ["Клиент: ранее спрашивал про онлайн-курс."]
+
+    trace = _direct_path_customer_memory_shadow_trace(context)
+
+    assert trace["enabled"] is True
+    assert trace["route_text_shadow_only"] is True
+    assert trace["found"] is True
 
 
 def test_explicit_bot_safe_off_disables_expanded_memory_shadow() -> None:
@@ -207,6 +221,42 @@ def test_bot_safe_context_prompt_reads_opened_mail_stage2_chunks_with_source_sys
     assert any(item.get("source_system") == "mail_archive_stage2" for item in items)
     assert "клиент письмом просил напомнить условия группы" in prompt
     assert "это письмо без source_system" not in prompt
+
+
+def test_bot_safe_context_prompt_reads_opened_mango_call_chunks() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-call",
+                "chunk_type": "mango_call_summary",
+                "text": "Звонок: клиент обсуждал онлайн-формат и попросил вернуться с расписанием.",
+                "event_at": "2026-07-09T12:00:00+00:00",
+                "next_step_status": "active",
+                "source_system": "mango_processed_summary",
+                "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+            {
+                "chunk_id": "chunk-call-wrong-source",
+                "chunk_type": "mango_call_summary",
+                "text": "Звонок из неизвестного источника не должен пройти.",
+                "source_system": "mango_raw_capture",
+                "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            },
+        ],
+    )
+
+    items = _direct_path_bot_safe_context_items(context)
+    prompt = _build_direct_path_prompt("Что дальше?", context=context, facts={"fact:1": "Безопасный факт"})
+
+    assert any(item.get("source_system") == "mango_processed_summary" for item in items)
+    assert "клиент обсуждал онлайн-формат" in prompt
+    assert "неизвестного источника" not in prompt
 
 
 def test_bot_safe_context_prompt_requires_known_active_brand() -> None:

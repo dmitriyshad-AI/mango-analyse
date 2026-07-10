@@ -1,0 +1,48 @@
+{
+  "created_at": "2026-07-02T00:04:03+0300",
+  "description": "Traceability manifest for SemanticFrame v4 local paired-enrichment telemetry rechecked with turn3 P0 gold labels. Fresh M1 artifacts are expected separately after manual M1 run.",
+  "files": [
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/on/dynamic_dialog_transcripts.jsonl",
+      "sha256": "9cee88cb906dc1cfce2b3e2d8f889dd22d229a8dfdaa0fd554a5edf8ceb4f290",
+      "size_bytes": 9470766
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/on/dynamic_summary.json",
+      "sha256": "1a9cc0d13e71f35b4538a1eee4741863ef1dc1fcffc94d19c457c6517cc555c5",
+      "size_bytes": 832845
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_frame_gold_calibration_report.json",
+      "sha256": "d055669385ee2ebe6b54f507a8d6898e357397ca7b87dd690326fe5dbe1fef72",
+      "size_bytes": 75819
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_frame_gold_calibration_report.md",
+      "sha256": "e79358ccccc0bb9c48838a480b5165b746ec54f49a06602273634600aa737be3",
+      "size_bytes": 1070
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_semantic_frame_eval_report.json",
+      "sha256": "952a37692fdc1c1250360919b62a9425c86b24ec1f850e3102001a8717aa8ac3",
+      "size_bytes": 56130
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_semantic_frame_eval_report.md",
+      "sha256": "a6203adb3c5cc61878c22c9aadb28a69abf2ab402909e982895714d05d955aa5",
+      "size_bytes": 855
+    },
+    {
+      "path": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
+      "sha256": "a45077c33b65c73c372085f9b9b23dd3a5dee60422ee49162189f1271c8b3c93",
+      "size_bytes": 26116
+    },
+    {
+      "path": "product_data/telegram_dynamic_test_sets/adr003_semantic_frame_eval_manifest_20260701.json",
+      "sha256": "6953deaa8b55da2c03cd10ad1f1dc9164d6ff00ee667f358ab390859ee1fabff",
+      "size_bytes": 11119
+    }
+  ],
+  "schema_version": "adr003_v4_turn3_trace_manifest_v1_2026_07_01",
+  "source_code_revision": "90d8a0df98e200c42136fc6af01de3f9e99eb503"
+}

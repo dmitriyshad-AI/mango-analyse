@@ -1,0 +1,107 @@
+{
+  "acceptance": {
+    "flags": {
+      "extra_model_calls_expected": true,
+      "hard_gate_failures_zero": true,
+      "input_turns_match": true,
+      "route_text_diff_zero": true,
+      "self_answer_partial_freshness_zero": true,
+      "semantic_frame_present_on_all_turns": true,
+      "semantic_frame_required_fields_complete": true
+    },
+    "notes": [
+      "ON run is paired SemanticFrame enrichment; model calls are only post-hoc frame metadata calls."
+    ],
+    "status": "pass"
+  },
+  "decision_readiness": {
+    "active_behavior_allowed": false,
+    "reason": "SemanticFrame has no filled expected-frame gold labels in this report.",
+    "semantic_decision_status": "not_pass",
+    "technical_shadow_status": "pass"
+  },
+  "dialogs": 131,
+  "notes": [
+    "Strict paired enrichment: route/text/input diff stayed zero.",
+    "Proof-shadow is present in enrichment path after harness fix.",
+    "Active remains NO-GO: no strict draft_for_manager candidates in paired no-op run.",
+    "Full transcripts are not selected for commit; reports and summary only."
+  ],
+  "queue_acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active autonomy remains NO-GO: this is a calibration queue, not a behavior change.",
+      "Existence/format vs live availability must be fixed in SemanticFrame/policy and validated in shadow first.",
+      "manager_only/context_update rows need an explicit policy decision before any active demotion discussion.",
+      "Fresh exact evidence alone is insufficient on current runtime telemetry.",
+      "No draft_for_manager route-only active candidate is ready."
+    ],
+    "status": "pass_report_only"
+  },
+  "queue_totals": {
+    "current_safe_over_handoff": 11,
+    "gold_compared_rows": 77,
+    "manager_only_exact_proof_rows": 1,
+    "manual_too_cautious_labels": 29,
+    "safe_self_rows": 32,
+    "strict_active_candidates_now": 0,
+    "true_frame_too_cautious": 14,
+    "true_frame_too_confident": 0,
+    "work_items_total": 69
+  },
+  "readiness_acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "No strict draft_for_manager candidates; active F3 remains NO-GO.",
+      "Exact-proof manager_only rows exist; they need separate policy/upstream work and cannot be demoted by F3 route gate.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_no_active_candidate"
+  },
+  "readiness_totals": {
+    "already_self_exact_proof": 5,
+    "blocked_frame_not_self": 0,
+    "blocked_no_exact_proof": 2,
+    "current_handoff_rows": 1,
+    "excluded_danger_money_p0": 1,
+    "existence_format_rows": 9,
+    "manager_only_exact_proof_needs_policy": 1,
+    "strict_f3_draft_candidates": 0
+  },
+  "run_dir": "audits/_inbox/adr003_f2n_enrich_existence_proof_noop_20260702130739",
+  "schema_version": "adr003_f2n_noop_existence_proof_summary_v1_2026_07_02",
+  "self_answer_shadow": {
+    "candidate_examples": [],
+    "freshness_unknown_self_candidates": 0,
+    "manager_only_lowered_count": 0,
+    "money_lowered_count": 0,
+    "operational_lowered_count": 0,
+    "p0_lowered_count": 0,
+    "partial_freshness_self_candidates": 0,
+    "reasons": {
+      "low_confidence": 3,
+      "protected_p0": 53,
+      "risk_class_not_safe": 23,
+      "route_not_draft_for_manager": 162
+    },
+    "schema_version": "semantic_frame_self_answer_shadow_metrics_v1_2026_07_02",
+    "self_classes": {
+      "address": 7,
+      "format": 48,
+      "platform": 1,
+      "price": 13,
+      "program": 21,
+      "safe_reference": 138,
+      "schedule": 13
+    },
+    "status": {
+      "blocked": 241
+    },
+    "turn_count": 241,
+    "unsafe_candidate_examples": [],
+    "would_demote_by_class": {},
+    "would_demote_count": 0
+  },
+  "source_rev": "6549b5b1+working_tree_harness_fix",
+  "turns": 241
+}

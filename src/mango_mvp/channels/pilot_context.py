@@ -94,6 +94,7 @@ class PilotContext:
     dialogue_memory_view: Mapping[str, Any] = field(default_factory=dict)
     dialogue_memory_state: Mapping[str, Any] = field(default_factory=dict)
     conversation_intent_plan: Mapping[str, Any] = field(default_factory=dict)
+    conversation_intent_plan_internal: Mapping[str, Any] = field(default_factory=dict)
     answer_contract: Mapping[str, Any] = field(default_factory=dict)
     gold_answers_v3: Mapping[str, Any] = field(default_factory=dict)
     gold_answer_context: Mapping[str, Any] = field(default_factory=dict)
@@ -154,6 +155,11 @@ class PilotContext:
         )
         object.__setattr__(
             self,
+            "conversation_intent_plan_internal",
+            compact_mapping(self.conversation_intent_plan_internal, max_items=36, max_chars=500),
+        )
+        object.__setattr__(
+            self,
             "answer_contract",
             compact_mapping(self.answer_contract, max_items=28, max_chars=500),
         )
@@ -207,6 +213,7 @@ class PilotContext:
             "dialogue_memory_view": dict(self.dialogue_memory_view),
             "dialogue_memory_state": dict(self.dialogue_memory_state),
             "conversation_intent_plan": dict(self.conversation_intent_plan),
+            "conversation_intent_plan_internal": dict(self.conversation_intent_plan_internal),
             "answer_contract": dict(self.answer_contract),
             "gold_answers_v3": dict(self.gold_answers_v3),
             "gold_answer_context": dict(self.gold_answer_context),
@@ -251,6 +258,7 @@ def build_pilot_context(
     dialogue_memory_view: Mapping[str, Any] | None = None,
     dialogue_memory_state: Mapping[str, Any] | None = None,
     conversation_intent_plan: Mapping[str, Any] | None = None,
+    conversation_intent_plan_internal: Mapping[str, Any] | None = None,
     answer_contract: Mapping[str, Any] | None = None,
     gold_answers_v3: Mapping[str, Any] | None = None,
     gold_answer_context: Mapping[str, Any] | None = None,
@@ -309,6 +317,7 @@ def build_pilot_context(
         dialogue_memory_view=dialogue_memory_view or {},
         dialogue_memory_state=dialogue_memory_state or {},
         conversation_intent_plan=conversation_intent_plan or {},
+        conversation_intent_plan_internal=conversation_intent_plan_internal or {},
         answer_contract=answer_contract or {},
         gold_answers_v3=gold_answers_v3 or {},
         gold_answer_context=gold_answer_context or {},

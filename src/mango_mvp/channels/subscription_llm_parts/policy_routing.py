@@ -47,6 +47,16 @@ from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     preserve_partial_answer_for_live_status,
     reliable_answerer_step1_active_for_turn,
 )
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    SemanticReading,
+    append_reading_trace_record,
+    off_topic_reading_decision,
+    reading_apply_class_enabled,
+    reading_class_enabled,
+    semantic_reading_trace_record,
+    semantic_frame_from_metadata,
+    semantic_reading_transition_metadata,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     MEMORY_PROVENANCE_ENV,
     PRESALE_PII_MEMORY_ENV,
@@ -73,6 +83,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _presale_prompt_child_name_value,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
+    SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
     _truthy_value,
 )
 
@@ -90,11 +101,16 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 
+FIX1B_AUTONOMY_VERIFIED_FACTS_ENV = "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS"
+
+SEATS_DEFAULT_OPEN_ENV = "TELEGRAM_SEATS_DEFAULT_OPEN"
+
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
+INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD = 0.90
 
 INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
-INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"other"})
+INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"off_topic", "other"})
 INTENT_MODEL_LED_TOPIC_MAP = {
     "live_availability": "theme:026_camp_general",
     "schedule": "theme:013_schedule",
@@ -110,6 +126,19 @@ INTENT_MODEL_LED_ANSWER_POLICY = {
     "price_fix": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
     "other": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
 }
+INTENT_ACTIONS_FRAME_REQUESTED_ACTIONS = frozenset(
+    {
+        "answer_question",
+        "check_availability",
+        "enroll",
+        "send_materials",
+        "send_payment_link",
+        "send_document",
+        "refund_or_cancel",
+        "handoff_manager",
+        "unknown",
+    }
+)
 
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 
@@ -139,7 +168,7 @@ LEGAL_THREAT_PII_SAFE_TEXT = (
     "Приняли обращение. Передам его ответственному сотруднику, он вернётся с ответом."
 )
 
-COMPLAINT_SAFE_TEXT = "Приняли обращение. Передам вопрос менеджеру, он вернётся с ответом."
+COMPLAINT_SAFE_TEXT = "Передам обращение менеджеру, он вернётся с ответом."
 
 PAYMENT_DISPUTE_SAFE_TEXT = (
     "Приняли вопрос по оплате. Передам его менеджеру: он проверит данные в системе и вернётся с ответом. "
@@ -260,6 +289,11 @@ TAX_ONLINE_FORM_SAFE_TEXT = (
 )
 
 TAX_FNS_REVIEW_SAFE_TEXT = "ФНС рассматривает заявление и принимает решение. Справка помогает подтвердить обучение, а менеджер подскажет порядок оформления."
+
+TAX_DEDUCTION_PROCESS_SAFE_TEXT = (
+    "Налоговый вычет оформляется через налоговую: решение и выплату принимает ФНС. "
+    "Со своей стороны поможем подготовить документы для вычета; справку готовим до 10 рабочих дней."
+)
 
 TAX_AMOUNT_SAFE_TEXT = (
     "Да, налоговый вычет оформить можно: у нас есть лицензия. "
@@ -543,11 +577,6 @@ ADMISSION_GUARANTEE_INPUT_RE = re.compile(
     re.I,
 )
 
-OFF_TOPIC_INPUT_RE = re.compile(
-    r"\b(?:iphone|айфон|андроид|android|биткоин|крипт\w*|курс\s+доллар|погод\w*|рецепт\w*|политик\w*|новост\w*)\b",
-    re.I,
-)
-
 PAYMENT_CONFIRMATION_RE = re.compile(
     r"оплат[ауы]\s+(?:отмечен|прошл|поступил|зачислен|получен)"
     r"|плат[её]ж\s+(?:прош[её]л|получен|зачислен)"
@@ -802,6 +831,54 @@ def _is_terminal_direct_info_template(text: str) -> bool:
         OFF_TOPIC_GENERIC_SAFE_TEXT,
         SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
     }
+
+
+def _is_off_topic_safe_text(text: str) -> bool:
+    return str(text or "").strip() in {
+        OFF_TOPIC_FOTON_SAFE_TEXT,
+        OFF_TOPIC_UNPK_SAFE_TEXT,
+        OFF_TOPIC_GENERIC_SAFE_TEXT,
+    }
+
+
+def _with_off_topic_reading_trace(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    applied_text: str,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "off_topic"):
+        return result
+    reading = SemanticReading.from_result(result, context=context)
+    decision = off_topic_reading_decision(reading)
+    topic_off_topic = bool(result.topic_id == "service:S3_out_of_scope")
+    final_off_topic_text = _is_off_topic_safe_text(applied_text)
+    reason = ""
+    conflicts: tuple[str, ...] = ()
+    if final_off_topic_text and decision == "off_topic":
+        status = "applied"
+        reason = "semantic_off_topic"
+    elif final_off_topic_text and topic_off_topic:
+        status = "observed"
+        reason = "topic_id_off_topic"
+        if decision == "not_off_topic":
+            conflicts = ("semantic_not_off_topic", "topic_id_off_topic")
+    else:
+        status = "no_op"
+        reason = "terminal_template_not_off_topic"
+    record = semantic_reading_trace_record(
+        reading_class="off_topic",
+        enabled=True,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=reading.source if reading is not None else "",
+        confidence=max(reading.intent_confidence, reading.frame_confidence) if reading is not None else 0.0,
+        changed_fields=("route", "draft_text", "safety_flags", "manager_checklist") if final_off_topic_text else (),
+        conflicts=conflicts,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
 
 def _apply_safe_template_spec(
     result: SubscriptionDraftResult,
@@ -1547,6 +1624,13 @@ def apply_dialogue_contract_v2_template_dispatcher(
                 )
                 return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
+            if spec.name == "terminal":
+                guarded = _with_off_topic_reading_trace(
+                    guarded,
+                    client_message=client_message,
+                    context=context,
+                    applied_text=text,
+                )
             if identity_policy_text:
                 trace_event(
                     context,
@@ -2306,6 +2390,10 @@ def apply_high_risk_content_guards(
         else {code for code in safety_decision.risk_codes if code in HARD_P0_CODES}
     )
     markers = set(_p0_model_led_filter_high_risk_codes(tuple(markers), client_message=client_message, context=context))
+    prefer_payment_dispute_template = _prefer_payment_dispute_template_over_refund(
+        safety_decision.risk_codes,
+        client_message=client_message,
+    )
     model_p0_meta = result.metadata.get("direct_path_model_p0") if isinstance(result.metadata, Mapping) else {}
     model_p0_complaint = bool(
         isinstance(model_p0_meta, Mapping)
@@ -2562,6 +2650,7 @@ def apply_high_risk_content_guards(
         and not metadata.get("presale_refund_policy_manager_check")
         and not (semantic_non_p0 and safety_decision.primary_risk == "refund")
         and not (semantic_non_p0 and "refund" not in markers)
+        and not prefer_payment_dispute_template
         and _is_refund_case(result, markers=markers)
     ):
         route = "manager_only"
@@ -2672,7 +2761,7 @@ def apply_high_risk_content_guards(
         and not safety_decision.semantic_non_p0
         and not metadata.get("presale_refund_policy_manager_check")
     ):
-        primary_risk = safety_decision.primary_risk
+        primary_risk = "payment_dispute" if prefer_payment_dispute_template and safety_decision.primary_risk == "refund" else safety_decision.primary_risk
         route = "manager_only"
         if primary_risk == "legal":
             topic = "theme:029_legal_question"
@@ -2718,6 +2807,145 @@ def apply_high_risk_content_guards(
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
     )
+
+def _fix1b_autonomy_verified_facts_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping) and context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV) is not None:
+        return _truthy_value(context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
+    return _truthy_value(os.getenv(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
+
+
+def _fix1b_has_paid_operation_context(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_p0, Mapping) and str(direct_p0.get("p0_kind") or "") == "paid_operation_context":
+        return True
+    return "direct_path_model_p0_paid_operation_context" in set(result.safety_flags)
+
+
+def _fix1b_has_positive_confirmed_fact_source(context: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    positive_key_markers = (
+        "price",
+        "address",
+        "schedule",
+        "format",
+        "product",
+        "program",
+        "course",
+        "camp",
+        "lvsh",
+        "group",
+        "platform",
+        "installment",
+    )
+    negative_key_markers = ("absence", "missing", "not_available", "unavailable", "closed", "cancelled")
+
+    def walk(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                key_text = str(key or "").casefold()
+                if any(marker in key_text for marker in negative_key_markers):
+                    continue
+                if any(marker in key_text for marker in positive_key_markers):
+                    return True
+                if walk(nested):
+                    return True
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return any(walk(item) for item in value)
+        return False
+
+    return any(
+        walk(context.get(key))
+        for key in (
+            "confirmed_facts",
+            "facts_context",
+            "dialogue_contract_pipeline",
+            "knowledge_snippets",
+            "context_used",
+        )
+    )
+
+
+def _fix1b_autonomy_verified_facts_corridor(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    if not _fix1b_autonomy_verified_facts_enabled(context):
+        return False
+    if result.message_type != "question":
+        return False
+    topic = str(result.topic_id or "").strip()
+    if topic not in AUTONOMY_MATRIX_SAFE_TOPIC_IDS or not _autonomy_topic_allowed(topic, context):
+        return False
+    active_brand = _active_brand(context)
+    if active_brand == "unknown":
+        return False
+    if "conversation_intent_plan_live_availability" in result.safety_flags:
+        return False
+    if is_high_risk_result(result) or detect_high_risk_input_markers(client_message, context=context):
+        return False
+    if _fix1b_has_paid_operation_context(result):
+        return False
+    if not _has_client_safe_current_fact(context):
+        return False
+    if not _fix1b_has_positive_confirmed_fact_source(context):
+        return False
+    fact_texts = _fresh_fact_texts(context)
+    if not fact_texts:
+        return False
+    draft_text = str(result.draft_text or "")
+    if not _claim_supported_by_facts(draft_text, fact_texts):
+        return False
+    facts_blob = " ".join(str(item or "") for item in fact_texts)
+    if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):
+        return False
+    if find_unsupported_numeric_promises(draft_text, context=context):
+        return False
+    if _fix1b_draft_mentions_foreign_brand(draft_text, active_brand=active_brand):
+        return False
+    if _result_has_live_status_missing_fact(result, client_message=client_message, context=context):
+        return False
+    if _asks_live_status_or_booking_question(draft_text):
+        return False
+    plan = _conversation_intent_plan(context)
+    scope = str(plan.get("fact_scope") or "").strip()
+    if scope and _scope_guard_has_foreign_concrete_fact(
+        draft_text,
+        requested_scope=scope,
+        blocked_neighbor_scopes=tuple(str(item) for item in plan.get("blocked_neighbor_scopes", ()) or ()),
+    ):
+        return False
+    return True
+
+
+def _fix1b_draft_mentions_foreign_brand(draft_text: str, *, active_brand: str) -> bool:
+    terms = BRAND_FORBIDDEN_TERMS.get(active_brand, ())
+    normalized = str(draft_text or "").casefold()
+    return any(str(term or "").casefold() in normalized for term in terms if str(term or "").strip())
+
+
+def _with_fix1b_autonomy_trace(
+    result: SubscriptionDraftResult,
+    *,
+    enabled: bool,
+    status: str,
+    reason: str,
+    changed_fields: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    record = semantic_reading_trace_record(
+        reading_class="fix1b",
+        enabled=enabled,
+        status=status,
+        decision="allow_autonomy" if status == "fix1b_promote" else "keep_guard",
+        reason=reason,
+        source="autonomy_matrix_guard",
+        changed_fields=changed_fields,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
 
 def apply_autonomy_matrix_guard(
     result: SubscriptionDraftResult,
@@ -2842,18 +3070,43 @@ def apply_autonomy_matrix_guard(
             "Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
             draft_text=_live_status_manager_check_text(client_message=client_message, context=context),
         )
+    fix1b_corridor = _fix1b_autonomy_verified_facts_corridor(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    if _fix1b_autonomy_verified_facts_enabled(context):
+        result = _with_fix1b_autonomy_trace(
+            result,
+            enabled=True,
+            status="fix1b_promote" if fix1b_corridor else "no_op",
+            reason="verified_fact_corridor" if fix1b_corridor else "corridor_not_satisfied",
+            changed_fields=("route", "safety_flags", "manager_checklist") if fix1b_corridor else (),
+        )
+        flags = list(result.safety_flags)
+        checklist = list(result.manager_checklist)
+        metadata = dict(result.metadata)
     if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text):
-        return demote(
-            "draft_for_manager",
-            "autonomy_default_cautious_missing_facts",
-            "Автономный ответ запрещен: есть недостающие факты.",
-        )
+        if fix1b_corridor:
+            metadata["fix1b_autonomy_verified_facts"] = True
+        else:
+            return demote(
+                "draft_for_manager",
+                "autonomy_default_cautious_missing_facts",
+                "Автономный ответ запрещен: есть недостающие факты.",
+            )
     if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text):
-        return demote(
-            "draft_for_manager",
-            "autonomy_default_cautious_unverified_fact",
-            "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
-        )
+        if fix1b_corridor:
+            metadata["fix1b_autonomy_verified_facts"] = True
+        else:
+            return demote(
+                "draft_for_manager",
+                "autonomy_default_cautious_unverified_fact",
+                "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
+            )
+    if fix1b_corridor:
+        flags.append("fix1b_autonomy_verified_facts_promoted")
+        metadata["fix1b_autonomy_verified_facts"] = True
     if "conversation_intent_plan_live_availability" in flags:
         return demote(
             "draft_for_manager",
@@ -2864,7 +3117,11 @@ def apply_autonomy_matrix_guard(
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
     draft_text = result.draft_text
-    if _draft_is_low_value_without_exact_fact(draft_text) and not _is_verified_client_safe_template(draft_text):
+    if (
+        _draft_is_low_value_without_exact_fact(draft_text)
+        and not _is_verified_client_safe_template(draft_text)
+        and not _verified_fact_template_blocked_by_inline_handoff(result)
+    ):
         fact_answer = _promoted_verified_fact_text(result, context=context, client_message=client_message)
         if fact_answer:
             draft_text = fact_answer
@@ -3002,6 +3259,8 @@ def _direct_path_model_intent_primary(signal: Mapping[str, Any]) -> str:
         primary = "address"
     if primary in {"price_lock", "current_terms", "fix_price"}:
         primary = "price_fix"
+    if primary in {"out_of_scope", "offtopic", "not_related", "irrelevant"}:
+        primary = "off_topic"
     if primary in {"general", "none", "unknown", "not_target"}:
         primary = "other"
     return primary if primary in INTENT_MODEL_LED_ALLOWED else ""
@@ -3017,6 +3276,8 @@ def _intent_model_led_decision(
         return None
     primary = _direct_path_model_intent_primary(_direct_path_model_intent_signal(result))
     if not primary:
+        return None
+    if primary == "off_topic":
         return None
     if primary == target:
         return True
@@ -3073,6 +3334,8 @@ def _conversation_intent_plan_with_model_led(
         "confidence": confidence,
         "reason": str(signal.get("reason") or ""),
     }
+    if model_intent == "off_topic":
+        return plan, {**trace_base, "applied": False, "skip_reason": "off_topic_metadata_only"}
     if original_intent == "live_availability" and model_intent != "live_availability":
         direct_question = str(plan.get("direct_question") or "")
         if _asks_explicit_live_availability_question(" ".join((str(client_message or ""), direct_question))):
@@ -3195,6 +3458,596 @@ def apply_conversation_intent_plan_guard(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
+    legacy_result = _apply_conversation_intent_plan_legacy_guard(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    if reading_class_enabled(context, "live_status_read"):
+        legacy_result = _live_status_read_transition_trace(
+            result,
+            legacy_result,
+            context=context,
+            stage="conversation_intent_plan",
+            client_message=client_message,
+        )
+    if reading_class_enabled(context, "route_templates"):
+        legacy_result = _route_templates_transition_trace(
+            result,
+            legacy_result,
+            context=context,
+            stage="autonomy_matrix",
+            reason="conversation_intent_plan_legacy_shadow",
+        )
+    if not reading_class_enabled(context, "intent_actions"):
+        return legacy_result
+    return _apply_intent_actions_transition_guard(
+        result,
+        legacy_result,
+        client_message=client_message,
+        context=context,
+    )
+
+
+def apply_live_status_read_plan_trace(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "live_status_read"):
+        return result
+    legacy_result = _apply_conversation_intent_plan_legacy_guard(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    return _live_status_read_transition_trace(
+        result,
+        legacy_result,
+        context=context,
+        stage="conversation_intent_plan_observer",
+        trace_only=True,
+        client_message=client_message,
+    )
+
+
+def _live_status_read_transition_trace(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    trace_only: bool = False,
+    client_message: str = "",
+) -> SubscriptionDraftResult:
+    if not trace_only and reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan"):
+        return _live_status_read_transition_apply(
+            original,
+            legacy_result,
+            context=context,
+            stage=stage,
+            client_message=client_message,
+        )
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    plan = _conversation_intent_plan(context)
+    legacy_live_status = "conversation_intent_plan_live_availability" in legacy_result.safety_flags
+    frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
+    frame_product = {}
+    if isinstance(frame.get("requested_product"), Mapping):
+        product = frame["requested_product"]  # type: ignore[index]
+        frame_product = {
+            key: str(product.get(key) or "")[:80]
+            for key in ("grade", "subject", "format")
+            if str(product.get(key) or "").strip()
+        }
+    changed_fields = _route_templates_changed_fields(original, legacy_result)
+    decision = "legacy_live_status" if legacy_live_status else "legacy_not_live_status"
+    conflicts: tuple[str, ...] = ()
+    if legacy_live_status and frame_action not in {"check_availability", "enroll", "handoff_manager"}:
+        conflicts = ("frame_requested_action",)
+    elif not legacy_live_status and frame_action == "check_availability":
+        conflicts = ("legacy_missing_live_status",)
+    record = semantic_reading_trace_record(
+        reading_class="live_status_read",
+        enabled=True,
+        status="shadow_only",
+        decision=decision,
+        reason="conversation_intent_plan_live_status_shadow",
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=changed_fields,
+        conflicts=conflicts,
+        metadata={
+            "stage": stage,
+            "legacy_route": legacy_result.route,
+            "original_route": original.route,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "frame_requested_action": frame_action,
+            "frame_requested_product": frame_product,
+        },
+    )
+    target = original if trace_only else legacy_result
+    return replace(target, metadata=append_reading_trace_record(target.metadata, record))
+
+
+def _live_status_frame_apply_fail_reason(reading: Optional[SemanticReading], frame: Mapping[str, Any]) -> str:
+    if reading is None or not frame:
+        return "no_frame"
+    if reading.source != "inline":
+        return "source_not_inline"
+    if reading.frame_confidence < 0.90:
+        return "low_confidence"
+    risk_class = str(frame.get("risk_class") or "").strip().casefold()
+    if risk_class in {
+        "p0",
+        "high_risk",
+        "payment_dispute",
+        "refund_claim",
+        "refund",
+        "legal",
+        "legal_threat",
+        "complaint",
+        "money_dispute",
+    }:
+        return "risk_class_floor"
+    if reading.requested_action not in {"check_availability", "enroll", "send_document"}:
+        return "requested_action_not_live_status_relevant"
+    return ""
+
+
+def _live_status_hard_floor_reason(result: SubscriptionDraftResult) -> str:
+    if result.route in {"blocked", "manager_only"}:
+        return "hard_route_floor"
+    if is_high_risk_result(result):
+        return "p0_or_high_risk_floor"
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_p0, Mapping):
+        direct_risk = str(direct_p0.get("risk_level") or "").strip().casefold()
+        direct_kind = str(direct_p0.get("p0_kind") or direct_p0.get("p0_kind_raw") or "").strip().casefold()
+        if bool(direct_p0.get("is_p0")) or direct_risk in {"high", "p0", "critical", "high_risk"}:
+            return "p0_or_high_risk_floor"
+        if direct_kind in {"refund", "payment_dispute", "complaint", "legal_threat", "contract_dispute", "cancellation_service_request"}:
+            return "p0_or_high_risk_floor"
+    flag_text = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    flags = {str(flag or "").strip() for flag in result.safety_flags}
+    if any(
+        marker in flag_text
+        for marker in ("p0", "payment_dispute", "refund", "complaint", "legal", "high_risk", "manager_only_p0", "funnel_p0")
+    ):
+        return "p0_or_high_risk_floor"
+    if _fix1b_has_paid_operation_context(result):
+        return "paid_operation_floor"
+    if flags & _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS:
+        return "brand_floor"
+    if any(flag.startswith("payment_confirmation_") or flag == "payment_source_conflict" for flag in flags):
+        return "payment_confirmation_floor"
+    return ""
+
+
+def _seats_default_open_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        SEATS_DEFAULT_OPEN_ENV,
+        aliases=("seats_default_open", "seats_default_open_enabled"),
+    )
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, SEATS_DEFAULT_OPEN_ENV)
+
+
+def _seats_default_open_brand(value: Any) -> str:
+    text = _normalize_fact_match_text(value)
+    if has_any_marker(text, ("foton", "фотон", "цдпо", "cdpo")):
+        return "foton"
+    if has_any_marker(text, ("unpk", "унпк", "мфти", "mipt")):
+        return "unpk"
+    return ""
+
+
+def _seats_default_open_exclusion_reason(
+    *,
+    frame: Mapping[str, Any],
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    requested_product = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
+    active_brand = _seats_default_open_brand(_active_brand(context))
+    product_brand = _seats_default_open_brand(requested_product.get("brand") if isinstance(requested_product, Mapping) else "")
+    if active_brand not in {"foton", "unpk"}:
+        return "brand_floor"
+    if product_brand and product_brand != active_brand:
+        return "brand_floor"
+    product_text = " ".join(
+        str(requested_product.get(key) or "")
+        for key in ("brand", "subject", "grade", "format", "venue", "program_kind", "raw_text")
+    )
+    haystack = _normalize_fact_match_text(
+        " ".join(
+            [
+                client_message,
+                product_text,
+                _dialog_context_haystack(context),
+            ]
+        )
+    )
+    if (
+        re.search(r"\bсколько\s+(?:мест|человек)\b", haystack, re.I)
+        or has_any_marker(haystack, ("размер группы", "наполняемость", "сколько учеников", "сколько детей"))
+    ):
+        return "group_size_question_floor"
+    if has_any_marker(haystack, ("лвш", "лагер", "летн", "лш", "менделеево", "смен")):
+        return "camp_or_shift_floor"
+    if has_any_marker(haystack, ("индивидуал", "персональн", "репетитор", "один на один", "1 на 1")):
+        return "individual_floor"
+    if has_any_marker(haystack, ("лобня", "жуковск")):
+        return "unsupported_city_floor"
+    if has_any_marker(
+        haystack,
+        (
+            "заброниру",
+            "бронь",
+            "зафиксиру",
+            "закрепи",
+            "оставьте место",
+            "удержите место",
+            "оформить место",
+            "оформите место",
+            "подтвердите место",
+            "лист ожидания",
+        ),
+    ) or re.search(r"\bзапиш(?:ите|и|ем|ать)\s+(?:нас|меня|ребенка|ребенка|сына|дочь|его|ее|в\s+группу)\b", haystack, re.I):
+        return "booking_operation_floor"
+    return ""
+
+
+def _seats_default_open_result(result: SubscriptionDraftResult, *, context: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
+    del context
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    metadata["seats_default_open_regular_groups"] = True
+    metadata["availability_promise_allowlist"] = "seats_default_open_regular_groups"
+    direct["seats_default_open_regular_groups"] = True
+    metadata["direct_path"] = direct
+    flags = [
+        flag
+        for flag in result.safety_flags
+        if flag not in {*BASE_SAFETY_FLAGS, "conversation_intent_plan_live_availability", "semantic_frame_live_status_read_live_availability"}
+    ]
+    flags.append("seats_default_open_regular_groups")
+    return replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        draft_text=SEATS_DEFAULT_OPEN_REGULAR_SAFE_TEXT,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=(),
+        forbidden_promises_detected=tuple(
+            item for item in result.forbidden_promises_detected if item != "availability_promise"
+        ),
+        metadata=metadata,
+    )
+
+
+def _live_status_frame_guarded_result(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    topic_id: str = "",
+) -> SubscriptionDraftResult:
+    route = result.route
+    flags = list(result.safety_flags)
+    checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+    if route in AUTONOMOUS_ROUTES:
+        route = "draft_for_manager"
+        flags.append("conversation_intent_plan_live_check_handoff")
+        metadata["live_status_read_route_applied"] = "draft_for_manager"
+    flags.extend(("conversation_intent_plan_live_availability", "semantic_frame_live_status_read_live_availability"))
+    checklist.append(
+        "SemanticFrame: вопрос про наличие/бронь/место требует проверки менеджером; не обещать место до проверки."
+    )
+    metadata["live_status_read_frame_applied"] = True
+    return replace(
+        result,
+        topic_id=topic_id or result.topic_id,
+        route=route,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
+    )
+
+
+def _live_status_read_transition_apply(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    client_message: str = "",
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    plan = _conversation_intent_plan(context)
+    frame_action = reading.requested_action if reading is not None else str(frame.get("requested_action") or "")
+    legacy_live_status = "conversation_intent_plan_live_availability" in legacy_result.safety_flags
+    fail_reason = (
+        _live_status_hard_floor_reason(original)
+        or _live_status_hard_floor_reason(legacy_result)
+        or _live_status_frame_apply_fail_reason(reading, frame)
+    )
+    if fail_reason:
+        chosen = legacy_result
+        status = "fail_closed"
+        decision = "legacy_more_conservative"
+        reason = fail_reason
+    elif frame_action == "check_availability":
+        default_open_exclusion = (
+            _seats_default_open_exclusion_reason(frame=frame, client_message=client_message, context=context)
+            if _seats_default_open_enabled(context)
+            else "seats_default_open_off"
+        )
+        if not default_open_exclusion:
+            chosen = _seats_default_open_result(original, context=context)
+            status = "applied"
+            decision = "frame_check_availability_default_open"
+            reason = "seats_default_open_regular_groups"
+        else:
+            chosen = legacy_result if legacy_live_status else _live_status_frame_guarded_result(
+                original,
+                context=context,
+                topic_id=str(legacy_result.topic_id or ""),
+            )
+            status = "applied"
+            decision = "frame_check_availability"
+            reason = "frame_live_availability"
+            if default_open_exclusion != "seats_default_open_off":
+                reason = f"frame_live_availability:{default_open_exclusion}"
+    else:
+        chosen = original
+        status = "applied"
+        decision = "frame_not_live_status"
+        reason = "frame_clears_legacy_live_status" if legacy_live_status else "frame_no_live_status"
+
+    product = {}
+    if isinstance(frame.get("requested_product"), Mapping):
+        raw_product = frame["requested_product"]  # type: ignore[index]
+        product = {
+            key: str(raw_product.get(key) or "")[:80]
+            for key in ("grade", "subject", "format")
+            if str(raw_product.get(key) or "").strip()
+        }
+    conflicts: tuple[str, ...] = ()
+    if frame_action == "check_availability" and not legacy_live_status:
+        conflicts = ("legacy_missing_live_status",)
+    elif legacy_live_status and frame_action in {"enroll", "send_document"}:
+        conflicts = ("legacy_false_live_status",)
+    record = semantic_reading_trace_record(
+        reading_class="live_status_read",
+        enabled=True,
+        status=status,
+        decision=decision,
+        reason=reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=_route_templates_changed_fields(original, chosen),
+        conflicts=conflicts,
+        metadata={
+            "stage": stage,
+            "apply_enabled": True,
+            "legacy_route": legacy_result.route,
+            "original_route": original.route,
+            "chosen_route": chosen.route,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "frame_requested_action": frame_action,
+            "frame_requested_product": product,
+            "legacy_live_status": legacy_live_status,
+        },
+    )
+    return replace(chosen, metadata=append_reading_trace_record(chosen.metadata, record))
+
+
+def _route_templates_transition_trace(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    reason: str,
+) -> SubscriptionDraftResult:
+    if reading_apply_class_enabled(context, "route_templates/autonomy_matrix"):
+        return _route_templates_transition_apply(
+            original,
+            legacy_result,
+            context=context,
+            stage=stage,
+            reason=reason,
+        )
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    changed_fields: list[str] = []
+    if legacy_result.route != original.route:
+        changed_fields.append("route")
+    if legacy_result.draft_text != original.draft_text:
+        changed_fields.append("draft_text")
+    if legacy_result.safety_flags != original.safety_flags:
+        changed_fields.append("safety_flags")
+    if legacy_result.manager_checklist != original.manager_checklist:
+        changed_fields.append("manager_checklist")
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status="applied" if changed_fields else "shadow_only",
+        decision="legacy_more_conservative",
+        reason=reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=changed_fields,
+        conflicts=("legacy_route",) if legacy_result.route != original.route else (),
+        metadata=semantic_reading_transition_metadata(
+            stage=stage,
+            draft_before=original.draft_text,
+            draft_after=legacy_result.draft_text,
+            text_replacement=legacy_result.draft_text != original.draft_text,
+            legacy_decision=legacy_result.route,
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen="legacy_more_conservative",
+            extra={
+                "legacy_route": legacy_result.route,
+                "original_route": original.route,
+                "primary_intent": reading.primary_intent if reading is not None else "",
+            },
+        ),
+    )
+    return replace(legacy_result, metadata=append_reading_trace_record(legacy_result.metadata, record))
+
+
+def _route_templates_transition_apply(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    stage: str,
+    reason: str,
+) -> SubscriptionDraftResult:
+    reading = SemanticReading.from_result(original, context=context)
+    frame = semantic_frame_from_metadata(original.metadata)
+    changed_fields = _route_templates_changed_fields(original, legacy_result)
+    fail_reason = _route_templates_frame_apply_fail_reason(frame)
+    chosen = legacy_result
+    chosen_name = "legacy_more_conservative"
+    status = "fail_closed" if fail_reason else "shadow_only"
+    trace_reason = fail_reason or reason
+    trace_changed_fields: Sequence[str] = changed_fields
+
+    if not fail_reason:
+        floor_reason = _route_templates_legacy_floor_reason(original, legacy_result)
+        if floor_reason:
+            status = "fail_closed"
+            trace_reason = floor_reason
+        elif not changed_fields:
+            status = "shadow_only"
+            trace_reason = reason
+        elif legacy_result.draft_text != original.draft_text:
+            status = "fail_closed"
+            trace_reason = "legacy_text_replacement"
+        else:
+            chosen = original
+            chosen_name = "frame_safe_original"
+            status = "applied"
+            trace_reason = reason
+
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status=status,
+        decision=chosen_name,
+        reason=trace_reason,
+        source=reading.source if reading is not None else str(frame.get("source") or ""),
+        confidence=reading.frame_confidence if reading is not None else frame.get("confidence", 0.0),
+        changed_fields=trace_changed_fields,
+        conflicts=("legacy_route",) if legacy_result.route != original.route else (),
+        metadata=semantic_reading_transition_metadata(
+            stage=stage,
+            draft_before=original.draft_text,
+            draft_after=chosen.draft_text,
+            text_replacement=chosen.draft_text != original.draft_text,
+            legacy_decision=legacy_result.route,
+            frame_decision=reading.requested_action if reading is not None else str(frame.get("requested_action") or ""),
+            chosen=chosen_name,
+            extra={
+                "apply_enabled": True,
+                "legacy_route": legacy_result.route,
+                "original_route": original.route,
+                "primary_intent": reading.primary_intent if reading is not None else "",
+                "answerability": str(frame.get("answerability") or ""),
+                "must_handoff": _intent_actions_frame_bool(frame.get("must_handoff")) if frame else None,
+                "risk_class": str(frame.get("risk_class") or ""),
+            },
+        ),
+    )
+    return replace(chosen, metadata=append_reading_trace_record(chosen.metadata, record))
+
+
+def _route_templates_changed_fields(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+) -> list[str]:
+    changed_fields: list[str] = []
+    if legacy_result.route != original.route:
+        changed_fields.append("route")
+    if legacy_result.topic_id != original.topic_id:
+        changed_fields.append("topic_id")
+    if legacy_result.draft_text != original.draft_text:
+        changed_fields.append("draft_text")
+    if legacy_result.safety_flags != original.safety_flags:
+        changed_fields.append("safety_flags")
+    if legacy_result.manager_checklist != original.manager_checklist:
+        changed_fields.append("manager_checklist")
+    return changed_fields
+
+
+def _route_templates_frame_apply_fail_reason(frame: Mapping[str, Any]) -> str:
+    if not frame:
+        return "no_frame"
+    if str(frame.get("source") or "").strip().casefold() != "inline":
+        return "source_not_inline"
+    try:
+        confidence = float(frame.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.90:
+        return "low_confidence"
+    if str(frame.get("requested_action") or "").strip() != "answer_question":
+        return "requested_action_not_answer_question"
+    if str(frame.get("answerability") or "").strip() != "answer_self":
+        return "answerability_not_answer_self"
+    if _intent_actions_frame_bool(frame.get("must_handoff")) is not False:
+        return "must_handoff_not_false"
+    if str(frame.get("risk_class") or "").strip() != "safe":
+        return "risk_class_not_safe"
+    return ""
+
+
+def _route_templates_legacy_floor_reason(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+) -> str:
+    if legacy_result.route in {"blocked", "manager_only"} or original.route in {"blocked", "manager_only"}:
+        return "hard_route_floor"
+    flag_text = " ".join(str(flag or "") for flag in (*original.safety_flags, *legacy_result.safety_flags)).casefold()
+    flags = {str(flag or "").strip() for flag in (*original.safety_flags, *legacy_result.safety_flags)}
+    if any(
+        marker in flag_text
+        for marker in ("p0", "payment_dispute", "refund", "complaint", "legal", "high_risk", "manager_only_p0", "funnel_p0")
+    ):
+        return "p0_or_high_risk_floor"
+    if flags & _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS:
+        return "brand_floor"
+    if any(flag.startswith("payment_confirmation_") or flag == "payment_source_conflict" for flag in flags):
+        return "payment_confirmation_floor"
+    if "conversation_intent_plan_live_availability" in legacy_result.safety_flags:
+        return "live_availability_floor"
+    if legacy_result.topic_id != original.topic_id:
+        return "topic_id_floor"
+    autonomy_cautious_false_positive = any(
+        marker in flag_text
+        for marker in (
+            "autonomy_default_cautious_missing_facts",
+            "autonomy_default_cautious_unverified_fact",
+            "autonomy_default_cautious_topic_not_allowed",
+        )
+    )
+    if flags.issuperset({"manager_approval_required", "no_auto_send"}) and not autonomy_cautious_false_positive:
+        return "manual_approval_floor"
+    return ""
+
+
+def _apply_conversation_intent_plan_legacy_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
     """Align draft topic/route with the context-level conversation plan.
 
     The plan is deliberately higher level than keyword rules: words such as
@@ -3242,21 +4095,12 @@ def apply_conversation_intent_plan_guard(
         checklist.append("План диалога распознал P0/high-risk тему: автономный ответ запрещён.")
         metadata["conversation_intent_plan_route_applied"] = "manager_only"
 
-    elif primary_intent == "live_availability":
-        if topic_from_plan and topic != plan_topic:
-            topic = plan_topic
-            flags.append("conversation_intent_plan_topic_applied")
-            metadata["conversation_intent_plan_topic_from"] = result.topic_id
-        if route in AUTONOMOUS_ROUTES:
-            route = "draft_for_manager"
-            flags.append("conversation_intent_plan_live_check_handoff")
-            metadata["conversation_intent_plan_route_applied"] = "draft_for_manager"
-        flags.append("conversation_intent_plan_live_availability")
-        checklist.append(
-            "План диалога: вопрос про место/наличие/бронь требует проверки менеджером; не обещать место до проверки."
-        )
-
-    elif topic_from_plan and topic != plan_topic and (not is_high_risk_result(result) or semantic_non_p0):
+    elif (
+        primary_intent != "live_availability"
+        and topic_from_plan
+        and topic != plan_topic
+        and (not is_high_risk_result(result) or semantic_non_p0)
+    ):
         original_high_risk = is_high_risk_result(result)
         topic = plan_topic
         flags.append("conversation_intent_plan_topic_applied")
@@ -3299,10 +4143,250 @@ def apply_conversation_intent_plan_guard(
         metadata=metadata,
     )
 
+
+def _intent_actions_route_rank(route: str) -> int:
+    normalized = str(route or "").strip()
+    if normalized in {"blocked", "manager_only"}:
+        return 4
+    if normalized == "draft_for_manager":
+        return 3
+    if normalized in AUTONOMOUS_ROUTES:
+        return 1
+    return 2
+
+
+def _intent_actions_frame(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    frame = semantic_frame_from_metadata(metadata)
+    return frame if isinstance(frame, Mapping) else {}
+
+
+def _intent_actions_legacy_active_for_existing_pipeline(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return _intent_model_led_enabled(context) and isinstance(metadata.get("direct_path_model_intent"), Mapping)
+
+
+def _intent_actions_frame_fail_reason(frame: Mapping[str, Any]) -> str:
+    if not frame:
+        return "no_frame"
+    if str(frame.get("source") or "").strip().casefold() != "inline":
+        return "source_not_inline"
+    requested_action = str(frame.get("requested_action") or "").strip()
+    if requested_action not in INTENT_ACTIONS_FRAME_REQUESTED_ACTIONS:
+        return "invalid_requested_action"
+    try:
+        confidence = float(frame.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD:
+        return "low_confidence"
+    return ""
+
+
+def _intent_actions_frame_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "y", "да", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "нет", "off"}:
+            return False
+    return None
+
+
+def _intent_actions_trace(
+    result: SubscriptionDraftResult,
+    *,
+    status: str,
+    reason: str,
+    frame: Mapping[str, Any],
+    legacy_result: SubscriptionDraftResult,
+    frame_result: Optional[SubscriptionDraftResult] = None,
+    chosen: str = "legacy",
+    changed_fields: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    metadata = {
+        "legacy_route": legacy_result.route,
+        "frame_route": frame_result.route if frame_result is not None else result.route,
+        "chosen": chosen,
+        "requested_action": str(frame.get("requested_action") or ""),
+        "answerability": str(frame.get("answerability") or ""),
+        "must_handoff": _intent_actions_frame_bool(frame.get("must_handoff")) if frame else None,
+        "risk_class": str(frame.get("risk_class") or ""),
+    }
+    conflict_fields: tuple[str, ...] = ()
+    if (frame_result is not None and frame_result.route != legacy_result.route) or result.route != legacy_result.route:
+        conflict_fields = ("legacy_route",)
+    record = semantic_reading_trace_record(
+        reading_class="intent_actions",
+        enabled=True,
+        status=status,
+        decision=chosen,
+        reason=reason,
+        source=str(frame.get("source") or "") if frame else "",
+        confidence=frame.get("confidence", 0.0) if frame else 0.0,
+        changed_fields=changed_fields,
+        conflicts=conflict_fields,
+        metadata=metadata,
+    )
+    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
+
+
+def _intent_actions_live_availability_result(
+    result: SubscriptionDraftResult,
+    *,
+    frame: Mapping[str, Any],
+) -> SubscriptionDraftResult:
+    flags = list(result.safety_flags)
+    checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+    route = result.route
+    if route in AUTONOMOUS_ROUTES:
+        route = "draft_for_manager"
+        flags.append("semantic_frame_live_check_handoff")
+        metadata["semantic_frame_intent_actions_route_applied"] = "draft_for_manager"
+    flags.append("conversation_intent_plan_live_availability")
+    flags.append("semantic_frame_intent_actions_live_availability")
+    checklist.append(
+        "SemanticFrame: вопрос про место/наличие/бронь требует проверки менеджером; не обещать место до проверки."
+    )
+    metadata["semantic_frame_intent_actions"] = {
+        "requested_action": str(frame.get("requested_action") or ""),
+        "confidence": frame.get("confidence", 0.0),
+        "source": str(frame.get("source") or ""),
+    }
+    return replace(
+        result,
+        route=route,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
+    )
+
+
+def _conversation_plan_live_availability_floor_result(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> Optional[SubscriptionDraftResult]:
+    plan = _conversation_intent_plan(context)
+    internal_plan = _conversation_intent_plan_internal(context)
+    primary_intent = str(plan.get("primary_intent") or "").strip()
+    legacy_floor = _truthy_value(
+        internal_plan.get("legacy_live_availability_floor_signal")
+        or plan.get("legacy_live_availability_floor_signal")
+    )
+    if primary_intent != "live_availability" and not legacy_floor:
+        return None
+    return _intent_actions_live_availability_result(result, frame={})
+
+
+def _apply_intent_actions_transition_guard(
+    original: SubscriptionDraftResult,
+    legacy_result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    frame = _intent_actions_frame(original)
+    legacy_active = _intent_actions_legacy_active_for_existing_pipeline(original, context)
+    previous_apply_active = reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan")
+    base_result = legacy_result if legacy_active or previous_apply_active else original
+    base_name = "legacy" if legacy_active else ("previous_apply" if previous_apply_active else "original")
+    fail_reason = _intent_actions_frame_fail_reason(frame)
+    if fail_reason:
+        plan_floor = _conversation_plan_live_availability_floor_result(base_result, context=context)
+        if plan_floor is not None:
+            return _intent_actions_trace(
+                plan_floor,
+                status="fail_closed",
+                reason=fail_reason,
+                frame=frame,
+                legacy_result=legacy_result,
+                frame_result=plan_floor,
+                chosen="conversation_plan_live_availability_floor",
+                changed_fields=_route_templates_changed_fields(base_result, plan_floor),
+            )
+        return _intent_actions_trace(
+            base_result,
+            status="fail_closed",
+            reason=fail_reason,
+            frame=frame,
+            legacy_result=legacy_result,
+            chosen=base_name,
+        )
+
+    requested_action = str(frame.get("requested_action") or "").strip()
+    frame_result: Optional[SubscriptionDraftResult] = None
+    reason = "no_matching_frame_action"
+
+    if requested_action == "check_availability":
+        if _truthy_value((base_result.metadata if isinstance(base_result.metadata, Mapping) else {}).get("seats_default_open_regular_groups")):
+            frame_result = base_result
+            reason = "seats_default_open_regular_groups"
+        else:
+            frame_result = _intent_actions_live_availability_result(base_result, frame=frame)
+            reason = "frame_check_availability"
+
+    if frame_result is None:
+        return _intent_actions_trace(
+            base_result,
+            status="no_op",
+            reason=reason,
+            frame=frame,
+            legacy_result=legacy_result,
+            chosen=base_name,
+        )
+
+    if requested_action == "check_availability":
+        chosen = frame_result
+        chosen_name = "frame_check_availability"
+    elif _intent_actions_route_rank(frame_result.route) > _intent_actions_route_rank(base_result.route):
+        chosen = frame_result
+        chosen_name = "frame_more_conservative"
+    else:
+        chosen = base_result
+        chosen_name = base_name
+
+    changed_fields: list[str] = []
+    if chosen.route != base_result.route:
+        changed_fields.append("route")
+    if chosen.safety_flags != base_result.safety_flags:
+        changed_fields.append("safety_flags")
+    if chosen.manager_checklist != base_result.manager_checklist:
+        changed_fields.append("manager_checklist")
+
+    return _intent_actions_trace(
+        chosen,
+        status="applied" if changed_fields else "shadow_only",
+        reason=reason,
+        frame=frame,
+        legacy_result=legacy_result,
+        frame_result=frame_result,
+        chosen=chosen_name,
+        changed_fields=changed_fields,
+    )
+
+
 def _conversation_intent_plan(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
     if not isinstance(context, Mapping):
         return {}
     plan = context.get("conversation_intent_plan")
+    return plan if isinstance(plan, Mapping) else {}
+
+def _conversation_intent_plan_internal(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    plan = context.get("conversation_intent_plan_internal")
     return plan if isinstance(plan, Mapping) else {}
 
 def _answer_contract(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -3520,7 +4604,7 @@ def apply_known_context_redundant_question_guard(
     }
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     repair_text = _known_context_repair_text(result, client_message=client_message, context=context, repeated=repeated)
-    return replace(
+    guarded = replace(
         result,
         route=route,
         draft_text=repair_text,
@@ -3529,6 +4613,207 @@ def apply_known_context_redundant_question_guard(
         context_warnings=tuple(dict.fromkeys([*result.context_warnings, "asked_known_data_again"])),
         metadata=metadata,
     )
+    if not reading_class_enabled(context, "route_templates"):
+        return guarded
+    reading = SemanticReading.from_result(result, context=context)
+    record = semantic_reading_trace_record(
+        reading_class="route_templates",
+        enabled=True,
+        status="applied",
+        decision="legacy_more_conservative",
+        reason="known_context_redundant_question_guard",
+        source=reading.source if reading is not None else "",
+        confidence=reading.frame_confidence if reading is not None else 0.0,
+        changed_fields=("route", "draft_text"),
+        conflicts=("reask_known_slots",),
+        metadata=semantic_reading_transition_metadata(
+            stage="redundant_guard",
+            draft_before=result.draft_text,
+            draft_after=guarded.draft_text,
+            text_replacement=True,
+            legacy_decision="repair_reask_known_slots",
+            frame_decision=reading.requested_action if reading is not None else "",
+            chosen="legacy_more_conservative",
+            extra={"repeated_fields": list(repeated)},
+        ),
+    )
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
+
+
+def apply_reask_read_trace(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "reask_read"):
+        return result
+    repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
+    apply_enabled = reading_apply_class_enabled(context, "reask_read/final_text")
+    guarded = result
+    changed_fields: list[str] = []
+    if repeated and apply_enabled:
+        guarded = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
+        if guarded.route != result.route:
+            changed_fields.append("route")
+        if guarded.draft_text != result.draft_text:
+            changed_fields.append("draft_text")
+        if guarded.safety_flags != result.safety_flags:
+            changed_fields.append("safety_flags")
+        if guarded.manager_checklist != result.manager_checklist:
+            changed_fields.append("manager_checklist")
+    known = known_context_fields(context)
+    hidden_slots = _semantic_hidden_slot_names(context)
+    do_not_reask = _do_not_reask_slot_names_from_context(context)
+    record = semantic_reading_trace_record(
+        reading_class="reask_read",
+        enabled=True,
+        status="applied" if changed_fields else ("would_flag" if repeated else "shadow_only"),
+        decision="known_slot_reask_applied" if changed_fields else ("known_slot_reask" if repeated else "no_reask_detected"),
+        reason="direct_path_final_text_reask_observer",
+        source="deterministic_observer",
+        confidence=1.0,
+        changed_fields=tuple(changed_fields),
+        conflicts=("known_slot_reask",) if repeated else (),
+        metadata={
+            "stage": "direct_path_final_text",
+            "apply_enabled": apply_enabled,
+            "repeated_slot_keys": list(repeated),
+            "known_slot_keys": sorted(key for key in known if key in {"grade", "subject", "format", "active_brand"}),
+            "do_not_reask_slots": sorted(do_not_reask),
+            "semantic_hidden_slot_names": sorted(hidden_slots),
+            "hidden_slots_are_client_confirmed": False,
+        },
+    )
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
+
+
+def apply_roles_read_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not reading_class_enabled(context, "roles_read"):
+        return result
+    plan = _conversation_intent_plan(context)
+    frame = semantic_frame_from_metadata(result.metadata)
+    apply_enabled = reading_apply_class_enabled(context, "roles_read/refund_tax")
+    guarded = result
+    changed_fields: list[str] = []
+    if apply_enabled and _roles_read_tax_non_refund_plan(plan) and _roles_read_refund_false_positive_result(result):
+        guarded = _roles_read_tax_non_refund_result(result)
+        if guarded.route != result.route:
+            changed_fields.append("route")
+        if guarded.topic_id != result.topic_id:
+            changed_fields.append("topic_id")
+        if guarded.draft_text != result.draft_text:
+            changed_fields.append("draft_text")
+        if guarded.safety_flags != result.safety_flags:
+            changed_fields.append("safety_flags")
+        if guarded.manager_checklist != result.manager_checklist:
+            changed_fields.append("manager_checklist")
+    record = semantic_reading_trace_record(
+        reading_class="roles_read",
+        enabled=True,
+        status="applied" if changed_fields else "shadow_only",
+        decision="tax_non_refund_template" if changed_fields else "roles_observed",
+        reason="direct_path_final_roles_observer",
+        source=str(frame.get("source") or "context"),
+        confidence=frame.get("confidence", 0.0) if frame else 0.0,
+        changed_fields=tuple(changed_fields),
+        conflicts=("tax_vs_refund",) if changed_fields else (),
+        metadata={
+            "stage": "direct_path_final_roles",
+            "apply_enabled": apply_enabled,
+            "final_route": result.route,
+            "final_topic_id": result.topic_id,
+            "plan_primary_intent": str(plan.get("primary_intent") or ""),
+            "plan_topic_id": str(plan.get("topic_id") or ""),
+            "payment_source": str(plan.get("payment_source") or ""),
+            "refund_frame": str(plan.get("refund_frame") or ""),
+            "enrollment_vs_recording": str(plan.get("enrollment_vs_recording") or ""),
+            "transfer_sense": str(plan.get("transfer_sense") or ""),
+            "frame_requested_action": str(frame.get("requested_action") or ""),
+            "frame_payment_readiness": str(frame.get("payment_readiness") or ""),
+            "frame_risk_class": str(frame.get("risk_class") or ""),
+        },
+    )
+    return replace(guarded, metadata=append_reading_trace_record(guarded.metadata, record))
+
+
+def _roles_read_tax_non_refund_plan(plan: Mapping[str, Any]) -> bool:
+    return (
+        str(plan.get("primary_intent") or "").strip() == "tax"
+        and str(plan.get("payment_source") or "").strip() == "tax_deduction"
+        and str(plan.get("refund_frame") or "") == "none"
+    )
+
+
+def _roles_read_refund_false_positive_result(result: SubscriptionDraftResult) -> bool:
+    return (
+        result.topic_id == "theme:009_refund"
+        or bool(_roles_read_refund_related_safety_flags(result.safety_flags))
+    )
+
+
+def _roles_read_refund_related_safety_flags(flags: Sequence[str]) -> tuple[str, ...]:
+    refund_related_flags = {
+        "zero_collect_refund_guarded",
+        "presale_refund_policy_manager_check",
+        "presale_refund_policy_non_p0",
+    }
+    return tuple(flag for flag in flags if str(flag or "") in refund_related_flags)
+
+
+def _roles_read_tax_non_refund_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    # The frame owns the customer-facing meaning, but legacy/P0 floors still own
+    # route hardening. A false "refund" text becomes a tax text; manager_only
+    # stays manager_only when an upstream safety floor already required review.
+    flags = tuple(dict.fromkeys([*result.safety_flags, "tax_deduction_safe_template_applied"]))
+    return replace(
+        result,
+        topic_id="theme:008_tax_deduction",
+        draft_text=TAX_DEDUCTION_PROCESS_SAFE_TEXT,
+        safety_flags=flags,
+        metadata={**dict(result.metadata), "roles_read_tax_non_refund_repaired": True},
+    )
+
+
+def _semantic_hidden_slot_names(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    result: set[str] = set()
+    for container in (context, context.get("dialogue_memory_view")):
+        if not isinstance(container, Mapping):
+            continue
+        slots = container.get("semantic_reading_slots")
+        if isinstance(slots, Mapping):
+            result.update(str(key or "").strip() for key in slots if str(key or "").strip())
+    return result
+
+
+def _do_not_reask_slot_names_from_context(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    result: set[str] = set()
+    for container in (
+        context,
+        context.get("conversation_intent_plan"),
+        context.get("planner_intent"),
+        context.get("answer_contract"),
+        context.get("dialogue_memory_view"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        raw = container.get("do_not_reask_slots") or container.get("do_not_ask_again")
+        if isinstance(raw, str):
+            value = raw.strip()
+            if value:
+                result.add(value)
+        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+            result.update(str(item or "").strip() for item in raw if str(item or "").strip())
+    return result
+
 
 def apply_funnel_policy_guard(
     result: SubscriptionDraftResult,
@@ -3644,7 +4929,11 @@ def find_redundant_questions_for_known_context(
         return ()
     text = str(draft_text or "").casefold().replace("ё", "е")
     repeated: list[str] = []
-    if known.get("student_name") and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text):
+    if (
+        known.get("student_name")
+        and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text)
+        and not _legitimate_enrollment_student_name_request(text, context=context)
+    ):
         repeated.append("student_name")
     if known.get("parent_name") and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", text):
         repeated.append("parent_name")
@@ -3659,6 +4948,18 @@ def find_redundant_questions_for_known_context(
     if known.get("active_brand") and re.search(r"(фотон\s+или\s+унпк|какой\s+центр|какой\s+учебн\w+\s+центр)", text):
         repeated.append("active_brand")
     return tuple(dict.fromkeys(repeated))
+
+
+def _legitimate_enrollment_student_name_request(text: str, *, context: Optional[Mapping[str, Any]]) -> bool:
+    plan = _conversation_intent_plan(context)
+    primary_intent = str(plan.get("primary_intent") or "").strip()
+    topic_id = str(plan.get("topic_id") or "").strip()
+    enrollment_vs_recording = str(plan.get("enrollment_vs_recording") or "").strip()
+    if enrollment_vs_recording == "recording":
+        return False
+    if enrollment_vs_recording == "enroll" or primary_intent in {"enroll", "enrollment"} or topic_id == "theme:020_enrollment":
+        return True
+    return False
 
 def apply_unstated_subject_guard(
     result: SubscriptionDraftResult,
@@ -3995,6 +5296,12 @@ def _answer_quality_was_rewritten(result: SubscriptionDraftResult) -> bool:
 def _is_refund_case(result: SubscriptionDraftResult, *, markers: set[str]) -> bool:
     return result.topic_id == "theme:009_refund" or "refund" in markers
 
+def _prefer_payment_dispute_template_over_refund(risk_codes: Sequence[str], *, client_message: str = "") -> bool:
+    codes = {str(code) for code in risk_codes}
+    if not {"refund", "payment_dispute"}.issubset(codes):
+        return False
+    return not any(code == "refund" for code in codes_from_text(str(client_message or "")))
+
 def _is_legal_threat_case(result: SubscriptionDraftResult, *, markers: set[str]) -> bool:
     return result.topic_id == "theme:029_legal_question" or "legal" in markers
 
@@ -4260,7 +5567,9 @@ def _terminal_safe_template(
         for marker in ("не отвечаете", "одно и то же", "не можете подсказать", "не можете ответить", "не буду оставлять заявку", "буду искать другой вариант")
     ):
         return SOFT_NEGATIVE_HANDOFF_SAFE_TEXT
-    if result.topic_id == "service:S3_out_of_scope" or OFF_TOPIC_INPUT_RE.search(str(client_message or "")):
+    reading = SemanticReading.from_result(result, context=context) if reading_class_enabled(context, "off_topic") else None
+    reading_off_topic = off_topic_reading_decision(reading) == "off_topic"
+    if result.topic_id == "service:S3_out_of_scope" or reading_off_topic:
         if active_brand == "foton":
             return OFF_TOPIC_FOTON_SAFE_TEXT
         if active_brand == "unpk":
@@ -4803,6 +6112,12 @@ def _draft_is_low_value_without_exact_fact(draft_text: str) -> bool:
     generic_markers = ("уточним", "уточню", "проверим", "проверю", "передам", "свяжется", "вернемся", "вернусь")
     return any(marker in text for marker in generic_markers) or len(text) < 120
 
+def _verified_fact_template_blocked_by_inline_handoff(result: SubscriptionDraftResult) -> bool:
+    frame = _intent_actions_frame(result)
+    if _intent_actions_frame_fail_reason(frame):
+        return False
+    return str(frame.get("requested_action") or "").strip() == "handoff_manager"
+
 def _promoted_verified_fact_text(
     result: SubscriptionDraftResult,
     *,
@@ -4830,7 +6145,7 @@ def _promoted_verified_fact_text(
             (
                 f"{fact_sentence}{suffix} {next_step}"
                 if prose_model_led
-                else f"Да, сориентирую по проверенным условиям. {fact_sentence}{suffix} {next_step}"
+                else f"По проверенным условиям. {fact_sentence}{suffix} {next_step}"
             ),
             client_message=client_message,
         )
@@ -4847,7 +6162,7 @@ def _promoted_verified_fact_text(
         if prose_model_led:
             return f"{fact_sentence} Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         return (
-            f"Да, по формату есть проверенная информация. {fact_sentence} "
+            f"По формату есть проверенная информация. {fact_sentence} "
             "Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         )
     if result.topic_id in {"theme:016_program", "theme:020_enrollment", "theme:021_continuation", "theme:022_age_level_testing", "theme:023_trial_class"}:
@@ -4874,7 +6189,7 @@ def _promoted_verified_fact_text(
     if prose_model_led:
         return f"{fact_sentence} Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
     return (
-        f"Да, сориентирую по проверенной информации. {fact_sentence} "
+        f"По проверенной информации. {fact_sentence} "
         "Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
     )
 

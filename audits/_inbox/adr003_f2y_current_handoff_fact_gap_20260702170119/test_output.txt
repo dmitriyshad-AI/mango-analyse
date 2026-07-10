@@ -1,0 +1,26 @@
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_current_handoff_fact_gap.py
+
+Result:
+6 passed in 0.17s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_current_handoff_fact_gap.py tests/test_report_adr003_frame_calibration_queue.py tests/test_report_adr003_fact_gated_self_answer_readiness.py tests/test_enrich_adr003_existing_frame_proof_shadow.py tests/test_report_adr003_exact_proof_injection_shadow.py
+
+Result:
+43 passed in 3.29s
+
+Command:
+git diff --check
+
+Result:
+passed
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+Result:
+3912 passed, 5 skipped, 1 warning in 86.33s
+
+Warning:
+urllib3 NotOpenSSLWarning from local Python/LibreSSL. Not related to this change.

@@ -79,6 +79,10 @@ from mango_mvp.channels.draft_prompt_builder import (
     safe_schedule_template,
     should_force_manager_only,
 )
+from mango_mvp.knowledge_base.product_existence_axes_catalog import (
+    build_product_existence_axes_catalog,
+    verify_product_format_exists,
+)
 from mango_mvp.insights.sanitizers import sanitize_answer
 from mango_mvp.insights.phase2_detectors import detect_anxiety, detect_objection
 from mango_mvp.insights.tone_score import score_tone
@@ -120,6 +124,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
+    TONE_CLOSE_FRAME_VETO_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
@@ -165,6 +170,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _pilot_profile_overrides,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
+    _seats_default_open_allowlisted_result,
 )
 
 from mango_mvp.channels.subscription_llm_parts.contracts import (
@@ -193,6 +199,11 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 )
 
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+    finalize_reading_trace_metadata,
+    reading_apply_class_enabled,
+    reading_class_enabled,
+)
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_GOLD_REAL_PACK_ENV,
@@ -210,7 +221,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     PRESALE_PROMPT_CHILD_NAME_KEY_RE,
     PRESALE_PROMPT_PARENT_NAME_KEY_RE,
     DIRECT_PATH_CATEGORY_ALIASES,
-    DIRECT_PATH_GOLD_TOPIC_KEYWORDS,
     _PARTIAL_PHONE_CONTEXT_RE,
     _CLIENT_CHILD_IDENTITY_PROMPT_RE,
     _CLIENT_PARENT_IDENTITY_PROMPT_RE,
@@ -269,10 +279,17 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_metadata,
     _direct_path_merge_metadata,
     apply_assumed_scope_guard,
+    apply_direct_path_scope_overclaim_guard,
     apply_direct_keyword_fallback_reask_layer,
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
+    _semantic_frame_posthoc_shadow_enabled,
+    _semantic_frame_decision_shadow_enabled,
+    _semantic_frame_manager_action_gate_enabled,
+    _semantic_frame_self_answer_shadow_enabled,
+    _semantic_frame_existence_proof_shadow_enabled,
+    _semantic_frame_proof_reconciliation_shadow_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
@@ -342,7 +359,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     MULTICHILD_DISCOUNT_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_GENERIC_SAFE_TEXT,
-    OFF_TOPIC_INPUT_RE,
     OFF_TOPIC_UNPK_SAFE_TEXT,
     OLD_TERM_SAFE_TEXT,
     PAYMENT_CONFIRMATION_RE,
@@ -567,7 +583,10 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     apply_high_risk_content_guards,
     apply_input_policy_guards,
     apply_known_context_redundant_question_guard,
+    apply_live_status_read_plan_trace,
     apply_payment_confirmation_guard,
+    apply_reask_read_trace,
+    apply_roles_read_trace,
     apply_subscription_policy_guards,
     apply_taxonomy_topic_guard,
     apply_unstated_subject_guard,
@@ -588,8 +607,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
     A_PROACTIVE_ENV,
     A_RICH_FORMAT_ENV,
-    COMPLAINT_APOLOGY_RE,
-    COMPLAINT_DETAIL_COLLECT_RE,
     CONTENT_DELIVERY_ACTION_RE,
     COSMETIC_OPENING_RE,
     DERIVED_PRODUCT_NUMBER_RE,
@@ -599,13 +616,11 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     DRAFT_PLACEHOLDER_RE,
     FOLLOWUP_DEADLINE_RE,
     GATE_BLOCKING_CODES,
-    HIGH_RISK_INPUT_PATTERNS,
     HUMANITY_BLOCK_A_ROUTE_FIX_ENV,
     HUMANITY_X2_REWRITE_ENV,
     HUMANITY_X2_REWRITE_MODEL_ENV,
     HUMANITY_X2_REWRITE_MODE_ENV,
     HUMANITY_X2_REWRITE_REASONING_ENV,
-    LEGAL_CONTEXT_INPUT_RE,
     LLM_RETRIEVE_MODEL_ENV,
     LLM_RETRIEVE_REASONING_ENV,
     LLM_RETRIEVE_TIMEOUT_ENV,
@@ -634,7 +649,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     PRESALE_SOURCE_ID_TOKEN_PATTERN,
     PRESALE_SOURCE_ID_TOKEN_RE,
     PRICE_FIX_PROCESS_SAFE_TEXT,
-    REFUND_FORBIDDEN_DETAIL_RE,
     SCHEDULE_ASSUMPTION_RE,
     SEMANTIC_DIAGNOSIS_GUARD_ENV,
     SEMANTIC_DIAGNOSIS_MODEL_ENV,
@@ -649,7 +663,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     UNSUPPORTED_FOLLOWUP_DEADLINE_SAFE_TEXT,
     UNSUPPORTED_OFFLINE_VISIT_INVITATION_SAFE_TEXT,
     UNSUPPORTED_SCHEDULE_ASSUMPTION_SAFE_TEXT,
-    ZERO_COLLECT_DRAFT_RE,
     _A2_EMOJI_RE,
     _A2_FAKE_DONE_RE,
     _A2_SERIOUS_TAGS,
@@ -969,6 +982,7 @@ class SubscriptionLlmDraftProvider:
             )
             reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
             closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
+            closed = _apply_tone_close_frame_veto(reasked, closed, context=context)
             scrubbed = scrub_direct_path_p0_text(
                 closed,
                 context=context,
@@ -976,7 +990,19 @@ class SubscriptionLlmDraftProvider:
             )
             guarded = apply_bot_safe_memory_step_guard(scrubbed, context=context)
             guarded = apply_unconfirmed_contact_data_claim_guard(guarded, client_message=client_message, context=context)
-            return apply_no_memory_step_frame_guard(guarded, context=context)
+            framed = self._apply_direct_path_semantic_frame_posthoc_shadow(
+                apply_no_memory_step_frame_guard(guarded, context=context),
+                client_message=client_message,
+                context=context,
+            )
+            proof_shadowed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
+            reconciled_shadowed = apply_semantic_frame_proof_reconciliation_shadow(proof_shadowed, context=context)
+            manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
+            self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
+            decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
+            reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
+            roles_traced = apply_roles_read_trace(reask_traced, context=context)
+            return apply_semantic_reading_trace_finalize(roles_traced, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -1199,8 +1225,20 @@ class SubscriptionLlmDraftProvider:
                 context=context,
                 client_message=client_message,
             )
-            if _intent_model_led_enabled(context) and _direct_path_model_intent_meta(result):
+            conversation_plan_guard_enabled = (
+                (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result))
+                or reading_class_enabled(context, "intent_actions")
+                or reading_apply_class_enabled(context, "route_templates/autonomy_matrix")
+                or reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan")
+            )
+            if conversation_plan_guard_enabled:
                 result = apply_conversation_intent_plan_guard(
+                    result,
+                    client_message=client_message,
+                    context=context,
+                )
+            else:
+                result = apply_live_status_read_plan_trace(
                     result,
                     client_message=client_message,
                     context=context,
@@ -1211,6 +1249,11 @@ class SubscriptionLlmDraftProvider:
                 context=context,
             )
             result = apply_assumed_scope_guard(result, context=context)
+            result = apply_direct_path_scope_overclaim_guard(
+                result,
+                context=context,
+                fact_pack=fact_pack,
+            )
 
         semantic_checked = apply_semantic_output_verifier(
             result,
@@ -1893,6 +1936,57 @@ class SubscriptionLlmDraftProvider:
             return ""
         return _extract_humanity_x2_text(raw or proc.stdout or proc.stderr or "")
 
+    def _direct_path_semantic_frame_shadow_runner(self, prompt: str) -> str:
+        model = str(os.getenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_MODEL") or self.model).strip() or self.model
+        reasoning = str(os.getenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_REASONING") or "medium").strip() or "medium"
+        return self._run_prompt_text(
+            prompt,
+            prefix="mango_semantic_frame_posthoc_",
+            suffix=".json",
+            model=model,
+            reasoning_effort=reasoning,
+            timeout_sec=min(self.timeout_sec, 45),
+        )
+
+    def _apply_direct_path_semantic_frame_posthoc_shadow(
+        self,
+        result: SubscriptionDraftResult,
+        *,
+        client_message: str,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> SubscriptionDraftResult:
+        if not _semantic_frame_posthoc_shadow_enabled(context):
+            return result
+        metadata = dict(result.metadata)
+        if isinstance(metadata.get("semantic_frame"), Mapping) or isinstance(metadata.get("semantic_frame_shadow"), Mapping):
+            return result
+
+        prompt = build_direct_path_semantic_frame_posthoc_prompt(result, client_message=client_message, context=context)
+        status = {"attempted": True, "status": "attempted", "mode": "posthoc"}
+        try:
+            raw = self._direct_path_semantic_frame_shadow_runner(prompt)
+            payload = extract_json_object(raw)
+            if "semantic_frame" not in payload and "semanticFrame" not in payload and "semantic_frame_shadow" not in payload:
+                payload = {"semantic_frame": payload}
+            frame = _direct_path_semantic_frame_from_payload(payload, source="posthoc")
+        except Exception as exc:  # noqa: BLE001 - shadow telemetry must be fail-soft.
+            frame = {}
+            status.update({"status": "provider_error", "error": str(exc)[:240]})
+        if not frame:
+            metadata["semantic_frame_posthoc_shadow"] = status if status.get("status") == "provider_error" else {**status, "status": "empty_frame"}
+            return replace(result, metadata=metadata)
+
+        status["status"] = "ok"
+        metadata["semantic_frame"] = frame
+        metadata["semantic_frame_shadow"] = frame
+        metadata["semantic_frame_posthoc_shadow"] = status
+        direct = dict(metadata.get("direct_path") or {})
+        direct["semantic_frame"] = dict(frame)
+        direct["semantic_frame_shadow"] = dict(frame)
+        direct["semantic_frame_posthoc_shadow"] = dict(status)
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)
 
@@ -2002,6 +2096,7 @@ class SubscriptionLlmDraftProvider:
             payload,
             raw_response=raw,
             include_semantic_frame_shadow='"semantic_frame"' in prompt_text and "SemanticFrame SHADOW" in prompt_text,
+            include_dialog_summary='"dialog_summary"' in prompt_text and "ПРЕДЫДУЩАЯ СВОДКА" in prompt_text,
         )
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
 
@@ -2153,7 +2248,7 @@ _DIRECT_PATH_MODEL_P0_LEGACY_KIND = {
 }
 
 
-_DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "other"})
+_DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "off_topic", "other"})
 
 
 def _direct_path_model_intent_value(value: Any) -> str:
@@ -2164,6 +2259,8 @@ def _direct_path_model_intent_value(value: Any) -> str:
         intent = "address"
     if intent in {"price_lock", "current_terms", "fix_price"}:
         intent = "price_fix"
+    if intent in {"out_of_scope", "offtopic", "not_related", "irrelevant"}:
+        intent = "off_topic"
     if intent in {"general", "none", "unknown", "not_target"}:
         intent = "other"
     return intent if intent in _DIRECT_PATH_MODEL_INTENTS else ""
@@ -2233,6 +2330,17 @@ def _direct_path_answerability_value(value: Any) -> str:
     return text[:40] if text else ""
 
 
+def _direct_path_semantic_frame_answerability_value(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if text in {"answer_self", "self", "can_answer", "yes", "да", "true", "1"}:
+        return "answer_self"
+    if text in {"manager_only", "manager", "handoff", "no", "нет", "false", "0"}:
+        return "manager_only"
+    if text in {"uncertain", "unknown", "не_уверен", "не уверен", "непонятно"}:
+        return "uncertain"
+    return text[:40] if text else ""
+
+
 def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     can_answer_self = _direct_path_answerability_value(payload.get("can_answer_self"))
     missing_facts = _clean_list(payload.get("self_missing_facts"), max_items=12, max_chars=120)
@@ -2249,6 +2357,9 @@ def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> 
     }
 
 
+SEMANTIC_FRAME_SCHEMA_VERSION = "semantic_frame_v1_2026_07_01"
+SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION = "semantic_frame_shadow_v1_2026_06_30"
+
 _SEMANTIC_FRAME_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
 _SEMANTIC_FRAME_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
 _SEMANTIC_FRAME_LONG_ID_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
@@ -2264,7 +2375,7 @@ def _direct_path_semantic_frame_safe_text(value: Any, *, limit: int) -> str:
     return text[:limit]
 
 
-def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any], *, source: str = "") -> dict[str, Any]:
     raw = payload.get("semantic_frame")
     if not isinstance(raw, Mapping):
         raw = payload.get("semanticFrame")
@@ -2285,15 +2396,24 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
         }
     else:
         product = {"raw_text": _direct_path_semantic_frame_safe_text(requested_product, limit=160)}
+    mode = str(raw.get("mode") or "shadow").strip().casefold()
+    if mode not in {"shadow", "active"}:
+        mode = "shadow"
+    frame_source = str(source or raw.get("source") or "").strip().casefold()
+    if frame_source not in {"inline", "posthoc"}:
+        frame_source = ""
     frame = {
-        "schema_version": "semantic_frame_shadow_v1_2026_06_30",
+        "schema_version": SEMANTIC_FRAME_SCHEMA_VERSION,
+        "legacy_schema_version": SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION,
+        "mode": mode,
+        "source": frame_source,
         "intent": _direct_path_semantic_frame_safe_text(raw.get("intent"), limit=120),
         "risk_class": _direct_path_semantic_frame_safe_text(raw.get("risk_class"), limit=80),
         "deal_stage": _direct_path_semantic_frame_safe_text(raw.get("deal_stage"), limit=80),
         "payment_readiness": _direct_path_semantic_frame_safe_text(raw.get("payment_readiness"), limit=80),
         "requested_product": product,
         "requested_action": _direct_path_semantic_frame_safe_text(raw.get("requested_action"), limit=120),
-        "answerability": _direct_path_answerability_value(raw.get("answerability")),
+        "answerability": _direct_path_semantic_frame_answerability_value(raw.get("answerability")),
         "must_handoff": _direct_path_payload_bool(raw.get("must_handoff")),
         "evidence": [
             safe_item
@@ -2318,6 +2438,65 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
     ):
         return {}
     return frame
+
+
+def build_direct_path_semantic_frame_posthoc_prompt(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    planner = metadata.get("conversation_intent_plan") if isinstance(metadata.get("conversation_intent_plan"), Mapping) else {}
+    recent = list(_direct_path_recent_messages(context, limit=8))
+    payload = {
+        "active_brand": _active_brand(context),
+        "client_message": _direct_path_semantic_frame_safe_text(client_message, limit=900),
+        "final_route": result.route,
+        "final_draft_text": _direct_path_semantic_frame_safe_text(result.draft_text, limit=1400),
+        "safety_flags": list(result.safety_flags)[:30],
+        "manager_checklist": list(result.manager_checklist)[:12],
+        "recent_messages": [_direct_path_semantic_frame_safe_text(item, limit=360) for item in recent[-8:]],
+        "direct_path": {
+            "model_p0": direct.get("model_p0") or metadata.get("direct_path_model_p0") or {},
+            "model_intent": direct.get("model_intent") or metadata.get("direct_path_model_intent") or {},
+            "action_proposal": direct.get("action_proposal") or metadata.get("action_proposal") or {},
+            "reason_class": metadata.get("reason_class") or direct.get("reason_class") or "",
+        },
+        "conversation_intent_plan": planner,
+    }
+    return (
+        "Ты заполняешь только телеметрию SemanticFrame для уже готового черновика Telegram-бота.\n"
+        "Нельзя переписывать ответ, менять route, менять safety_flags или предлагать клиентский текст.\n"
+        "Оцени смысл ситуации по текущей реплике, истории и уже готовому результату.\n"
+        "Верни только JSON с одним ключом semantic_frame.\n\n"
+        "Ключевая граница: справочная информация != действие менеджера.\n"
+        "Сначала классифицируй смысл запроса клиента отдельно от текущего final_route/final_draft_text. final_route=draft_for_manager/manager_only и текст «менеджер проверит» не являются доказательством, что сам запрос требует менеджера.\n"
+        "Ставь must_handoff=false и answerability=answer_self только когда ВЕСЬ запрос является безопасной справкой и есть проверенная client-safe опора в final_draft_text или переданных direct_path/conversation metadata: публичная цена без индивидуальных условий, адрес, формат, платформа, программа, возраст/класс, общий порядок записи, общий порядок тестирования, пауза клиента «подумаем/вернёмся позже» без слов про оплату/место, благодарность/подтверждение без просьбы что-то оформить.\n"
+        "Ставь must_handoff=true и answerability=manager_only, если хотя бы часть запроса требует человека: P0/жалоба/юридическое/возврат-претензия, подтверждение оплаты или чек, ссылка/реквизиты/альтернативная оплата, сроки или порядок оплаты («оплачу позже/сегодня/завтра»), рассрочка, предоплата, частичный платёж, фиксация цены, удержание/вычет/списание/отработка/возвратные условия, договорные документы, фактическая запись/бронь/лист ожидания/закрепление места, живое наличие мест или подходящей группы, конкретное расписание/доступ «завтра/после оплаты не видно», просьба администратора связаться, персональный подбор преподавателя/группы, индивидуальная ситуация ребёнка после урока/по болезни/по документам, или отсутствует проверенный факт и безопасно ответить нельзя.\n"
+        "Не путай стабильную справку о существовании продукта с живым наличием мест. Вопросы «есть ли курс/лагерь/формат для 5 класса», «подходит ли ребёнку после N класса», «есть онлайн/очно?» без просьбы записать, забронировать или проверить места — это requested_action=answer_question, risk_class=safe, answerability=answer_self при наличии проверенного факта. Вопросы «есть места», «можно попасть/забронировать/записаться сейчас», «есть подходящая группа» — это check_availability/manager_only.\n"
+        "Не копируй осторожность из final_route: draft_for_manager может быть просто режимом черновика, а не доказательством, что must_handoff=true.\n"
+        "Не называй known factual answer missing_facts только потому, что есть manager_approval_required/no_auto_send или осторожный final_route: если в final_draft_text или переданных metadata есть конкретная проверенная опора на справочный вопрос, risk_class=safe. risk_class=missing_facts ставь только когда безопасная справка не имеет проверенной опоры ни в final_draft_text, ни в metadata.\n"
+        "В evidence кратко укажи, где видишь опору или нехватку опоры: final_draft_text/direct_path/conversation_intent_plan/recent_messages. Не придумывай факты и не вставляй персональные данные.\n"
+        "Поле answerability верни строго одним из: answer_self, manager_only, uncertain. Не используй yes/no.\n"
+        "Поле requested_action верни строго одним из перечисленных enum; для благодарности/паузы/получили ссылку используй answer_question, если отдельного действия нет.\n\n"
+        "Схема semantic_frame:\n"
+        "{\n"
+        '  "intent": "главный смысл запроса",\n'
+        '  "risk_class": "safe|p0|manager_action|missing_facts|unknown",\n'
+        '  "deal_stage": "cold|interest|qualification|offer|closing|post_payment|support|unknown",\n'
+        '  "payment_readiness": "none|asking_price|considering|ready_to_pay|paid|dispute|unknown",\n'
+        '  "requested_product": {"brand": "", "subject": "", "grade": "", "format": "", "venue": "", "program_kind": "", "raw_text": ""},\n'
+        '  "requested_action": "answer_question|check_availability|enroll|send_materials|send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown",\n'
+        '  "answerability": "answer_self|manager_only|uncertain",\n'
+        '  "must_handoff": false,\n'
+        '  "evidence": ["короткие неперсональные причины без телефонов, email и ФИО"],\n'
+        '  "confidence": 0.0\n'
+        "}\n\n"
+        "Данные для классификации:\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+    )
 
 
 def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
@@ -2423,12 +2602,959 @@ def _apply_direct_path_model_p0_route(
     )
 
 
+SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION = "semantic_frame_decision_shadow_v1_2026_07_01"
+SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION = "semantic_frame_manager_action_gate_v1_2026_07_01"
+SEMANTIC_FRAME_SELF_ANSWER_SHADOW_SCHEMA_VERSION = "semantic_frame_self_answer_shadow_v1_2026_07_02"
+SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_SCHEMA_VERSION = "semantic_frame_existence_proof_shadow_v1_2026_07_02"
+SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_SCHEMA_VERSION = "semantic_frame_proof_reconciliation_shadow_v1_2026_07_02"
+
+_SEMANTIC_FRAME_P0_FLAGS = {
+    "p0",
+    "refund",
+    "refund_claim",
+    "payment_dispute",
+    "complaint",
+    "legal",
+    "legal_threat",
+    "high_risk",
+    "p0_deferral",
+    "zero_collect_required",
+    "direct_path_model_p0_refund",
+    "direct_path_model_p0_payment_dispute",
+    "direct_path_model_p0_complaint",
+    "direct_path_model_p0_legal_threat",
+    "direct_path_model_p0_contract_dispute",
+    "direct_path_model_p0_cancellation_service_request",
+    "direct_path_model_p0_paid_operation_context",
+}
+
+_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST = {
+    "answer_question": "answer_only",
+    "check_availability": "capture_lead",
+    "enroll": "capture_lead",
+    "send_materials": "send_materials",
+    "send_payment_link": "send_payment_link",
+    "send_document": "send_document",
+    "refund_or_cancel": "handoff_manager",
+    "handoff_manager": "handoff_manager",
+}
+
+_SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES = {"offer", "closing"}
+_SEMANTIC_FRAME_CLOSE_VETO_PAYMENT = {"asking_price", "considering", "ready_to_pay"}
+_SEMANTIC_FRAME_CLOSE_VETO_ACTIONS = {
+    "check_availability",
+    "enroll",
+    "send_materials",
+    "send_payment_link",
+    "send_document",
+}
+
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE = 0.8
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES = {"closing", "post_payment", "support"}
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES = {"paid", "dispute"}
+
+_SEMANTIC_FRAME_SELF_ANSWER_CONFIDENCE = 0.9
+_SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_FLAGS = {
+    "authoritative_output_gate_blocked",
+    "autonomy_default_cautious_unverified_fact",
+    "autonomy_default_cautious_live_status_missing",
+    "future_price_handoff_applied",
+    "price_future_manager_only",
+    "presale_refund_policy_manager_check",
+    "direct_path_preblocked",
+}
+_SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_SUBSTRINGS = (
+    "manager_only",
+    "payment_dispute",
+    "refund_claim",
+    "complaint",
+    "legal",
+    "zero_collect",
+    "output_sanitizer:",
+    "client_name_echo",
+    "internal_client_placeholder",
+)
+_SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT = {"ready_to_pay", "paid", "dispute"}
+_SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES = {"post_payment", "support"}
+
+
+def _semantic_frame_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "y", "да", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "нет", "off"}:
+            return False
+    return None
+
+
+def _semantic_frame_value(frame: Mapping[str, Any], key: str) -> str:
+    return str(frame.get(key) or "").strip().casefold()
+
+
+def _semantic_frame_from_result(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    for key in ("semantic_frame", "semantic_frame_shadow"):
+        frame = metadata.get(key)
+        if isinstance(frame, Mapping):
+            return frame
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        for key in ("semantic_frame", "semantic_frame_shadow"):
+            frame = direct.get(key)
+            if isinstance(frame, Mapping):
+                return frame
+    return {}
+
+
+def _semantic_frame_posthoc_ok(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    status = metadata.get("semantic_frame_posthoc_shadow")
+    if isinstance(status, Mapping) and str(status.get("status") or "").strip() == "ok":
+        return True
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        status = direct.get("semantic_frame_posthoc_shadow")
+        return isinstance(status, Mapping) and str(status.get("status") or "").strip() == "ok"
+    return False
+
+
+def _semantic_frame_actual_p0(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_model_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_model_p0, Mapping) and bool(direct_model_p0.get("is_p0")):
+        return True
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping) and isinstance(direct.get("model_p0"), Mapping):
+        return True
+    flags = {str(flag or "").strip() for flag in result.safety_flags if str(flag or "").strip()}
+    if flags.intersection(_SEMANTIC_FRAME_P0_FLAGS):
+        return True
+    return str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"} and result.route == "manager_only"
+
+
+def _semantic_frame_alignment(expected: Optional[bool], actual: bool) -> str:
+    if expected is None:
+        return "unknown"
+    return "match" if bool(expected) == bool(actual) else "mismatch"
+
+
+def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]:
+    answerability = _semantic_frame_value(frame, "answerability")
+    risk_class = _semantic_frame_value(frame, "risk_class")
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    if must_handoff is True or answerability == "manager_only" or risk_class in {"p0", "manager_action"}:
+        return True
+    if answerability == "answer_self" or risk_class == "safe":
+        return False
+    return None
+
+
+def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
+    if _clamp_float(frame.get("confidence", 0.0)) < 0.6:
+        return False
+    if _semantic_frame_value(frame, "risk_class") == "p0":
+        return False
+    if _semantic_frame_bool(frame.get("must_handoff")) is True:
+        return True
+    return (
+        _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
+        or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
+        or _semantic_frame_value(frame, "requested_action") in _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS
+    )
+
+
+def _tone_close_frame_veto_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        TONE_CLOSE_FRAME_VETO_ENV,
+        aliases=("tone_close_frame_veto", "tone_close_frame_veto_enabled"),
+    )
+    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, TONE_CLOSE_FRAME_VETO_ENV)
+
+
+def _apply_tone_close_frame_veto(
+    before_close: SubscriptionDraftResult,
+    after_close: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _tone_close_frame_veto_enabled(context):
+        return after_close
+    close_detect = after_close.metadata.get("close_detect") if isinstance(after_close.metadata, Mapping) else {}
+    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() not in {
+        "fired",
+        "suppressed_handoff",
+    }:
+        return after_close
+    frame = _semantic_frame_from_result(before_close) or _semantic_frame_from_result(after_close)
+    if not frame or not _semantic_frame_close_veto_candidate(frame):
+        return after_close
+
+    trace = {
+        "enabled": True,
+        "status": "applied",
+        "reason": "semantic_frame_hot_lead_close_veto",
+        "close_status_before_veto": str(close_detect.get("status") or "").strip(),
+        "close_step": str(close_detect.get("step") or "").strip(),
+        "route_before_close": before_close.route,
+        "route_after_close": after_close.route,
+        "frame": {
+            "confidence": _clamp_float(frame.get("confidence", 0.0)),
+            "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+            "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+            "requested_action": _semantic_frame_value(frame, "requested_action"),
+            "answerability": _semantic_frame_value(frame, "answerability"),
+        },
+    }
+    metadata = dict(before_close.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    metadata["tone_close_frame_veto"] = trace
+    direct["tone_close_frame_veto"] = trace
+    metadata["direct_path"] = direct
+    return replace(
+        before_close,
+        safety_flags=tuple(dict.fromkeys([*before_close.safety_flags, "tone_close_frame_veto"])),
+        metadata=metadata,
+    )
+
+
+def _semantic_frame_action_alignment(frame: Mapping[str, Any], actual_action: str) -> dict[str, str]:
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    expected_action = _SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST.get(requested_action, "")
+    if not expected_action or not actual_action:
+        alignment = "unknown"
+    elif expected_action == actual_action:
+        alignment = "match"
+    else:
+        alignment = "mismatch"
+    return {
+        "requested_action": requested_action,
+        "expected_deal_action": expected_action,
+        "actual_deal_action": actual_action,
+        "alignment": alignment,
+    }
+
+
+def _semantic_frame_requested_product_brand(frame: Mapping[str, Any]) -> str:
+    product = frame.get("requested_product")
+    if isinstance(product, Mapping):
+        raw = str(product.get("brand") or "").strip().casefold()
+        if raw in {"фотон", "foton"}:
+            return "foton"
+        if raw in {"унпк", "унпк мфти", "unpk"}:
+            return "unpk"
+        return raw
+    return ""
+
+
+def _semantic_frame_self_class(frame: Mapping[str, Any], direct: Mapping[str, Any]) -> str:
+    selected = str(direct.get("selected_category") or "").strip().casefold()
+    intent = _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=160).casefold()
+    haystack = f"{selected} {intent}"
+    if "price" in haystack or "pricing" in haystack or "стоим" in haystack or "цен" in haystack:
+        return "price"
+    if "schedule" in haystack or "распис" in haystack or "дат" in haystack:
+        return "schedule"
+    if "address" in haystack or "адрес" in haystack or "площад" in haystack:
+        return "address"
+    if "format" in haystack or "online" in haystack or "онлайн" in haystack or "очно" in haystack:
+        return "format"
+    if "platform" in haystack or "платформ" in haystack:
+        return "platform"
+    if "course" in haystack or "program" in haystack or "курс" in haystack or "программ" in haystack:
+        return "program"
+    if "thanks" in haystack or "gratitude" in haystack or "спасибо" in haystack:
+        return "safe_close"
+    return selected or "safe_reference"
+
+
+def _semantic_frame_truthy_text(value: Any) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return normalized in {"1", "true", "yes", "y", "да", "on"}
+
+
+def _semantic_frame_existence_proof_shadow_trace(
+    frame: Mapping[str, Any],
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    active_brand = _active_brand(context)
+    base: dict[str, Any] = {
+        "schema_version": SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "route_text_shadow_only": True,
+        "status": "blocked",
+        "reason": "",
+        "exact_fact_keys": [],
+        "fact_metadata": {},
+    }
+    if not frame:
+        return {**base, "reason": "no_frame"}
+    if _semantic_frame_value(frame, "requested_action") != "answer_question":
+        return {**base, "reason": "requested_action_not_answer_question"}
+    if _semantic_frame_bool(frame.get("must_handoff")) is True and _semantic_frame_value(frame, "risk_class") in {
+        "p0",
+        "manager_action",
+    }:
+        return {**base, "reason": "protected_handoff_frame"}
+    if _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
+        return {**base, "reason": "payment_readiness_blocked"}
+    if _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:
+        return {**base, "reason": "deal_stage_blocked"}
+
+    requested = frame.get("requested_product") if isinstance(frame.get("requested_product"), Mapping) else {}
+    requested_brand = _semantic_frame_requested_product_brand(frame)
+    brand = requested_brand if requested_brand in {"foton", "unpk"} else active_brand
+    if brand not in {"foton", "unpk"}:
+        return {**base, "reason": "unknown_brand"}
+    if requested_brand and requested_brand != brand:
+        return {**base, "reason": "brand_mismatch", "brand": brand, "requested_brand": requested_brand}
+
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    records = [
+        fact
+        for fact in _direct_path_snapshot_facts(snapshot)
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=brand)
+    ]
+    if not records:
+        return {**base, "reason": "no_client_safe_snapshot_facts", "brand": brand}
+
+    proof = verify_product_format_exists(
+        build_product_existence_axes_catalog(records),
+        brand=brand,
+        grade=str(requested.get("grade") or ""),
+        subject=str(requested.get("subject") or ""),
+        format=str(requested.get("format") or ""),
+        program_kind=str(requested.get("program_kind") or ""),
+        product_family=str(requested.get("raw_text") or ""),
+    )
+    status = str(proof.get("status") or "").strip()
+    entry = proof.get("entry") if isinstance(proof.get("entry"), Mapping) else {}
+    if status not in {"exists", "not_offered"} or not entry:
+        return {
+            **base,
+            "reason": str(proof.get("reason") or status or "no_exact_product_existence_fact"),
+            "brand": brand,
+            "proof_status": status,
+            "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        }
+
+    fact_key = str(entry.get("source_fact_key") or "").strip()
+    valid_until = str(entry.get("valid_until") or "").strip()
+    if not fact_key:
+        return {**base, "reason": "empty_source_fact_key", "brand": brand, "proof_status": status}
+    fact_metadata = {
+        fact_key: {
+            "brand": brand,
+            "client_safe": "true",
+            "valid_until": valid_until,
+            "source": "semantic_frame_existence_proof_shadow",
+            "proof_status": status,
+            "fact_type": str(entry.get("source_fact_type") or ""),
+            "product_family": str(entry.get("product_family") or ""),
+            "program_kind": str(entry.get("program_kind") or ""),
+            "format": str(entry.get("format") or ""),
+        }
+    }
+    return {
+        **base,
+        "status": status,
+        "reason": str(proof.get("reason") or "exact_product_existence_fact"),
+        "brand": brand,
+        "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        "exact_fact_keys": [fact_key],
+        "fact_metadata": fact_metadata,
+        "source_fact_key": fact_key,
+        "valid_until": valid_until,
+    }
+
+
+def _semantic_frame_fresh_client_safe_fact_trace(
+    direct: Mapping[str, Any],
+    *,
+    active_brand: str,
+) -> dict[str, Any]:
+    exact_keys = [str(key or "").strip() for key in (direct.get("wide_fact_exact_keys") or ()) if str(key or "").strip()]
+    fact_meta = dict(direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {})
+    proof_shadow = direct.get("semantic_frame_existence_proof_shadow")
+    proof_keys: list[str] = []
+    if isinstance(proof_shadow, Mapping) and str(proof_shadow.get("status") or "") in {"exists", "not_offered"}:
+        proof_keys = [
+            str(key or "").strip()
+            for key in (proof_shadow.get("exact_fact_keys") or ())
+            if str(key or "").strip()
+        ]
+        proof_meta = proof_shadow.get("fact_metadata") if isinstance(proof_shadow.get("fact_metadata"), Mapping) else {}
+        for key, value in proof_meta.items():
+            if str(key or "").strip() and isinstance(value, Mapping):
+                fact_meta[str(key)] = dict(value)
+        exact_keys = list(dict.fromkeys([*exact_keys, *proof_keys]))
+    checked: list[dict[str, str]] = []
+    fresh_checked: list[dict[str, str]] = []
+    base = {
+        "exact_fact_count": len(exact_keys),
+        "existence_proof_shadow_count": len(proof_keys),
+        "checked_count": 0,
+        "fresh_client_safe_count": 0,
+        "all_exact_facts_fresh_client_safe": False,
+    }
+    if not exact_keys:
+        return {"ok": False, "reason": "no_exact_fact_keys", "checked": checked, **base}
+    for key in exact_keys:
+        raw = fact_meta.get(key) if isinstance(fact_meta, Mapping) else None
+        meta = raw if isinstance(raw, Mapping) else {}
+        brand = str(meta.get("brand") or "").strip().casefold()
+        valid_until = str(meta.get("valid_until") or "").strip()
+        client_safe = _semantic_frame_truthy_text(meta.get("client_safe"))
+        valid_until_ok = bool(valid_until) and _direct_path_valid_until_ok(valid_until)
+        checked.append(
+            {
+                "fact_key": key,
+                "brand": brand,
+                "client_safe": "true" if client_safe else "false",
+                "valid_until": valid_until,
+                "valid_until_ok": "true" if valid_until_ok else "false",
+                "source": str(meta.get("source") or "wide_fact_pack"),
+            }
+        )
+        if brand == active_brand and client_safe and valid_until_ok:
+            fresh_checked.append(checked[-1])
+    base = {
+        **base,
+        "checked_count": len(checked),
+        "fresh_client_safe_count": len(fresh_checked),
+        "all_exact_facts_fresh_client_safe": bool(exact_keys) and len(fresh_checked) == len(exact_keys),
+        "checked_truncated": len(checked) > 16,
+    }
+    checked_trace = checked[:16]
+    if fresh_checked:
+        first = fresh_checked[0]
+        return {
+            "ok": True,
+            "reason": "fresh_client_safe_exact_fact",
+            "fact_key": first.get("fact_key", ""),
+            "valid_until": first.get("valid_until", ""),
+            "checked": checked_trace,
+            **base,
+        }
+    return {"ok": False, "reason": "no_fresh_client_safe_exact_fact", "checked": checked_trace, **base}
+
+
+def _semantic_frame_self_answer_blocking_flags(result: SubscriptionDraftResult) -> tuple[str, ...]:
+    flags = [str(flag or "").strip() for flag in result.safety_flags if str(flag or "").strip()]
+    blocked: list[str] = []
+    for flag in flags:
+        folded = flag.casefold()
+        if flag in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_FLAGS:
+            blocked.append(flag)
+            continue
+        if any(marker in folded for marker in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_SUBSTRINGS):
+            blocked.append(flag)
+    return tuple(dict.fromkeys(blocked))
+
+
+def _semantic_frame_self_answer_shadow_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    frame = _semantic_frame_from_result(result)
+    route_before = result.route
+    base = {
+        "schema_version": SEMANTIC_FRAME_SELF_ANSWER_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "threshold": _SEMANTIC_FRAME_SELF_ANSWER_CONFIDENCE,
+        "route_before": route_before,
+        "route_after_if_active": route_before,
+    }
+    if not frame:
+        return {**base, "status": "blocked", "reason": "no_frame"}
+    frame_schema = str(frame.get("schema_version") or "").strip()
+    confidence = _clamp_float(frame.get("confidence", 0.0))
+    active_brand = _active_brand(context)
+    product_brand = _semantic_frame_requested_product_brand(frame)
+    blocking_flags = _semantic_frame_self_answer_blocking_flags(result)
+    freshness = _semantic_frame_fresh_client_safe_fact_trace(direct, active_brand=active_brand)
+    frame_trace = {
+        "schema_version": frame_schema,
+        "confidence": confidence,
+        "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+        "risk_class": _semantic_frame_value(frame, "risk_class"),
+        "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+        "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+        "requested_action": _semantic_frame_value(frame, "requested_action"),
+        "answerability": _semantic_frame_value(frame, "answerability"),
+        "must_handoff": _semantic_frame_bool(frame.get("must_handoff")),
+    }
+    trace = {
+        **base,
+        "self_class": _semantic_frame_self_class(frame, direct),
+        "active_brand": active_brand,
+        "frame": frame_trace,
+        "guards": {
+            "posthoc_ok": _semantic_frame_posthoc_ok(result),
+            "actual_p0": _semantic_frame_actual_p0(result),
+            "blocking_flags": list(blocking_flags),
+            "has_missing_facts": bool(result.missing_facts),
+            "has_forbidden_promises": bool(result.forbidden_promises_detected),
+            "freshness": freshness,
+        },
+    }
+
+    reason = ""
+    if frame_schema != SEMANTIC_FRAME_SCHEMA_VERSION:
+        reason = "unsupported_frame_schema"
+    elif not _semantic_frame_posthoc_ok(result):
+        reason = "frame_not_posthoc"
+    elif _semantic_frame_actual_p0(result):
+        reason = "protected_p0"
+    elif route_before != "draft_for_manager":
+        reason = "route_not_draft_for_manager"
+    elif active_brand not in {"foton", "unpk"}:
+        reason = "unknown_active_brand"
+    elif product_brand and product_brand not in {active_brand, "unknown"}:
+        reason = "frame_brand_mismatch"
+    elif confidence < _SEMANTIC_FRAME_SELF_ANSWER_CONFIDENCE:
+        reason = "low_confidence"
+    elif _semantic_frame_value(frame, "risk_class") != "safe":
+        reason = "risk_class_not_safe"
+    elif _semantic_frame_value(frame, "answerability") != "answer_self":
+        reason = "answerability_not_self"
+    elif _semantic_frame_bool(frame.get("must_handoff")) is not False:
+        reason = "must_handoff_not_false"
+    elif _semantic_frame_value(frame, "requested_action") != "answer_question":
+        reason = "requested_action_not_answer_question"
+    elif _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
+        reason = "payment_readiness_blocked"
+    elif _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:
+        reason = "deal_stage_blocked"
+    elif blocking_flags:
+        reason = "blocking_safety_flags"
+    elif bool(direct.get("deferral_text_in_self")):
+        reason = "deferral_text_in_self"
+    elif result.missing_facts:
+        reason = "missing_facts"
+    elif result.forbidden_promises_detected:
+        reason = "forbidden_promises"
+    elif not bool(freshness.get("ok")):
+        reason = str(freshness.get("reason") or "freshness_unknown")
+
+    if reason:
+        return {**trace, "status": "blocked", "reason": reason}
+    return {
+        **trace,
+        "status": "would_demote_to_self",
+        "reason": "safe_answer_self_fresh_fact",
+        "route_after_if_active": "bot_answer_self_for_pilot",
+    }
+
+
+def _semantic_frame_manager_action_gate_reason(frame: Mapping[str, Any]) -> tuple[bool, str]:
+    confidence = _clamp_float(frame.get("confidence", 0.0))
+    if confidence < _SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE:
+        return False, "low_confidence"
+    if _semantic_frame_value(frame, "risk_class") != "manager_action":
+        return False, "risk_class_not_manager_action"
+
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    answerability = _semantic_frame_value(frame, "answerability")
+    if must_handoff is not True and answerability != "manager_only":
+        return False, "no_strong_handoff_signal"
+
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    deal_stage = _semantic_frame_value(frame, "deal_stage")
+    payment_readiness = _semantic_frame_value(frame, "payment_readiness")
+
+    if requested_action == "check_availability" and deal_stage in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES:
+        return True, "manager_action:check_availability"
+    if requested_action in {"handoff_manager", "send_document"}:
+        return True, f"manager_action:{requested_action}"
+    if requested_action == "enroll" and (
+        deal_stage in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES
+        or payment_readiness in {"ready_to_pay", *_SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES}
+    ):
+        return True, "manager_action:enroll_closing"
+    if payment_readiness in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES and requested_action in {
+        "unknown",
+        "handoff_manager",
+        "send_document",
+    }:
+        return True, f"manager_action:payment_{payment_readiness}"
+    return False, "unsupported_manager_action"
+
+
+def apply_semantic_frame_existence_proof_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_existence_proof_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace = _semantic_frame_existence_proof_shadow_trace(_semantic_frame_from_result(result), context=context)
+    metadata["semantic_frame_existence_proof_shadow"] = trace
+    direct["semantic_frame_existence_proof_shadow"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def _semantic_frame_proof_reconciliation_shadow_trace(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    frame = _semantic_frame_from_result(result)
+    active_brand = _active_brand(context)
+    proof = direct.get("semantic_frame_existence_proof_shadow")
+    if not isinstance(proof, Mapping):
+        proof = metadata.get("semantic_frame_existence_proof_shadow")
+    if not isinstance(proof, Mapping):
+        proof = {}
+    freshness = _semantic_frame_fresh_client_safe_fact_trace(direct, active_brand=active_brand)
+    base = {
+        "schema_version": SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "route_text_shadow_only": True,
+        "active_behavior_allowed": False,
+        "status": "blocked",
+        "reason": "",
+        "route_before": result.route,
+        "route_after_if_active": result.route,
+        "active_blockers": [],
+        "result_missing_facts": [str(item) for item in result.missing_facts],
+        "proof_status": str(proof.get("status") or ""),
+        "proof_reason": str(proof.get("reason") or ""),
+        "source_fact_key": str(proof.get("source_fact_key") or ""),
+        "valid_until": str(proof.get("valid_until") or ""),
+        "query_axes": proof.get("query_axes") if isinstance(proof.get("query_axes"), Mapping) else {},
+        "exact_fact_keys": [
+            str(key or "").strip()
+            for key in (proof.get("exact_fact_keys") or ())
+            if str(key or "").strip()
+        ],
+        "freshness": freshness,
+    }
+    if not frame:
+        return {**base, "reason": "no_frame", "active_blockers": ["no_frame"]}
+    frame_schema = str(frame.get("schema_version") or "").strip()
+    frame_trace = {
+        "schema_version": frame_schema,
+        "confidence": _clamp_float(frame.get("confidence", 0.0)),
+        "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+        "risk_class": _semantic_frame_value(frame, "risk_class"),
+        "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+        "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+        "requested_action": _semantic_frame_value(frame, "requested_action"),
+        "answerability": _semantic_frame_value(frame, "answerability"),
+        "must_handoff": _semantic_frame_bool(frame.get("must_handoff")),
+    }
+    trace = {
+        **base,
+        "frame_before": frame_trace,
+    }
+    if frame_schema != SEMANTIC_FRAME_SCHEMA_VERSION:
+        return {**trace, "reason": "unsupported_frame_schema", "active_blockers": ["unsupported_frame_schema"]}
+    if not _semantic_frame_posthoc_ok(result):
+        return {**trace, "reason": "frame_not_posthoc", "active_blockers": ["frame_not_posthoc"]}
+    if _semantic_frame_actual_p0(result):
+        return {**trace, "reason": "protected_p0", "active_blockers": ["protected_p0"]}
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    risk_class = _semantic_frame_value(frame, "risk_class")
+    if requested_action not in {"answer_question", "check_availability"}:
+        return {**trace, "reason": "requested_action_not_reconcilable", "active_blockers": ["requested_action_not_reconcilable"]}
+    if risk_class in {"p0"}:
+        return {**trace, "reason": "protected_handoff_frame", "active_blockers": ["protected_handoff_frame"]}
+    if risk_class not in {"safe", "missing_facts", "manager_action"}:
+        return {**trace, "reason": "risk_class_not_reconcilable", "active_blockers": ["risk_class_not_reconcilable"]}
+    if _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT:
+        return {**trace, "reason": "payment_readiness_blocked", "active_blockers": ["payment_readiness_blocked"]}
+    if _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES:
+        return {**trace, "reason": "deal_stage_blocked", "active_blockers": ["deal_stage_blocked"]}
+    if not bool(freshness.get("ok")):
+        reason = str(freshness.get("reason") or "freshness_unknown")
+        return {**trace, "reason": reason, "active_blockers": [reason]}
+
+    answerability = _semantic_frame_value(frame, "answerability")
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    if risk_class == "safe" and answerability == "answer_self" and must_handoff is False:
+        return {**trace, "status": "already_aligned", "reason": "frame_already_safe_answer_self"}
+    if risk_class == "missing_facts" or answerability == "manager_only" or must_handoff is True:
+        active_blockers = [
+            "shadow_only_reconciliation",
+            "requires_text_readiness_policy",
+            "requires_existence_vs_live_availability_semantic_review",
+        ]
+        if requested_action == "check_availability":
+            active_blockers.append("current_frame_requested_action_check_availability")
+        if risk_class == "manager_action":
+            active_blockers.append("current_frame_risk_class_manager_action")
+        if result.missing_facts:
+            active_blockers.append("result_missing_facts_present")
+        return {
+            **trace,
+            "status": "would_reconcile_to_safe_reference",
+            "reason": "fresh_proof_contradicts_missing_facts_frame",
+            "active_blockers": active_blockers,
+            "reconciled_frame_if_applied": {
+                "risk_class": "safe",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "requested_action": "answer_question",
+            },
+        }
+    return {**trace, "status": "pass", "reason": "frame_not_missing_facts_or_manager_only"}
+
+
+def apply_semantic_frame_proof_reconciliation_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_proof_reconciliation_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace = _semantic_frame_proof_reconciliation_shadow_trace(result, context=context)
+    metadata["semantic_frame_proof_reconciliation_shadow"] = trace
+    direct["semantic_frame_proof_reconciliation_shadow"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def apply_semantic_frame_manager_action_gate(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_manager_action_gate_enabled(context):
+        return result
+
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    frame = _semantic_frame_from_result(result)
+    route_before = result.route
+
+    if not frame:
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "no_frame",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    if not _semantic_frame_posthoc_ok(result):
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "frame_not_posthoc",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    if _seats_default_open_allowlisted_result(result):
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "pass",
+            "reason": "seats_default_open_regular_groups_allowlist",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    should_gate, reason = _semantic_frame_manager_action_gate_reason(frame)
+    route_is_autonomous = route_before in AUTONOMOUS_ROUTES
+    status = "promoted_to_draft_for_manager" if should_gate and route_is_autonomous else "pass"
+    route_after = "draft_for_manager" if status == "promoted_to_draft_for_manager" else route_before
+    trace = {
+        "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+        "enabled": True,
+        "status": status,
+        "reason": reason,
+        "route_before": route_before,
+        "route_after": route_after,
+        "frame": {
+            "confidence": _clamp_float(frame.get("confidence", 0.0)),
+            "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+            "risk_class": _semantic_frame_value(frame, "risk_class"),
+            "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+            "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+            "requested_action": _semantic_frame_value(frame, "requested_action"),
+            "answerability": _semantic_frame_value(frame, "answerability"),
+            "must_handoff": _semantic_frame_bool(frame.get("must_handoff")),
+        },
+    }
+    metadata["semantic_frame_manager_action_gate"] = trace
+    direct["semantic_frame_manager_action_gate"] = trace
+    metadata["direct_path"] = direct
+    if status != "promoted_to_draft_for_manager":
+        return replace(result, metadata=metadata)
+
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *result.safety_flags,
+                "semantic_frame_manager_action_gate",
+                "manager_approval_required",
+                "no_auto_send",
+            ]
+        )
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "SemanticFrame: проверить действие менеджера перед ответом клиенту.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="draft_for_manager",
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata=metadata,
+    )
+
+
+def apply_semantic_frame_self_answer_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_self_answer_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace = _semantic_frame_self_answer_shadow_trace(result, context=context)
+    metadata["semantic_frame_self_answer_shadow"] = trace
+    direct["semantic_frame_self_answer_shadow"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def apply_semantic_frame_decision_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_decision_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    frame = _semantic_frame_from_result(result)
+    if not frame:
+        shadow = {
+            "schema_version": SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "no_frame",
+            "route_after": result.route,
+        }
+    else:
+        actual_handoff = result.route not in AUTONOMOUS_ROUTES
+        actual_p0 = _semantic_frame_actual_p0(result)
+        frame_p0 = _semantic_frame_value(frame, "risk_class") == "p0"
+        expected_handoff = _semantic_frame_expected_handoff(frame)
+        action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
+        close_detect = metadata.get("close_detect") if isinstance(metadata.get("close_detect"), Mapping) else {}
+        actual_action = str(action_decision.get("action") or "").strip()
+        close_status = str(close_detect.get("status") or "").strip()
+        close_veto_candidate = _semantic_frame_close_veto_candidate(frame)
+        if close_veto_candidate and close_status == "fired":
+            close_alignment = "mismatch"
+        elif close_veto_candidate:
+            close_alignment = "match"
+        else:
+            close_alignment = "not_applicable"
+        shadow = {
+            "schema_version": SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "observed",
+            "frame": {
+                "mode": str(frame.get("mode") or "").strip(),
+                "confidence": _clamp_float(frame.get("confidence", 0.0)),
+                "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+                "risk_class": _semantic_frame_value(frame, "risk_class"),
+                "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+                "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+                "requested_action": _semantic_frame_value(frame, "requested_action"),
+                "answerability": _semantic_frame_value(frame, "answerability"),
+                "must_handoff": _semantic_frame_bool(frame.get("must_handoff")) is True,
+                "evidence_count": (
+                    len(frame.get("evidence") or ())
+                    if isinstance(frame.get("evidence"), Sequence)
+                    and not isinstance(frame.get("evidence"), (str, bytes))
+                    else 0
+                ),
+            },
+            "actual": {
+                "route_after": result.route,
+                "handoff": actual_handoff,
+                "manager_only": result.route == "manager_only",
+                "p0": actual_p0,
+                "action_decision": actual_action,
+                "close_detect_status": close_status,
+                "direct_selected_category": str(direct.get("selected_category") or "").strip(),
+            },
+            "comparisons": {
+                "must_handoff_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
+                "p0_vs_actual": _semantic_frame_alignment(frame_p0, actual_p0),
+                "answerability_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
+                "close_veto_candidate": close_veto_candidate,
+                "close_veto_vs_close_detect": close_alignment,
+                "action": _semantic_frame_action_alignment(frame, actual_action),
+            },
+        }
+    metadata["frame_decision_shadow"] = shadow
+    direct["frame_decision_shadow"] = shadow
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
+def apply_semantic_reading_trace_finalize(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    del context
+    metadata = finalize_reading_trace_metadata(result.metadata)
+    if metadata == result.metadata:
+        return result
+    return replace(result, metadata=metadata)
+
+
 def _normalize_direct_path_payload(
     payload: Mapping[str, Any],
     *,
     raw_response: Optional[str] = None,
     include_answerability_self: bool = False,
     include_semantic_frame_shadow: bool = False,
+    include_dialog_summary: bool = False,
 ) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
@@ -2458,9 +3584,16 @@ def _normalize_direct_path_payload(
         metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
     if include_answerability_self:
         metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
-    semantic_frame = _direct_path_semantic_frame_from_payload(payload) if include_semantic_frame_shadow else {}
+    semantic_frame = _direct_path_semantic_frame_from_payload(payload, source="inline") if include_semantic_frame_shadow else {}
     if semantic_frame:
+        metadata["semantic_frame"] = semantic_frame
+        # Backward-compatible alias for one release: TZ154/text hygiene and
+        # older simulators may still read the historical shadow key.
         metadata["semantic_frame_shadow"] = semantic_frame
+    if include_dialog_summary:
+        dialog_summary = " ".join(str(payload.get("dialog_summary") or "").split())[:500]
+        if dialog_summary:
+            metadata["dialog_summary_candidate"] = dialog_summary
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),
         broad_group=str(payload.get("broad_group") or "direct_path"),

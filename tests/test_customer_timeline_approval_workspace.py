@@ -54,6 +54,7 @@ def test_approval_workspace_builds_json_and_escaped_html(tmp_path: Path) -> None
     assert "Customer Timeline Approval Workspace" in html
     assert "Write CRM blocked" in html
     assert "Run ASR/R+A blocked" in html
+    assert "Next step: needs_manager_review" in html
     assert "/not/read/transcript.json" not in html
     assert "raw_payload" not in html
     assert "provider_raw_payload" not in html

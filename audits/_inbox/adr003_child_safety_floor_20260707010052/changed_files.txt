@@ -1,0 +1,7 @@
+docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md
+src/mango_mvp/channels/p0_recall_spec.py
+src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
+src/mango_mvp/channels/subscription_llm_parts/support.py
+tests/test_subscription_llm_draft_provider.py
+tests/fixtures/adr003_runtime_channel_regex_snapshot.json
+tests/fixtures/adr003_direct_path_text_patterns_snapshot.json

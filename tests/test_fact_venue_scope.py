@@ -199,6 +199,94 @@ def test_fact_venue_scope_demotes_foreign_exact_when_no_target_fact_present(tmp_
     assert pack["llm_retrieve"]["venue_scope"]["venue_scope_demoted_ids"] == ["unpk.lvsh.address"]
 
 
+def test_fact_venue_scope_keyword_fallback_removes_foreign_exact_when_target_present(tmp_path: Path) -> None:
+    snapshot = _write_snapshot(
+        tmp_path,
+        [
+            _fact("unpk.moscow.address", "УНПК МФТИ: московские очные занятия проходят на Сретенке.", venue="moscow_regular"),
+            _fact("unpk.lvsh.address", "УНПК МФТИ: ЛВШ проходит в Менделеево.", venue="lvsh_mendeleevo", program_kind="camp_lvsh"),
+        ],
+    )
+
+    pack = _direct_path_context_fact_pack(
+        _venue_context(snapshot),
+        client_message="Где очные занятия в Москве?",
+        retriever_fn=lambda _prompt: {
+            "requested_scope": "moscow_regular",
+            "exact_ids": [],
+            "adjacent_ids": [],
+        },
+    )
+
+    assert pack["llm_retrieve"]["fallback"] is True
+    assert pack["llm_retrieve"]["fallback_reason"] == "empty_selection"
+    assert "unpk.moscow.address" in pack["exact_keys"]
+    assert "unpk.lvsh.address" not in pack["facts"]
+    assert pack["keyword_venue_scope"]["target_venue_fact_present"] is True
+    assert pack["llm_retrieve"]["venue_scope"]["source"] == "keyword_fallback"
+
+
+def test_successful_llm_retriever_does_not_add_keyword_category_facts(tmp_path: Path) -> None:
+    snapshot = _write_snapshot(
+        tmp_path,
+        [
+            _fact(
+                "unpk.regular.price",
+                "УНПК МФТИ: стоимость регулярного курса зависит от класса и формата.",
+                fact_type="price",
+            ),
+            _fact(
+                "unpk.regular.schedule",
+                "УНПК МФТИ: расписание регулярных групп публикуется после подбора группы.",
+                fact_type="schedule",
+            ),
+        ],
+    )
+
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "unpk",
+            "snapshot_path": str(snapshot),
+            LLM_RETRIEVE_ENV: "1",
+            "conversation_intent_plan": {"primary_intent": "price", "answer_topics": ["price"]},
+        },
+        client_message="Когда проходят занятия?",
+        retriever_fn=lambda _prompt: {
+            "exact_ids": ["unpk.regular.schedule"],
+            "adjacent_ids": [],
+        },
+    )
+
+    assert pack["selected_category"] == "llm_retrieve"
+    assert pack["exact_keys"] == ["unpk.regular.schedule"]
+    assert "unpk.regular.price" not in pack["facts"]
+    assert pack["llm_retrieve"]["fallback"] is False
+
+
+def test_fact_venue_scope_keyword_fallback_demotes_foreign_when_no_target_present(tmp_path: Path) -> None:
+    snapshot = _write_snapshot(
+        tmp_path,
+        [
+            _fact("unpk.lvsh.address", "УНПК МФТИ: ЛВШ проходит в Менделеево.", venue="lvsh_mendeleevo", program_kind="camp_lvsh"),
+        ],
+    )
+
+    pack = _direct_path_context_fact_pack(
+        _venue_context(snapshot),
+        client_message="Где очные занятия в Москве?",
+        retriever_fn=lambda _prompt: {
+            "requested_scope": "moscow_regular",
+            "exact_ids": [],
+            "adjacent_ids": [],
+        },
+    )
+
+    assert pack["exact_keys"] == []
+    assert pack["adjacent_keys"] == ["unpk.lvsh.address"]
+    assert pack["keyword_venue_scope"]["venue_scope_demoted_ids"] == ["unpk.lvsh.address"]
+    assert pack["llm_retrieve"]["venue_scope"]["source"] == "keyword_fallback"
+
+
 def test_fact_venue_scope_unspecified_does_not_narrow_model_selection(tmp_path: Path) -> None:
     snapshot = _write_snapshot(
         tmp_path,

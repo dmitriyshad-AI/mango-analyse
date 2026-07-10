@@ -3,19 +3,23 @@ from __future__ import annotations
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
 
 
-def test_intent_plan_treats_place_booking_as_live_availability_not_price_fix() -> None:
+def test_intent_plan_keeps_place_booking_only_as_legacy_floor_signal_not_primary_meaning() -> None:
     plan = build_conversation_intent_plan(
         current_message="Можно закрепить место на ЛВШ для 8 класса?",
         active_brand="foton",
         recent_messages=["Клиент: интересует лагерь в Менделеево", "Ответ: Подберём смену."],
     )
 
-    assert plan.primary_intent == "live_availability"
+    assert plan.primary_intent == "camp"
     assert plan.topic_id == "theme:026_camp_general"
-    assert plan.answer_policy == "answer_safe_parts_then_manager_live_check"
-    assert plan.route_bias == "draft_for_manager"
-    assert "availability.current" in plan.required_fact_keys
-    assert "seat_or_booking_words_do_not_mean_price_fix" in plan.decision_notes
+    assert plan.answer_policy == "answer_directly_if_fact_verified"
+    assert plan.route_bias == "bot_answer_self_for_pilot"
+    assert "availability.current" not in plan.required_fact_keys
+    assert plan.legacy_live_availability_floor_signal is True
+    assert "legacy_live_availability_floor_signal" not in plan.to_prompt_view()
+    assert plan.to_internal_view()["legacy_live_availability_floor_signal"] is True
+    assert "legacy_live_availability_floor_signal" in plan.decision_notes
+    assert "seat_or_booking_words_do_not_mean_price_fix" not in plan.decision_notes
 
 
 def test_intent_plan_does_not_treat_arrival_place_as_live_availability() -> None:
@@ -224,6 +228,27 @@ def test_intent_plan_treats_certificate_request_as_documents_not_address() -> No
     assert "locations.current" not in plan.required_fact_keys
     assert plan.fact_scope == "tax_deduction"
     assert "matkap_process" in plan.blocked_neighbor_scopes
+
+
+def test_intent_plan_treats_ndfl_return_as_tax_not_refund() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Возврат НДФЛ оформляете?",
+        active_brand="foton",
+        dialogue_memory_view={
+            "current_message_roles": {
+                "payment_source": "tax_deduction",
+                "refund_frame": "none",
+                "topics": ["tax"],
+            }
+        },
+    )
+
+    assert plan.primary_intent == "tax"
+    assert plan.topic_id == "theme:008_tax_deduction"
+    assert plan.payment_source == "tax_deduction"
+    assert plan.refund_frame == "none"
+    assert "refund" not in plan.risk_signals
+    assert plan.route_bias == "bot_answer_self_for_pilot"
 
 
 def test_intent_plan_treats_plain_document_request_as_documents() -> None:

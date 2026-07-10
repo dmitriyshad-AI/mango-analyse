@@ -1,0 +1,14 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_report_adr003_semantic_frame_eval.py tests/test_adr003_regex_understanding_moratorium.py tests/test_build_adr003_semantic_frame_eval.py
+
+7 passed in 1.72s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3776 passed, 5 skipped, 1 warning in 86.10s (0:01:26)
+
+Smoke on fake dynamic output:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_semantic_frame_eval.py --on-transcripts audits/_inbox/adr003_m1_scenarios_fake_smoke_full_20260701_final/dynamic_dialog_transcripts.jsonl --on-summary audits/_inbox/adr003_m1_scenarios_fake_smoke_full_20260701_final/dynamic_summary.json --out-dir audits/_inbox/adr003_semantic_frame_report_fake_check_20260701
+
+Report status: needs_review; ON turns=241; frame present=0; expected for fake bot mode.
+Acceptance flags: route_text_diff_zero=False, extra_model_calls_zero=False, hard_gate_failures_zero=True, semantic_frame_present_on_all_turns=False, semantic_frame_required_fields_complete=True.

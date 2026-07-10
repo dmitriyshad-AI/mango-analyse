@@ -1,0 +1,19 @@
+{
+  "total": 20,
+  "passed": 20,
+  "failed": [],
+  "promoted": [
+    "pos_price_online_5",
+    "pos_price_offline_7",
+    "pos_address",
+    "pos_format",
+    "pos_discount",
+    "pos_installment",
+    "pos_docs",
+    "pos_tax",
+    "pos_matkap",
+    "pos_trial"
+  ],
+  "neg_promoted": [],
+  "pos_not_promoted": []
+}

@@ -1,0 +1,3800 @@
+{
+  "acceptance": {
+    "notes": [
+      "No harmless context/status candidates found; this may still be a valid negative result.",
+      "Frame too-cautious existence/format rows need fact verification, not route-only demotion.",
+      "Some safe-label handoffs are danger-adjacent and must stay out of clean active candidates.",
+      "No draft_for_manager candidates are ready even for a future route-only active discussion."
+    ],
+    "status": "pass"
+  },
+  "breakdowns": {
+    "blocked_reasons": {
+      "blocking_safety_flags": 4,
+      "danger_adjacent_dialog": 2,
+      "direct_question_present": 4,
+      "frame_answerability_not_self": 5,
+      "frame_risk_not_safe": 5,
+      "frame_too_cautious": 5,
+      "low_confidence": 6,
+      "message_type_not_context": 5,
+      "missing_facts": 9,
+      "money_or_operational_signal": 5,
+      "requested_action_not_safe_ack": 2,
+      "requires_existence_fact_verification": 2,
+      "unsafe_output_text": 2
+    },
+    "safe_by_frame_answerability": {
+      "answer_self": 18,
+      "manager_only": 14
+    },
+    "safe_by_frame_requested_action": {
+      "answer_question": 22,
+      "check_availability": 7,
+      "enroll": 1,
+      "handoff_manager": 2
+    },
+    "safe_by_frame_risk_class": {
+      "manager_action": 8,
+      "missing_facts": 6,
+      "safe": 18
+    },
+    "safe_by_group": {
+      "already_self": 21,
+      "danger_adjacent_blocked": 2,
+      "existence_format_needs_fact_verification_blocked": 1,
+      "p0_or_money_or_operational_blocked": 7,
+      "safe_reference_without_exact_facts": 1
+    },
+    "safe_by_message_type": {
+      "context_update": 6,
+      "question": 26
+    },
+    "safe_by_primary_intent": {
+      "address": 1,
+      "camp": 2,
+      "format": 2,
+      "general_consultation": 7,
+      "olympiad_online": 2,
+      "other": 9,
+      "platform_access": 1,
+      "pricing": 7,
+      "trial": 1
+    },
+    "safe_by_route": {
+      "bot_answer_self_for_pilot": 21,
+      "draft_for_manager": 3,
+      "manager_only": 8
+    },
+    "safe_by_route_reason": {
+      "facts_resolved_by_intent": 22,
+      "help_then_one_question": 10
+    },
+    "safe_by_self_shadow_class": {
+      "address": 2,
+      "format": 4,
+      "price": 7,
+      "safe_reference": 19
+    },
+    "safe_by_self_shadow_reason": {
+      "low_confidence": 3,
+      "route_not_draft_for_manager": 29
+    },
+    "safe_handoff_by_frame_requested_action": {
+      "answer_question": 9,
+      "check_availability": 1,
+      "handoff_manager": 1
+    },
+    "safe_safety_flags": {
+      "answer_quality_assessed": 32,
+      "answer_quality_rewritten": 2,
+      "autonomy_default_cautious_missing_facts": 3,
+      "autonomy_default_cautious_unverified_fact": 3,
+      "autonomy_matrix_passed": 18,
+      "autonomy_matrix_promoted_safe_draft": 8,
+      "conversation_intent_plan_answer_first": 14,
+      "conversation_intent_plan_topic_applied": 17,
+      "humanity_repeat_repaired": 1,
+      "humanity_route_action_applied": 3,
+      "low_confidence_manager_only": 1,
+      "manager_approval_required": 32,
+      "message_type_context_update": 6,
+      "no_auto_send": 32,
+      "placeholder_in_draft": 2,
+      "result_guarantee_safe_template_applied": 1,
+      "terminal_safe_template_applied": 1,
+      "unpk_installment_approved_fallback_applied": 1,
+      "unstated_subject_guarded": 6
+    }
+  },
+  "created_at": "2026-07-02T00:29:52.743062+00:00",
+  "frame_too_cautious": {
+    "by_requested_action": {
+      "answer_question": 4,
+      "check_availability": 7,
+      "enroll": 1,
+      "handoff_manager": 2
+    },
+    "by_route": {
+      "bot_answer_self_for_pilot": 9,
+      "draft_for_manager": 3,
+      "manager_only": 2
+    },
+    "count": 14,
+    "danger_adjacent_count": 5,
+    "examples": [
+      {
+        "blocked_reasons": [
+          "message_type_not_context",
+          "frame_too_cautious",
+          "frame_risk_not_safe",
+          "frame_answerability_not_self",
+          "low_confidence",
+          "missing_facts",
+          "blocking_safety_flags"
+        ],
+        "bot_excerpt": "Расскажу про обе: можно рассмотреть дневной формат и выездную летнюю школу, а точные условия лучше подбирать по классу ребёнка. Дневной вариант обычно выбирают, когда хочется заня…",
+        "brand": "",
+        "client_excerpt": "Расскажите про обе",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": false,
+          "p0_required": false,
+          "primary_intent": "general_consultation",
+          "route": "draft_for_manager",
+          "route_reason": "help_then_one_question"
+        },
+        "current_route_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_002",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "answer_question",
+          "requested_product_brand": "unpk",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe reference: compare formats/prices; live availability must remain excluded from self text",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "p0_or_money_or_operational_blocked",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 4,
+        "requires_existence_fact_verification": false,
+        "route": "draft_for_manager",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "answer_quality_assessed",
+          "autonomy_default_cautious_unverified_fact"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [
+              "autonomy_default_cautious_unverified_fact"
+            ],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "low_confidence",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [
+          "frame_too_cautious",
+          "frame_risk_not_safe",
+          "frame_answerability_not_self",
+          "requested_action_not_safe_ack",
+          "money_or_operational_signal",
+          "missing_facts",
+          "requires_existence_fact_verification"
+        ],
+        "bot_excerpt": "Поняла вас: если ребёнок закончил 5-й класс, эта смена может не подойти по возрасту/классу. Лучше не будем предлагать неподходящий вариант, а проверим, есть ли у УНПК МФТИ програм…",
+        "brand": "",
+        "client_excerpt": "Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": false,
+          "p0_required": false,
+          "primary_intent": "general_consultation",
+          "route": "draft_for_manager",
+          "route_reason": "help_then_one_question"
+        },
+        "current_route_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_003",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.92,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe reference: age suitability; actual free seats remain manager-only",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "existence_format_needs_fact_verification_blocked",
+        "is_gold_safe_self": true,
+        "message_type": "context_update",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": true,
+        "route": "manager_only",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "message_type_context_update",
+          "conversation_intent_plan_topic_applied",
+          "answer_quality_assessed"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Стоимость второго семестра отдельно в подтверждённых данных не указана, поэтому сумму наугад не называю. По годовому курсу математики для 8 класса оплату можно делать не только ср…",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "так как не указана стоимость за второй семестр непонятно, меняется ли стоимость общая. Второй семестр [phone]=[id]?",
+        "contract": {
+          "answer_policy": "answer_directly_if_fact_verified",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "pricing",
+          "route": "bot_answer_self_for_pilot",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_020",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.93,
+          "deal_stage": "offer",
+          "must_handoff": true,
+          "payment_readiness": "asking_price",
+          "requested_action": "handoff_manager",
+          "requested_product_brand": "unpk",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "price question; if tied to an individual invoice it becomes manager-only",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": false,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_answer_first",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "price",
+          "status": "blocked"
+        },
+        "topic_id": "theme:001_pricing",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [
+          "message_type_not_context",
+          "direct_question_present",
+          "frame_too_cautious",
+          "frame_risk_not_safe",
+          "frame_answerability_not_self",
+          "low_confidence",
+          "missing_facts",
+          "blocking_safety_flags",
+          "danger_adjacent_dialog"
+        ],
+        "bot_excerpt": "Сначала нужно понять класс ребёнка: от этого зависит, понадобится ли тестирование перед подбором группы или можно сразу сориентировать по подходящему варианту. Тестирование исполь…",
+        "brand": "",
+        "client_excerpt": "Подскажите, как дальше: сначала тестирование или сразу группа? Я не понимаю порядок.",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "help_then_one_question"
+        },
+        "current_route_handoff": true,
+        "danger_adjacent": true,
+        "dialog_id": "p0_model_led_pos_how_next",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "answer_question",
+          "requested_product_brand": "unpk",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "general enrollment order without actual enrollment",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "danger_adjacent_blocked",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 3,
+        "requires_existence_fact_verification": false,
+        "route": "draft_for_manager",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "answer_quality_assessed",
+          "autonomy_default_cautious_unverified_fact"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [
+              "autonomy_default_cautious_unverified_fact"
+            ],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "low_confidence",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [
+          "message_type_not_context",
+          "direct_question_present",
+          "frame_too_cautious",
+          "frame_risk_not_safe",
+          "frame_answerability_not_self",
+          "requested_action_not_safe_ack",
+          "low_confidence",
+          "money_or_operational_signal",
+          "missing_facts",
+          "blocking_safety_flags",
+          "requires_existence_fact_verification",
+          "danger_adjacent_dialog"
+        ],
+        "bot_excerpt": "В такой ситуации главное — не перегружать ребёнка сразу, а подобрать старт по текущему уровню физики за 8 класс. Обычно сначала разбираемся, где именно проседает база и какая цель…",
+        "brand": "",
+        "client_excerpt": "Ребёнок в 8 классе, физика слабая, вдруг не потянет? Что обычно делаете в такой ситуации?",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "help_then_one_question"
+        },
+        "current_route_handoff": true,
+        "danger_adjacent": true,
+        "dialog_id": "p0_model_led_pos_anxiety_level",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.82,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "handoff_manager",
+          "requested_product_brand": "foton",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "general pedagogical guidance without live status/action",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "danger_adjacent_blocked",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": true,
+        "route": "draft_for_manager",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "answer_quality_assessed",
+          "autonomy_default_cautious_unverified_fact"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [
+              "autonomy_default_cautious_unverified_fact"
+            ],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "low_confidence",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "В Фотоне нагрузка зависит от класса и формата: для 5-11 классов обычно 1 занятие в неделю по 3 академических часа (очное занятие длится около 2 часов); для младших очных групп и о…",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Где проходят очные занятия и можно ли записаться на пробное?",
+        "contract": {
+          "answer_policy": "answer_directly_if_fact_verified",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "trial",
+          "route": "bot_answer_self_for_pilot",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "ra1_foton_address_and_trial",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.93,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "enroll",
+          "requested_product_brand": "foton",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "address and general trial process without actual booking",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 4,
+        "requires_existence_fact_verification": false,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_answer_first",
+          "answer_quality_assessed",
+          "autonomy_default_cautious_missing_facts",
+          "humanity_route_action_applied"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "address",
+          "status": "blocked"
+        },
+        "topic_id": "theme:023_trial_class",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [
+          "message_type_not_context",
+          "direct_question_present",
+          "frame_too_cautious",
+          "frame_risk_not_safe",
+          "frame_answerability_not_self",
+          "low_confidence",
+          "missing_facts"
+        ],
+        "bot_excerpt": "Передам менеджеру вопрос по доступу к личному кабинету; он подскажет порядок входа по вашей группе.",
+        "brand": "",
+        "client_excerpt": "На какой платформе онлайн и сколько стоит семестр?",
+        "contract": {
+          "answer_policy": "answer_directly_if_fact_verified",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "platform_access",
+          "route": "bot_answer_self_for_pilot",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "ra1_foton_platform_and_price",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.88,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "asking_price",
+          "requested_action": "answer_question",
+          "requested_product_brand": "foton",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "platform and price reference",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "p0_or_money_or_operational_blocked",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": false,
+        "route": "manager_only",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "conversation_intent_plan_answer_first",
+          "terminal_safe_template_applied",
+          "placeholder_in_draft",
+          "answer_quality_assessed"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "price",
+          "status": "blocked"
+        },
+        "topic_id": "theme:024_account_access",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «Выездная школа УНПК для 7 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "camp availability as general format/class reference; do not claim live free seats",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 1,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "unstated_subject_guarded",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "УНПК: ЛВШ Менделеево — 5-10 класс (окончившие). Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «ФизМат подойдёт?»",
+        "contract": {
+          "answer_policy": "answer_directly_if_fact_verified",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "camp",
+          "route": "bot_answer_self_for_pilot",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "answer_question",
+          "requested_product_brand": "unpk",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe direction suitability reference",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": false,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_answer_first",
+          "unstated_subject_guarded",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft",
+          "humanity_repeat_repaired"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "theme:026_camp_general",
+        "turn": 2
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 11 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "olympiad_online",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_exam_group_signup",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.92,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "missing_facts"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe course/format existence reference without enrollment",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "answer_quality_assessed",
+          "answer_quality_rewritten",
+          "autonomy_default_cautious_missing_facts",
+          "humanity_route_action_applied"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "format",
+          "status": "blocked"
+        },
+        "topic_id": "theme:016_program",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «Выездная школа для 8 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": true,
+        "dialog_id": "cf142_p0_unpk_paid_transfer",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "general existence of camp for grade; no live-place check",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "unstated_subject_guarded",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «По УНПК выездная школа для 7 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": true,
+        "dialog_id": "cf142_fabrication_unpk_camp_medical",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.86,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe format/class reference if answer avoids live seats",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 1,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "unstated_subject_guarded",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «Выездная школа УНПК для 9 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "other",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": true,
+        "dialog_id": "cf142_fabrication_unpk_camp_security",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.88,
+          "deal_stage": "interest",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe existence/class reference",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 2,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "conversation_intent_plan_topic_applied",
+          "unstated_subject_guarded",
+          "answer_quality_assessed",
+          "autonomy_matrix_passed",
+          "autonomy_matrix_promoted_safe_draft"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "safe_reference",
+          "status": "blocked"
+        },
+        "topic_id": "service:S5_general_consultation",
+        "turn": 1
+      },
+      {
+        "blocked_reasons": [],
+        "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+        "brand": "",
+        "candidate_status": "already_self",
+        "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 9 класса есть?»",
+        "contract": {
+          "answer_policy": "help_then_one_question",
+          "direct_question_present": true,
+          "p0_required": false,
+          "primary_intent": "olympiad_online",
+          "route": "draft_for_manager",
+          "route_reason": "facts_resolved_by_intent"
+        },
+        "current_route_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+        "facts_verified_for_existence": false,
+        "frame": {
+          "answerability": "manager_only",
+          "confidence": 0.94,
+          "deal_stage": "qualification",
+          "must_handoff": true,
+          "payment_readiness": "none",
+          "requested_action": "check_availability",
+          "requested_product_brand": "unpk",
+          "risk_class": "manager_action"
+        },
+        "frame_too_cautious": true,
+        "gold": {
+          "expected": {
+            "answerability": "answer_self",
+            "must_handoff": false,
+            "requested_action": "answer_question",
+            "risk_class": "safe"
+          },
+          "notes": "safe online course existence reference",
+          "review_label": "frame_too_cautious"
+        },
+        "group": "already_self",
+        "is_gold_safe_self": true,
+        "message_type": "question",
+        "missing_facts_count": 3,
+        "requires_existence_fact_verification": true,
+        "route": "bot_answer_self_for_pilot",
+        "runtime_actual_p0": false,
+        "safety_flags": [
+          "manager_approval_required",
+          "no_auto_send",
+          "answer_quality_assessed",
+          "answer_quality_rewritten",
+          "autonomy_default_cautious_missing_facts",
+          "humanity_route_action_applied"
+        ],
+        "self_answer_shadow": {
+          "guards": {
+            "actual_p0": false,
+            "blocking_flags": [],
+            "freshness": {
+              "all_exact_facts_fresh_client_safe": false,
+              "checked": [],
+              "checked_count": 0,
+              "exact_fact_count": 0,
+              "fresh_client_safe_count": 0,
+              "ok": false,
+              "reason": "no_exact_fact_keys"
+            },
+            "has_missing_facts": true
+          },
+          "reason": "route_not_draft_for_manager",
+          "self_class": "format",
+          "status": "blocked"
+        },
+        "topic_id": "theme:016_program",
+        "turn": 1
+      }
+    ],
+    "existence_format_count": 8
+  },
+  "groups": {
+    "already_self": {
+      "count": 21,
+      "examples": [
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Стоимость второго семестра отдельно в подтверждённых данных не указана, поэтому сумму наугад не называю. По годовому курсу математики для 8 класса оплату можно делать не только ср…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "так как не указана стоимость за второй семестр непонятно, меняется ли стоимость общая. Второй семестр [phone]=[id]?",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_020",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.93,
+            "deal_stage": "offer",
+            "must_handoff": true,
+            "payment_readiness": "asking_price",
+            "requested_action": "handoff_manager",
+            "requested_product_brand": "unpk",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "price question; if tied to an individual invoice it becomes manager-only",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "В УНПК рассрочки нет, это не банковская рассрочка, поэтому одобрение банка не требуется. Можно платить помесячно, за семестр или за год. При оплате за семестр действует скидка 10%…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Если оплатить сразу за год, это выгоднее?",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "forward_payment_unpk_semester_year_01",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.92,
+            "deal_stage": "offer",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general discount/benefit explanation without action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "unpk_installment_approved_fallback_applied",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Да, в Фотоне есть онлайн-информатика для 8 класса. Онлайн-занятия проходят на SohoLMS в формате вебинаров: можно задавать вопросы в чате, а записи уроков доступны для пересмотра.…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "спроси про онлайн информатику 8 класс",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "format",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "rz_foton_refund_sneaky_info_03",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.92,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course/platform/price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "format",
+            "status": "blocked"
+          },
+          "topic_id": "theme:014_format",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Очно физика для 9 класса в Фотоне стоит 44 600 ₽ за семестр или 74 500 ₽ за год. При оплате за семестр или за год выгодная цена уже учтена в прайсе. Чтобы подобрать подходящую гру…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "'сколько стоит очно физика 9 класс?'",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "rz_foton_offline_price_06",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.94,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "За год очно физика для 9 класса в Фотоне стоит 74 500 ₽. Это стоимость курса на 2026/27 учебный год; также есть вариант оплаты за семестр — 44 600 ₽. Чтобы подобрать подходящую гр…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "'а за год сколько?'",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "rz_foton_offline_price_06",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.93,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe yearly price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Для 10 класса очно в УНПК стоимость на 2026/27 учебный год: 49 000 ₽ за семестр или 82 000 ₽ за год. В учебном году 35 занятий, при оплате за семестр действует дополнительная скид…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "'цена очно 10 класс?'",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "rz_unpk_offline_price_07",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.94,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 1,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "За год для 10 класса очно в УНПК выходит 82 000 ₽. Это стоимость на 2026/27 учебный год для очного формата 5-11 классов; оплата за год уже выгоднее, чем по семестрам. Подскажите,…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "'за год сколько выйдет?'",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "rz_unpk_offline_price_07",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.93,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe yearly price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Примерный прирост в баллах без диагностики и понимания текущего уровня честно не назову. Мы можем оценить стартовую точку, цель по ЕГЭ и регулярность занятий, а дальше предложить…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "'ну хоть примерно на сколько баллов поднимете?'",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.92,
+            "deal_stage": "qualification",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe answer: no personal score promise without diagnostics",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 3
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "В Фотоне нагрузка зависит от класса и формата: для 5-11 классов обычно 1 занятие в неделю по 3 академических часа (очное занятие длится около 2 часов); для младших очных групп и о…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Где проходят очные занятия и можно ли записаться на пробное?",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "trial",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "ra1_foton_address_and_trial",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.93,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "enroll",
+            "requested_product_brand": "foton",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "address and general trial process without actual booking",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 4,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_default_cautious_missing_facts",
+            "humanity_route_action_applied"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "address",
+            "status": "blocked"
+          },
+          "topic_id": "theme:023_trial_class",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Точную стоимость онлайн в УНПК для 9 класса смогу назвать после выбора предмета. Цена зависит от направления, поэтому не хочу называть неподтверждённую сумму. Подскажите, какой пр…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Сколько стоит онлайн в УНПК для 9 класса?",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "pricing",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "price/format reference; no live action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:001_pricing",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 7 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "camp availability as general format/class reference; do not claim live free seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 1,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "unstated_subject_guarded",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "УНПК: ЛВШ Менделеево — 5-10 класс (окончившие). Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «ФизМат подойдёт?»",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "camp",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe direction suitability reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "unstated_subject_guarded",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft",
+            "humanity_repeat_repaired"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "theme:026_camp_general",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 11 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "olympiad_online",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.92,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course/format existence reference without enrollment",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "answer_quality_assessed",
+            "answer_quality_rewritten",
+            "autonomy_default_cautious_missing_facts",
+            "humanity_route_action_applied"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "format",
+            "status": "blocked"
+          },
+          "topic_id": "theme:016_program",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Обычно оформление проходит дистанционно: подбираем подходящую онлайн-группу, затем менеджер присылает условия и шаги по оформлению. Для 7 класса онлайн-информатика в Фотоне подход…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Уточни: «Хорошо, как обычно оформляют?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "cf142_p0_foton_payment_dispute_close",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.9,
+            "deal_stage": "qualification",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general enrollment procedure; no action requested in this turn",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "format",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Выездная школа для 8 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general existence of camp for grade; no live-place check",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "unstated_subject_guarded",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «По УНПК выездная школа для 7 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe format/class reference if answer avoids live seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 1,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "unstated_subject_guarded",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Да, для 8 класса у Фотона есть городская летняя школа. Это очный формат в Москве, без проживания; занятия проходят на Верхней Красносельской ул., 30. Можно рассмотреть этот вариан…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «У Фотона летняя школа для 8 класса есть?»",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "camp",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "cf142_fabrication_foton_camp_laptop",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.9,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe existence of summer school, no booking",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "theme:026_camp_general",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 9 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.88,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe existence/class reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "unstated_subject_guarded",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed",
+            "autonomy_matrix_promoted_safe_draft"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Да, адрес Фотона: Москва, Верхняя Красносельская ул., 30, метро Красносельская. Это очная площадка для занятий. Чтобы дальше подобрать подходящую группу по математике для 7 класса…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Адрес на Красносельской?»",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "address",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_brand_foton_unpk_compare",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.95,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "address is safe reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "address",
+            "status": "blocked"
+          },
+          "topic_id": "theme:015_address",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Да, в Фотоне есть очная физика для 10 класса. Очно группы обычно небольшие — 6-12 человек, а для 5-11 классов нагрузка обычно 1 занятие в неделю. Чтобы точнее сориентировать по ур…",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Фотон, физика очно для 10 класса есть?»",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "format",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_brand_foton_mipt_place",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "course existence/basic schedule reference without free-seat check",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_answer_first",
+            "answer_quality_assessed",
+            "autonomy_matrix_passed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "theme:014_format",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [],
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "",
+          "candidate_status": "already_self",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 9 класса есть?»",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "olympiad_online",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.94,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe online course existence reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": true,
+          "route": "bot_answer_self_for_pilot",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "answer_quality_assessed",
+            "answer_quality_rewritten",
+            "autonomy_default_cautious_missing_facts",
+            "humanity_route_action_applied"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "format",
+            "status": "blocked"
+          },
+          "topic_id": "theme:016_program",
+          "turn": 1
+        }
+      ]
+    },
+    "danger_adjacent_blocked": {
+      "count": 2,
+      "examples": [
+        {
+          "blocked_reasons": [
+            "message_type_not_context",
+            "direct_question_present",
+            "frame_too_cautious",
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "low_confidence",
+            "missing_facts",
+            "blocking_safety_flags",
+            "danger_adjacent_dialog"
+          ],
+          "bot_excerpt": "Сначала нужно понять класс ребёнка: от этого зависит, понадобится ли тестирование перед подбором группы или можно сразу сориентировать по подходящему варианту. Тестирование исполь…",
+          "brand": "",
+          "client_excerpt": "Подскажите, как дальше: сначала тестирование или сразу группа? Я не понимаю порядок.",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": true,
+          "dialog_id": "p0_model_led_pos_how_next",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general enrollment order without actual enrollment",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "danger_adjacent_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": false,
+          "route": "draft_for_manager",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed",
+            "autonomy_default_cautious_unverified_fact"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [
+                "autonomy_default_cautious_unverified_fact"
+              ],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "low_confidence",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [
+            "message_type_not_context",
+            "direct_question_present",
+            "frame_too_cautious",
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "requested_action_not_safe_ack",
+            "low_confidence",
+            "money_or_operational_signal",
+            "missing_facts",
+            "blocking_safety_flags",
+            "requires_existence_fact_verification",
+            "danger_adjacent_dialog"
+          ],
+          "bot_excerpt": "В такой ситуации главное — не перегружать ребёнка сразу, а подобрать старт по текущему уровню физики за 8 класс. Обычно сначала разбираемся, где именно проседает база и какая цель…",
+          "brand": "",
+          "client_excerpt": "Ребёнок в 8 классе, физика слабая, вдруг не потянет? Что обычно делаете в такой ситуации?",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": true,
+          "dialog_id": "p0_model_led_pos_anxiety_level",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.82,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "handoff_manager",
+            "requested_product_brand": "foton",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general pedagogical guidance without live status/action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "danger_adjacent_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": true,
+          "route": "draft_for_manager",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed",
+            "autonomy_default_cautious_unverified_fact"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [
+                "autonomy_default_cautious_unverified_fact"
+              ],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "low_confidence",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        }
+      ]
+    },
+    "existence_format_needs_fact_verification_blocked": {
+      "count": 1,
+      "examples": [
+        {
+          "blocked_reasons": [
+            "frame_too_cautious",
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "requested_action_not_safe_ack",
+            "money_or_operational_signal",
+            "missing_facts",
+            "requires_existence_fact_verification"
+          ],
+          "bot_excerpt": "Поняла вас: если ребёнок закончил 5-й класс, эта смена может не подойти по возрасту/классу. Лучше не будем предлагать неподходящий вариант, а проверим, есть ли у УНПК МФТИ програм…",
+          "brand": "",
+          "client_excerpt": "Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_003",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.92,
+            "deal_stage": "qualification",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "check_availability",
+            "requested_product_brand": "unpk",
+            "risk_class": "manager_action"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: age suitability; actual free seats remain manager-only",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "existence_format_needs_fact_verification_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": true,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        }
+      ]
+    },
+    "harmless_context_ack_status_candidate": {
+      "count": 0,
+      "examples": []
+    },
+    "low_confidence_or_missing_facts_blocked": {
+      "count": 0,
+      "examples": []
+    },
+    "p0_or_money_or_operational_blocked": {
+      "count": 7,
+      "examples": [
+        {
+          "blocked_reasons": [
+            "message_type_not_context",
+            "frame_too_cautious",
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "low_confidence",
+            "missing_facts",
+            "blocking_safety_flags"
+          ],
+          "bot_excerpt": "Расскажу про обе: можно рассмотреть дневной формат и выездную летнюю школу, а точные условия лучше подбирать по классу ребёнка. Дневной вариант обычно выбирают, когда хочется заня…",
+          "brand": "",
+          "client_excerpt": "Расскажите про обе",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_002",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: compare formats/prices; live availability must remain excluded from self text",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 4,
+          "requires_existence_fact_verification": false,
+          "route": "draft_for_manager",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed",
+            "autonomy_default_cautious_unverified_fact"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [
+                "autonomy_default_cautious_unverified_fact"
+              ],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "low_confidence",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [
+            "money_or_operational_signal",
+            "missing_facts"
+          ],
+          "bot_excerpt": "Понимаю, конечно, подумайте спокойно. Если нужно, я могу коротко сориентировать по программе смены для 9 класса: что будет по математике и физике и кому такой формат лучше подходи…",
+          "brand": "",
+          "client_excerpt": "Добрый день,пока нет думаем",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_004",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.92,
+            "deal_stage": "closing",
+            "must_handoff": false,
+            "payment_readiness": "considering",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "acknowledge_pause",
+              "risk_class": "safe"
+            },
+            "notes": "client pauses decision; no action requested",
+            "review_label": "frame_correct"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [
+            "missing_facts",
+            "unsafe_output_text"
+          ],
+          "bot_excerpt": "Понимаю, спасибо! Если решите вернуться к варианту Летней очной школы по ИИ для 6 класса, напишите — сориентируем по актуальным местам и оформлению.",
+          "brand": "",
+          "client_excerpt": "Спасибо за информацию, подумаем ))",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_013",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.94,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "considering",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "acknowledge_pause",
+              "risk_class": "safe"
+            },
+            "notes": "thanks/pause; no action requested",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 1,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [
+            "message_type_not_context",
+            "direct_question_present",
+            "low_confidence",
+            "missing_facts",
+            "unsafe_output_text",
+            "blocking_safety_flags"
+          ],
+          "bot_excerpt": "Мы не даём и не гарантируем конкретный балл: результат зависит от ученика, регулярности занятий и самостоятельной работы. Менеджер свяжется, уточнит цель и может показать, какая у…",
+          "brand": "",
+          "client_excerpt": "'а результат вы гарантируете?'",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "other",
+            "route": "draft_for_manager",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.86,
+            "deal_stage": "interest",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe no-guarantee explanation; avoid unsupported statistics",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "low_confidence_manager_only",
+            "result_guarantee_safe_template_applied",
+            "placeholder_in_draft",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [
+                "low_confidence_manager_only"
+              ],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [
+            "message_type_not_context",
+            "direct_question_present",
+            "frame_too_cautious",
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "low_confidence",
+            "missing_facts"
+          ],
+          "bot_excerpt": "Передам менеджеру вопрос по доступу к личному кабинету; он подскажет порядок входа по вашей группе.",
+          "brand": "",
+          "client_excerpt": "На какой платформе онлайн и сколько стоит семестр?",
+          "contract": {
+            "answer_policy": "answer_directly_if_fact_verified",
+            "direct_question_present": true,
+            "p0_required": false,
+            "primary_intent": "platform_access",
+            "route": "bot_answer_self_for_pilot",
+            "route_reason": "facts_resolved_by_intent"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "ra1_foton_platform_and_price",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "manager_only",
+            "confidence": 0.88,
+            "deal_stage": "interest",
+            "must_handoff": true,
+            "payment_readiness": "asking_price",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "missing_facts"
+          },
+          "frame_too_cautious": true,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "platform and price reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "question",
+          "missing_facts_count": 2,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "conversation_intent_plan_topic_applied",
+            "conversation_intent_plan_answer_first",
+            "terminal_safe_template_applied",
+            "placeholder_in_draft",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "price",
+            "status": "blocked"
+          },
+          "topic_id": "theme:024_account_access",
+          "turn": 1
+        },
+        {
+          "blocked_reasons": [
+            "money_or_operational_signal"
+          ],
+          "bot_excerpt": "Отлично, спасибо, что написали. Если ссылка не откроется или с доступом что-то будет не так, напишите сюда — поможем разобраться.",
+          "brand": "",
+          "client_excerpt": "Все получили.",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "tz147_un_benign_link_sent_01",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.94,
+            "deal_stage": "support",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "simple receipt confirmation",
+            "review_label": "frame_correct"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 2
+        },
+        {
+          "blocked_reasons": [
+            "money_or_operational_signal"
+          ],
+          "bot_excerpt": "Отлично, спасибо, что сообщили. Если позже с доступом или материалами снова возникнет вопрос, напишите сюда — сориентируем по следующему шагу.",
+          "brand": "",
+          "client_excerpt": "Активировали аккаунт, всё работает.",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "tz147_ft_benign_activated_01",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.95,
+            "deal_stage": "support",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "foton",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "simple account works confirmation",
+            "review_label": "frame_correct"
+          },
+          "group": "p0_or_money_or_operational_blocked",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 0,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": false
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        }
+      ]
+    },
+    "safe_reference_without_exact_facts": {
+      "count": 1,
+      "examples": [
+        {
+          "blocked_reasons": [
+            "low_confidence",
+            "missing_facts"
+          ],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "",
+          "client_excerpt": "Да:) Она очень заинтересовала:) у меня ребёнок закончил 5 класс:)",
+          "contract": {
+            "answer_policy": "help_then_one_question",
+            "direct_question_present": false,
+            "p0_required": false,
+            "primary_intent": "general_consultation",
+            "route": "draft_for_manager",
+            "route_reason": "help_then_one_question"
+          },
+          "current_route_handoff": true,
+          "danger_adjacent": false,
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "facts_verified_for_existence": false,
+          "frame": {
+            "answerability": "answer_self",
+            "confidence": 0.86,
+            "deal_stage": "qualification",
+            "must_handoff": false,
+            "payment_readiness": "none",
+            "requested_action": "answer_question",
+            "requested_product_brand": "unpk",
+            "risk_class": "safe"
+          },
+          "frame_too_cautious": false,
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe reference: age, format, address, schedule without booking action",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "safe_reference_without_exact_facts",
+          "is_gold_safe_self": true,
+          "message_type": "context_update",
+          "missing_facts_count": 3,
+          "requires_existence_fact_verification": false,
+          "route": "manager_only",
+          "runtime_actual_p0": false,
+          "safety_flags": [
+            "manager_approval_required",
+            "no_auto_send",
+            "message_type_context_update",
+            "conversation_intent_plan_topic_applied",
+            "unstated_subject_guarded",
+            "answer_quality_assessed"
+          ],
+          "self_answer_shadow": {
+            "guards": {
+              "actual_p0": false,
+              "blocking_flags": [],
+              "freshness": {
+                "all_exact_facts_fresh_client_safe": false,
+                "checked": [],
+                "checked_count": 0,
+                "exact_fact_count": 0,
+                "fresh_client_safe_count": 0,
+                "ok": false,
+                "reason": "no_exact_fact_keys"
+              },
+              "has_missing_facts": true
+            },
+            "reason": "route_not_draft_for_manager",
+            "self_class": "safe_reference",
+            "status": "blocked"
+          },
+          "topic_id": "service:S5_general_consultation",
+          "turn": 1
+        }
+      ]
+    },
+    "unclear_review_required": {
+      "count": 0,
+      "examples": []
+    }
+  },
+  "inputs": {
+    "gold": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/gold_calibration/adr003_frame_gold_calibration_report.json",
+    "gold_sha256": "32b17c7196bcc192da3bdb1834f05199753e4aae80aeb75be8d683df4c7a1342",
+    "transcripts": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/ON/dynamic_dialog_transcripts.jsonl",
+    "transcripts_sha256": "e36b08908c24631fe54fefcac22494f318717bec46751d925f4ad9f57f46541b"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is not changed.",
+    "Runtime actual_p0 uses model/flag/shadow evidence and does not treat route=manager_only as P0 by itself.",
+    "manager_only candidates are diagnostic only and require a separate policy decision before any future active demotion."
+  ],
+  "schema_version": "adr003_overhandoff_levers_v1_2026_07_02",
+  "source_rev": "36ea110",
+  "totals": {
+    "danger_adjacent_blocked": 2,
+    "dialogs_total": 131,
+    "draft_candidates_for_future_active": 0,
+    "existence_format_needs_fact_verification_blocked": 1,
+    "gold_compared_rows": 79,
+    "gold_safe_self_rows": 32,
+    "harmless_context_ack_status_candidates": 0,
+    "manager_only_candidates_need_policy_decision": 0,
+    "missing_gold_turn_examples": [],
+    "missing_gold_turns": 0,
+    "safe_already_self": 21,
+    "safe_draft_for_manager": 3,
+    "safe_handoff_total": 11,
+    "safe_manager_only": 8,
+    "turns_total": 241
+  }
+}

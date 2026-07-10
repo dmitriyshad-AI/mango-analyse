@@ -1,0 +1,8 @@
+branch: codex/adr003-semanticframe-migration
+rev: 1af697aa
+
+ M docs/ADR003_ETAP_T_DECISIONS.md
+ M src/mango_mvp/channels/subscription_llm_parts/policy_routing.py
+ M tests/test_subscription_llm_draft_provider.py
+?? product_data/telegram_dynamic_test_sets/adr003_focus_reask_roles_payment_20260706.jsonl
+?? tasks/_running/2026-07-06_TZ_adr003_focus_pair_and_replay_pipeline.md

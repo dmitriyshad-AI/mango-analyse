@@ -1,0 +1,1191 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "No strict draft_for_manager candidates; active F3 remains NO-GO.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_no_active_candidate"
+  },
+  "breakdowns": {
+    "by_evidence_level": {
+      "kb_exact": 6
+    },
+    "by_readiness_group": {
+      "already_self_exact_proof": 5,
+      "excluded_danger_money_p0": 1
+    },
+    "by_requested_action": {
+      "answer_question": 6
+    },
+    "by_route": {
+      "bot_answer_self_for_pilot": 6
+    }
+  },
+  "created_at": "2026-07-02T08:42:58.397887+00:00",
+  "groups": {
+    "already_self_exact_proof": {
+      "count": 5,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+            "existence_status": "exists",
+            "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+            "fact_type": "course_parameter",
+            "match_level": "exact",
+            "product": "camp",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2026-08-31"
+          },
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 7 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "camp availability as general format/class reference; do not claim live free seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 2,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+              "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+              "existence_status": "exists",
+              "format": "",
+              "grade_values": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ],
+              "product_family": "camp",
+              "program_kind": "camp",
+              "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+              "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+              "source_fact_type": "course_parameter",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "classes_raw": "5-10",
+                "freshness_check_date": "2026-06-12",
+                "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "raw_value": "5-10",
+                "valid_until": "2026-08-31"
+              },
+              "subjects": [
+                "math",
+                "physics"
+              ],
+              "valid_until": "2026-08-31",
+              "venue": "lvsh_mendeleevo"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "5-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                  "raw_value": "5-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [
+                  "math",
+                  "physics"
+                ],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              },
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_it_classes_bbd85fed38_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_classes:bbd85fed38",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "7-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.it.classes",
+                  "raw_value": "7-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "",
+              "grade": 7,
+              "product_family": "",
+              "program_kind": "camp",
+              "subject": ""
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "already_self_exact_proof",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездной",
+            "grade": "7",
+            "program_kind": "ЛВШ",
+            "raw_text": "Выездная школа УНПК для 7 класса",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_accommodation_meals_per_day:f9c7d957ee: УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+            "existence_status": "exists",
+            "fact_key": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "regular_course",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "subject",
+              "format",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2027-05-30"
+          },
+          "blocked_reasons": [],
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 11 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe course/format existence reference without enrollment",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 1,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+              "entry_id": "product_existence_fact_v3_unpk_schedule_2026_27_groups_group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30_client_safe_t_55b15b7949_exists",
+              "existence_status": "exists",
+              "format": "online",
+              "grade_values": [
+                11
+              ],
+              "product_family": "regular_course",
+              "program_kind": "olympiad",
+              "source_fact_id": "fact:v3:unpk:schedule_2026_27_groups_group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30_client_safe_t:55b15b7949",
+              "source_fact_key": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+              "source_fact_type": "deadline",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "freshness_check_date": "2026-06-12",
+                "number": 11,
+                "path": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+                "raw_value": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+                "valid_until": "2027-05-30"
+              },
+              "subjects": [
+                "physics"
+              ],
+              "valid_until": "2027-05-30",
+              "venue": "online"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+                "entry_id": "product_existence_fact_v3_unpk_schedule_2026_27_groups_group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30_client_safe_t_55b15b7949_exists",
+                "existence_status": "exists",
+                "format": "online",
+                "grade_values": [
+                  11
+                ],
+                "product_family": "regular_course",
+                "program_kind": "olympiad",
+                "source_fact_id": "fact:v3:unpk:schedule_2026_27_groups_group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30_client_safe_t:55b15b7949",
+                "source_fact_key": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+                "source_fact_type": "deadline",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "freshness_check_date": "2026-06-12",
+                  "number": 11,
+                  "path": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+                  "raw_value": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+                  "valid_until": "2027-05-30"
+                },
+                "subjects": [
+                  "physics"
+                ],
+                "valid_until": "2027-05-30",
+                "venue": "online"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "online",
+              "grade": 11,
+              "product_family": "",
+              "program_kind": "olympiad",
+              "subject": "physics"
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "already_self_exact_proof",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "онлайн",
+            "grade": "11",
+            "program_kind": "олимпиадная подготовка",
+            "raw_text": "Олимпиадная физика онлайн для 11 класса есть?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_olympiad_targets_client_sa: Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+            "existence_status": "exists",
+            "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+            "fact_type": "course_parameter",
+            "match_level": "exact",
+            "product": "camp",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2026-08-31"
+          },
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «По УНПК выездная школа для 7 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe format/class reference if answer avoids live seats",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 2,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+              "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+              "existence_status": "exists",
+              "format": "",
+              "grade_values": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ],
+              "product_family": "camp",
+              "program_kind": "camp",
+              "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+              "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+              "source_fact_type": "course_parameter",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "classes_raw": "5-10",
+                "freshness_check_date": "2026-06-12",
+                "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "raw_value": "5-10",
+                "valid_until": "2026-08-31"
+              },
+              "subjects": [
+                "math",
+                "physics"
+              ],
+              "valid_until": "2026-08-31",
+              "venue": "lvsh_mendeleevo"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "5-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                  "raw_value": "5-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [
+                  "math",
+                  "physics"
+                ],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              },
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_it_classes_bbd85fed38_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_classes:bbd85fed38",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "7-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.it.classes",
+                  "raw_value": "7-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "",
+              "grade": 7,
+              "product_family": "",
+              "program_kind": "camp",
+              "subject": ""
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "already_self_exact_proof",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездной",
+            "grade": "7",
+            "program_kind": "ЛВШ",
+            "raw_text": "По УНПК выездная школа для 7 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_accommodation_meals_per_day:f9c7d957ee: УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+            "existence_status": "exists",
+            "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+            "fact_type": "course_parameter",
+            "match_level": "exact",
+            "product": "camp",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2026-08-31"
+          },
+          "blocked_reasons": [],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа УНПК для 9 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe existence/class reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 2,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+              "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+              "existence_status": "exists",
+              "format": "",
+              "grade_values": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ],
+              "product_family": "camp",
+              "program_kind": "camp",
+              "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+              "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+              "source_fact_type": "course_parameter",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "classes_raw": "5-10",
+                "freshness_check_date": "2026-06-12",
+                "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "raw_value": "5-10",
+                "valid_until": "2026-08-31"
+              },
+              "subjects": [
+                "math",
+                "physics"
+              ],
+              "valid_until": "2026-08-31",
+              "venue": "lvsh_mendeleevo"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "5-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                  "raw_value": "5-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [
+                  "math",
+                  "physics"
+                ],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              },
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_it_classes_bbd85fed38_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_classes:bbd85fed38",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "7-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.it.classes",
+                  "raw_value": "7-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "",
+              "grade": 9,
+              "product_family": "",
+              "program_kind": "camp",
+              "subject": ""
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "already_self_exact_proof",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная",
+            "grade": "9",
+            "program_kind": "лагерь/ЛВШ",
+            "raw_text": "Выездная школа УНПК для 9 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_subjects_1:566cb6f8a9: УНПК: в ЛВШ Менделеево для IT-направления есть предмет «Python»."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        },
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+            "existence_status": "exists",
+            "fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+            "fact_type": "deadline",
+            "match_level": "exact",
+            "product": "regular_course",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "subject",
+              "format",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2027-05-30"
+          },
+          "blocked_reasons": [],
+          "bot_excerpt": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО. Если хотите, менеджер УНПК поможет подобрать следующий шаг.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Олимпиадная физика онлайн для 9 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": false,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "safe online course existence reference",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "already_self_with_exact_kb_evidence",
+          "is_gold_safe_self": true,
+          "kb_match_count": 1,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+              "entry_id": "product_existence_fact_v3_unpk_schedule_2026_27_groups_group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30_client_safe_t_884d09b663_exists",
+              "existence_status": "exists",
+              "format": "online",
+              "grade_values": [
+                9
+              ],
+              "product_family": "regular_course",
+              "program_kind": "olympiad",
+              "source_fact_id": "fact:v3:unpk:schedule_2026_27_groups_group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30_client_safe_t:884d09b663",
+              "source_fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+              "source_fact_type": "deadline",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "freshness_check_date": "2026-06-12",
+                "number": 9,
+                "path": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+                "raw_value": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+                "valid_until": "2027-05-30"
+              },
+              "subjects": [
+                "physics"
+              ],
+              "valid_until": "2027-05-30",
+              "venue": "online"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+                "entry_id": "product_existence_fact_v3_unpk_schedule_2026_27_groups_group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30_client_safe_t_884d09b663_exists",
+                "existence_status": "exists",
+                "format": "online",
+                "grade_values": [
+                  9
+                ],
+                "product_family": "regular_course",
+                "program_kind": "olympiad",
+                "source_fact_id": "fact:v3:unpk:schedule_2026_27_groups_group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30_client_safe_t:884d09b663",
+                "source_fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+                "source_fact_type": "deadline",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "freshness_check_date": "2026-06-12",
+                  "number": 9,
+                  "path": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+                  "raw_value": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+                  "valid_until": "2027-05-30"
+                },
+                "subjects": [
+                  "physics"
+                ],
+                "valid_until": "2027-05-30",
+                "venue": "online"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "online",
+              "grade": 9,
+              "product_family": "",
+              "program_kind": "olympiad",
+              "subject": "physics"
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "already_self_exact_proof",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "subject",
+            "grade",
+            "format",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "онлайн",
+            "grade": "9",
+            "program_kind": "олимпиадная подготовка",
+            "raw_text": "Олимпиадная физика онлайн для 9 класса есть?",
+            "subject": "физика"
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "program_kind"
+            ],
+            "match_level": "partial",
+            "requested_axes": [
+              "subject",
+              "grade",
+              "format",
+              "program_kind"
+            ],
+            "score": 1,
+            "text_excerpt": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_olympiad_targets_client_sa: Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        }
+      ]
+    },
+    "blocked_frame_not_self": {
+      "count": 0,
+      "examples": []
+    },
+    "blocked_no_exact_proof": {
+      "count": 0,
+      "examples": []
+    },
+    "excluded_danger_money_p0": {
+      "count": 1,
+      "examples": [
+        {
+          "best_kb_match": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "client_safe_text_excerpt": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+            "existence_status": "exists",
+            "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+            "fact_type": "course_parameter",
+            "match_level": "exact",
+            "product": "camp",
+            "requested_axes": [
+              "brand",
+              "grade",
+              "program_kind"
+            ],
+            "score": 100,
+            "valid_until": "2026-08-31"
+          },
+          "blocked_reasons": [
+            "danger_money_or_p0"
+          ],
+          "bot_excerpt": "Не буду подставлять предмет или направление, которое вы не называли. Если напишете предмет и класс, сориентирую по подходящему курсу и следующему шагу.",
+          "brand": "unpk",
+          "client_excerpt": "Спроси: «Выездная школа для 8 класса есть?»",
+          "current_handoff": false,
+          "current_self": true,
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "evidence_level": "kb_exact",
+          "excluded_danger_money_p0": true,
+          "existence_format_candidate": true,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "frame_self_ok": false,
+          "frame_self_reasons": [
+            "frame_risk_not_safe",
+            "frame_answerability_not_self",
+            "frame_must_handoff",
+            "low_confidence"
+          ],
+          "gold": {
+            "expected": {
+              "answerability": "answer_self",
+              "must_handoff": false,
+              "requested_action": "answer_question",
+              "risk_class": "safe"
+            },
+            "notes": "general existence of camp for grade; no live-place check",
+            "review_label": "frame_too_cautious"
+          },
+          "group": "excluded_danger_money_p0",
+          "is_gold_safe_self": true,
+          "kb_match_count": 2,
+          "product_existence_check": {
+            "entry": {
+              "brand": "unpk",
+              "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+              "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+              "existence_status": "exists",
+              "format": "",
+              "grade_values": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ],
+              "product_family": "camp",
+              "program_kind": "camp",
+              "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+              "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+              "source_fact_type": "course_parameter",
+              "source_kind": "kb_fact",
+              "structured_value": {
+                "classes_raw": "5-10",
+                "freshness_check_date": "2026-06-12",
+                "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "raw_value": "5-10",
+                "valid_until": "2026-08-31"
+              },
+              "subjects": [
+                "math",
+                "physics"
+              ],
+              "valid_until": "2026-08-31",
+              "venue": "lvsh_mendeleevo"
+            },
+            "matches": [
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_fizmat_classes_5266552dcc_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_fizmat_classes:5266552dcc",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "5-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+                  "raw_value": "5-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [
+                  "math",
+                  "physics"
+                ],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              },
+              {
+                "brand": "unpk",
+                "client_safe_text": "УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+                "entry_id": "product_existence_fact_v3_unpk_lvsh_mendeleevo_2026_directions_it_classes_bbd85fed38_exists",
+                "existence_status": "exists",
+                "format": "",
+                "grade_values": [
+                  7,
+                  8,
+                  9,
+                  10
+                ],
+                "product_family": "camp",
+                "program_kind": "camp",
+                "source_fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_directions_it_classes:bbd85fed38",
+                "source_fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+                "source_fact_type": "course_parameter",
+                "source_kind": "kb_fact",
+                "structured_value": {
+                  "classes_raw": "7-10",
+                  "freshness_check_date": "2026-06-12",
+                  "path": "lvsh_mendeleevo_2026.directions.it.classes",
+                  "raw_value": "7-10",
+                  "valid_until": "2026-08-31"
+                },
+                "subjects": [],
+                "valid_until": "2026-08-31",
+                "venue": "lvsh_mendeleevo"
+              }
+            ],
+            "query_axes": {
+              "brand": "unpk",
+              "format": "",
+              "grade": 8,
+              "product_family": "",
+              "program_kind": "camp",
+              "subject": ""
+            },
+            "reason": "exact_product_existence_fact",
+            "status": "exists"
+          },
+          "readiness_group": "excluded_danger_money_p0",
+          "requested_action": "answer_question",
+          "requested_axes": [
+            "grade",
+            "program_kind"
+          ],
+          "requested_product": {
+            "brand": "unpk",
+            "format": "выездная",
+            "grade": "8",
+            "program_kind": "ЛВШ",
+            "raw_text": "Выездная школа для 8 класса есть?",
+            "subject": ""
+          },
+          "route": "bot_answer_self_for_pilot",
+          "runtime_fact_evidence": {
+            "axis_hits": [
+              "grade",
+              "program_kind"
+            ],
+            "match_level": "exact",
+            "requested_axes": [
+              "grade",
+              "program_kind"
+            ],
+            "score": 12,
+            "text_excerpt": "fact:v3:unpk:lvsh_mendeleevo_2026_audience:8fbc0262b0: УНПК: ЛВШ Менделеево — 5-10 класс (окончившие)."
+          },
+          "strict_f3_candidate": false,
+          "turn": 1
+        }
+      ]
+    },
+    "manager_only_exact_proof_needs_policy": {
+      "count": 0,
+      "examples": []
+    },
+    "other": {
+      "count": 0,
+      "examples": []
+    },
+    "strict_f3_draft_candidate": {
+      "count": 0,
+      "examples": []
+    }
+  },
+  "inputs": {
+    "confidence_threshold": 0.9,
+    "gold": "/tmp/adr003_f2j_existence_subset_gold.jsonl",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "transcripts": "/tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is unchanged.",
+    "Strict F3 candidates require route_before=draft_for_manager; manager_only is never demoted here.",
+    "Exact proof comes from product_existence_axes_catalog via the F2e existence report."
+  ],
+  "schema_version": "adr003_fact_gated_self_answer_readiness_v1_2026_07_02",
+  "source_rev": "896e820",
+  "totals": {
+    "already_self_exact_proof": 5,
+    "blocked_frame_not_self": 0,
+    "blocked_no_exact_proof": 0,
+    "current_handoff_rows": 0,
+    "excluded_danger_money_p0": 1,
+    "existence_format_rows": 6,
+    "manager_only_exact_proof_needs_policy": 0,
+    "strict_f3_draft_candidates": 0
+  }
+}

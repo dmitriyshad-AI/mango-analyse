@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -595,6 +596,53 @@ def test_direct_path_fail_fast_marks_config_invalid(monkeypatch, tmp_path):
 
     assert summary["config_validity"]["invalid"] is True
     assert summary["config_validity"]["reason"] == "config_invalid"
+
+
+def test_summary_includes_frame_decision_shadow_counts(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "frame_shadow",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [
+                {
+                    "turn": 1,
+                    "bot_route": "draft_for_manager",
+                    "bot_frame_decision_shadow": {
+                        "status": "observed",
+                        "comparisons": {
+                            "must_handoff_vs_route": "match",
+                            "p0_vs_actual": "mismatch",
+                            "answerability_vs_route": "match",
+                            "close_veto_vs_close_detect": "not_applicable",
+                            "action": {"alignment": "unknown"},
+                        },
+                    },
+                }
+            ],
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": "frame_shadow", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    frame_shadow = summary["frame_decision_shadow"]
+    assert frame_shadow["turn_count"] == 1
+    assert frame_shadow["statuses"] == {"observed": 1}
+    assert frame_shadow["must_handoff_vs_route"] == {"match": 1}
+    assert frame_shadow["p0_vs_actual"] == {"mismatch": 1}
+    assert frame_shadow["mismatches"][0]["dialog_id"] == "frame_shadow"
+    assert "Frame decision shadow" in sim.render_summary_md(summary)
+    rows = sim.build_turn_rows(transcripts)
+    csv_path = tmp_path / "turns.csv"
+    sim.write_csv(csv_path, rows)
+    csv_text = csv_path.read_text(encoding="utf-8")
+    assert "bot_semantic_frame" in csv_text.splitlines()[0]
+    assert "bot_frame_decision_shadow" in csv_text.splitlines()[0]
 
 
 def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
@@ -1279,6 +1327,58 @@ def test_replay_from_uses_saved_client_messages_and_marks_summary(tmp_path, monk
     assert summary["llm_calls"]["client"] == 0
 
 
+def test_scripted_client_mode_uses_persona_behaviors_without_client_llm(tmp_path, monkeypatch):
+    path = tmp_path / "scripted.jsonl"
+    out_dir = tmp_path / "scripted_out"
+    snapshot = tmp_path / "snapshot.json"
+    rows = [
+        {"type": "simulator_spec", "rules": ["scripted"]},
+        {"type": "judge_spec", "output_schema": {"verdict": "PASS|FAIL"}},
+        {
+            "type": "persona",
+            "dialog_id": "scripted_case",
+            "brand": "foton",
+            "persona": "родитель",
+            "max_turns": 3,
+            "scripted_behaviors": ["Первый точный вопрос", "Второй точный вопрос"],
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+    snapshot.write_text(json.dumps({"facts": []}), encoding="utf-8")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    rc = sim.main(
+        [
+            "--scenarios",
+            str(path),
+            "--snapshot",
+            str(snapshot),
+            "--out-dir",
+            str(out_dir),
+            "--client-mode",
+            "scripted",
+            "--judge-mode",
+            "fake",
+            "--bot-mode",
+            "fake",
+            "--memory-mode",
+            "fake",
+            "--parallel",
+            "1",
+        ]
+    )
+
+    assert rc == 0
+    transcript_rows = [
+        json.loads(line)
+        for line in (out_dir / "dynamic_dialog_transcripts.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    turns = transcript_rows[0]["turns"]
+    assert [turn["client_message"] for turn in turns] == ["Первый точный вопрос", "Второй точный вопрос"]
+    summary = json.loads((out_dir / "dynamic_summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_calls"]["client"] == 0
+
+
 def test_replay_from_refuses_same_output_transcript_path(tmp_path):
     path = tmp_path / "v7.jsonl"
     out_dir = tmp_path / "out"
@@ -1355,6 +1455,48 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert "answer_quality_reference" in context
     assert "conversation_intent_plan" in context
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+
+
+def test_initial_history_lines_seed_dynamic_context(monkeypatch, tmp_path):
+    captured: list[tuple[str, ...]] = []
+
+    def fake_context_builder(*args, **kwargs):
+        captured.append(tuple(kwargs.get("recent_messages") or ()))
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context_builder)
+
+    class CapturingProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                }
+            )
+
+    sim.run_one_dialog(
+        {
+            "dialog_id": "history_seed",
+            "brand": "unpk",
+            "persona": "родитель",
+            "max_turns": 1,
+            "initial_history_lines": ["Клиент: старый вопрос", "Ответ: старый ответ"],
+            "scripted_behaviors": ["текущий вопрос"],
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.ScriptedClientModel({"scripted_behaviors": ["текущий вопрос"]}),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=CapturingProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    assert captured[0] == ("Клиент: старый вопрос", "Ответ: старый ответ")
 
 
 def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch, tmp_path):
@@ -2189,6 +2331,7 @@ def test_llm_call_summary_exposes_semantic_output_roles() -> None:
             "bot_semantic_output_verifier": 3,
             "bot_semantic_output_regen": 1,
             "bot_direct_draft": 2,
+            "bot_semantic_frame_shadow": 1,
             "bot_retriever": 1,
             "client": 2,
         },
@@ -2199,8 +2342,9 @@ def test_llm_call_summary_exposes_semantic_output_roles() -> None:
     assert summary["bot_semantic_output_verifier"] == 3
     assert summary["bot_semantic_output_regen"] == 1
     assert summary["bot_direct_draft"] == 2
+    assert summary["bot_semantic_frame_shadow"] == 1
     assert summary["bot_retriever"] == 1
-    assert summary["total"] == 9
+    assert summary["total"] == 10
 
 
 def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
@@ -2218,6 +2362,378 @@ def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
 
     assert result.draft_text == "Да, подскажу."
     assert counter.snapshot()["bot_direct_draft"] == 1
+
+
+def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW", "1")
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    counter = sim.LlmCallCounter()
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    def fake_frame_runner(self, prompt: str) -> str:
+        if "SLOW" in prompt:
+            time.sleep(0.05)
+        return json.dumps(
+            {
+                "semantic_frame": {
+                    "intent": "live_availability",
+                    "risk_class": "manager_action",
+                    "deal_stage": "closing",
+                    "payment_readiness": "considering",
+                    "requested_product": {"brand": "foton", "raw_text": "курс"},
+                    "requested_action": "check_availability",
+                    "answerability": "manager_only",
+                    "must_handoff": True,
+                    "evidence": ["нужно проверить место"],
+                    "confidence": 0.9,
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(
+        sim.SubscriptionLlmDraftProvider,
+        "_direct_path_semantic_frame_shadow_runner",
+        fake_frame_runner,
+    )
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+    dialogs = [
+        {
+            "dialog_id": "d1",
+            "brand": "foton",
+            "persona": {"dialog_id": "d1", "brand": "foton"},
+            "judge_result": {"verdict": "PASS_WITH_NOTES"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "SLOW Есть места?",
+                    "bot_route": "draft_for_manager",
+                    "bot_text": "Менеджер проверит наличие места.",
+                    "bot_safety_flags": ["manager_approval_required"],
+                    "bot_manager_checklist": ["Проверить наличие места."],
+                },
+                {
+                    "turn": 2,
+                    "client_message": "Спасибо.",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Пожалуйста.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        },
+        {
+            "dialog_id": "d2",
+            "brand": "unpk",
+            "persona": {"dialog_id": "d2", "brand": "unpk"},
+            "judge_result": {"verdict": "PASS_WITH_NOTES"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Где занятия?",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Занятия проходят по адресу центра.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        },
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=2,
+    )
+
+    assert [dialog["dialog_id"] for dialog in enriched] == ["d1", "d2"]
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "draft_for_manager"
+    assert turn["bot_text"] == "Менеджер проверит наличие места."
+    assert turn["bot_safety_flags"] == ["manager_approval_required"]
+    assert turn["bot_manager_checklist"] == ["Проверить наличие места."]
+    assert turn["bot_semantic_frame"]["intent"] == "live_availability"
+    assert turn["bot_frame_decision_shadow"]["status"] == "observed"
+    second_turn = enriched[0]["turns"][1]
+    assert second_turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert second_turn["bot_text"] == "Пожалуйста."
+    assert second_turn["bot_safety_flags"] == ["no_auto_send"]
+    assert second_turn["bot_manager_checklist"] == []
+    assert second_turn["bot_semantic_frame"]["intent"] == "live_availability"
+    third_turn = enriched[1]["turns"][0]
+    assert third_turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert third_turn["bot_text"] == "Занятия проходят по адресу центра."
+    assert third_turn["bot_semantic_frame"]["intent"] == "live_availability"
+    assert counter.snapshot()["bot_semantic_frame_shadow"] == 3
+    assert counter.snapshot().get("bot_direct_draft", 0) == 0
+
+
+def test_semantic_frame_enrich_transcripts_keeps_frozen_fields_if_provider_mutates(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+
+    class MutatingProvider:
+        def _apply_direct_path_semantic_frame_posthoc_shadow(self, result, *, client_message: str, context):
+            return sim.SubscriptionDraftResult(
+                route="manager_only",
+                draft_text="MUTATED",
+                safety_flags=("mutated_flag",),
+                manager_checklist=("mutated checklist",),
+                missing_facts=result.missing_facts,
+                topic_id=result.topic_id,
+                message_type=result.message_type,
+                risk_level=result.risk_level,
+                metadata={
+                    **dict(result.metadata),
+                    "semantic_frame": {
+                        "intent": "availability",
+                        "risk_class": "safe",
+                        "deal_stage": "exploration",
+                        "payment_readiness": "unknown",
+                        "requested_product": {"brand": "foton", "raw_text": ""},
+                        "requested_action": "ask_info",
+                        "answerability": "yes",
+                        "must_handoff": False,
+                        "evidence": ["test"],
+                        "confidence": 0.9,
+                    },
+                },
+            )
+
+    dialogs = [
+        {
+            "dialog_id": "frozen",
+            "brand": "foton",
+            "persona": {"dialog_id": "frozen", "brand": "foton"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Есть места?",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Да, есть места.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        }
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=MutatingProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=1,
+    )
+
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert turn["bot_text"] == "Да, есть места."
+    assert turn["bot_safety_flags"] == ["no_auto_send"]
+    assert turn["bot_manager_checklist"] == []
+    assert turn["bot_semantic_frame"]["intent"] == "availability"
+    assert turn["bot_frame_decision_shadow"]["status"] == "observed"
+
+
+def test_semantic_frame_enrich_transcripts_applies_existence_proof_shadow(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "unpk",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+
+    class FrameProvider:
+        def _apply_direct_path_semantic_frame_posthoc_shadow(self, result, *, client_message: str, context):
+            metadata = dict(result.metadata)
+            direct = dict(metadata.get("direct_path") or {})
+            frame = {
+                "intent": "exists",
+                "risk_class": "safe",
+                "deal_stage": "exploration",
+                "payment_readiness": "none",
+                "requested_product": {"brand": "unpk", "raw_text": "олимпиадная физика онлайн 9 класс"},
+                "requested_action": "answer_question",
+                "answerability": "answer_self",
+                "must_handoff": False,
+                "evidence": ["test"],
+                "confidence": 0.95,
+            }
+            metadata["semantic_frame"] = frame
+            direct["semantic_frame"] = frame
+            metadata["direct_path"] = direct
+            return sim.SubscriptionDraftResult(
+                route=result.route,
+                draft_text=result.draft_text,
+                safety_flags=result.safety_flags,
+                manager_checklist=result.manager_checklist,
+                missing_facts=result.missing_facts,
+                topic_id=result.topic_id,
+                message_type=result.message_type,
+                risk_level=result.risk_level,
+                metadata=metadata,
+            )
+
+    def fake_proof_shadow(result, *, context):
+        metadata = dict(result.metadata)
+        direct = dict(metadata.get("direct_path") or {})
+        trace = {
+            "enabled": True,
+            "status": "exists",
+            "exact_fact_keys": ["fact.existence"],
+            "route_text_shadow_only": True,
+        }
+        metadata["semantic_frame_existence_proof_shadow"] = trace
+        direct["semantic_frame_existence_proof_shadow"] = trace
+        metadata["direct_path"] = direct
+        return sim.SubscriptionDraftResult(
+            route=result.route,
+            draft_text=result.draft_text,
+            safety_flags=result.safety_flags,
+            manager_checklist=result.manager_checklist,
+            missing_facts=result.missing_facts,
+            topic_id=result.topic_id,
+            message_type=result.message_type,
+            risk_level=result.risk_level,
+            metadata=metadata,
+        )
+
+    monkeypatch.setattr(sim, "apply_semantic_frame_existence_proof_shadow", fake_proof_shadow)
+
+    dialogs = [
+        {
+            "dialog_id": "proof",
+            "brand": "unpk",
+            "persona": {"dialog_id": "proof", "brand": "unpk"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Есть олимпиадная физика онлайн для 9 класса?",
+                    "bot_route": "draft_for_manager",
+                    "bot_text": "Менеджер проверит.",
+                    "bot_safety_flags": ["manager_approval_required"],
+                    "bot_manager_checklist": ["Проверить группу."],
+                }
+            ],
+        }
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=FrameProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=1,
+    )
+
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "draft_for_manager"
+    assert turn["bot_text"] == "Менеджер проверит."
+    assert turn["bot_safety_flags"] == ["manager_approval_required"]
+    assert turn["bot_manager_checklist"] == ["Проверить группу."]
+    assert turn["bot_direct_path"]["semantic_frame_existence_proof_shadow"]["status"] == "exists"
+
+
+def test_semantic_frame_enrich_transcripts_parallel_counter_stress(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW", "1")
+    counter = sim.LlmCallCounter()
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    def fake_frame_runner(self, prompt: str) -> str:
+        return json.dumps(
+            {
+                "semantic_frame": {
+                    "intent": "stress",
+                    "risk_class": "safe",
+                    "deal_stage": "exploration",
+                    "payment_readiness": "unknown",
+                    "requested_product": {"brand": "foton", "raw_text": ""},
+                    "requested_action": "ask_info",
+                    "answerability": "yes",
+                    "must_handoff": False,
+                    "evidence": ["stress"],
+                    "confidence": 0.8,
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(sim.SubscriptionLlmDraftProvider, "_direct_path_semantic_frame_shadow_runner", fake_frame_runner)
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+    dialogs = [
+        {
+            "dialog_id": f"d{dialog_index}",
+            "brand": "foton",
+            "persona": {"dialog_id": f"d{dialog_index}", "brand": "foton"},
+            "turns": [
+                {
+                    "turn": turn_index,
+                    "client_message": f"Вопрос {dialog_index}-{turn_index}",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Ответ.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+                for turn_index in range(1, 4)
+            ],
+        }
+        for dialog_index in range(10)
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=4,
+    )
+
+    assert len(enriched) == 10
+    assert sum(len(dialog["turns"]) for dialog in enriched) == 30
+    assert counter.snapshot()["bot_semantic_frame_shadow"] == 30
+    assert counter.snapshot().get("bot_direct_draft", 0) == 0
 
 
 def test_direct_path_retriever_runner_counts_llm_role(monkeypatch) -> None:
@@ -2392,10 +2908,13 @@ def test_build_bot_provider_codex_mode_is_isolated_by_default_and_can_disable() 
 
     isolated = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True))
     baseline = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=False))
+    no_retry = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True, bot_max_attempts=1))
 
     assert isinstance(isolated, sim.CountingSubscriptionLlmDraftProvider)
     assert isolated.codex_isolated is True
+    assert isolated.max_attempts == 2
     assert baseline.codex_isolated is False
+    assert no_retry.max_attempts == 1
 
 
 def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:
@@ -2578,6 +3097,7 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "client": 2,
         "bot_draft": 3,
         "bot_direct_draft": 0,
+        "bot_semantic_frame_shadow": 0,
         "bot_retriever": 0,
         "bot_critic": 1,
         "bot_faithfulness": 2,

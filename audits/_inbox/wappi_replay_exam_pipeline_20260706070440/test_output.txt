@@ -1,0 +1,7 @@
+pytest tests/test_wappi_replay_*.py: 15 passed
+py_compile replay modules/scripts: OK
+offline fake replay smoke: turns=3, machine_gate_failures=0, llm_calls.client=0
+build_wappi_replay_m1_manifest smoke: metric=chat_only_replay
+pytest --collect-only: 4165 tests collected
+git diff --check: OK
+live Wappi export/pilot-10: NOT RUN, requires separate owner confirmation

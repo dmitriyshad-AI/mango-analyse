@@ -1,0 +1,181 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active F3 remains NO-GO: this report diagnoses manager_only rows only.",
+      "If runtime retrieval missed exact proof, the next safe step is shadow evidence injection or retrieval diagnostics, not manager_only demotion.",
+      "If frame marks manager_action, frame calibration is required before any active route change.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_diagnosed"
+  },
+  "breakdowns": {
+    "by_message_type": {
+      "context_update": 2
+    },
+    "by_reason_class": {
+      "policy_permission": 2
+    },
+    "by_requested_action": {
+      "answer_question": 1,
+      "check_availability": 1
+    },
+    "by_root_cause": {
+      "answer_contract_no_required_fact_keys": 2,
+      "conversation_plan_no_product_scope": 2,
+      "frame_action_not_safe_reference": 1,
+      "frame_confidence_below_threshold": 1,
+      "frame_marks_manager_action": 1,
+      "route_locked_manager_only": 2,
+      "runtime_missing_facts_present": 2,
+      "runtime_retrieval_missed_exact_fact": 2,
+      "runtime_retrieval_zero_candidates": 2,
+      "self_shadow_has_no_runtime_exact_fact_keys": 2
+    }
+  },
+  "cases": [
+    {
+      "blocked_reasons": [
+        "route_is_manager_only",
+        "low_confidence"
+      ],
+      "contract_required_fact_keys": [],
+      "contract_route": "draft_for_manager",
+      "contract_route_bias": "draft_for_manager",
+      "contract_route_reason": "help_then_one_question",
+      "dialog_id": "wappi_pair_missing_72h_001",
+      "existence_status": "exists",
+      "frame_answerability": "answer_self",
+      "frame_confidence": 0.86,
+      "frame_must_handoff": false,
+      "frame_risk_class": "safe",
+      "message_type": "context_update",
+      "missing_fact_count": 3,
+      "plan_direct_question_present": false,
+      "plan_fact_scope": "",
+      "plan_known_slot_keys": [
+        "grade"
+      ],
+      "plan_primary_intent": "general_consultation",
+      "plan_product_scope": "",
+      "plan_required_fact_keys": [],
+      "plan_route_bias": "draft_for_manager",
+      "plan_topic_id": "service:S5_general_consultation",
+      "reason_class": "policy_permission",
+      "requested_action": "answer_question",
+      "requested_axes": [
+        "grade",
+        "program_kind"
+      ],
+      "root_cause_codes": [
+        "route_locked_manager_only",
+        "runtime_retrieval_missed_exact_fact",
+        "runtime_retrieval_zero_candidates",
+        "conversation_plan_no_product_scope",
+        "answer_contract_no_required_fact_keys",
+        "frame_confidence_below_threshold",
+        "runtime_missing_facts_present",
+        "self_shadow_has_no_runtime_exact_fact_keys"
+      ],
+      "route": "manager_only",
+      "runtime_candidate_count": 0,
+      "runtime_model_needed_facts": [],
+      "runtime_retrieval_mode": "off",
+      "runtime_selected_adjacent_ids": [],
+      "runtime_selected_exact_ids": [],
+      "safety_flags": [
+        "message_type_context_update",
+        "conversation_intent_plan_topic_applied",
+        "unstated_subject_guarded",
+        "answer_quality_assessed"
+      ],
+      "self_shadow_freshness_reason": "no_exact_fact_keys",
+      "self_shadow_reason": "route_not_draft_for_manager",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 1
+    },
+    {
+      "blocked_reasons": [
+        "route_is_manager_only",
+        "frame_risk_not_safe",
+        "frame_answerability_not_self",
+        "frame_action_not_safe_self",
+        "frame_must_handoff"
+      ],
+      "contract_required_fact_keys": [],
+      "contract_route": "draft_for_manager",
+      "contract_route_bias": "draft_for_manager",
+      "contract_route_reason": "help_then_one_question",
+      "dialog_id": "wappi_pair_missing_72h_003",
+      "existence_status": "exists",
+      "frame_answerability": "manager_only",
+      "frame_confidence": 0.92,
+      "frame_must_handoff": true,
+      "frame_risk_class": "manager_action",
+      "message_type": "context_update",
+      "missing_fact_count": 2,
+      "plan_direct_question_present": false,
+      "plan_fact_scope": "",
+      "plan_known_slot_keys": [],
+      "plan_primary_intent": "general_consultation",
+      "plan_product_scope": "",
+      "plan_required_fact_keys": [],
+      "plan_route_bias": "draft_for_manager",
+      "plan_topic_id": "service:S5_general_consultation",
+      "reason_class": "policy_permission",
+      "requested_action": "check_availability",
+      "requested_axes": [
+        "grade",
+        "program_kind"
+      ],
+      "root_cause_codes": [
+        "route_locked_manager_only",
+        "runtime_retrieval_missed_exact_fact",
+        "runtime_retrieval_zero_candidates",
+        "conversation_plan_no_product_scope",
+        "answer_contract_no_required_fact_keys",
+        "frame_marks_manager_action",
+        "frame_action_not_safe_reference",
+        "runtime_missing_facts_present",
+        "self_shadow_has_no_runtime_exact_fact_keys"
+      ],
+      "route": "manager_only",
+      "runtime_candidate_count": 0,
+      "runtime_model_needed_facts": [],
+      "runtime_retrieval_mode": "off",
+      "runtime_selected_adjacent_ids": [],
+      "runtime_selected_exact_ids": [],
+      "safety_flags": [
+        "message_type_context_update",
+        "conversation_intent_plan_topic_applied",
+        "answer_quality_assessed"
+      ],
+      "self_shadow_freshness_reason": "no_exact_fact_keys",
+      "self_shadow_reason": "route_not_draft_for_manager",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 1
+    }
+  ],
+  "created_at": "2026-07-02T01:48:00.957639+00:00",
+  "inputs": {
+    "confidence_threshold": 0.9,
+    "gold": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "transcripts": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/ON/dynamic_dialog_transcripts.jsonl"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is unchanged.",
+    "This report diagnoses manager_only exact-proof rows; it does not authorize demoting manager_only.",
+    "Exact product proof comes from the F2f readiness report; runtime retrieval evidence is read from transcripts."
+  ],
+  "schema_version": "adr003_manager_only_exact_proof_root_cause_v1_2026_07_02",
+  "source_rev": "322020d",
+  "totals": {
+    "conversation_plan_lacks_product_scope": 2,
+    "frame_manager_action": 1,
+    "low_confidence": 1,
+    "manager_only_exact_proof_rows": 2,
+    "readiness_strict_f3_draft_candidates": 0,
+    "runtime_exact_proof_missing": 2
+  }
+}

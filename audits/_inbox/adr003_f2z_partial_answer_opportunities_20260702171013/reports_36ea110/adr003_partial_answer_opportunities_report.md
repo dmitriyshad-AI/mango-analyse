@@ -1,0 +1,159 @@
+# ADR-003 F2z Partial Answer Opportunities
+
+- Status: `pass_report_only`
+- Active readiness: `no_go`
+- Source rev: `246e250a`
+- Total turns: `241`
+- Handoff turns: `135`
+- Partial-support handoff turns: `44`
+- Draft partial shadow candidates: `0`
+- Manager-only partial policy blocked: `2`
+- Action/danger excluded partial rows: `37`
+
+## Partial Root Causes
+
+- `action_or_danger_excluded`: `37`
+- `hard_missing_axis_blocked`: `4`
+- `manager_only_policy_blocked`: `2`
+- `broad_missing_axes_blocked`: `1`
+
+## Partial Cases
+
+- `wappi_pair_missing_72h_001#1` route=`manager_only` action=`answer_question` status=`hard_missing_axis_blocked`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, hard_missing_axis`
+- `wappi_pair_missing_72h_002#1` route=`draft_for_manager` action=`answer_question` status=`broad_missing_axes_blocked`
+  - proven: `product_existence, price_cost`; missing slots: `grade`; uncovered: `boarding_food, dates_schedule, location_address`
+  - why not active: `report_only, no_text_generated, broad_missing_axes`
+- `wappi_pair_missing_72h_003#1` route=`manager_only` action=`check_availability` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `boarding_food, live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:check_availability`
+- `wappi_pair_missing_72h_004#1` route=`manager_only` action=`answer_question` status=`hard_missing_axis_blocked`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, hard_missing_axis`
+- `wappi_pair_missing_72h_007#1` route=`draft_for_manager` action=`check_availability` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: `grade`; uncovered: `boarding_food, live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:check_availability`
+- `wappi_pair_missing_72h_014#1` route=`manager_only` action=`send_payment_link` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:send_payment_link`
+- `wappi_pair_missing_72h_016#1` route=`manager_only` action=`send_payment_link` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:send_payment_link`
+- `wappi_pair_missing_72h_017#1` route=`manager_only` action=`enroll` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:enroll`
+- `wappi_pair_missing_72h_022#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `wappi_pair_missing_72h_023#1` route=`draft_for_manager` action=`check_availability` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `boarding_food, live_availability, location_address`
+  - why not active: `report_only, no_text_generated, requested_action:check_availability`
+- `wappi_pair_missing_72h_024#1` route=`manager_only` action=`answer_question` status=`hard_missing_axis_blocked`
+  - proven: `product_existence`; missing slots: ``; uncovered: `dates_schedule, live_availability`
+  - why not active: `report_only, no_text_generated, hard_missing_axis`
+- `forward_payment_foton_hold_price_01#2` route=`draft_for_manager` action=`check_availability` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: `grade`; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:check_availability`
+- `p0_model_led_pos_anxiety_level#1` route=`draft_for_manager` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_paid_no_access_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence, platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_paid_no_access_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence, platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_paid_no_access_dash_anchor_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence, platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_paid_no_access_dash_anchor_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_paid_invite_missing_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_paid_invite_missing_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_login_password_missing_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_ft_login_password_missing_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_platform_link_missing_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_platform_link_missing_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_cabinet_access_not_opened_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `p0_un_cabinet_access_not_opened_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `rz_foton_refund_prepay_rules_01#4` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `rz_unpk_refund_paid_dispute_02#2` route=`manager_only` action=`refund_or_cancel` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `boarding_food, dates_schedule, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:refund_or_cancel`
+- `rz_unpk_refund_paid_dispute_02#3` route=`manager_only` action=`refund_or_cancel` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:refund_or_cancel`
+- `ra1_foton_price_and_places#1` route=`draft_for_manager` action=`check_availability` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:check_availability`
+- `ra1_foton_dates_and_booking#1` route=`draft_for_manager` action=`enroll` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: `grade`; uncovered: ``
+  - why not active: `report_only, no_text_generated, requested_action:enroll`
+- `ra1_foton_platform_and_price#1` route=`manager_only` action=`answer_question` status=`manager_only_policy_blocked`
+  - proven: `price_cost, platform_current`; missing slots: `grade`; uncovered: `class_grade`
+  - why not active: `report_only, no_text_generated, route_manager_only`
+- `ra1_foton_cross_brand_question#1` route=`manager_only` action=`answer_question` status=`manager_only_policy_blocked`
+  - proven: `price_cost`; missing slots: `grade`; uncovered: `class_grade`
+  - why not active: `report_only, no_text_generated, route_manager_only`
+- `cf142_pos_unpk_exam_group_signup#3` route=`manager_only` action=`enroll` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:enroll`
+- `cf142_p0_unpk_paid_transfer#2` route=`draft_for_manager` action=`answer_question` status=`hard_missing_axis_blocked`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability`
+  - why not active: `report_only, no_text_generated, hard_missing_axis`
+- `cf142_p0_unpk_paid_transfer#3` route=`manager_only` action=`refund_or_cancel` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `boarding_food, live_availability`
+  - why not active: `report_only, no_text_generated, requested_action:refund_or_cancel`
+- `cf142_brand_unpk_foton_compare#3` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `location_address, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `cf142_brand_foton_mipt_place#3` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `dates_schedule, location_address`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_un_paid_lesson_01#2` route=`draft_for_manager` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `dates_schedule, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_ft_online_link_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence, platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_ft_online_link_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence, platform_current`; missing slots: ``; uncovered: `dates_schedule, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_un_login_password_01#1` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `platform_current`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_un_login_password_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_ft_course_not_opened_01#2` route=`manager_only` action=`handoff_manager` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:handoff_manager`
+- `tz147_un_benign_access_question_01#2` route=`manager_only` action=`enroll` status=`action_or_danger_excluded`
+  - proven: `product_existence`; missing slots: ``; uncovered: `live_availability, payment_access`
+  - why not active: `report_only, no_text_generated, requested_action:enroll`
+
+## Acceptance Notes
+
+- Active autonomy remains NO-GO: this report emits no route or text changes.
+- Partial-answer candidates require owner-approved text policy and semantic review.
+- manager_only rows stay blocked even with partial support.

@@ -1,0 +1,2508 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "draft_partial_shadow_candidate_count": 0,
+    "notes": [
+      "Active autonomy remains NO-GO: this report emits no route or text changes.",
+      "Partial-answer candidates require owner-approved text policy and semantic review.",
+      "manager_only rows stay blocked even with partial support."
+    ],
+    "status": "pass_report_only"
+  },
+  "breakdowns": {
+    "handoff_by_requested_action": {
+      "answer_question": 31,
+      "check_availability": 10,
+      "enroll": 8,
+      "handoff_manager": 69,
+      "refund_or_cancel": 12,
+      "send_document": 2,
+      "send_payment_link": 3
+    },
+    "handoff_by_route": {
+      "draft_for_manager": 26,
+      "manager_only": 109
+    },
+    "partial_by_route": {
+      "draft_for_manager": 9,
+      "manager_only": 35
+    },
+    "partial_by_status": {
+      "action_or_danger_excluded": 37,
+      "broad_missing_axes_blocked": 1,
+      "hard_missing_axis_blocked": 4,
+      "manager_only_policy_blocked": 2
+    }
+  },
+  "created_at": "2026-07-02T14:10:13.699334+00:00",
+  "inputs": {
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "kb_snapshot_sha256": "f2f211a56cafc213326d4841752e38a081172de867bd598b08724a510b065ba5",
+    "transcripts": "audits/_inbox/adr003_f2v_existing_frame_proof_replay_20260702155709/reports_36ea110/enriched/dynamic_dialog_transcripts.jsonl",
+    "transcripts_sha256": "5a5473f5979db8229e62503035b060c9aea203f187e23f358a9c1e67ef2d95a5"
+  },
+  "notes": [
+    "Report-only diagnostic: no route/text/runtime behavior changes.",
+    "No customer-facing partial answer is generated or exported.",
+    "A future active step requires owner-approved text policy and semantic review."
+  ],
+  "partial_cases": [
+    {
+      "answerability": "answer_self",
+      "client_excerpt": "Да:) Она очень заинтересовала:) у меня ребёнок закончил 5 класс:)",
+      "confidence": 0.86,
+      "dialog_id": "wappi_pair_missing_72h_001",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "live_availability",
+          "program_direction"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "tg_unpk_verified_2026_05_21.client_facts.lvsh_age_rule.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "live_availability",
+        "program_direction"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": false,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "hard_missing_axis_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "hard_missing_axis"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "safe",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Расскажите про обе",
+      "confidence": 0.86,
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "class_grade",
+          "dates_schedule",
+          "location_address",
+          "price_cost",
+          "program_direction"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 18,
+        "price_fact_keys": [
+          "ls_city_2026_unpk.dolgoprudny.prices.base",
+          "ls_city_2026_unpk.dolgoprudny.prices.plus_factultative",
+          "ls_city_2026_unpk.dolgoprudny.prices.plus_individual",
+          "ls_city_2026_unpk.moscow.prices.base",
+          "ls_city_2026_unpk.moscow.prices.plus_factultative",
+          "ls_city_2026_unpk.moscow.prices.plus_individual",
+          "r4_1_owner_2026_06_12.unpk.city_summer_school_tariffs",
+          "intensives_2026.ege_unpk.prices.one_block"
+        ],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.free_morning_club.from_day",
+          "ls_city_2026_unpk.free_morning_club.name",
+          "ls_city_2026_unpk.free_morning_club.time",
+          "ls_city_2026_unpk.meals"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "price_cost"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "dates_schedule",
+          "location_address"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "class_grade",
+        "dates_schedule",
+        "location_address",
+        "price_cost",
+        "program_direction"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "broad_missing_axes_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "broad_missing_axes"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "missing_facts",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+      "confidence": 0.92,
+      "dialog_id": "wappi_pair_missing_72h_003",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "class_grade",
+          "live_availability"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "tg_unpk_verified_2026_05_21.client_facts.lvsh_age_rule.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "class_grade",
+        "live_availability"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:check_availability"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "check_availability",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "answer_self",
+      "client_excerpt": "Добрый день,пока нет думаем",
+      "confidence": 0.92,
+      "dialog_id": "wappi_pair_missing_72h_004",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "live_availability",
+          "program_direction"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "live_availability",
+        "program_direction"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": false,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "hard_missing_axis_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "hard_missing_axis"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "safe",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Добрый вечер. Хотела узнать по поводу смены летнего лагеря 6-17 июля. Есть ли места, как устроены занятия, есть ли перерыв, перекус?",
+      "confidence": 0.92,
+      "dialog_id": "wappi_pair_missing_72h_007",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "class_grade",
+          "live_availability"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.free_morning_club.from_day",
+          "ls_city_2026_unpk.free_morning_club.name",
+          "ls_city_2026_unpk.free_morning_club.time",
+          "ls_city_2026_unpk.meals"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "class_grade",
+        "live_availability"
+      ],
+      "missing_fact_count": 5,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:check_availability"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "check_availability",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Доплата за [fio] за тариф премиум 10",
+      "confidence": 0.96,
+      "dialog_id": "wappi_pair_missing_72h_014",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.moscow.dates",
+          "ls_city_2026_unpk.moscow.location",
+          "lvsh_mendeleevo_2026.transfer_from_moscow.available",
+          "lvsh_mendeleevo_2026.transfer_from_moscow.confirmed_by_team"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:send_payment_link"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "send_payment_link",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "А сюда можно ссылки на оплату?",
+      "confidence": 0.96,
+      "dialog_id": "wappi_pair_missing_72h_016",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.free_morning_club.from_day",
+          "ls_city_2026_unpk.free_morning_club.name",
+          "ls_city_2026_unpk.free_morning_club.time",
+          "ls_city_2026_unpk.meals"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:send_payment_link"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "send_payment_link",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "[fio] [phone] Grade 8, 7 класс по российской системе. [fio] [phone] WhatsApp [email]",
+      "confidence": 0.93,
+      "dialog_id": "wappi_pair_missing_72h_017",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "live_availability"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "lvsh_mendeleevo_2026.directions.it.classes"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "live_availability"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:enroll"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "enroll",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Спасибо огромное. [fio] чек.",
+      "confidence": 0.93,
+      "dialog_id": "wappi_pair_missing_72h_022",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "ls_city_2026_unpk.dolgoprudny.location",
+          "ls_city_2026_unpk.dolgoprudny.smeny.1",
+          "ls_city_2026_unpk.dolgoprudny.smeny.2",
+          "ls_city_2026_unpk.moscow.dates",
+          "ls_city_2026_unpk.moscow.location",
+          "lvsh_mendeleevo_2026.transfer_from_moscow.available",
+          "lvsh_mendeleevo_2026.transfer_from_moscow.confirmed_by_team"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "6-17 июля есть места? По какому адресу проходит?",
+      "confidence": 0.94,
+      "dialog_id": "wappi_pair_missing_72h_023",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "live_availability",
+          "location_address"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "live_availability",
+          "location_address"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "live_availability",
+        "location_address"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:check_availability"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "check_availability",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "answer_self",
+      "client_excerpt": "Поняла, спасибо. Надо подумать, время еще есть👍",
+      "confidence": 0.92,
+      "dialog_id": "wappi_pair_missing_72h_024",
+      "kb_support": {
+        "missing_categories": [
+          "dates_schedule",
+          "live_availability"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_r68_onlajn_sat_1430_1630_math_8_advanced_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "dates_schedule",
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "dates_schedule",
+        "live_availability"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": false,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "hard_missing_axis_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "hard_missing_axis"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "safe",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "А если мы сейчас решим, место точно будет за нами?",
+      "confidence": 0.95,
+      "dialog_id": "forward_payment_foton_hold_price_01",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "live_availability"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "presentation_format_facts_2026_05_21.client_facts.offline_organization.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.parent_access_offline.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_c13_krasnoselskaya_sat_1000_1200_math_11_advanced_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_c18_krasnoselskaya_sat_1000_1200_math_11_base_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_c29_krasnoselskaya_sat_1000_1200_physics_10_base_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_c51_krasnoselskaya_sat_1000_1200_physics_9_advanced_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_d13_krasnoselskaya_sat_1215_1415_physics_11_advanced_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_d18_krasnoselskaya_sat_1215_1415_physics_11_base_before_2027_05_22.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "live_availability"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:check_availability"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "check_availability",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Ребёнок в 8 классе, физика слабая, вдруг не потянет? Что обычно делаете в такой ситуации?",
+      "confidence": 0.82,
+      "dialog_id": "p0_model_led_pos_anxiety_level",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "schedule_2026_27.groups.group_start_date_h83_krasnoselskaya_sun_1000_1200_physics_8_base_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_w73_onlajn_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "payment_access"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплатили онлайн-курс, ссылка на платформу не пришла",
+      "confidence": 0.98,
+      "dialog_id": "p0_ft_paid_no_access_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.regular_group_size",
+          "r4_1_owner_2026_06_12.foton.schedule_timezone_msk",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "жду уже сутки",
+      "confidence": 0.94,
+      "dialog_id": "p0_ft_paid_no_access_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.regular_group_size",
+          "r4_1_owner_2026_06_12.foton.schedule_timezone_msk",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплатил онлайн-математику — доступа так и нет",
+      "confidence": 0.98,
+      "dialog_id": "p0_ft_paid_no_access_dash_anchor_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q52_onlajn_sat_1215_1415_math_9_oge_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_r68_onlajn_sat_1430_1630_math_8_advanced_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "понял, жду",
+      "confidence": 0.95,
+      "dialog_id": "p0_ft_paid_no_access_dash_anchor_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q52_onlajn_sat_1215_1415_math_9_oge_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_r68_onlajn_sat_1430_1630_math_8_advanced_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплату внесли, а приглашение на онлайн физику для 9 класса так и не пришло",
+      "confidence": 0.98,
+      "dialog_id": "p0_un_paid_invite_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_v47_onlajn_ano_sun_1215_1415_physics_9_oge_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_z8_onlajn_ano_mon_wed_1800_1930_physics_9_oge_before_2027_05_26.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "понял, жду",
+      "confidence": 0.93,
+      "dialog_id": "p0_un_paid_invite_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_v47_onlajn_ano_sun_1215_1415_physics_9_oge_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_z8_onlajn_ano_mon_wed_1800_1930_physics_9_oge_before_2027_05_26.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплачен курс, логин и пароль в личном кабинете так и не дали",
+      "confidence": 0.98,
+      "dialog_id": "p0_ft_login_password_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "жду уже сутки",
+      "confidence": 0.96,
+      "dialog_id": "p0_ft_login_password_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.offline_organization.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.parent_access_offline.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.author_program_not_single_textbook",
+          "r4_1_owner_2026_06_12.foton.regular_group_size"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплатили, ссылка на платформу для онлайн занятий до сих пор не пришла",
+      "confidence": 0.97,
+      "dialog_id": "p0_un_platform_link_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 5,
+        "platform_fact_keys": [
+          "processes_2026_06_10.unpk.after_payment_access",
+          "processes_2026_06_10.unpk.online_access_platform",
+          "processes_2026_06_10.unpk.personal_cabinet",
+          "r4_owner_2026_06_11.unpk.online_platform_transition",
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "второй день доступа нет",
+      "confidence": 0.95,
+      "dialog_id": "p0_un_platform_link_missing_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 5,
+        "platform_fact_keys": [
+          "processes_2026_06_10.unpk.after_payment_access",
+          "processes_2026_06_10.unpk.online_access_platform",
+          "processes_2026_06_10.unpk.personal_cabinet",
+          "r4_owner_2026_06_11.unpk.online_platform_transition",
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "оплатили курс, доступ к личному кабинету для онлайн физики не открыли",
+      "confidence": 0.96,
+      "dialog_id": "p0_un_cabinet_access_not_opened_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q26_onlajn_ano_sat_1215_1415_physics_10_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_v78_onlajn_ano_sun_1215_1415_physics_7_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_w68_onlajn_ano_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "понял, жду",
+      "confidence": 0.94,
+      "dialog_id": "p0_un_cabinet_access_not_opened_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q26_onlajn_ano_sat_1215_1415_physics_10_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_v78_onlajn_ano_sun_1215_1415_physics_7_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_w68_onlajn_ano_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "'ну в двух словах какие там условия? email пока не оставлю'",
+      "confidence": 0.88,
+      "dialog_id": "rz_foton_refund_prepay_rules_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_c51_krasnoselskaya_sat_1000_1200_physics_9_advanced_before_2027_05_22.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_e51_krasnoselskaya_sat_1430_1630_physics_9_base_before_2027_05_22.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 4
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "'я оплатил, а расписание так и не прислали — хочу вернуть деньги'",
+      "confidence": 0.97,
+      "dialog_id": "rz_unpk_refund_paid_dispute_02",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "dates_schedule",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_h34_sretenka_sun_1000_1200_physics_10_advanced_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_i23_sretenka_sun_1215_1415_informatics_10_11_advanced_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_i29_sretenka_sun_1215_1415_math_10_advanced_before_2027_05_23.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "dates_schedule",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "dates_schedule",
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:refund_or_cancel"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "refund_or_cancel",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "'так вернёте или нет?'",
+      "confidence": 0.98,
+      "dialog_id": "rz_unpk_refund_paid_dispute_02",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_h34_sretenka_sun_1000_1200_physics_10_advanced_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_i23_sretenka_sun_1215_1415_informatics_10_11_advanced_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_i29_sretenka_sun_1215_1415_math_10_advanced_before_2027_05_23.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:refund_or_cancel"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "refund_or_cancel",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 3
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Сколько стоит онлайн-курс для 7 класса и есть ли сейчас места?",
+      "confidence": 0.94,
+      "dialog_id": "ra1_foton_price_and_places",
+      "kb_support": {
+        "missing_categories": [
+          "live_availability",
+          "program_direction"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "live_availability",
+        "program_direction"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:check_availability"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "check_availability",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Какие даты ЛВШ и можете забронировать место на физику?",
+      "confidence": 0.94,
+      "dialog_id": "ra1_foton_dates_and_booking",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "lvsh_mendeleevo_2026.directions.fizmat.subjects.1",
+          "lvsh_mendeleevo_2026.directions.fizmat.subjects.2"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": []
+      },
+      "missing_fact_categories": [
+        "class_grade"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:enroll"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "enroll",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "На какой платформе онлайн и сколько стоит семестр?",
+      "confidence": 0.88,
+      "dialog_id": "ra1_foton_platform_and_price",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "platform_current",
+          "price_cost"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 5,
+        "price_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+          "prices_regular_2026_27.online_3_4_class.before_2026_08_01.semester",
+          "prices_regular_2026_27.online_3_4_class.before_2026_08_01.year_range",
+          "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+          "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year"
+        ],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "price_cost",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "class_grade"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "platform_current",
+        "price_cost"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "manager_only_policy_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "route_manager_only"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "missing_facts",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "А у Фотона и УНПК одинаковая цена на онлайн?",
+      "confidence": 0.9,
+      "dialog_id": "ra1_foton_cross_brand_question",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "price_cost"
+        ],
+        "missing_slots": [
+          "grade"
+        ],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 5,
+        "price_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+          "prices_regular_2026_27.online_3_4_class.before_2026_08_01.semester",
+          "prices_regular_2026_27.online_3_4_class.before_2026_08_01.year_range",
+          "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+          "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year"
+        ],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "price_cost"
+        ],
+        "uncovered_categories": [
+          "class_grade"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "price_cost"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "manager_only_policy_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "route_manager_only"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "missing_facts",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Фиксированная закрывающая реплика: «Отлично, тогда хочу записаться.»",
+      "confidence": 0.96,
+      "dialog_id": "cf142_pos_unpk_exam_group_signup",
+      "kb_support": {
+        "missing_categories": [
+          "live_availability",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "live_availability",
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:enroll"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "enroll",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 3
+    },
+    {
+      "answerability": "answer_self",
+      "client_excerpt": "Уточни: «ФизМат подходит, спасибо.»",
+      "confidence": 0.78,
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "kb_support": {
+        "missing_categories": [
+          "live_availability"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "lvsh_mendeleevo_2026.directions.it.classes"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "live_availability"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": false,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "hard_missing_axis_blocked",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "hard_missing_axis"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "answer_question",
+      "risk_class": "safe",
+      "route": "draft_for_manager",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Фиксированная закрывающая реплика: «А если оплатим смену и нужно будет перенести, деньги не сгорят?»",
+      "confidence": 0.96,
+      "dialog_id": "cf142_p0_unpk_paid_transfer",
+      "kb_support": {
+        "missing_categories": [
+          "boarding_food",
+          "live_availability"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "lvsh_mendeleevo_2026.directions.fizmat.classes",
+          "lvsh_mendeleevo_2026.directions.it.classes"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "boarding_food",
+          "live_availability"
+        ]
+      },
+      "missing_fact_categories": [
+        "boarding_food",
+        "live_availability"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:refund_or_cancel"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "refund_or_cancel",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 3
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Фиксированная закрывающая реплика: «Поняла, спасибо. А Фотон у вас тоже на Красносельской?»",
+      "confidence": 0.9,
+      "dialog_id": "cf142_brand_unpk_foton_compare",
+      "kb_support": {
+        "missing_categories": [
+          "location_address",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_h125_krasnoselskaya_sun_1000_1200_math_5_olympiad_before_2027_05_23.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_j125_krasnoselskaya_sun_1430_1630_math_5_advanced_before_2027_05_23.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "location_address",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "location_address",
+        "payment_access"
+      ],
+      "missing_fact_count": 1,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 3
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Фиксированная закрывающая реплика: «Спасибо, тогда подъедем на МФТИ в Долгопрудном?»",
+      "confidence": 0.88,
+      "dialog_id": "cf142_brand_foton_mipt_place",
+      "kb_support": {
+        "missing_categories": [
+          "class_grade",
+          "dates_schedule",
+          "location_address"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "schedule_2026_27.groups.group_start_date_c29_krasnoselskaya_sat_1000_1200_physics_10_base_before_2027_05_22.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "dates_schedule",
+          "location_address"
+        ]
+      },
+      "missing_fact_categories": [
+        "class_grade",
+        "dates_schedule",
+        "location_address"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 3
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Сегодня уже должно было быть.",
+      "confidence": 0.92,
+      "dialog_id": "tz147_un_paid_lesson_01",
+      "kb_support": {
+        "missing_categories": [
+          "dates_schedule",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_ab3_onlajn_ano_tue_thu_1800_1930_math_11_ege_before_2027_05_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q4_onlajn_ano_sat_1215_1415_math_11_ege_before_2027_05_29.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_s9_onlajn_ano_sat_1645_1845_math_11_olympiad_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "dates_schedule",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "dates_schedule",
+        "payment_access"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "manager_action",
+      "route": "draft_for_manager",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Оплатили онлайн-курс, ссылка на платформу не пришла.",
+      "confidence": 0.97,
+      "dialog_id": "tz147_ft_online_link_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.regular_group_size",
+          "r4_1_owner_2026_06_12.foton.schedule_timezone_msk",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Занятие скоро.",
+      "confidence": 0.93,
+      "dialog_id": "tz147_ft_online_link_01",
+      "kb_support": {
+        "missing_categories": [
+          "dates_schedule",
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 6,
+        "platform_fact_keys": [
+          "processes_2026_06_10.foton.after_payment_access",
+          "processes_2026_06_10.foton.online_access_platform",
+          "processes_2026_06_10.foton.personal_cabinet",
+          "r4_owner_2026_06_11.foton.online_platform_transition",
+          "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.regular_group_size",
+          "r4_1_owner_2026_06_12.foton.schedule_timezone_msk",
+          "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence",
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "dates_schedule",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "dates_schedule",
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Оплатили курс, логин и пароль не дали.",
+      "confidence": 0.97,
+      "dialog_id": "tz147_un_login_password_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access",
+          "platform_current"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 5,
+        "platform_fact_keys": [
+          "processes_2026_06_10.unpk.after_payment_access",
+          "processes_2026_06_10.unpk.online_access_platform",
+          "processes_2026_06_10.unpk.personal_cabinet",
+          "r4_owner_2026_06_11.unpk.online_platform_transition",
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [],
+        "product_check_reason": "required_axis_missing",
+        "product_check_status": "needs_slot",
+        "proven_parts": [
+          "platform_current"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access",
+        "platform_current"
+      ],
+      "missing_fact_count": 4,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 1
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Как зайти?",
+      "confidence": 0.9,
+      "dialog_id": "tz147_un_login_password_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text",
+          "r4_1_owner_2026_06_12.unpk.author_program_not_single_textbook",
+          "r4_1_owner_2026_06_12.unpk.regular_group_size",
+          "r4_1_owner_2026_06_12.unpk.schedule_timezone_msk",
+          "r4_owner_2026_06_11.unpk.lesson_duration_by_format",
+          "r4_owner_2026_06_11.unpk.small_groups_personal_attention"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Нужен доступ сегодня.",
+      "confidence": 0.94,
+      "dialog_id": "tz147_ft_course_not_opened_01",
+      "kb_support": {
+        "missing_categories": [
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product",
+          "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product",
+          "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.offline_organization.client_safe_text",
+          "presentation_format_facts_2026_05_21.client_facts.parent_access_offline.client_safe_text",
+          "r4_1_owner_2026_06_12.foton.author_program_not_single_textbook",
+          "r4_1_owner_2026_06_12.foton.regular_group_size"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "payment_access"
+      ],
+      "missing_fact_count": 3,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:handoff_manager"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "handoff_manager",
+      "risk_class": "p0",
+      "route": "manager_only",
+      "turn": 2
+    },
+    {
+      "answerability": "manager_only",
+      "client_excerpt": "Мы ещё не записались.",
+      "confidence": 0.86,
+      "dialog_id": "tz147_un_benign_access_question_01",
+      "kb_support": {
+        "missing_categories": [
+          "live_availability",
+          "payment_access"
+        ],
+        "missing_slots": [],
+        "platform_fact_count": 0,
+        "platform_fact_keys": [],
+        "price_fact_count": 0,
+        "price_fact_keys": [],
+        "product_check_exact_fact_keys": [
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+          "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_ab3_onlajn_ano_tue_thu_1800_1930_math_11_ege_before_2027_05_27.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_q4_onlajn_ano_sat_1215_1415_math_11_ege_before_2027_05_29.client_safe_text",
+          "schedule_2026_27.groups.group_start_date_s9_onlajn_ano_sat_1645_1845_math_11_olympiad_before_2027_05_30.client_safe_text"
+        ],
+        "product_check_reason": "exact_product_existence_fact",
+        "product_check_status": "exists",
+        "proven_parts": [
+          "product_existence"
+        ],
+        "uncovered_categories": [
+          "live_availability",
+          "payment_access"
+        ]
+      },
+      "missing_fact_categories": [
+        "live_availability",
+        "payment_access"
+      ],
+      "missing_fact_count": 2,
+      "must_handoff": true,
+      "partial_answer_shadow": {
+        "active_behavior_allowed": false,
+        "generated_text_exported": false,
+        "has_partial_support": true,
+        "status": "action_or_danger_excluded",
+        "why_not_active": [
+          "report_only",
+          "no_text_generated",
+          "requested_action:enroll"
+        ],
+        "would_require_text_policy": false
+      },
+      "requested_action": "enroll",
+      "risk_class": "manager_action",
+      "route": "manager_only",
+      "turn": 2
+    }
+  ],
+  "schema_version": "adr003_partial_answer_opportunities_v1_2026_07_02",
+  "source_rev": "246e250a",
+  "totals": {
+    "action_or_danger_excluded_partial_rows": 37,
+    "broad_missing_axes_blocked": 1,
+    "draft_partial_shadow_candidates": 0,
+    "handoff_turns": 135,
+    "hard_missing_axis_blocked": 4,
+    "manager_only_partial_policy_blocked": 2,
+    "partial_support_handoff_turns": 44,
+    "total_turns": 241
+  }
+}

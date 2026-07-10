@@ -1,0 +1,27 @@
+{
+  "block": "adr003_frame_gold_calibration",
+  "created_at": "2026-07-01T22:45:00+03:00",
+  "status": "formal_pass_semantic_blocked_for_active",
+  "head_before": "3aedeea",
+  "scope": "Phase 1 SemanticFrame gold calibration only",
+  "no_live_touched": true,
+  "no_runtime_behavior_change": true,
+  "gold": {
+    "path": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
+    "sha256": "4c505bb23cddbdfb8a0d4324bd2822b253001dc46fc0e75b90ab5ba2d6fb5be3",
+    "rows": 75,
+    "contains_client_text": false
+  },
+  "calibration": {
+    "report": "audits/_inbox/adr003_frame_gold_calibration_20260701/adr003_frame_gold_calibration_report.json",
+    "must_handoff_accuracy": 0.6027,
+    "too_cautious": 29,
+    "too_confident": 0,
+    "compared_rows": 73,
+    "unclear_rows": 2
+  },
+  "tests": {
+    "full_pytest": "3807 passed, 5 skipped",
+    "targeted_pytest": "23 passed"
+  }
+}

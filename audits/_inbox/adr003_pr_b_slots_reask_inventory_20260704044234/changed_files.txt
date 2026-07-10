@@ -1,0 +1,3 @@
+docs/ADR003_ETAP_T_DECISIONS.md
+tasks/tz_pr_b_slots_reask_wrapper.md
+audits/_inbox/adr003_pr_b_slots_reask_inventory_20260704044234/*

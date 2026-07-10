@@ -1,0 +1,207 @@
+{
+  "counts": {
+    "dialogs_total": 131,
+    "existence_proof_reason:deal_stage_blocked": 5,
+    "existence_proof_reason:exact_product_existence_fact": 44,
+    "existence_proof_reason:no_exact_product_existence_fact": 9,
+    "existence_proof_reason:protected_handoff_frame": 1,
+    "existence_proof_reason:requested_action_not_answer_question": 156,
+    "existence_proof_reason:required_axis_missing": 26,
+    "existence_proof_status:blocked": 197,
+    "existence_proof_status:exists": 44,
+    "proof_reconciliation_reason:deal_stage_blocked": 7,
+    "proof_reconciliation_reason:frame_already_safe_answer_self": 35,
+    "proof_reconciliation_reason:fresh_proof_contradicts_missing_facts_frame": 9,
+    "proof_reconciliation_reason:no_exact_fact_keys": 60,
+    "proof_reconciliation_reason:payment_readiness_blocked": 3,
+    "proof_reconciliation_reason:protected_p0": 53,
+    "proof_reconciliation_reason:requested_action_not_reconcilable": 74,
+    "proof_reconciliation_status:already_aligned": 35,
+    "proof_reconciliation_status:blocked": 197,
+    "proof_reconciliation_status:would_reconcile_to_safe_reference": 9,
+    "proof_reconciliation_would_reconcile_to_safe_reference": 9,
+    "self_answer_shadow_reason:low_confidence": 5,
+    "self_answer_shadow_reason:protected_p0": 53,
+    "self_answer_shadow_reason:risk_class_not_safe": 21,
+    "self_answer_shadow_reason:route_not_draft_for_manager": 162,
+    "self_answer_shadow_status:blocked": 241,
+    "turns_total": 241,
+    "turns_with_frame": 241
+  },
+  "examples": [
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Расскажите про обе",
+      "dialog_id": "wappi_pair_missing_72h_002",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "draft_for_manager",
+      "source_fact_key": "r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh",
+      "turn": 1
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Спроси: «Где занятия проходят?»",
+      "dialog_id": "cf142_pos_unpk_offline_math_next",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "schedule_2026_27.groups.group_start_date_h125_krasnoselskaya_sun_1000_1200_math_5_olympiad_before_2027_05_23.client_safe_text",
+      "turn": 2
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Спроси: «ФизМат подойдёт?»",
+      "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 2
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Уточни: «Проживание и питание есть?»",
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 2
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Фиксированная закрывающая реплика: «Спасибо, понятно. Медсестра там круглосуточно будет?»",
+      "dialog_id": "cf142_fabrication_unpk_camp_medical",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 3
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Уточни: «ИТ направление для 9 класса подойдёт?»",
+      "dialog_id": "cf142_fabrication_unpk_camp_security",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 2
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Фиксированная закрывающая реплика: «Хорошо, спасибо. Там охрана и камеры на территории есть?»",
+      "dialog_id": "cf142_fabrication_unpk_camp_security",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+      "turn": 3
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Спроси: «Где проходят занятия?»",
+      "dialog_id": "cf142_brand_unpk_foton_compare",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "schedule_2026_27.groups.group_start_date_h125_krasnoselskaya_sun_1000_1200_math_5_olympiad_before_2027_05_23.client_safe_text",
+      "turn": 2
+    },
+    {
+      "active_blockers": [
+        "shadow_only_reconciliation",
+        "requires_text_readiness_policy",
+        "requires_existence_vs_live_availability_semantic_review",
+        "result_missing_facts_present"
+      ],
+      "brand": "unpk",
+      "client_message": "Когда появится после оплаты?",
+      "dialog_id": "tz147_un_benign_not_paid_01",
+      "frame_answerability": "manager_only",
+      "frame_requested_action": "answer_question",
+      "frame_risk_class": "missing_facts",
+      "proof_status": "exists",
+      "route": "bot_answer_self_for_pilot",
+      "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+      "turn": 2
+    }
+  ],
+  "input_source_rev": "36ea110",
+  "inputs": {
+    "kb_snapshot": "/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "kb_snapshot_sha256": "f2f211a56cafc213326d4841752e38a081172de867bd598b08724a510b065ba5",
+    "transcripts": "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/adr003_f2_clean_36ea110_20260702/runs/adr003_f2_self_answer_shadow_36ea110/ON/dynamic_dialog_transcripts.jsonl",
+    "transcripts_sha256": "e36b08908c24631fe54fefcac22494f318717bec46751d925f4ad9f57f46541b"
+  },
+  "model_calls_added": 0,
+  "protected_turn_field_diff_count": 0,
+  "route_text_diff_count": 0,
+  "schema_version": "adr003_existing_frame_proof_shadow_replay_v1",
+  "script_source_rev": "cf1497ffb87211934350ade2f2898ba15da0a584"
+}

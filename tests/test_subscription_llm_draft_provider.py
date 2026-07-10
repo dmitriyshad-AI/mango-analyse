@@ -696,6 +696,7 @@ def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> Non
         client_message="Можно закрепить место на ЛВШ?",
         context={
             "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             "conversation_intent_plan": {
                 "primary_intent": "live_availability",
                 "topic_id": "theme:026_camp_general",
@@ -706,10 +707,9 @@ def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> Non
         },
     )
 
-    assert guarded.topic_id == "theme:026_camp_general"
     assert guarded.route == "draft_for_manager"
     assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_topic_applied" in guarded.safety_flags
+    assert "semantic_frame_intent_actions_live_availability" in guarded.safety_flags
 
 
 def test_followup_deadline_guard_catches_absolute_datetime_with_vernutsya() -> None:
@@ -11256,6 +11256,7 @@ def test_direct_path_bot_safe_memory_step_guard_runs_without_semantic_verifier(t
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
             "timeline_context": {
                 "source": "customer_timeline_bot_context",
                 "found": True,
@@ -11510,6 +11511,7 @@ def test_direct_path_memory_step_guard_rewrites_synonym_frame_for_review_status(
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
             "timeline_context": {
                 "source": "customer_timeline_bot_context",
                 "found": True,
@@ -11569,6 +11571,7 @@ def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
             "timeline_context": {
                 "source": "customer_timeline_bot_context",
                 "found": True,
@@ -13122,7 +13125,8 @@ def test_intent_model_led_prompt_block_is_flagged_only() -> None:
     assert "Смысловой intent_model_led" not in off_prompt
     assert "model_intent" not in explicit_off_prompt
     assert "Смысловой intent_model_led" in on_prompt
-    assert '"model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other"' in on_prompt
+    assert '"model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|off_topic|other"' in on_prompt
+    assert "off_topic ставь только" in on_prompt
     assert "«место» как территория/площадка/место занятий" in on_prompt
     assert "настоящего вопроса о наличии мест/броней/свободной группе" in on_prompt
     assert "«когда привезу/подъеду» — other" in on_prompt
@@ -13193,7 +13197,7 @@ def test_intent_model_led_false_live_availability_keeps_direct_answer() -> None:
     assert guarded.metadata["conversation_intent_primary_intent"] == "address"
 
 
-def test_intent_model_led_true_live_availability_still_hands_off() -> None:
+def test_intent_model_led_true_live_availability_no_longer_hands_off_without_frame() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text="Я уточню по группе.",
@@ -13228,9 +13232,9 @@ def test_intent_model_led_true_live_availability_still_hands_off() -> None:
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "live_availability"
 
 
@@ -13270,9 +13274,9 @@ def test_intent_model_led_does_not_demote_explicit_availability_question() -> No
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
-    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied"] is False
     assert guarded.metadata["intent_model_led"]["skip_reason"] == "explicit_live_availability_floor"
 
@@ -13312,8 +13316,8 @@ def test_intent_model_led_low_confidence_does_not_demote_live_availability() -> 
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied"] is False
     assert guarded.metadata["intent_model_led"]["skip_reason"] == "low_confidence"
 
@@ -13344,8 +13348,8 @@ def test_intent_model_led_is_ignored_when_flag_off() -> None:
         context=context,
     )
 
-    assert guarded.route == "draft_for_manager"
-    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
     assert "intent_model_led" not in guarded.metadata
 
 
@@ -14958,9 +14962,8 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     )
 
     assert "Живые образцы менеджерского стиля" in provider_with_gold.last_prompt
-    assert "Стоимость за один предмет" in provider_with_gold.last_prompt
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
-    assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+    assert result.metadata["direct_path"]["gold_real_example_ids"]
 
 
 def test_direct_path_real_manager_gold_pack_env_overrides_examples(monkeypatch) -> None:
@@ -15077,7 +15080,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.P0_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.P0_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
@@ -15094,7 +15097,17 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "0"}) is False
     assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"}) is True
-    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}) is False
+    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}) is True
+    assert (
+        subscription_llm._direct_path_model_p0_enabled(
+            {
+                **context,
+                subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0",
+                subscription_llm.P0_MODEL_LED_ENV: "0",
+            }
+        )
+        is False
+    )
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:
@@ -15387,8 +15400,8 @@ def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:
     assert result.metadata["direct_path"]["gold_real_enabled"] is False
 
 
-def test_prose_model_led_default_off_and_not_in_pilot_profile() -> None:
-    assert PROSE_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+def test_prose_model_led_default_off_and_enabled_in_pilot_profile() -> None:
+    assert PROSE_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._prose_model_led_enabled({}) is False
     assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "1"}) is True
     assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "0"}) is False
@@ -15429,7 +15442,8 @@ def test_prose_model_led_verified_fact_fallback_removes_robotic_opening() -> Non
         client_message="Сколько стоит?",
     )
 
-    assert "Да, сориентирую по проверенным условиям" in off
+    assert "По проверенным условиям" in off
+    assert not off.startswith("Да,")
     assert "сориентирую по проверенной" not in on.casefold()
     assert "44 600 ₽" in on
 

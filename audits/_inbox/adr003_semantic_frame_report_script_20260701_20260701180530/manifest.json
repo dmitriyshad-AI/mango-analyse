@@ -1,0 +1,14 @@
+{
+  "audit_pack": "adr003_semantic_frame_report_script_20260701_20260701180530",
+  "branch": "codex/adr003-semanticframe-migration",
+  "created_at_msk": "2026-07-01T18:05:30+03:00",
+  "scope": "ADR-003 SemanticFrame OFF/ON report script",
+  "status": "formal_pass",
+  "semantic_review": "PASS_WITH_NOTES",
+  "tests": {
+    "targeted": "7 passed in 1.72s",
+    "full_pytest": "3776 passed, 5 skipped, 1 warning in 86.10s"
+  },
+  "live_touched": false,
+  "external_writes": false
+}

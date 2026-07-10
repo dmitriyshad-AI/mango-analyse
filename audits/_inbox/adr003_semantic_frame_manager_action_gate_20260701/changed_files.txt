@@ -1,0 +1,6 @@
+docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md
+src/mango_mvp/channels/subscription_llm_parts/__init__.py
+src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+src/mango_mvp/channels/subscription_llm_parts/provider.py
+tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
+tests/test_direct_path_semantic_frame_shadow.py

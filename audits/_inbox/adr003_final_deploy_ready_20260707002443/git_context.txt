@@ -1,0 +1,10 @@
+branch: codex/adr003-semanticframe-migration
+rev: 1a03f65b
+
+ M src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
+ M tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
+ M tests/test_adr003_regex_understanding_moratorium.py
+ M tests/test_direct_p0_text_hygiene.py
+ M tests/test_direct_path_payment_refund_split.py
+?? tasks/_running/2026-07-06_TZ_FINAL_dovesti_ADR003_do_deploya_repo_wrapper.md
+?? tests/test_adr003_paymentfix_acceptance_set.py

@@ -468,10 +468,15 @@ def render_bot_context(panel: Mapping[str, Any]) -> str:
         f'<span class="pill warn">Review: {e(summary.get("review_required_chunks"))}</span>'
         f'<span class="pill">Blocked: {e(summary.get("blocked_chunks"))}</span>'
     )
-    body = "".join(
-        f'<div class="row"><strong>{e(item.get("chunk_type"))}</strong><p>{e(item.get("summary") or item.get("text"))}</p></div>'
-        for item in items[:6]
-    )
+    def render_item(item: Mapping[str, Any]) -> str:
+        next_step_status = item.get("next_step_status")
+        status_html = f'<span class="pill">Next step: {e(next_step_status)}</span>' if next_step_status else ""
+        return (
+            f'<div class="row"><strong>{e(item.get("chunk_type"))}</strong>{status_html}'
+            f'<p>{e(item.get("summary") or item.get("text"))}</p></div>'
+        )
+
+    body = "".join(render_item(item) for item in items[:6])
     return head + (body or '<p class="sub">No bot-safe chunks.</p>')
 
 

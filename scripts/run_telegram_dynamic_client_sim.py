@@ -31,6 +31,12 @@ from mango_mvp.channels.subscription_llm import (
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
+from mango_mvp.channels.subscription_llm_parts.provider import (
+    apply_semantic_frame_decision_shadow,
+    apply_semantic_frame_existence_proof_shadow,
+    apply_semantic_frame_proof_reconciliation_shadow,
+    apply_semantic_frame_self_answer_shadow,
+)
 from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
@@ -39,9 +45,11 @@ from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dial
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
 from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import SemanticReading
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     DEFAULT_BOT_SAFE_TENANT_ID,
     BotSafeLookup,
+    bot_memory_expanded_shadow_enabled,
     bot_safe_crm_context_enabled,
     bot_safe_tenant_from_env,
     bot_safe_timeline_db_from_env,
@@ -75,6 +83,66 @@ class DynamicSimInput:
     personas: tuple[Mapping[str, Any], ...]
 
 
+def _semantic_reading_memory_from_result(result: Any) -> Mapping[str, Any] | None:
+    reading = SemanticReading.from_result(result)
+    return reading.to_memory_dict() if reading is not None else None
+
+
+def _semantic_frame_memory_from_result(result: Any) -> Mapping[str, Any] | None:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        direct = metadata.get("direct_path")
+        if isinstance(direct, Mapping):
+            frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
+    return dict(frame) if isinstance(frame, Mapping) and frame else None
+
+
+def _semantic_reading_memory_from_turn(turn: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    direct_path = dict(turn.get("bot_direct_path") or {}) if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+    model_intent = dict(turn.get("bot_model_intent") or {}) if isinstance(turn.get("bot_model_intent"), Mapping) else {}
+    frame = dict(turn.get("bot_semantic_frame") or {}) if isinstance(turn.get("bot_semantic_frame"), Mapping) else {}
+    metadata = {
+        "direct_path": {**direct_path, "model_intent": model_intent, "semantic_frame": frame},
+        "direct_path_model_intent": model_intent,
+        "semantic_frame": frame,
+    }
+    frozen = SubscriptionDraftResult(
+        route=str(turn.get("bot_route") or "draft_for_manager"),
+        draft_text=str(turn.get("bot_text") or ""),
+        safety_flags=tuple(str(flag) for flag in (turn.get("bot_safety_flags") or ())),
+        manager_checklist=tuple(str(item) for item in (turn.get("bot_manager_checklist") or ())),
+        metadata=metadata,
+    )
+    return _semantic_reading_memory_from_result(frozen)
+
+
+def _dialog_summary_from_result(result: Any) -> str:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    candidate = str(metadata.get("dialog_summary_candidate") or "").strip()
+    if candidate:
+        return candidate
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        return str(direct.get("dialog_summary_candidate") or "").strip()
+    return ""
+
+
+def _dialog_summary_from_turn(turn: Mapping[str, Any]) -> str:
+    direct = turn.get("bot_direct_path")
+    if isinstance(direct, Mapping):
+        candidate = str(direct.get("dialog_summary_candidate") or "").strip()
+        if candidate:
+            return candidate
+    return str(turn.get("bot_dialog_summary") or turn.get("dialog_summary_candidate") or "").strip()
+
+
 class FakeClientModel:
     def generate(self, prompt: str) -> Mapping[str, Any]:
         if "turn_index=1" in prompt:
@@ -98,6 +166,24 @@ class ReplayClientModel:
             "message": str(turn.get("client_message") or ""),
             "stop": bool(turn.get("client_stop")),
         }
+
+
+class ScriptedClientModel:
+    def __init__(self, persona: Mapping[str, Any]) -> None:
+        raw_messages = persona.get("scripted_behaviors")
+        if raw_messages is None:
+            raw_messages = persona.get("behaviors")
+        if isinstance(raw_messages, str):
+            raw_messages = [raw_messages]
+        self._messages = tuple(str(item or "").strip() for item in (raw_messages or ()) if str(item or "").strip())
+        self._index = 0
+
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        if self._index >= len(self._messages):
+            return {"message": "Поняла, спасибо.", "stop": True}
+        message = self._messages[self._index]
+        self._index += 1
+        return {"message": message, "stop": self._index >= len(self._messages)}
 
 
 class FakeJudgeModel:
@@ -272,6 +358,10 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
     def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
         self._count_llm_call("bot_direct_draft")
         return super()._direct_path_draft_runner(prompt)
+
+    def _direct_path_semantic_frame_shadow_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_semantic_frame_shadow")
+        return super()._direct_path_semantic_frame_shadow_runner(prompt)
 
     def _direct_path_llm_retrieve_runner(self, prompt: str) -> Mapping[str, Any] | str:
         self._count_llm_call("bot_retriever")
@@ -592,6 +682,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Replay exact client messages from an existing dynamic_dialog_transcripts.jsonl while re-running the bot and judge.",
     )
     parser.add_argument(
+        "--semantic-frame-enrich-from",
+        type=Path,
+        default=None,
+        help="Read existing transcripts and add post-hoc SemanticFrame metadata without re-running draft generation.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Continue an interrupted run by loading existing dynamic_dialog_transcripts.jsonl from --out-dir.",
@@ -611,7 +707,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="When resuming, rerun only dialogs that ended with timeout.",
     )
-    parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
+    parser.add_argument("--client-mode", choices=("codex", "fake", "scripted"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument(
         "--judge-prompt-version",
@@ -638,6 +734,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--claude-auth-mode", choices=tuple(sorted(_CLAUDE_AUTH_MODES)), default="subscription")
     parser.add_argument("--bot-reasoning", default="medium")
+    parser.add_argument(
+        "--bot-max-attempts",
+        type=int,
+        default=2,
+        help="Maximum provider attempts per bot draft. Set to 1 for no-retry acceptance runs.",
+    )
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
     parser.add_argument("--memory-mode", choices=("codex", "fake", "off"), default="codex")
@@ -664,6 +766,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Enable optional answer-quality LLM rewrite layer for bot answers in this run only.",
     )
+    parser.add_argument(
+        "--progress-json",
+        type=Path,
+        default=None,
+        help="Write atomic progress JSON after completed dialogs; intended for long M1 runs.",
+    )
+    parser.add_argument(
+        "--progress-leg",
+        default="",
+        help="Human-readable leg label stored in --progress-json.",
+    )
     args = parser.parse_args(argv)
     llm_call_counter = LlmCallCounter()
     setattr(args, "llm_call_counter", llm_call_counter)
@@ -677,7 +790,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if "stable_runtime" in args.out_dir.resolve(strict=False).parts:
         raise ValueError("Refusing to write dynamic sim outputs under stable_runtime")
-    if (args.bot_mode == "codex" or args.transcripts_in is not None or args.replay_from is not None) and not args.snapshot.exists():
+    if (
+        args.bot_mode == "codex"
+        or args.transcripts_in is not None
+        or args.replay_from is not None
+        or args.semantic_frame_enrich_from is not None
+    ) and not args.snapshot.exists():
         raise FileNotFoundError(f"Knowledge snapshot not found: {args.snapshot}")
 
     sim_input = load_dynamic_sim_input(args.scenarios)
@@ -699,12 +817,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         for index, persona in enumerate(personas)
     }
 
-    if args.transcripts_in is not None and args.replay_from is not None:
-        raise ValueError("--transcripts-in and --replay-from are mutually exclusive")
+    exclusive_inputs = [value is not None for value in (args.transcripts_in, args.replay_from, args.semantic_frame_enrich_from)]
+    if sum(exclusive_inputs) > 1:
+        raise ValueError("--transcripts-in, --replay-from, and --semantic-frame-enrich-from are mutually exclusive")
     if args.replay_from is not None and args.replay_from.resolve(strict=False) == transcripts_path.resolve(strict=False):
         raise ValueError("--replay-from must differ from --out-dir/dynamic_dialog_transcripts.jsonl")
+    if args.semantic_frame_enrich_from is not None and args.semantic_frame_enrich_from.resolve(strict=False) == transcripts_path.resolve(strict=False):
+        raise ValueError("--semantic-frame-enrich-from must differ from --out-dir/dynamic_dialog_transcripts.jsonl")
 
-    if args.transcripts_in is not None:
+    if args.semantic_frame_enrich_from is not None:
+        bot_provider = build_bot_provider(args)
+        source_dialogs = [
+            dialog
+            for dialog in load_transcripts(args.semantic_frame_enrich_from)
+            if args.brand == "all" or dialog.get("brand") == args.brand
+        ][: args.limit if args.limit > 0 else None]
+        transcripts = enrich_transcripts_with_semantic_frame(
+            source_dialogs,
+            bot_provider=bot_provider,
+            snapshot_path=args.snapshot,
+            memory_model=build_memory_model(args),
+            judge_prompt_version=args.judge_prompt_version,
+            parallel=args.parallel,
+        )
+        judge_results = extract_judge_results(transcripts)
+        turn_rows = build_turn_rows(transcripts)
+    elif args.transcripts_in is not None:
         judge_model = build_judge_model(args)
         memory_model = build_memory_model(args)
         transcripts = [
@@ -779,7 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pending_personas.append(persona)
 
         if args.parallel == 1:
-            client_model = build_client_model(args)
+            client_model = None if args.client_mode == "scripted" else build_client_model(args)
             judge_model = build_judge_model(args)
             bot_provider = build_bot_provider(args)
             memory_model = build_memory_model(args)
@@ -811,7 +949,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             persona,
                             simulator_spec=sim_input.simulator_spec,
                             judge_spec=sim_input.judge_spec,
-                            client_model=client_model,
+                            client_model=build_client_model(args, persona=persona) if args.client_mode == "scripted" else client_model,
                             judge_model=judge_model,
                             bot_provider=bot_provider,
                             memory_model=memory_model,
@@ -851,6 +989,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     llm_calls=llm_call_counter.snapshot(),
                     judge_prompt_version=args.judge_prompt_version,
                     replay_source_run=replay_source_run,
+                    progress_path=args.progress_json,
+                    progress_leg=args.progress_leg,
+                    progress_total=len(personas),
+                    progress_last_dialog_id=dialog_id,
                 )
                 print(
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
@@ -919,6 +1061,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         llm_calls=llm_call_counter.snapshot(),
                         judge_prompt_version=args.judge_prompt_version,
                         replay_source_run=replay_source_run,
+                        progress_path=args.progress_json,
+                        progress_leg=args.progress_leg,
+                        progress_total=len(personas),
+                        progress_last_dialog_id=dialog_id,
                     )
                     print(
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
@@ -948,6 +1094,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         llm_calls=llm_call_counter.snapshot(),
         judge_prompt_version=args.judge_prompt_version,
         replay_source_run=str(args.replay_from or ""),
+        progress_path=args.progress_json,
+        progress_leg=args.progress_leg,
+        progress_total=len(personas),
+        progress_last_dialog_id="",
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -972,6 +1122,10 @@ def write_dynamic_outputs(
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
     replay_source_run: str = "",
+    progress_path: Path | None = None,
+    progress_leg: str = "",
+    progress_total: int = 0,
+    progress_last_dialog_id: str = "",
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -995,7 +1149,44 @@ def write_dynamic_outputs(
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
+    if progress_path is not None:
+        write_progress_json(
+            progress_path,
+            leg=progress_leg,
+            summary=summary,
+            total=progress_total,
+            last_dialog_id=progress_last_dialog_id,
+        )
     return summary
+
+
+def write_progress_json(
+    path: Path,
+    *,
+    leg: str,
+    summary: Mapping[str, Any],
+    total: int,
+    last_dialog_id: str = "",
+) -> None:
+    totals = summary.get("totals") if isinstance(summary.get("totals"), Mapping) else {}
+    hard_gate_ids = summary.get("hard_gate_failure_dialogs")
+    if not isinstance(hard_gate_ids, list):
+        hard_gate_ids = []
+    payload = {
+        "leg": str(leg or path.parent.name),
+        "done_dialogs": int(totals.get("dialogs") or 0),
+        "total": int(total or 0),
+        "pass": int(totals.get("pass") or 0),
+        "pass_with_notes": int(totals.get("pass_with_notes") or 0),
+        "fail": int(totals.get("fail") or 0),
+        "hard_gate_dialog_ids": [str(item) for item in hard_gate_ids if str(item or "").strip()],
+        "last_dialog_id": str(last_dialog_id or ""),
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def load_dynamic_sim_input(path: Path) -> DynamicSimInput:
@@ -1029,9 +1220,13 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
     return rows
 
 
-def build_client_model(args: argparse.Namespace) -> Any:
+def build_client_model(args: argparse.Namespace, *, persona: Mapping[str, Any] | None = None) -> Any:
     if args.client_mode == "fake":
         return FakeClientModel()
+    if args.client_mode == "scripted":
+        if persona is None:
+            raise ValueError("scripted client mode requires a persona")
+        return ScriptedClientModel(persona)
     return maybe_counting_model(
         CodexJsonModel(
             model=args.model,
@@ -1162,6 +1357,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         model=model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
+        max_attempts=max(1, int(getattr(args, "bot_max_attempts", 2))),
         cache_dir=cache_dir,
         runner=runner,
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
@@ -1190,7 +1386,7 @@ def run_one_dialog_isolated(
         persona,
         simulator_spec=simulator_spec,
         judge_spec=judge_spec,
-        client_model=build_client_model(args),
+        client_model=build_client_model(args, persona=persona) if args.client_mode == "scripted" else build_client_model(args),
         judge_model=build_judge_model(args),
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
         memory_model=build_memory_model(args),
@@ -1607,6 +1803,21 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_semantic_reading_trace": json.dumps(
+                        turn.get("bot_semantic_reading_trace") or [],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "bot_frame_decision_shadow": json.dumps(
+                        turn.get("bot_frame_decision_shadow") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "bot_semantic_frame_self_answer_shadow": json.dumps(
+                        turn.get("bot_semantic_frame_self_answer_shadow") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_semantic_output_verifier": json.dumps(
                         turn.get("bot_semantic_output_verifier") or {},
                         ensure_ascii=False,
@@ -1691,13 +1902,155 @@ def attach_context_facts_to_dialog(
             route=str(turn.get("bot_route") or ""),
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+            semantic_reading=_semantic_reading_memory_from_turn(turn),
+            semantic_frame=dict(turn.get("bot_semantic_frame") or {}) if isinstance(turn.get("bot_semantic_frame"), Mapping) else None,
+            dialog_summary=_dialog_summary_from_turn(turn),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
         )
         dialogue_memory = updated_memory.to_json_dict()
         turns.append(turn)
         recent_messages.append(f"Клиент: {client_message}")
         recent_messages.append(f"Ответ: {bot_text}")
     return {**dict(dialog), "turns": turns}
+
+
+def enrich_transcripts_with_semantic_frame(
+    dialogs: Sequence[Mapping[str, Any]],
+    *,
+    bot_provider: Any,
+    snapshot_path: Path,
+    memory_model: Any = None,
+    judge_prompt_version: str = "v2",
+    parallel: int = 1,
+) -> list[Mapping[str, Any]]:
+    if parallel <= 1 or len(dialogs) <= 1:
+        return [
+            _enrich_one_transcript_with_semantic_frame(
+                dialog,
+                bot_provider=bot_provider,
+                snapshot_path=snapshot_path,
+                memory_model=memory_model,
+                judge_prompt_version=judge_prompt_version,
+            )
+            for dialog in dialogs
+        ]
+    enriched: list[Mapping[str, Any] | None] = [None] * len(dialogs)
+    with ThreadPoolExecutor(max_workers=parallel) as executor:
+        future_to_index = {
+            executor.submit(
+                _enrich_one_transcript_with_semantic_frame,
+                dialog,
+                bot_provider=bot_provider,
+                snapshot_path=snapshot_path,
+                memory_model=memory_model,
+                judge_prompt_version=judge_prompt_version,
+            ): index
+            for index, dialog in enumerate(dialogs)
+        }
+        for future in as_completed(future_to_index):
+            enriched[future_to_index[future]] = future.result()
+    return [dialog for dialog in enriched if dialog is not None]
+
+
+def _enrich_one_transcript_with_semantic_frame(
+    dialog: Mapping[str, Any],
+    *,
+    bot_provider: Any,
+    snapshot_path: Path,
+    memory_model: Any = None,
+    judge_prompt_version: str = "v2",
+) -> Mapping[str, Any]:
+    persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
+    recent_messages: list[str] = _initial_recent_messages_from_persona(persona)
+    dialogue_memory: Mapping[str, Any] = {}
+    turns: list[Mapping[str, Any]] = []
+    for raw_turn in dialog.get("turns") or []:
+        if not isinstance(raw_turn, Mapping):
+            continue
+        turn = dict(raw_turn)
+        client_message = str(turn.get("client_message") or "")
+        bot_text = strip_internal_service_markers(str(turn.get("bot_text") or "")).strip()
+        context = build_bot_prompt_context(
+            client_message,
+            persona=persona,
+            recent_messages=recent_messages,
+            snapshot_path=snapshot_path,
+            dialogue_memory=dialogue_memory,
+        )
+        frozen = SubscriptionDraftResult(
+            route=str(turn.get("bot_route") or "draft_for_manager"),
+            draft_text=bot_text,
+            safety_flags=tuple(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
+            manager_checklist=tuple(str(item) for item in (turn.get("bot_manager_checklist") or [])),
+            missing_facts=tuple(str(item) for item in (turn.get("bot_missing_facts") or [])),
+            topic_id=str(turn.get("bot_topic_id") or "unknown"),
+            message_type=str(turn.get("bot_message_type") or "question"),
+            risk_level=str(turn.get("bot_risk_level") or "low"),
+            metadata={
+                "direct_path": dict(turn.get("bot_direct_path") or {}) if isinstance(turn.get("bot_direct_path"), Mapping) else {},
+                "direct_path_model_p0": (
+                    dict((turn.get("bot_direct_path") or {}).get("model_p0") or {})
+                    if isinstance(turn.get("bot_direct_path"), Mapping)
+                    else {}
+                ),
+                "direct_path_model_intent": dict(turn.get("bot_model_intent") or {}) if isinstance(turn.get("bot_model_intent"), Mapping) else {},
+                "conversation_intent_plan": (
+                    dict(turn.get("bot_conversation_intent_plan") or {})
+                    if isinstance(turn.get("bot_conversation_intent_plan"), Mapping)
+                    else {}
+                ),
+                "reason_class": str(turn.get("bot_reason_class") or ""),
+            },
+        )
+        framed = bot_provider._apply_direct_path_semantic_frame_posthoc_shadow(  # noqa: SLF001 - measurement harness.
+            frozen,
+            client_message=client_message,
+            context=context,
+        )
+        framed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
+        framed = apply_semantic_frame_proof_reconciliation_shadow(framed, context=context)
+        framed = apply_semantic_frame_self_answer_shadow(framed, context=context)
+        framed = apply_semantic_frame_decision_shadow(framed, context=context)
+        raw_frame = framed.metadata.get("semantic_frame") if isinstance(framed.metadata, Mapping) else {}
+        if not isinstance(raw_frame, Mapping):
+            raw_frame = framed.metadata.get("semantic_frame_shadow") if isinstance(framed.metadata, Mapping) else {}
+        raw_shadow = framed.metadata.get("frame_decision_shadow") if isinstance(framed.metadata, Mapping) else {}
+        raw_self_shadow = framed.metadata.get("semantic_frame_self_answer_shadow") if isinstance(framed.metadata, Mapping) else {}
+        raw_reconciliation_shadow = (
+            framed.metadata.get("semantic_frame_proof_reconciliation_shadow")
+            if isinstance(framed.metadata, Mapping)
+            else {}
+        )
+        raw_direct = framed.metadata.get("direct_path") if isinstance(framed.metadata, Mapping) else {}
+        if isinstance(raw_frame, Mapping) and raw_frame:
+            turn["bot_semantic_frame"] = dict(raw_frame)
+        if isinstance(raw_shadow, Mapping) and raw_shadow:
+            turn["bot_frame_decision_shadow"] = dict(raw_shadow)
+        if isinstance(raw_self_shadow, Mapping) and raw_self_shadow:
+            turn["bot_semantic_frame_self_answer_shadow"] = dict(raw_self_shadow)
+        if isinstance(raw_reconciliation_shadow, Mapping) and raw_reconciliation_shadow:
+            turn["bot_semantic_frame_proof_reconciliation_shadow"] = dict(raw_reconciliation_shadow)
+        if isinstance(raw_direct, Mapping) and raw_direct:
+            turn["bot_direct_path"] = dict(raw_direct)
+        turn["semantic_frame_enriched"] = True
+        turns.append(turn)
+        updated_memory = update_dialogue_memory_after_answer(
+            context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
+            answer_text=bot_text,
+            route=str(turn.get("bot_route") or ""),
+            fact_refs=(),
+            safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+            semantic_reading=_semantic_reading_memory_from_result(framed),
+            semantic_frame=dict(raw_frame) if isinstance(raw_frame, Mapping) and raw_frame else None,
+            dialog_summary=_dialog_summary_from_result(framed),
+            memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
+        )
+        dialogue_memory = updated_memory.to_json_dict()
+        recent_messages.append(f"Клиент: {client_message}")
+        recent_messages.append(f"Ответ: {bot_text}")
+    return {**dict(dialog), "turns": turns, "semantic_frame_enriched": True}
 
 
 def run_one_dialog(
@@ -1720,7 +2073,7 @@ def run_one_dialog(
     brand = str(persona.get("brand") or "unknown")
     max_turns = int(max_turns_override or persona.get("max_turns") or 6)
     turns: list[dict[str, Any]] = []
-    recent_messages: list[str] = []
+    recent_messages: list[str] = _initial_recent_messages_from_persona(persona)
     dialogue_memory: Mapping[str, Any] = {}
 
     for turn_index in range(1, max_turns + 1):
@@ -1772,13 +2125,25 @@ def run_one_dialog(
             direct_path_metadata=direct_path_metadata,
             authoritative_gate_metadata=authoritative_gate_metadata,
         )
+        semantic_reading_trace_metadata = []
+        raw_semantic_reading_trace = result.metadata.get("semantic_reading_trace") if isinstance(result.metadata, Mapping) else None
+        if not raw_semantic_reading_trace and isinstance(direct_path_metadata, Mapping):
+            raw_semantic_reading_trace = direct_path_metadata.get("semantic_reading_trace")
+        if isinstance(raw_semantic_reading_trace, Sequence) and not isinstance(raw_semantic_reading_trace, (str, bytes, bytearray)):
+            semantic_reading_trace_metadata = [
+                dict(item) for item in raw_semantic_reading_trace if isinstance(item, Mapping)
+            ]
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
             route=result.route,
             fact_refs=result.context_used,
             safety_flags=result.safety_flags,
+            semantic_reading=_semantic_reading_memory_from_result(result),
+            semantic_frame=_semantic_frame_memory_from_result(result),
+            dialog_summary=_dialog_summary_from_result(result),
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
+            context=context,
         )
         dialogue_memory = updated_memory.to_json_dict()
         confirmed_facts_for_judge = facts_for_judge(
@@ -1815,16 +2180,28 @@ def run_one_dialog(
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
         action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
         action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
+        frame_decision_shadow_metadata = (
+            dict(result.metadata.get("frame_decision_shadow") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("frame_decision_shadow"), Mapping)
+            else {}
+        )
+        semantic_frame_self_answer_shadow_metadata = (
+            dict(result.metadata.get("semantic_frame_self_answer_shadow") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("semantic_frame_self_answer_shadow"), Mapping)
+            else {}
+        )
         answerability_trace_metadata = (
             dict(result.metadata.get("answerability_trace") or {})
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
             else {}
         )
-        semantic_frame_metadata = (
-            dict(result.metadata.get("semantic_frame_shadow") or {})
-            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("semantic_frame_shadow"), Mapping)
-            else {}
-        )
+        semantic_frame_metadata = {}
+        if isinstance(result.metadata, Mapping):
+            raw_frame = result.metadata.get("semantic_frame")
+            if not isinstance(raw_frame, Mapping):
+                raw_frame = result.metadata.get("semantic_frame_shadow")
+            if isinstance(raw_frame, Mapping):
+                semantic_frame_metadata = dict(raw_frame)
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1871,6 +2248,9 @@ def run_one_dialog(
             "bot_action_decision": action_decision_metadata,
             "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
             "bot_close_detect": close_detect_metadata,
+            "bot_frame_decision_shadow": frame_decision_shadow_metadata,
+            "bot_semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow_metadata,
+            "bot_semantic_reading_trace": semantic_reading_trace_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
@@ -2135,7 +2515,7 @@ def bot_safe_context_items_for_judge(context: Mapping[str, Any] | None, *, limit
 
 
 def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
-    if not bot_safe_crm_context_enabled():
+    if not (bot_safe_crm_context_enabled() or bot_memory_expanded_shadow_enabled()):
         return {}
     db_path = bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     if not db_path.exists():
@@ -2163,6 +2543,7 @@ def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_bra
             amo_lead_id=amo_lead_id,
             amo_contact_id=amo_contact_id,
         ),
+        allow_explicit_customer_id=bool(customer_id),
     )
     return context if context.get("found") else {}
 
@@ -2223,6 +2604,20 @@ def _persona_for_client_prompt(persona: Mapping[str, Any]) -> Mapping[str, Any]:
         for key, value in persona.items()
         if str(key) not in _DYNAMIC_SIM_RESOLVER_PERSONA_KEYS
     }
+
+
+def _initial_recent_messages_from_persona(persona: Mapping[str, Any]) -> list[str]:
+    raw_lines = persona.get("initial_history_lines")
+    if raw_lines is None:
+        raw_lines = persona.get("history_lines")
+    if isinstance(raw_lines, str):
+        raw_lines = [raw_lines]
+    lines: list[str] = []
+    for item in raw_lines or ():
+        text = str(item or "").strip()
+        if text:
+            lines.append(text)
+    return lines
 
 
 def normalize_judge_prompt_version(value: object) -> str:
@@ -3281,6 +3676,27 @@ def build_summary(
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
     semantic_frame = _semantic_frame_summary(transcripts)
+    frame_decision_shadow = _frame_decision_shadow_summary(transcripts)
+    semantic_frame_self_answer_shadow = _semantic_frame_self_answer_shadow_summary(transcripts)
+    total_turns = sum(len(item.get("turns") or []) for item in transcripts)
+    semantic_frame_enriched_turns = sum(
+        1
+        for dialog in transcripts
+        for turn in (dialog.get("turns") or [])
+        if isinstance(turn, Mapping) and bool(turn.get("semantic_frame_enriched"))
+    )
+    semantic_frame_enrichment_status = (
+        "all"
+        if total_turns and semantic_frame_enriched_turns == total_turns
+        else "partial"
+        if semantic_frame_enriched_turns
+        else "none"
+    )
+    semantic_frame_enrichment = {
+        "status": semantic_frame_enrichment_status,
+        "turns_total": total_turns,
+        "enriched_turns": semantic_frame_enriched_turns,
+    }
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3294,7 +3710,7 @@ def build_summary(
     llm_call_summary = _llm_call_summary(
         llm_calls or {},
         dialogs=len(judge_results),
-        turns=sum(len(item.get("turns") or []) for item in transcripts),
+        turns=total_turns,
     )
     metrics = build_metric_intervals(
         dialogs=len(judge_results),
@@ -3309,6 +3725,8 @@ def build_summary(
         "snapshot_path": str(snapshot_path),
         "replay": bool(replay_source_run),
         "replay_source_run": replay_source_run,
+        "semantic_frame_enriched": semantic_frame_enrichment_status == "all",
+        "semantic_frame_enrichment": semantic_frame_enrichment,
         "scenario_metadata": _scenario_metadata(judge_spec),
         "run_config": {
             "parallel": int(parallel),
@@ -3325,7 +3743,7 @@ def build_summary(
         },
         "totals": {
             "dialogs": len(judge_results),
-            "turns": sum(len(item.get("turns") or []) for item in transcripts),
+            "turns": total_turns,
             "pass": verdicts.get("PASS", 0),
             "pass_with_notes": verdicts.get("PASS_WITH_NOTES", 0),
             "fail": verdicts.get("FAIL", 0),
@@ -3408,6 +3826,12 @@ def build_summary(
         "fact_retrieval_trace": fact_retrieval_trace,
         **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
         **({"semantic_frame": semantic_frame} if int(semantic_frame.get("turn_count") or 0) else {}),
+        **({"frame_decision_shadow": frame_decision_shadow} if int(frame_decision_shadow.get("turn_count") or 0) else {}),
+        **(
+            {"semantic_frame_self_answer_shadow": semantic_frame_self_answer_shadow}
+            if int(semantic_frame_self_answer_shadow.get("turn_count") or 0)
+            else {}
+        ),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -3772,6 +4196,114 @@ def _semantic_frame_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping
     }
 
 
+def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    statuses: Counter[str] = Counter()
+    handoff_alignment: Counter[str] = Counter()
+    p0_alignment: Counter[str] = Counter()
+    answerability_alignment: Counter[str] = Counter()
+    close_alignment: Counter[str] = Counter()
+    action_alignment: Counter[str] = Counter()
+    mismatches: list[Mapping[str, Any]] = []
+    examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            shadow = turn.get("bot_frame_decision_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            total += 1
+            status = str(shadow.get("status") or "").strip() or "unknown"
+            statuses[status] += 1
+            comparisons = shadow.get("comparisons") if isinstance(shadow.get("comparisons"), Mapping) else {}
+            action = comparisons.get("action") if isinstance(comparisons.get("action"), Mapping) else {}
+            handoff = str(comparisons.get("must_handoff_vs_route") or "unknown")
+            p0 = str(comparisons.get("p0_vs_actual") or "unknown")
+            answerability = str(comparisons.get("answerability_vs_route") or "unknown")
+            close = str(comparisons.get("close_veto_vs_close_detect") or "unknown")
+            action_value = str(action.get("alignment") or "unknown")
+            handoff_alignment[handoff] += 1
+            p0_alignment[p0] += 1
+            answerability_alignment[answerability] += 1
+            close_alignment[close] += 1
+            action_alignment[action_value] += 1
+            has_mismatch = "mismatch" in {handoff, p0, answerability, close, action_value}
+            row = {
+                "dialog_id": str(dialog.get("dialog_id") or ""),
+                "turn": turn.get("turn"),
+                "brand": str(dialog.get("brand") or ""),
+                "route": str(turn.get("bot_route") or ""),
+                "status": status,
+                "handoff_alignment": handoff,
+                "p0_alignment": p0,
+                "close_alignment": close,
+                "action_alignment": action_value,
+            }
+            if has_mismatch and len(mismatches) < 100:
+                mismatches.append(row)
+            if len(examples) < 50:
+                examples.append(row)
+    return {
+        "schema_version": "frame_decision_shadow_summary_v1_2026_07_01",
+        "turn_count": total,
+        "statuses": dict(statuses),
+        "must_handoff_vs_route": dict(handoff_alignment),
+        "p0_vs_actual": dict(p0_alignment),
+        "answerability_vs_route": dict(answerability_alignment),
+        "close_veto_vs_close_detect": dict(close_alignment),
+        "action_alignment": dict(action_alignment),
+        "mismatches": mismatches,
+        "examples": examples,
+    }
+
+
+def _semantic_frame_self_answer_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    statuses: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
+    self_classes: Counter[str] = Counter()
+    would_demote_examples: list[Mapping[str, Any]] = []
+    blocked_examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            shadow = turn.get("bot_semantic_frame_self_answer_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            total += 1
+            status = str(shadow.get("status") or "unknown")
+            reason = str(shadow.get("reason") or "unknown")
+            self_class = str(shadow.get("self_class") or "unknown")
+            statuses[status] += 1
+            reasons[reason] += 1
+            self_classes[self_class] += 1
+            row = {
+                "dialog_id": str(dialog.get("dialog_id") or ""),
+                "turn": turn.get("turn"),
+                "brand": str(dialog.get("brand") or ""),
+                "route": str(turn.get("bot_route") or ""),
+                "status": status,
+                "reason": reason,
+                "self_class": self_class,
+                "route_after_if_active": shadow.get("route_after_if_active"),
+            }
+            if status == "would_demote_to_self" and len(would_demote_examples) < 50:
+                would_demote_examples.append(row)
+            elif status == "blocked" and len(blocked_examples) < 50:
+                blocked_examples.append(row)
+    return {
+        "schema_version": "semantic_frame_self_answer_shadow_summary_v1_2026_07_02",
+        "turn_count": total,
+        "statuses": dict(statuses),
+        "reasons": dict(reasons),
+        "self_classes": dict(self_classes),
+        "would_demote_examples": would_demote_examples,
+        "blocked_examples": blocked_examples,
+    }
+
+
 def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) -> Mapping[str, Any]:
     role_counts = {str(role): int(value or 0) for role, value in (counts or {}).items()}
     total = sum(role_counts.values())
@@ -3780,6 +4312,7 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "client": role_counts.get("client", 0),
         "bot_draft": role_counts.get("bot_draft", 0),
         "bot_direct_draft": role_counts.get("bot_direct_draft", 0),
+        "bot_semantic_frame_shadow": role_counts.get("bot_semantic_frame_shadow", 0),
         "bot_retriever": role_counts.get("bot_retriever", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
         "bot_faithfulness": role_counts.get("bot_faithfulness", 0),
@@ -5123,6 +5656,12 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
     over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
     handoff_trace = summary.get("handoff_trace") if isinstance(summary.get("handoff_trace"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
+    frame_decision_shadow = summary.get("frame_decision_shadow") if isinstance(summary.get("frame_decision_shadow"), Mapping) else {}
+    self_answer_shadow = (
+        summary.get("semantic_frame_self_answer_shadow")
+        if isinstance(summary.get("semantic_frame_self_answer_shadow"), Mapping)
+        else {}
+    )
     return "\n".join(
         [
             "# Dynamic Telegram Client Simulation v7",
@@ -5143,6 +5682,8 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
             f"- Close detect: `{summary.get('close_detect')}`",
+            f"- Frame decision shadow: `{frame_decision_shadow}`",
+            f"- SemanticFrame self-answer shadow: `{self_answer_shadow}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",
@@ -5294,6 +5835,10 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_model_intent_scope",
         "bot_model_intent_sense",
         "bot_model_intent_confidence",
+        "bot_semantic_frame",
+        "bot_semantic_reading_trace",
+        "bot_frame_decision_shadow",
+        "bot_semantic_frame_self_answer_shadow",
         "bot_safety_flags",
         "bot_answer_quality_findings",
         "bot_answer_quality_rewritten",

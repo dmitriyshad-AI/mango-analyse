@@ -1,0 +1,9 @@
+branch: codex/adr003-semanticframe-migration
+rev_before_commit: 8cd2d966
+
+Staged files are limited to ADR-003 F2ac partial-answer policy shadow:
+
+- scripts/report_adr003_partial_answer_policy_shadow.py
+- tests/test_report_adr003_partial_answer_policy_shadow.py
+- tasks/_done/2026-07-02_ADR003_F2ac_partial_answer_policy_shadow_report.md
+- audits/_inbox/adr003_f2ac_partial_answer_policy_shadow_20260702175642/

@@ -1,0 +1,48 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py tests/test_report_adr003_frame_calibration_queue.py
+38 passed in 1.04s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py tests/test_report_adr003_semantic_frame_eval.py tests/test_report_adr003_frame_gold_calibration.py tests/test_report_adr003_frame_calibration_queue.py
+52 passed in 1.34s
+
+git diff --check
+passed
+
+Paired no-op enrichment from 36ea110 OFF transcripts:
+dialogs=131
+turns=241
+hard_gate_failures=0
+
+ADR003 semantic frame eval report:
+acceptance.status=pass
+compared_turns=241
+route_text_diff_count=0
+input_diff_count=0
+semantic_frame_present=241/241
+semantic_frame_required_fields=241/241
+on_non_frame_total=0
+self_answer_would_demote_count=0
+p0_lowered_count=0
+money_lowered_count=0
+operational_lowered_count=0
+manager_only_lowered_count=0
+
+Gold calibration:
+must_handoff_accuracy=0.8701
+too_cautious=10
+too_confident=0
+p0_misses=0
+
+Calibration queue:
+source_rev=42ee2ff5
+strict_active_candidates_now=0
+clean_route_only_discussion=0
+fact_assertion_required=8
+danger_adjacent=2
+stable_existence_as_check_availability=0
+stable_existence_as_enroll=1
+true_live_availability_negative_controls=29
+true_enroll_booking_negative_controls=9
+
+PII grep on selected committed audit files:
+no actual email, phone, AMO entity id, contact id, or lead id found.
+False positives: internal `capture_lead` enum and textual "Current handoff" report line.

@@ -1,0 +1,39 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "No manager_only exact-proof rows remain in this input.",
+      "Report-only: no route/text/runtime changes."
+    ],
+    "status": "pass_no_manager_only_exact_proof_rows"
+  },
+  "breakdowns": {
+    "by_message_type": {},
+    "by_non_policy_residual_blocker": {},
+    "by_requested_action": {},
+    "by_residual_blocker": {}
+  },
+  "cases": [],
+  "created_at": "2026-07-02T08:42:58.591325+00:00",
+  "inputs": {
+    "as_of_date": "2026-07-02",
+    "confidence_threshold": 0.9,
+    "gold": "/tmp/adr003_f2j_existence_subset_gold.jsonl",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "transcripts": "/tmp/adr003_f2j_posthoc_measure/dynamic_dialog_transcripts.jsonl"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is unchanged.",
+    "Exact-proof injection is hypothetical telemetry only; no fact is injected into the bot.",
+    "manager_only remains non-demotable by this phase."
+  ],
+  "schema_version": "adr003_exact_proof_injection_shadow_v1_2026_07_02",
+  "source_rev": "896e820",
+  "totals": {
+    "evidence_only_sufficient_rows": 0,
+    "fresh_client_safe_exact_proof": 0,
+    "manager_only_exact_proof_rows": 0,
+    "readiness_strict_f3_draft_candidates": 0,
+    "still_blocked_after_injection": 0
+  }
+}

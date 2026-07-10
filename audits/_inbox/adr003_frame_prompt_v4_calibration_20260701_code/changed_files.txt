@@ -1,0 +1,5 @@
+docs/ADR003_SEMANTIC_FRAME_EVAL.md
+src/mango_mvp/channels/subscription_llm_parts/provider.py
+tests/test_direct_path_semantic_frame_shadow.py
+tests/test_subscription_llm_draft_provider.py
+

@@ -28,6 +28,7 @@ from scripts.run_telegram_public_pilot_bots import (
     knowledge_base_version_for_store,
     normalize_phone,
     parse_debug_phone_command,
+    dialog_summary_from_result,
     public_telegram_reply_payload,
     public_reply_text,
     PublicPilotBotRuntime,
@@ -501,8 +502,8 @@ def test_public_bot_selfcheck_reports_live_guard_telemetry_without_requiring_env
     assert profile_without_env.ok is True
     assert profile_without_env.active_guards["fact_venue_scope"] is True
     assert profile_without_env.active_guards["autonomy_scope_precision"] is True
-    assert profile_without_env.active_guards["p0_model_led"] is False
-    assert profile_without_env.active_guards["prose_model_led"] is False
+    assert profile_without_env.active_guards["p0_model_led"] is True
+    assert profile_without_env.active_guards["prose_model_led"] is True
     assert "p0_model_led" not in REQUIRED_GUARD_KEYS
     assert "prose_model_led" not in REQUIRED_GUARD_KEYS
     assert "fact_venue_scope" not in REQUIRED_GUARD_KEYS
@@ -778,6 +779,22 @@ def test_public_reply_text_falls_back_when_empty() -> None:
     text = public_reply_text(result)
     assert "передам вопрос менеджеру" in text.casefold()
     assert "спасибо за сообщение" not in text.casefold()
+
+
+def test_public_pilot_dialog_summary_from_result_reads_top_level_and_direct_path_metadata() -> None:
+    top_level = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Ответ.",
+        metadata={"dialog_summary_candidate": "Клиент выбирает онлайн-физику."},
+    )
+    nested = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Ответ.",
+        metadata={"direct_path": {"dialog_summary_candidate": "Клиент выбирает очную математику."}},
+    )
+
+    assert dialog_summary_from_result(top_level) == "Клиент выбирает онлайн-физику."
+    assert dialog_summary_from_result(nested) == "Клиент выбирает очную математику."
 
 
 def test_public_telegram_reply_payload_is_plain_by_default() -> None:

@@ -1,0 +1,17 @@
+branch: codex/adr003-semanticframe-migration
+rev: 3c327dfc
+
+ M docs/ADR003_ETAP_T_DECISIONS.md
+?? docs/WAPPI_REPLAY_EXAM_PIPELINE.md
+?? scripts/build_wappi_replay_m1_manifest.py
+?? scripts/export_wappi_replay_dialogs.py
+?? scripts/run_wappi_replay_exam.py
+?? src/mango_mvp/replay_exam/
+?? tests/test_wappi_replay_exporter.py
+?? tests/test_wappi_replay_judge.py
+?? tests/test_wappi_replay_m1_adapter.py
+?? tests/test_wappi_replay_machine_gate.py
+?? tests/test_wappi_replay_pseudonymizer.py
+?? tests/test_wappi_replay_runner.py
+?? tests/test_wappi_replay_scripts.py
+?? tests/test_wappi_replay_slicer.py

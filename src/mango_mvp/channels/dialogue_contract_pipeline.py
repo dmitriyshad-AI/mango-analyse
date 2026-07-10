@@ -58,6 +58,7 @@ QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
 AUTONOMY_SCOPE_PRECISION_ENV = "TELEGRAM_AUTONOMY_SCOPE_PRECISION"
+AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV = "TELEGRAM_AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 _FAITHFULNESS_SHADOW_CONTEXT_KEY = "_faithfulness_shadow"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
@@ -732,6 +733,20 @@ def autonomy_scope_precision_enabled(context: Mapping[str, Any] | None = None) -
     from mango_mvp.channels.subscription_llm_parts.support import _pilot_profile_default_on_flag_enabled
 
     return _pilot_profile_default_on_flag_enabled(context, AUTONOMY_SCOPE_PRECISION_ENV, aliases=aliases)
+
+
+def authoritative_gate_scope_relevance_fix_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    aliases = (
+        "authoritative_gate_scope_relevance_fix",
+        "authoritative_gate_scope_relevance_fix_enabled",
+    )
+    if isinstance(context, MappingABC):
+        for key in (AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV, *aliases):
+            if key in context:
+                return _truthy(context.get(key))
+    if AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV in os.environ:
+        return _truthy(os.getenv(AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV))
+    return False
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -7098,14 +7113,25 @@ def _wrong_intent_fact_findings(
                 "Контактные часы нельзя выдавать как дни занятий группы.",
             )
         )
-    if not _asks_address(contract) and _draft_uses_address_fact(draft, facts):
+    scope_relevance_fix = authoritative_gate_scope_relevance_fix_enabled(context)
+    address_allowed = _asks_address(contract) or (
+        scope_relevance_fix and _scope_relevance_context_allows_address(context)
+    ) or (
+        scope_relevance_fix
+        and _scope_relevance_context_allows_class_schedule(context)
+        and _draft_uses_class_schedule_fact(draft, facts)
+    )
+    if not address_allowed and _draft_uses_address_fact(draft, facts):
         findings.append(
             VerificationFinding(
                 "wrong_intent_fact",
                 "Адресный факт нельзя выдавать как ответ на неадресный вопрос.",
             )
         )
-    if not _contract_mentions_camp_or_lvsh(contract) and _draft_uses_camp_or_lvsh_fact(draft, facts):
+    camp_allowed = _contract_mentions_camp_or_lvsh(contract) or (
+        scope_relevance_fix and _scope_relevance_context_allows_camp_or_lvsh(context)
+    )
+    if not camp_allowed and _draft_uses_camp_or_lvsh_fact(draft, facts):
         findings.append(
             VerificationFinding(
                 "wrong_intent_fact",
@@ -7115,6 +7141,139 @@ def _wrong_intent_fact_findings(
     if venue_scope_enabled(context):
         findings.extend(_wrong_venue_scope_fact_findings(draft, facts=facts, context=context))
     return findings
+
+
+_SCOPE_ADDRESS_MARKERS = {
+    "address",
+    "addresses",
+    "location",
+    "locations",
+    "contact_address",
+    "theme:015_address",
+}
+_SCOPE_CAMP_MARKERS = {
+    "camp",
+    "camp_lvsh",
+    "city_camp",
+    "city_day_camp",
+    "lvsh",
+    "lvsh_mendeleevo",
+    "residential_lvsh",
+    "theme:026_camp_general",
+    "vyezd_camp",
+    "лвш",
+}
+_SCOPE_CLASS_SCHEDULE_MARKERS = {
+    "class_schedule",
+    "theme:013_schedule",
+}
+
+
+def _scope_relevance_context_allows_address(context: Mapping[str, Any] | None) -> bool:
+    return bool(_scope_relevance_context_tokens(context) & _SCOPE_ADDRESS_MARKERS)
+
+
+def _scope_relevance_context_allows_camp_or_lvsh(context: Mapping[str, Any] | None) -> bool:
+    tokens = _scope_relevance_context_tokens(context)
+    if tokens & _SCOPE_CAMP_MARKERS:
+        return True
+    return any(
+        token.startswith("lvsh_") or token.endswith("_camp") or token.startswith("theme:026_")
+        for token in tokens
+    )
+
+
+def _scope_relevance_context_allows_class_schedule(context: Mapping[str, Any] | None) -> bool:
+    return bool(_scope_relevance_context_tokens(context) & _SCOPE_CLASS_SCHEDULE_MARKERS)
+
+
+def _scope_relevance_context_tokens(context: Mapping[str, Any] | None) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    tokens: set[str] = set()
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, Mapping):
+        _scope_relevance_add_fields(
+            tokens,
+            plan,
+            fields=(
+                "answer_topics",
+                "topic_roles",
+                "primary_intent",
+                "product_family",
+                "product_scope",
+                "fact_scope",
+                "topic_id",
+                "training_format",
+                "training_formats",
+            ),
+        )
+        known_slots = plan.get("known_slots")
+        if isinstance(known_slots, Mapping):
+            _scope_relevance_add_fields(tokens, known_slots, fields=("product",))
+    answer_contract = context.get("answer_contract")
+    if isinstance(answer_contract, Mapping):
+        _scope_relevance_add_fields(
+            tokens,
+            answer_contract,
+            fields=("primary_intent", "answerable_safe_parts", "topic_id", "known_slots"),
+        )
+    direct = context.get("direct_path")
+    if isinstance(direct, Mapping):
+        model_intent = direct.get("model_intent")
+        if isinstance(model_intent, Mapping):
+            _scope_relevance_add_fields(tokens, model_intent, fields=("primary_intent", "scope", "sense"))
+        _scope_relevance_add_coverage_tokens(tokens, direct.get("answer_coverage_plan"))
+        reliable = direct.get("reliable_answerer")
+        if isinstance(reliable, Mapping):
+            _scope_relevance_add_fields(tokens, reliable, fields=("covered_facets_in_text",))
+            _scope_relevance_add_coverage_tokens(tokens, reliable.get("answer_coverage_plan"))
+        llm_retrieve = direct.get("llm_retrieve")
+        if isinstance(llm_retrieve, Mapping):
+            venue_meta = llm_retrieve.get("venue_scope")
+            if isinstance(venue_meta, Mapping):
+                _scope_relevance_add_fields(tokens, venue_meta, fields=("requested_scope", "requested_scope_raw"))
+    direct_path_model_intent = context.get("direct_path_model_intent")
+    if isinstance(direct_path_model_intent, Mapping):
+        _scope_relevance_add_fields(tokens, direct_path_model_intent, fields=("primary_intent", "scope", "sense"))
+    _scope_relevance_add_coverage_tokens(tokens, context.get("answer_coverage_plan"))
+    return tokens
+
+
+def _scope_relevance_add_coverage_tokens(tokens: set[str], coverage: Any) -> None:
+    if not isinstance(coverage, Mapping):
+        return
+    _scope_relevance_add_fields(tokens, coverage, fields=("client_facets", "requested_scope"))
+    covered = coverage.get("covered_facets")
+    if isinstance(covered, SequenceABC) and not isinstance(covered, (str, bytes)):
+        for item in covered:
+            if isinstance(item, Mapping):
+                _scope_relevance_add_fields(tokens, item, fields=("facet",))
+
+
+def _scope_relevance_add_fields(tokens: set[str], mapping: Mapping[str, Any], *, fields: Sequence[str]) -> None:
+    for field in fields:
+        if field in mapping:
+            _scope_relevance_add_value(tokens, mapping.get(field))
+
+
+def _scope_relevance_add_value(tokens: set[str], value: Any) -> None:
+    if isinstance(value, str):
+        normalized = _scope_relevance_token(value)
+        if normalized:
+            tokens.add(normalized)
+        return
+    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes)):
+        for item in value:
+            _scope_relevance_add_value(tokens, item)
+        return
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _scope_relevance_add_value(tokens, item)
+
+
+def _scope_relevance_token(value: str) -> str:
+    return " ".join(str(value or "").strip().casefold().replace("ё", "е").split()).replace(" ", "_")
 
 
 def _wrong_venue_scope_fact_findings(
@@ -7302,6 +7461,22 @@ def _draft_uses_address_fact(draft: str, facts: Mapping[str, str]) -> bool:
             continue
         tail = _fact_tail(str(value or "")).casefold().replace("ё", "е")
         if tail and len(tail) >= 4 and tail in text:
+            return True
+    return False
+
+
+def _draft_uses_class_schedule_fact(draft: str, facts: Mapping[str, str]) -> bool:
+    text = str(draft or "").casefold().replace("ё", "е")
+    if not text:
+        return False
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not re.search(r"schedule|расписан|групп", combined, re.I):
+            continue
+        tail = _fact_tail(str(value or "")).casefold().replace("ё", "е")
+        if tail and len(tail) >= 12 and tail in text:
+            return True
+        if re.search(r"\b(?:пн|вт|ср|чт|пт|сб|вс)\b|\b(?:понедельник|вторник|сред|четверг|пятниц|суббот|воскрес)", text, re.I):
             return True
     return False
 

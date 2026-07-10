@@ -93,6 +93,20 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     }
 
 
+def test_bot_safe_crm_context_blocks_explicit_customer_id_by_default(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+    )
+
+    assert context["found"] is False
+    assert context["warnings"] == ["explicit_customer_id_not_allowed"]
+
+
 def test_bot_safe_crm_context_strips_empty_next_step_sentence_on_read(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
@@ -141,6 +155,7 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
         allowed_root=tmp_path,
         active_brand="unpk",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     raw = json.dumps(context, ensure_ascii=False)
@@ -175,6 +190,7 @@ def test_bot_safe_crm_context_reads_e4b_opened_mail_stage2_chunks(tmp_path: Path
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -222,6 +238,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -237,8 +254,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
     assert "0009513397027963" not in raw
     assert "[контактные данные у менеджера]" in raw
     assert "[ссылка скрыта]" in raw
-    assert "[имя клиента у менеджера]" in raw
-    assert "[имя ученика/клиента у менеджера]" in raw
+    assert "[персона у менеджера]" in raw
     assert scan_bot_safe_context_pii(raw) == ()
 
 
@@ -267,6 +283,7 @@ def test_bot_safe_crm_context_blocks_e4b_mail_foreign_brand(tmp_path: Path, monk
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -300,6 +317,7 @@ def test_bot_safe_crm_context_reads_e4b_opened_telegram_history_chunks(tmp_path:
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -334,6 +352,7 @@ def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, m
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -391,6 +410,7 @@ def test_bot_safe_crm_context_reads_opened_mango_calls_without_brand_scope(tmp_p
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -434,6 +454,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_channel_contacts(tmp_path: Path, mon
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
         limit=5,
     )
 
@@ -540,6 +561,11 @@ def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
     assert scan_bot_safe_context_pii("Телефон 8 (800) 550 25 88") == ("phone",)
 
 
+def test_scan_bot_safe_context_pii_detects_person_name_and_address() -> None:
+    assert scan_bot_safe_context_pii("Имя ученика: Иван Петров") == ("person_name",)
+    assert scan_bot_safe_context_pii("Адрес: улица Ленина, дом 5") == ("address",)
+
+
 def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
 
@@ -548,6 +574,7 @@ def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     raw = json.dumps(context, ensure_ascii=False)
@@ -564,6 +591,7 @@ def test_bot_safe_crm_context_drops_placeholder_junk_chunks(tmp_path: Path) -> N
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     raw = json.dumps(context, ensure_ascii=False)
@@ -580,6 +608,7 @@ def test_bot_safe_crm_context_blocks_foreign_brand_only_chunks(tmp_path: Path) -
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     raw = json.dumps(context, ensure_ascii=False)
@@ -596,6 +625,7 @@ def test_bot_safe_crm_context_blocks_pii_only_chunks(tmp_path: Path) -> None:
         allowed_root=tmp_path,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     raw = json.dumps(context, ensure_ascii=False)
@@ -644,6 +674,7 @@ def test_bot_safe_crm_context_opens_read_only_db_under_path_with_spaces(tmp_path
         allowed_root=db_path.parent,
         active_brand="foton",
         lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
     )
 
     assert context["found"] is True

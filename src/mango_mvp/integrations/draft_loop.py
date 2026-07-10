@@ -13,8 +13,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
+from mango_mvp.channels.dialogue_memory import (
+    MEMORY_PROVENANCE_ENV,
+    _dialog_summary_candidate,
+    _dialog_summary_rolling_enabled,
+    update_dialogue_memory_after_answer,
+)
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
-from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, update_dialogue_memory_after_answer
+from mango_mvp.channels.subscription_llm_parts.semantic_reading import SemanticReading
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AmoWappiHttpError,
     AmoWappiPhase1Config,
@@ -888,9 +894,14 @@ class AmoWappiDraftLoop:
                 self.state.save()
                 return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0}
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
-        history = _prompt_history_lines(messages, recent_limit=self.config.history_limit, brand=brand)
         client_message = inbound_new[-1].text
         previous_memory = self.state.dialogue_memory_for(key)
+        history = _prompt_history_lines(
+            messages,
+            recent_limit=self.config.history_limit,
+            brand=brand,
+            dialogue_memory=previous_memory,
+        )
         context = self._build_context(
             key,
             history,
@@ -910,13 +921,18 @@ class AmoWappiDraftLoop:
                 if isinstance(context.get("dialogue_memory_state"), Mapping)
                 else context.get("dialogue_memory_view")
             )
+            semantic_reading = SemanticReading.from_result(result)
             updated_memory = update_dialogue_memory_after_answer(
                 memory_source if isinstance(memory_source, Mapping) else {},
                 answer_text=draft_text,
                 route=route,
                 fact_refs=tuple(getattr(result, "context_used", ()) or ()),
                 safety_flags=safety_flags,
+                semantic_reading=semantic_reading.to_memory_dict() if semantic_reading is not None else None,
+                semantic_frame=_semantic_frame_from_result(result),
+                dialog_summary=_dialog_summary_from_result(result),
                 memory_llm_fn=None,
+                context=context,
             )
             self.state.set_dialogue_memory(key, updated_memory.to_json_dict())
         last_message = inbound_new[-1]
@@ -1238,13 +1254,52 @@ def _history_lines(messages: Sequence[WappiHistoryMessage], *, limit: int | None
     return tuple(lines[-_raw_history_limit(limit):])
 
 
-def _prompt_history_lines(messages: Sequence[WappiHistoryMessage], *, recent_limit: int | None = None, brand: str = "") -> tuple[str, ...]:
+def _dialog_summary_from_result(result: object) -> str:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return ""
+    candidate = str(metadata.get("dialog_summary_candidate") or "").strip()
+    if candidate:
+        return candidate
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        return str(direct.get("dialog_summary_candidate") or "").strip()
+    return ""
+
+
+def _semantic_frame_from_result(result: object) -> Mapping[str, Any] | None:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    frame = metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping):
+        frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        direct = metadata.get("direct_path")
+        if isinstance(direct, Mapping):
+            frame = direct.get("semantic_frame") if isinstance(direct.get("semantic_frame"), Mapping) else direct.get("semantic_frame_shadow")
+    return dict(frame) if isinstance(frame, Mapping) and frame else None
+
+
+def _prompt_history_lines(
+    messages: Sequence[WappiHistoryMessage],
+    *,
+    recent_limit: int | None = None,
+    brand: str = "",
+    dialogue_memory: Mapping[str, object] | None = None,
+) -> tuple[str, ...]:
     text_messages = [item for item in messages if item.message_type == "text" and item.text.strip()]
     raw_limit = _raw_history_limit(recent_limit)
     recent = text_messages[-raw_limit:]
     older = text_messages[:-raw_limit]
     lines: list[str] = []
-    summary = _older_dialogue_summary(older, brand=brand)
+    summary = ""
+    if _dialog_summary_rolling_enabled(None) and isinstance(dialogue_memory, Mapping):
+        summary = _dialog_summary_candidate(dialogue_memory.get("conversation_summary_short"), active_brand=brand)
+        if summary and not _mentions_other_brand(summary, brand):
+            summary = f"{OLDER_DIALOGUE_SUMMARY_PREFIX} {summary}"[:700].rstrip()
+    if not summary:
+        summary = _older_dialogue_summary(older, brand=brand)
     if summary:
         lines.append(summary)
     lines.extend(_history_lines(recent, limit=raw_limit))

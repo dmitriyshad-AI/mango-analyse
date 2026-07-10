@@ -1,0 +1,271 @@
+# ADR003 этап T — журнал решений Codex
+
+Дата: 2026-07-03
+Ветка: `codex/adr003-semanticframe-migration`
+Стартовый HEAD: `7676a902bd0ac0dc55dc5df18e461565e22339cb`
+
+## D-001. `PROJECT_NOW.md` не коммитить
+
+Решение: обновлять `docs/PROJECT_NOW.md` только локально через `python3 scripts/project_now.py`; exact HEAD и ссылки на артефакты фиксировать в этом журнале и audit pack.
+
+Обоснование: `docs/PROJECT_NOW.md` является generated/ignored файлом по `AGENTS.md` и `.gitignore`. Коммит такого файла нарушил бы проектную дисциплину и смешал runtime-снимок с кодовым изменением.
+
+## D-002. Делать repo-wrapper ТЗ
+
+Решение: создать tracked wrapper в `tasks/_inbox_codex/`, затем перевести его через `scripts/task_move.py --take` и запускать `scripts/preflight.py`.
+
+Обоснование: исходное ТЗ лежит в Foton и не имеет машиночитаемой шапки. Для крупной реализации нужен штатный preflight, иначе границы зон и безопасный collect-only не проверяются.
+
+## D-003. Сузить реализацию до этапа T
+
+Решение: реализовывать только trace, `sense_seats`, `off_topic`, `slots_gsf`, env-matrix, `e3_paired` runner и deletion manifest. Fix1b/Fix2/slots_reask/deal_action не реализовывать.
+
+Обоснование: эти блоки относятся к другим подсистемам и сделают будущий замер неатрибутируемым. `deal_action` уже включён профилем, `slots_reask` требует передачи semantic reading в симуляторную память, Fix1b/Fix2 требуют отдельных смысловых критериев.
+
+## D-004. Trace финализировать после `apply_semantic_frame_decision_shadow`
+
+Решение: добавить `apply_semantic_reading_trace_finalize(...)` после текущего последнего direct-path shadow слоя; старый `frame_decision_shadow` не переименовывать и не менять.
+
+Обоснование: иначе trace может не увидеть итоговые изменения и может сломать существующие отчёты, которые читают старый ключ.
+
+## D-005. `sense_seats` зависит от reliable step1
+
+Решение: если маска `sense_seats` включена, но `TELEGRAM_RELIABLE_ANSWERER_STEP1` выключен, писать trace `suppressed(reason="reliable_step1_off")`; в `e3_paired` включать reliable step1 в обоих плечах.
+
+Обоснование: `apply_reliable_answerer_output_guard` не работает при выключенном reliable step1. Без явной suppressed-записи класс молча стал бы инертным.
+
+Обновление 2026-07-07: решение о принудительном включении reliable step1 в `e3_paired` отменено. Раннер больше не задаёт `TELEGRAM_RELIABLE_ANSWERER_STEP1=1` в B/ON-ногах и измеряет фактический профиль; если классу нужен reliable step1, это должно приходить из профиля или явного целевого env, а не из скрытой методической подмешки.
+
+## D-006. `semantic_reading_slots` — hidden storage без читателей
+
+Решение: хранить модельные slot-кандидаты отдельно от `known_slots`, `client_confirmed_slots`, `topic_focus`, prompt-view и direct-path prompt. В этом этапе нет потребителя этих слотов.
+
+Обоснование: модельная догадка не является подтверждённым словом клиента. Любой merge в общий slot-map создаст старую ошибку: бот перестанет переспросить неподтверждённые данные.
+
+## D-007. Маска `slots_gsf` в memory-layer
+
+Решение: не добавлять новый параметр `context` в `update_dialogue_memory_after_answer`; гейтить запись `semantic_reading_slots` через существующий env/context resolver `reading_class_enabled(None, "slots_gsf")`, а caller-side включение оставить future work.
+
+Обоснование: у функции уже есть параметр `semantic_reading`, но нет `context`. Добавление `context` расширило бы публичный контракт памяти и затронуло бы больше вызовов. Env-only гейт достаточен для этого этапа, потому что `TELEGRAM_SEMANTIC_READING_CLASSES` уже является глобальным флагом reading-классов.
+
+## D-008. `e2_triple` не трогать
+
+Решение: не менять `scripts/run_adr003_semantic_reading_e2_triple.sh`; для будущего ON-замера создать отдельный `scripts/run_adr003_semantic_reading_e3_paired.sh`.
+
+Обоснование: `e2_triple` нужен для теневой проверки inline/posthoc frame и специально держит `TELEGRAM_SEMANTIC_READING_CLASSES=` пустым. Смешивать его с active reading-масками нельзя.
+
+## D-009. Deletion manifest — только данные
+
+Решение: создать `docs/ADR003_DELETION_MANIFEST.md` со статусом `awaiting_green`; ничего не удалять.
+
+Обоснование: удаление legacy regex возможно только после per-class зелёного замера и отдельного разрешения Дмитрия.
+
+## D-010. E3 мерит reading-дельту поверх одинакового inline SemanticFrame
+
+Решение: в `e3_paired` включить `TELEGRAM_SEMANTIC_FRAME_SHADOW=1` в обоих плечах, а ON-плечо отличается от B-плеча только `TELEGRAM_SEMANTIC_READING_CLASSES`.
+
+Обоснование: `slots_gsf` читает `requested_product` из inline SemanticFrame. Если frame отсутствует в обоих плечах, paired-замер не измеряет reading-класс. Это не меняет runtime default/profilе и не включает флаги в живом боте; это только решение измерительного runner.
+
+## D-011. Локальный timeout E3 dry-check не блокирует кодовый этап
+
+Решение: локальный E3 `--dry-check`, остановившийся на `provider_error=timeout` в первых двух диалогах, классифицировать как `infrastructure_bug`. Для закрытия кодового этапа добавить unit-инвариант fake direct-provider: при всех reading-масках OFF `semantic_reading_trace` отсутствует, а metadata/route/text остаются исходными. Поведенческий E3 dry-check остаётся обязательным fail-fast предусловием будущего M1/E3 прогона.
+
+Обоснование: timeout случился до появления inline SemanticFrame и не доказывает дефект trace/vrezka-кода. Unit-инвариант закрывает красную строку OFF без модельных вызовов, а runner сохраняет поведенческий gate там, где доступен валидный model-run.
+
+## D-012. `sense_seats` не снимает floor на обещание наличия мест
+
+Решение: `sense_seats=not_seats` больше не пропускает deterministic `availability_promise` guard, если в ответе уже есть обещание наличия места/группы/записи. В таком случае старый floor остаётся, а trace пишет `reason="availability_promise_floor_kept"`.
+
+Обоснование: LLM должна понимать смысл слова «место», но не должна отключать защиту от клиентского обещания «места есть / запишем» без live-факта. Детерминизм здесь остаётся верификатором, а не понимальщиком.
+
+## D-013. PR-A Fix1b пропускает только полностью проверенный клиентский ответ
+
+Решение: `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` оставлен default-OFF и не добавлен в профиль. Коридор может снять только два ложных демоута (`autonomy_default_cautious_missing_facts`, `autonomy_default_cautious_unverified_fact`) и только если весь черновик поддержан свежими client-safe фактами, не содержит неподтвержденных чисел/дат, чужого бренда или live-обещаний мест. Trace-класс `fix1b` не входит в `TELEGRAM_SEMANTIC_READING_CLASSES`; это диагностическая запись применения коридора, а не новый пользовательский reading-класс.
+
+Обоснование: найденный баг находится в проверке выхода: бот уже дал проверенный ценовой/адресный ответ, но старый cautious-layer понижал его в `draft_for_manager`. Расширять понимание клиента здесь не нужно. Reader agreement и будущий регрейд должны видеть, где коридор сработал, но P0/live/brand/fabrication полы остаются выше и не обходятся.
+
+## D-014. PR-B slots_reask остается hidden-storage/read-only механизмом
+
+Решение: `TELEGRAM_SLOTS_REASK` оставлен default-OFF и не добавлен в профиль. Он не создаёт `semantic_reading_slots`; hidden-слоты создаются только активной маской `TELEGRAM_SEMANTIC_READING_CLASSES=slots_gsf`. PR-B только читает имена уже записанных hidden-слотов и добавляет эти имена в `do_not_ask_again`, чтобы бот не переспрашивал grade/subject/format. Значения hidden-слотов не попадают в `known_slots`, `client_confirmed_slots` или `to_prompt_view()`.
+
+Обоснование: это анти-переспрос, а не merge semantic slots into memory. Старые regex G/S/F и `known_slots` остаются до отдельного `slots_gsf -> known_slots` решения с `source=semantic_reading_llm`. В текущем HEAD три sim/update точки уже пробрасывают `semantic_reading=` в память; блок PR-B зафиксирован как инвентаризация существующего механизма и проверка его границ.
+
+## D-015. PR-D rolling dialog summary производится inline и пишется fail-closed
+
+Решение: `TELEGRAM_DIALOG_SUMMARY_ROLLING` оставлен default-OFF и не добавлен в профиль. Поле `dialog_summary` добавляется только в основной direct-path JSON при включённом флаге, без отдельного LLM-вызова. Запись в `DialogueMemory.conversation_summary_short` идёт отдельной веткой `update_dialogue_memory_after_answer(dialog_summary=...)`, до раннего возврата memory-provenance, но не через `_apply_memory_llm_update`.
+
+Обоснование: старый memory-LLM слой трогает слоты и исторически конфликтовал с provenance. PR-D должен хранить только короткую смысловую сводку диалога, без записи фактов в `known_slots` и без ПДн/чужого бренда/цен и дат. Direct path получает предыдущую сводку как безопасный prompt context, а Wappi использует её вместо сырьевой 6-строчной склейки только при включённом флаге.
+
+## D-016. Package-2 Srez-1a `intent_actions` остается explicit-env и same-stage
+
+Решение: `intent_actions` добавлен только в allowlist `TELEGRAM_SEMANTIC_READING_CLASSES`, но не в `PILOT_PROFILE_DEFAULT_READING_CLASSES`. В переходном режиме `apply_conversation_intent_plan_guard` считает legacy-решение как раньше, затем читает только inline `SemanticFrame` на той же стадии direct-path pipeline и применяет fail-closed/max-conservative слой.
+
+Обоснование: срез заменяет выходное route-решение, а не входные чтения `conversation_intent_plan`. Posthoc frame появляется позже и не является той же стадией. При `requested_action=check_availability` frame может переустановить protective-сигнал `conversation_intent_plan_live_availability`, чтобы Fix1b/autonomy не начали обещать живые места. При отсутствии inline frame, низкой confidence, невалидном enum или source mismatch применяется legacy. Frame-based false-P0 repair в этом коммите не включается; его продолжает делать только legacy-логика до отдельного замера. Профильное включение и deletion legacy-вычисления остаются отдельными решениями после пары и регрейда.
+
+## D-017. PaymentFix и PR-D включаются в `pilot_gold_v1` как профильные дефолты
+
+Решение: после M1-регрейда трех приемочных пар добавить `TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX` и `TELEGRAM_DIALOG_SUMMARY_ROLLING` в профильный default-ON контур `pilot_gold_v1`, сохранив явный env/context override `=0`.
+
+Обоснование: PaymentFix и PR-D прошли независимые пары; это не включает live runtime и не трогает AMO/CRM/Tallanto. PaymentFix чинит текстовую болезнь #16, PR-D хранит короткую безопасную rolling summary. `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` в профиль не добавляется из-за найденных дыр коридора.
+
+## D-018. Fix1b hardening до любого включения
+
+Решение: `TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS` остается default-OFF. Коридор дополнительно блокирует отрицательные утверждения о существовании курса/группы/программы и входящий paid-context (`чек`, `квитанция`, `скрин оплаты`, `оплатил/оплачено`).
+
+Обоснование: M1-регрейд подтвердил безопасность Fix1b, но не разрешил включение: коридор мог пропустить отрицательное существование и оплаченный контекст. Эти стопы относятся к верификации готового черновика/операционного контекста, а не к новому чтению client intent.
+
+## D-019. Package-2 runner добавляет целевой reading-класс поверх профиля только env-ом
+
+Решение: `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает `TARGET_READING_CLASS` и добавляет его к `READING_CLASSES` только для ON-ноги. B-нога не задаёт `TELEGRAM_SEMANTIC_READING_CLASSES=` пустой строкой, а запускается как чистый профиль `pilot_gold_v1`. Валидатор разрешает профильные traces в B, но запрещает target-class trace; ON обязан иметь target-class trace. Профильный default reading classes на момент D-019 не менялся; после D-032 `intent_actions` стал профильным default, и раннер теперь отказывает, если target уже входит в профиль/base.
+
+Обоснование: срез-1a должен был измерить `intent_actions` как единственную новую переменную поверх текущего профиля. Добавлять `intent_actions` в профиль до пары было нельзя: baseline стал бы загрязнен и неатрибутируем. Это ограничение снято только после D-032.
+
+## D-020. Inline text gate верифицирует адресные числа и учебный год только из источников хода
+
+Решение: числа адресов вроде `20`/`30` считаются verified, если они пришли из selected exact address fact или уже подтверждены `number_audit`; учебный год `2026/27` считается verified только из selected exact fact id, текста selected exact fact или metadata этого же selected exact fact (`product`/`academic_year`/`school_year`). Произвольный raw blob фактов не становится источником истины, а служебные даты вида `2026_06_11` не считаются учебным годом.
+
+Обоснование: это снимает ложные тревоги гейта на адресах и строках `2026/27`, но не открывает проход любым числам из базы. Граница сохраняет правило: проверяется только источник текущего хода, adjacent facts остаются warning, а не pass.
+
+## D-021. Deletion №1 остановлен до свежей пары после фикса B-ноги
+
+Решение: не удалять legacy live-availability ветку `conversation_intent_plan` на основании пары `adr003_srez1a_pair_72c84090_20260704_ready`. Сначала нужно переснять pair после исправления runner: B = чистый профиль, ON = профиль + `TARGET_READING_CLASS=intent_actions`. На момент D-021 `intent_actions` не добавлялся в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а профильное включение/deletion оставались отдельным решением после свежего регрейда. Это решение superseded by D-032 после свежей пары и `да №5`.
+
+Обоснование: старая B-нога явно задавала `TELEGRAM_SEMANTIC_READING_CLASSES=` и тем самым глушила профильные default-классы `sense_seats,slots_gsf,off_topic`. Такая пара полезна для разведки, но не является достаточным доказательством безопасности deletion на боевом профиле. Удаление legacy ветки без профильного replacement могло снять защитный `conversation_intent_plan_live_availability`, на который опираются live-status/Fix1b/autonomy полы; D-032 делает deletion атомарно с replacement и fail-closed fallback.
+
+## D-022. Apply-класс задаётся точкой, а не широким reading-классом
+
+Решение: добавить отдельный env `TELEGRAM_READING_APPLY_CLASSES` с allowlist точек применения, сейчас только `route_templates/autonomy_matrix`. Значение `route_templates` в `TELEGRAM_SEMANTIC_READING_CLASSES` включает trace/read-класс, но не включает apply. Apply срабатывает только при одновременном `TELEGRAM_SEMANTIC_READING_CLASSES=route_templates` и `TELEGRAM_READING_APPLY_CLASSES=route_templates/autonomy_matrix`.
+
+Обоснование: широкий apply по имени `route_templates` случайно включил бы все будущие route-template точки одним флагом и сделал бы замеры неатрибутируемыми. Точечный stage-key позволяет резать «лазанью» по одному живому месту и сохраняет дисциплину default-OFF.
+
+## D-023. `route_templates/autonomy_matrix` применяет frame только как узкий safe-bypass
+
+Решение: apply-ветка `route_templates/autonomy_matrix` может вернуть исходный безопасный ответ вместо legacy-demote только когда inline SemanticFrame имеет `confidence>=0.90`, `requested_action=answer_question`, `answerability=answer_self`, `must_handoff=false`, `risk_class=safe`; при любом P0/high-risk/manager_only/blocked/live-availability floor, отсутствии frame, posthoc source, низкой confidence или замене текста выбирается legacy. Direct-path вызывает `apply_conversation_intent_plan_guard` для этой точки даже без `intent_model_led`.
+
+Обоснование: это первый apply-механизм после trace, поэтому он должен быть fail-closed и не иметь права снимать полы безопасности. Цель — измерить точечное снятие ложного route-template понижения, а не переписать routing целиком.
+
+## D-024. Ж2 строится как trace-only на реально живых live-status точках
+
+Решение: добавить класс `live_status_read` в allowlist reading-классов, но не в профиль. Сам по себе `live_status_read` не вызывает `conversation_intent_plan` guard, потому что этот guard меняет route; trace рядом с `conversation_intent_plan` пишется только если guard уже вызван другой активной причиной (`intent_model_led`/`intent_actions`/apply stage). Дополнительно trace пишется в `reliable_answerer` output guard: legacy-решение, frame `requested_action`, нормализованные grade/subject/format, фасеты и availability-promise status. `requested_product.raw_text` и сырой клиентский текст в trace не пишутся.
+
+Обоснование: Ж2 должен сначала доказать исполняемость и agreement на живом direct-path. Писать trace в dead monolith или в `build_answer_coverage_plan` нельзя: первое не влияет на бота, второе раздует trace и смешает prompt-time вычисления с output-guard решением. Удаление стема «мест» и apply для Ж2 остаются после agreement-регрейда.
+
+## D-025. Ж3/Ж4 сейчас закрываются sentinel-гейтами, без нового поведения
+
+Решение: для Ж3 усилить тест, что hidden `semantic_reading_slots` не становятся `known_slots`/`client_confirmed_slots` и не попадают в direct-path prompt как подтверждённые значения. Для Ж4 усилить тесты: «сколько можно вернуть по налоговому вычету» остаётся tax/non-refund, а «уже оплатил, хочу вернуть оплату» даже с упоминанием налогового вычета остаётся `refund_frame=dispute` и `manager_only`.
+
+Обоснование: Ж3 и Ж4 имеют высокую цену ошибки: слоты могут превратиться в ложные клиентские подтверждения, а деньги — в P0-пропуск. До отдельной trace-пары и per-class регрейда здесь нельзя включать apply или менять runtime-поведение; быстрый безопасный шаг — закрепить границы автоматическими sentinel-тестами.
+
+## D-026. Apply `route_templates/autonomy_matrix` усиливается дополнительными floors
+
+Решение: `TELEGRAM_READING_APPLY_CLASSES=route_templates/autonomy_matrix` остаётся default-OFF и может выбирать frame-safe original только если legacy не сработал как brand/payment/manual/live/topic floor. В floor добавлены `brand_separation_guarded`/cross-brand, `payment_confirmation_without_two_sources`/`payment_source_conflict`, `manager_approval_required+no_auto_send` без известного autonomy-cautious false-positive, и `topic_id` mismatch.
+
+Обоснование: аудитор нашёл, что первый scaffold доказывал P0/live floor, но не доказывал brand/payment floors прямо в apply-ветке. Поздние final gates всё ещё существуют, но apply должен быть fail-closed сам по себе, чтобы не зависеть от неявной очередности слоёв.
+
+## D-027. Ж2 `live_status_read` получает входной trace-observer
+
+Решение: если `live_status_read` включён, но настоящий `apply_conversation_intent_plan_guard` не вызван соседним режимом, direct-path пишет trace-only observer рядом с `conversation_intent_plan` без применения route/text/safety изменений. Если guard уже вызван профилем/`intent_actions`/apply, используется существующий trace на той же стадии, без дубля.
+
+Обоснование: разведка показала, что один `live_status_read` хорошо видит `reliable_answerer_output_guard`, но не всегда видит входной классификатор `conversation_intent_plan`. Observer нужен для honest agreement Ж2: legacy live-status vs `SemanticFrame.requested_action`, но до регрейда это не имеет права менять поведение.
+
+## D-028. Ж3 начинается с final-text `reask_read` trace, не с переноса legacy guard
+
+Решение: добавить default-OFF class `reask_read`, который на финальном direct-path тексте пишет trace-only запись о повторном вопросе уже известных `grade/subject/format` и о hidden `semantic_reading_slots` только по именам слотов, без значений. Runtime text/route не меняются.
+
+Обоснование: живой direct-path почти не доходит до старого `apply_known_context_redundant_question_guard`; переносить его вслепую означало бы снова мерить мёртвый код. Сначала нужен наблюдатель на финальном тексте, а hidden slots не должны стать client-confirmed или утечь в prompt/trace значениями.
+
+## D-029. Ж4 начинается с `roles_read` trace, без попытки чинить деньги маршрутом
+
+Решение: добавить default-OFF class `roles_read`, который пишет trace-only запись по смысловым ролям денег/записи: `payment_source`, `refund_frame`, `enrollment_vs_recording`, `transfer_sense`, поля `SemanticFrame` и итоговый route/topic. Runtime text/route/safety flags не меняются.
+
+Обоснование: роли вроде «возврат оплаты курса» vs «налоговый вычет» и «записать на курс» vs «запись урока» стоят рядом с P0/деньгами. До отдельной пары и регрейда здесь нельзя делать apply. Trace нужен, чтобы увидеть реальные расхождения frame с legacy на живом direct-path, а не переносить regex-узлы из замороженного монолита.
+
+## D-030. Hidden semantic slots запрещены в prompt-памяти значениями
+
+Решение: `dialogue_memory_view.semantic_reading_slots` не передаётся в direct-path prompt как память диалога даже при выключенном `PRESALE_PII_MEMORY`. В trace для `reask_read` разрешены только имена hidden-слотов, без `value`; в prompt hidden-значения не попадают.
+
+Обоснование: `semantic_reading_slots` — это вывод модели, а не подтверждённые клиентом `known_slots`. Аудит показал, что старый путь мог вставить эти значения в блок «Память диалога». Это могло сделать LLM-вывод похожим на клиентское подтверждение. Для Ж3 это критичный boundary: не переспросить уже известное можно только после отдельного решения, но нельзя тихо считать hidden-slot фактом.
+
+## D-031. Ж2 apply строится как смысловое объединение, а не 1:1 замена legacy
+
+Решение: добавить default-OFF apply point `live_status_read/conversation_intent_plan`. Он работает только при включённых `TELEGRAM_SEMANTIC_READING_CLASSES=live_status_read` и `TELEGRAM_READING_APPLY_CLASSES=live_status_read/conversation_intent_plan`. `SemanticFrame.requested_action=check_availability` ставит страховку живых мест: `draft_for_manager` для автономного route, флаг `conversation_intent_plan_live_availability` и manager checklist «не обещать место до проверки». `risk_class=manager_action/missing_facts` для `check_availability` не блокирует apply, потому что это ожидаемый смысл «проверить наличие у менеджера», а не P0. `send_document`/`enroll` без availability-смысла не ставят live-status demote и могут снять ложный legacy live-status. Paid/P0/high-risk/blocked/manager_only остаются fail-closed floor; P0/high-risk проверяется не только по flags, но и через `is_high_risk_result()` и `direct_path_model_p0` metadata.
+
+Обоснование: регрейд Ж2 показал: 10/12 legacy-хитов подтверждены frame, 2 only-legacy — ложные или более правильно закрытые другим смыслом, а 10 only-frame — слепая зона legacy. Поэтому замена должна идти по объединению смыслов: availability защищаем, paid отправляем менеджеру, document/enroll без availability не считаем «местами». Аудит дополнительно поймал опасный обход: high-risk мог быть задан через `topic_id/risk_level/direct_path_model_p0`, а не через flags; поэтому floor использует общий high-risk классификатор. Профильное включение и deletion legacy по-прежнему запрещены до микро-пары и отдельного решения.
+
+## D-032. Профильное включение `intent_actions` и deletion №1 после регрейда пары 1a
+
+Решение: после raw-регрейда свежей пары 1a и отдельного «да» владельца `intent_actions` добавлен в `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а legacy output-ветка `primary_intent == "live_availability"` внутри `conversation_intent_plan` guard удалена. Входной `conversation_intent_plan.py` и детектор `_asks_live_availability` не тронуты. Отдельный apply-класс `live_status_read/conversation_intent_plan` не включается в профиль. Если inline-frame отсутствует или невалиден, но старый план видит `live_availability`, `intent_actions` fail-closed ставит manager/check-live floor, чтобы не было тихого автономного ответа без frame.
+
+Обоснование: пара 1a показала, что inline `SemanticFrame.requested_action=check_availability` переустанавливает защитный сигнал `conversation_intent_plan_live_availability` там, где старый output-guard был слеп, и не понижает `manager_only`/`blocked`. Удаляем именно выходное legacy-применение, а не источник метаданных или safety floor. Это первый шаг «минус-лазанья»: live availability на этом участке теперь идёт через frame; legacy `primary_intent` остаётся только fail-closed запасным полом при неисправном frame.
+
+## D-033. Ж3 `reask_read` не переводится в apply до исправления источника known-slots
+
+Решение: не включать apply для `reask_read` в финальный M1-пакет текущего захода. Класс остаётся trace-only. Следующий безопасный шаг по Ж3 — отдельный фикс качества памяти/known-slots и повторная микро-пара, а не применение текущего наблюдателя.
+
+Обоснование: локальная прослушка Ж3 (`2026-07-05_Zh3_reask_read_export_6896673b`) дала 3 `would_flag` на 101 ход. Два случая полезны: бот действительно повторно просит уже названный предмет/класс. Но один случай небезопасен: в `zh3_reask_known_slot_01` ход 3 память перед trace содержит `child_name='Записи'`, и `reask_read` считает просьбу прислать ФИО ученика повторным запросом `student_name`. Это ложное client-confirmed значение, возникшее из слова «записи», и active-apply мог бы удалить нужный запрос ФИО ученика. Пока источник `known_context_fields`/dialogue memory не перестанет принимать такие ложные имена, `reask_read` нельзя применять.
+
+## D-034. Ж4 `roles_read` не переводится в apply: деньги/НДФЛ/запись требуют отдельного фикса
+
+Решение: не включать apply для `roles_read` и не включать его в следующий большой ON-пакет как поведенческий класс. Класс остаётся trace-only. Для Ж4 нужен отдельный regression set и upstream-фикс plan/frame/text hygiene: НДФЛ не должен превращаться в refund/dispute, payment-dispute без возврата не должен получать возвратный шаблон, real refund/dispute остаётся manager-only.
+
+Обоснование: локальная прослушка Ж4 (`2026-07-05_Zh4_roles_read_export_6896673b`) показала 106/106 `shadow_only`; готового apply-механизма нет. Аудит сырья нашёл блокеры: `Возврат НДФЛ оформляете?` размечен как `plan_primary_intent=refund`, `refund_frame=dispute`, хотя это налоговый вычет; `Если оплатили, а доступа к уроку нет` получает текст про возврат вместо статуса доступа; P0 `ребёнок один остался` остаётся `manager_only`, но текст уходит в объяснение вместо сухого handoff. Эти дефекты не лечатся включением `roles_read`; сначала нужен точечный money/tax/recording fix с регрессиями.
+
+## D-035. Большой M1-замер поддерживает несколько target-классов и ON-only apply
+
+Решение: runner `scripts/run_adr003_semantic_reading_e3_paired.sh` принимает CSV `TARGET_READING_CLASSES` поверх обратно совместимого `TARGET_READING_CLASS` и CSV `TARGET_APPLY_CLASSES`. B-нога остаётся чистым профилем: `TELEGRAM_SEMANTIC_READING_CLASSES` и `TELEGRAM_READING_APPLY_CLASSES` явно сбрасываются. ON-нога получает `TELEGRAM_SEMANTIC_READING_CLASSES=profile+TARGET_READING_CLASSES` и `TELEGRAM_READING_APPLY_CLASSES=TARGET_APPLY_CLASSES`. Валидатор принимает CSV в `--require-trace-class`/`--forbid-trace-class`: B запрещает любые target-traces, ON требует trace по каждому target-классу. Для скорости добавлен `RUN_ORDER=ON_FIRST`: можно прогнать ON первым, а затем обязательную B-ногу той же командой/машиной перед отчётом.
+
+Обоснование: после D-033/D-034 нельзя отправлять на M1 пакет `Ж2+Ж3+Ж4`. Но безопасный большой замер всё ещё нужен для прошедших точек: `route_templates/autonomy_matrix` и `live_status_read/conversation_intent_plan`. Старый runner умел только один target-класс и не умел ON-only apply, поэтому мог либо сделать неатрибутируемый замер, либо протащить apply в baseline. Локальный dry-check `runs/adr003_safe_final_dry_f6ce4f22_20260705_195447` подтвердил новую матрицу: B `forbidden_trace_turns_by_class` для `route_templates/live_status_read` = 0, ON `required_trace_turns_by_class` для обоих классов = 2/2, `eligible_frame_rate=1.0`.
+
+## D-036. Финальная M1-пара сужена до `live_status_read`, атомарный №2 подготовлен только как gated plan
+
+Решение: после регрейда Ж2 и NO-GO по Ж3/Ж4 финальный M1-пакет текущего трека должен собираться только для `live_status_read`: B = боевой профиль как есть, ON = `TARGET_READING_CLASSES=live_status_read` и `TARGET_APPLY_CLASSES=live_status_read/conversation_intent_plan`, порядок `RUN_ORDER=ON_FIRST`. Пакет должен лежать в Yandex folder `adr003_final_livestatus_pair_<source-sha>_20260705`; source-of-truth для конкретного SHA — `SOURCE_HEAD.txt` внутри пакета, он должен совпадать с bundle HEAD. Атомарный №2 (`live_status_read` в профиль + deletion входного legacy seats stem/facets) подготовлен только как план в `docs/ADR003_ATOMIC2_LIVE_STATUS_READ_PREP_20260705.md`; runtime-код не меняется до сырого регрейда M1 и отдельного «да».
+
+Обоснование: Ж3 `reask_read` и Ж4 `roles_read` подтверждённо остаются trace-only из-за ложных known-slots и money/tax/recording блокеров. Финальная пара должна быть атрибутируемой и не смешивать безопасный Ж2 с NO-GO классами. Подготовка атомарного №2 как документа сохраняет скорость следующего захода, но не оставляет рабочее дерево в наполовину включённом состоянии до измерения.
+
+## D-037. Атомарный №2: `live_status_read` включён в профиль, legacy seats stem оставлен только как fail-closed пол
+
+Решение: после сырого регрейда финальной пары `adr003_final_livestatus_pair_6bc781d0_20260705` и отдельного «да» владельца `live_status_read` добавлен в профильный default `PILOT_PROFILE_DEFAULT_READING_CLASSES`, а `live_status_read/conversation_intent_plan` добавлен в профильный default apply. Входной legacy stem `мест/места/бронь/забронируйте` больше не назначает `primary_intent=live_availability` как смысл ответа: `conversation_intent_plan` сохраняет отдельный `legacy_live_availability_floor_signal`, а `policy_routing` использует его только как fail-closed floor, если frame недоступен или осторожнее. Runner E3 теперь берёт профильные reading/apply defaults из `semantic_reading.py`; когда target-классы не заданы, ON/B не подставляют ручные env и проверяют профиль “как есть”. При target-замере ON получает “профиль + target”, включая профильный apply, чтобы новые пары не выключали уже принятый `live_status_read`.
+
+Обоснование: регрейд финальной пары показал, что `live_status_read` даёт полезную защиту на живых вопросах о местах и не понижает P0/деньги/бренды. Прямое удаление legacy stem без запасного сигнала было бы опасным: при сломанном/отсутствующем frame бот мог бы потерять менеджерский пол на вопросах о наличии мест. Поэтому смысл переносится в SemanticFrame, а старый stem остаётся только аварийным полом. Локальный профильный dry-smoke `runs/adr003_atomic2_profile_smoke_6bc781d0_20260706_051011` подтвердил `use_on_reading_env=0`, `live_status_read` trace в B/ON и `eligible_frame_rate=1.0`.
+
+## D-038. Ж3: `reask_read` получает apply-флаг только после исправления ложного имени и enroll-ФИО
+
+Решение: `reask_read/final_text` добавлен в allowlist apply-классов, но не добавлен в профильный default. Apply работает только при явных `TELEGRAM_SEMANTIC_READING_CLASSES=reask_read` и `TELEGRAM_READING_APPLY_CLASSES=reask_read/final_text`: если финальный текст повторно просит уже известные `grade/subject/format/...`, применяется тот же fail-safe repair, что у старого known-context guard. Два блокера прослушки закрыты до apply: provenance-память больше не принимает служебные слова вроде `Записи` как `child_name`, а просьба прислать ФИО ученика при реальном enrollment-контексте не считается повторным вопросом.
+
+Обоснование: прослушка Ж3 показала и полезные срабатывания, и один опасный false positive: старый слот-экстрактор сделал `child_name='Записи'`, после чего reask-наблюдатель считал легитимный запрос ФИО ученика повтором. Быстрое включение `reask_read` без этих двух правок могло бы удалить нужный шаг оформления заявки. Поэтому apply включён только флагом для будущего замера, а профиль не меняется.
+
+## D-039. Ж4: `roles_read/refund_tax` чинит НДФЛ-vs-refund только через подтверждённый план
+
+Решение: `roles_read/refund_tax` добавлен в allowlist apply-классов, но не добавлен в профильный default. Apply работает только при явных `TELEGRAM_SEMANTIC_READING_CLASSES=roles_read` и `TELEGRAM_READING_APPLY_CLASSES=roles_read/refund_tax`, и только если `conversation_intent_plan` уже подтвердил `primary_intent=tax`, `payment_source=tax_deduction`, `refund_frame=none`. В этом случае ложный refund/P0-результат заменяется на клиентский шаблон про налоговый вычет: вычет оформляется через ФНС, школа помогает подготовить документы, справка готовится до 10 рабочих дней. Настоящий refund/dispute остаётся `manager_only`.
+
+Обоснование: прослушка Ж4 показала, что фраза `Возврат НДФЛ оформляете?` может ошибочно уходить в refund/dispute. Быстрая правка через новый regex или расширение marker-таблицы `НДФЛ` была отвергнута: это противоречит ADR-003 и снова добавляет deterministic-понимание. Поэтому Ж4 опирается на уже подтверждённый semantic plan/frame и не меняет frozen regex/marker budgets; `tests/test_adr003_regex_understanding_moratorium.py` остаётся зелёным. Смысловой риск закрыт регрессиями: false-positive refund при tax-plan заменяется на безопасный tax-текст только за apply-флагом, а настоящий `refund/dispute` остаётся P0/manager_only.
+
+## D-040. Остаток #16: смешанный `refund+payment_dispute` latch выбирает payment-текст на безопасном follow-up
+
+Решение: если P0-latch содержит одновременно `refund` и `payment_dispute`, но текущая реплика клиента не содержит текущего refund-кода, финальный P0 override остаётся `manager_only`, но выбирает `PAYMENT_DISPUTE_SAFE_TEXT` и `theme:003_payment_status`, а не refund-шаблон. Если текущая реплика явно просит возврат, поведение не меняется: остаётся `theme:009_refund` и `zero_collect_refund_guarded`.
+
+Обоснование: финальная M1-пара нашла остаточную болезнь #16: на `Оплатила вчера, расписание появится?` бот мог отвечать текстом про возврат из-за старого смешанного latch. Это не должно сниматься маршрутом: вопрос всё ещё требует проверки менеджером по системе. Исправление меняет только выбор безопасного P0-шаблона, не ослабляет деньги/P0-пол и не добавляет новых regex/marker-паттернов; moratorium остаётся зелёным.
+
+## D-041. Frozen-монолит не удаляется без отдельного физического deletion manifest
+
+Решение: не делать физическую уборку `answer_quality_rewriter`/`humanity`/`known_context_redundant_question_guard`/`rules_engine` в финальном марафоне ADR-003. Эти узлы зафиксированы как `dead_on_direct_path/frozen_monolith_only` для текущего Telegram direct-path, но не как безопасные кандидаты на удаление из репозитория. Их дальнейшая уборка переносится в отдельный post-pilot cleanup с точным function-level deletion manifest, импорт-аудитом, совместимостным тест-планом и отдельным подтверждением владельца.
+
+Обоснование: `docs/ADR003_LIVE_PATH_UNDERSTANDING_MAP.md` прямо отделяет статус `dead_on_direct_path` от права физически удалять код. Актуальный `docs/ADR003_DELETION_MANIFEST.md` покрывает измеренные ADR-003 удаления (`sense_seats`, `off_topic`, `slots_gsf`) и не содержит точного списка удаления frozen-монолита. По сырью эти модули всё ещё импортируются `subscription_llm_parts/monolith.py`, тестами и совместимостными слоями; часть функций (`find_redundant_questions_for_known_context`) уже используется как основа для новых trace/apply-проверок Ж3. Поэтому удаление “по названию” могло бы сломать исторический контур и тестовые гарантии, хотя живой direct-path уже не зависит от этих веток.
+
+## D-042. `roles_read/refund_tax` сужен до настоящих refund false-positive
+
+Решение: `roles_read/refund_tax` больше не считает сам `route=manager_only` достаточным доказательством ложного refund. Apply tax-шаблона разрешён только когда `conversation_intent_plan` подтверждает tax/non-refund (`primary_intent=tax`, `payment_source=tax_deduction`, `refund_frame=none`) и выход действительно refund-похожий: `topic_id=theme:009_refund` или refund-related safety flag. Нерефандные `manager_only` причины, включая оплату/доступ/спор, остаются менеджерскими.
+
+Обоснование: независимый аудит перед фокусной M1-парой нашёл, что прежний коридор мог перевести в `bot_answer_self_for_pilot` любой `manager_only`, если рядом есть tax-plan. Это шире D-039 и опасно для денег/P0. Новая регрессия `test_direct_path_roles_read_apply_does_not_clear_unrelated_manager_only` закрепляет hard-negative: tax-plan + `manager_only` по payment dispute не превращается в tax self-answer. Позитивный кейс `Возврат НДФЛ` остаётся рабочим, потому что там выход действительно refund false-positive.
+
+## D-043. Фокусная пара M1 для Ж3/Ж4/#16 измеряет только явные target-классы
+
+Решение: фокусный набор `product_data/telegram_dynamic_test_sets/adr003_focus_reask_roles_payment_20260706.jsonl` содержит 35 персон: 20 существующих `PaymentFix` и 15 новых персон на `reask_read`, `roles_read` и остаток #16. B-нога = профиль `pilot_gold_v1` как есть. ON-нога = профиль + `TARGET_READING_CLASSES=reask_read,roles_read` и `TARGET_APPLY_CLASSES=reask_read/final_text,roles_read/refund_tax`. `live_status_read` не target, потому что он уже профильный после D-037.
+
+Обоснование: M1 должен измерить только ещё не включённые Ж3/Ж4 и проверить #16 как регрессионный контроль, не смешивая эффект с уже принятым `live_status_read`. Локальная репетиция `runs/adr003_semantic_reading_e3_dry_check_focus_reask_roles_payment_local_1af697aa` прошла: ON и B валидны, `eligible_frame_rate=1.0`, hard gate fail = 0, `RUN_ORDER=ON_FIRST`, target-traces в ON есть, B остаётся чистым профилем.
+
+## D-044. Replay-тренажёр строится как offline chat-only pipeline с отдельным live-read подтверждением
+
+Решение: replay-exam реализуется отдельным пакетом `mango_mvp.replay_exam`, а не через `AmoWappiDraftLoop.run_once`. Exporter имеет только read-only Wappi pagination с `mark_all=False` и пишет raw только под `~/.mango_local/replay_exam/raw/`. CLI `scripts/export_wappi_replay_dialogs.py` отказывается делать live-read без явного `--allow-live-wappi-read`; сам live-read не запускался в этом заходе. Runner работает по scrubbed cases, параллелится только по диалогам, передаёт `sends_client_replies=False` и `crm_context={}`, machine gate первичен, judge payload строится отдельным `replay_judge_v1`.
+
+Обоснование: replay нужен как экзамен качества на реальных Wappi-диалогах, но raw Wappi export — это live-read и ПДн-зона. Поэтому сначала закрепляется безопасный offline pipeline, pseudonymizer, slicer, machine gate и M1 manifest adapter на unit-тестах. Настоящий pilot-10 по последним Wappi-профилям требует отдельного явного подтверждения владельца и semantic-регрейда методики до полного M1-экзамена.

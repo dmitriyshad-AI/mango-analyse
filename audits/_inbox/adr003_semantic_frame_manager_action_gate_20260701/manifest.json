@@ -1,0 +1,17 @@
+{
+  "block": "adr003_semantic_frame_manager_action_gate",
+  "created_at": "2026-07-01",
+  "pii_filtered": true,
+  "live_touched": false,
+  "external_writes": false,
+  "formal_pass": true,
+  "semantic_pass_for_enable": false,
+  "files": [
+    "implementation_notes.md",
+    "changed_files.txt",
+    "test_output.txt",
+    "semantic_review.md",
+    "risk_review.md",
+    "backward_compatibility.md"
+  ]
+}

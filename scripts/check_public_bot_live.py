@@ -40,6 +40,7 @@ from scripts.run_telegram_public_pilot_bots import (
     PILOT_STORE_PATH_ENV,
     PublicPilotBotRuntime,
     configs_from_env,
+    dialog_summary_from_result,
     load_debug_clients,
     merged_env,
     public_reply_text,
@@ -438,6 +439,8 @@ async def run_turn(
         route=result.route,
         fact_refs=result.context_used,
         safety_flags=result.safety_flags,
+        dialog_summary=dialog_summary_from_result(result),
+        context=context,
     )
     session.dialogue_memory = updated_memory.to_json_dict()
     session.recent_messages.append(f"Клиент: {text}")

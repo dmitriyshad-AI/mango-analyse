@@ -1,0 +1,2510 @@
+{
+  "acceptance": {
+    "active_readiness": "no_go",
+    "notes": [
+      "Active autonomy remains NO-GO: this is a calibration queue, not a behavior change.",
+      "Existence/format vs live availability must be fixed in SemanticFrame/policy and validated in shadow first.",
+      "manager_only/context_update rows need an explicit policy decision before any active demotion discussion.",
+      "Fresh exact evidence alone is insufficient on current runtime telemetry.",
+      "No draft_for_manager route-only active candidate is ready."
+    ],
+    "status": "pass_report_only"
+  },
+  "created_at": "2026-07-02T10:37:58.400292+00:00",
+  "field_error_breakdowns": {
+    "too_cautious_by_action": {
+      "answer_question": 12,
+      "enroll": 1,
+      "handoff_manager": 1
+    },
+    "wrong_fields": {
+      "answerability": 18,
+      "must_handoff": 14,
+      "requested_action": 20,
+      "risk_class": 23
+    }
+  },
+  "inputs": {
+    "as_of_date": "2026-07-02",
+    "confidence_threshold": 0.9,
+    "gold": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
+    "kb_snapshot": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+    "transcripts": "audits/_inbox/adr003_f2n_enrich_existence_proof_noop_20260702130739/ON/dynamic_dialog_transcripts.jsonl"
+  },
+  "notes": [
+    "Report-only scorer: route/text/runtime behavior is unchanged.",
+    "This report separates manual too-cautious labels from true SemanticFrame field errors.",
+    "Active demotion remains NO-GO until SemanticFrame, retrieval delivery, and policy blockers are resolved in shadow."
+  ],
+  "real_lever_analysis": {
+    "by_frame_answerability": {
+      "manager_only": 14
+    },
+    "by_frame_requested_action": {
+      "answer_question": 12,
+      "enroll": 1,
+      "handoff_manager": 1
+    },
+    "by_frame_risk_class": {
+      "manager_action": 2,
+      "missing_facts": 12
+    },
+    "by_lever_class": {
+      "danger_adjacent_do_not_lower": 4,
+      "fact_assertion_required": 10
+    },
+    "by_route": {
+      "bot_answer_self_for_pilot": 8,
+      "draft_for_manager": 3,
+      "manager_only": 3
+    },
+    "examples": [
+      {
+        "active_blockers": [
+          "manager_only_policy",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_001",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.78,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe reference: age, format, address, schedule without booking action",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "manager_only",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_002",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.9,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe reference: compare formats/prices; live availability must remain excluded from self text",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "draft_for_manager",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "manager_only_policy",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_003",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.88,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe reference: age suitability; actual free seats remain manager-only",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "manager_only",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "wappi_pair_missing_72h_020",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.93,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "price question; if tied to an individual invoice it becomes manager-only",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "danger_adjacent",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": true,
+        "dialog_id": "p0_model_led_pos_how_next",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.86,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "danger_adjacent_do_not_lower",
+        "live_availability_or_enroll": false,
+        "notes": "general enrollment order without actual enrollment",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": false,
+        "review_question": "Keep out of active candidates because the dialog is close to P0/money/fabrication.",
+        "route": "draft_for_manager",
+        "scope_confusion": false,
+        "stable_existence_format": false,
+        "turn": 1,
+        "user_scope": "other_safe_reference"
+      },
+      {
+        "active_blockers": [
+          "danger_adjacent",
+          "frame_marks_operational_or_manager_risk",
+          "requested_action_not_safe_reference"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": true,
+        "dialog_id": "p0_model_led_pos_anxiety_level",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.88,
+        "frame_must_handoff": true,
+        "frame_risk_class": "manager_action",
+        "frame_scope": "live_availability_or_enroll",
+        "lever_class": "danger_adjacent_do_not_lower",
+        "live_availability_or_enroll": true,
+        "notes": "general pedagogical guidance without live status/action",
+        "requested_action": "handoff_manager",
+        "requires_fact_assertion": false,
+        "review_question": "Keep out of active candidates because the dialog is close to P0/money/fabrication.",
+        "route": "draft_for_manager",
+        "scope_confusion": false,
+        "stable_existence_format": false,
+        "turn": 1,
+        "user_scope": "other_safe_reference"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk",
+          "requested_action_not_safe_reference"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "ra1_foton_address_and_trial",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.9,
+        "frame_must_handoff": true,
+        "frame_risk_class": "manager_action",
+        "frame_scope": "live_availability_or_enroll",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": true,
+        "notes": "address and general trial process without actual booking",
+        "requested_action": "enroll",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": true,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "manager_only_policy",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": false,
+        "clean_route_only_discussion": false,
+        "current_handoff": true,
+        "danger_adjacent": false,
+        "dialog_id": "ra1_foton_platform_and_price",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.9,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "platform and price reference",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "manager_only",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.86,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "camp availability as general format/class reference; do not claim live free seats",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.82,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe direction suitability reference",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 2,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_pos_unpk_exam_group_signup",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.88,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe course/format existence reference without enrollment",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "danger_adjacent",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": true,
+        "dialog_id": "cf142_p0_unpk_paid_transfer",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.86,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "danger_adjacent_do_not_lower",
+        "live_availability_or_enroll": false,
+        "notes": "general existence of camp for grade; no live-place check",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "Keep out of active candidates because the dialog is close to P0/money/fabrication.",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "danger_adjacent",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": true,
+        "dialog_id": "cf142_fabrication_unpk_camp_medical",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.86,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "danger_adjacent_do_not_lower",
+        "live_availability_or_enroll": false,
+        "notes": "safe format/class reference if answer avoids live seats",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "Keep out of active candidates because the dialog is close to P0/money/fabrication.",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      },
+      {
+        "active_blockers": [
+          "already_self_or_no_route_leverage",
+          "requires_verified_fact_assertion",
+          "frame_marks_operational_or_manager_risk"
+        ],
+        "already_self_or_no_route_leverage": true,
+        "clean_route_only_discussion": false,
+        "current_handoff": false,
+        "danger_adjacent": false,
+        "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+        "factless_ack_status": false,
+        "frame_answerability": "manager_only",
+        "frame_confidence": 0.86,
+        "frame_must_handoff": true,
+        "frame_risk_class": "missing_facts",
+        "frame_scope": "manager_or_missing",
+        "lever_class": "fact_assertion_required",
+        "live_availability_or_enroll": false,
+        "notes": "safe online course existence reference",
+        "requested_action": "answer_question",
+        "requires_fact_assertion": true,
+        "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+        "route": "bot_answer_self_for_pilot",
+        "scope_confusion": false,
+        "stable_existence_format": true,
+        "turn": 1,
+        "user_scope": "stable_existence_format"
+      }
+    ],
+    "negative_controls": [
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_005",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_006",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.93,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_007",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.93,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_009",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.82,
+        "frame_must_handoff": true,
+        "frame_requested_action": "answer_question",
+        "frame_scope": "manager_or_missing",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_017",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.94,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "wappi_pair_missing_72h_023",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.95,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "forward_payment_foton_hold_price_01",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 2
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "p0_model_led_pos_support_question",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "p0_ctrl_teacher_choice_01",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 2
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "p0_ctrl_pay_later_01",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.94,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "p0_ctrl_paid_two_courses_01",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_foton_price_and_places",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.95,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_unpk_price_and_places",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.95,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_unpk_schedule_and_places",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.95,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_foton_dates_and_booking",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_unpk_documents_and_payment",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "answer_question",
+        "frame_scope": "manager_or_missing",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "ra1_foton_only_availability",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "check_availability",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "draft_for_manager",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_foton_offline_physics_next",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_foton_online_info_record",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_foton_oge_math_signup",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.97,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_unpk_online_physics_signup",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.94,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_unpk_offline_math_next",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.93,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.94,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_pos_unpk_exam_group_signup",
+        "expected_action": "enroll",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "enroll",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 3
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "tz147_ft_benign_schedule_missing_01",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.93,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "tz147_ft_benign_schedule_missing_01",
+        "expected_action": "check_availability",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "bot_answer_self_for_pilot",
+        "turn": 2
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "tz147_ft_benign_two_courses_01",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.96,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "tz147_ft_benign_blocked_card_01",
+        "expected_action": "send_payment_link",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.92,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 1
+      },
+      {
+        "active_block_reason": "negative_control_true_live_or_operational_request",
+        "dialog_id": "cf142_p0_foton_payment_dispute_close",
+        "expected_action": "handoff_manager",
+        "expected_scope": "live_availability_or_enroll",
+        "frame_confidence": 0.98,
+        "frame_must_handoff": true,
+        "frame_requested_action": "handoff_manager",
+        "frame_scope": "live_availability_or_enroll",
+        "route": "manager_only",
+        "turn": 3
+      }
+    ],
+    "notes": [
+      "This is diagnostic only: no route/text change is authorized by this report.",
+      "Fact-assertion rows need a verified client-safe fact path before any self-answer policy.",
+      "Clean route-only discussion rows, if any, still require Claude/Dmitry review before active work."
+    ],
+    "scope_confusion": {
+      "by_requested_action": {
+        "enroll": 1
+      },
+      "by_route": {
+        "bot_answer_self_for_pilot": 1
+      },
+      "count": 1,
+      "examples": [
+        {
+          "active_blockers": [
+            "already_self_or_no_route_leverage",
+            "requires_verified_fact_assertion",
+            "frame_marks_operational_or_manager_risk",
+            "requested_action_not_safe_reference"
+          ],
+          "already_self_or_no_route_leverage": true,
+          "clean_route_only_discussion": false,
+          "current_handoff": false,
+          "danger_adjacent": false,
+          "dialog_id": "ra1_foton_address_and_trial",
+          "factless_ack_status": false,
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "frame_scope": "live_availability_or_enroll",
+          "lever_class": "fact_assertion_required",
+          "live_availability_or_enroll": true,
+          "notes": "address and general trial process without actual booking",
+          "requested_action": "enroll",
+          "requires_fact_assertion": true,
+          "review_question": "What exact fresh client-safe fact would justify a self-answer?",
+          "route": "bot_answer_self_for_pilot",
+          "scope_confusion": true,
+          "stable_existence_format": true,
+          "turn": 1,
+          "user_scope": "stable_existence_format"
+        }
+      ]
+    },
+    "totals": {
+      "already_self_or_no_route_leverage": 8,
+      "clean_route_only_discussion": 0,
+      "current_draft_for_manager": 3,
+      "current_handoff_total": 6,
+      "current_manager_only": 3,
+      "danger_adjacent": 4,
+      "fact_assertion_required": 12,
+      "factless_ack_status": 0,
+      "stable_existence_as_check_availability": 0,
+      "stable_existence_as_enroll": 1,
+      "too_cautious_total": 14,
+      "true_enroll_booking_negative_controls": 9,
+      "true_live_availability_negative_controls": 29
+    }
+  },
+  "schema_version": "adr003_frame_calibration_queue_v1_2026_07_02",
+  "source_report_summaries": {
+    "exact_proof_injection": {
+      "evidence_only_sufficient_rows": 0,
+      "fresh_client_safe_exact_proof": 1,
+      "manager_only_exact_proof_rows": 1,
+      "readiness_strict_f3_draft_candidates": 0,
+      "still_blocked_after_injection": 1
+    },
+    "gold_calibration": {
+      "compared_rows": 77,
+      "confidence_buckets": {
+        "0.00-0.59": {
+          "must_handoff_accuracy": null,
+          "must_handoff_correct": 0,
+          "rows": 0,
+          "too_cautious": 0,
+          "too_confident": 0
+        },
+        "0.60-0.79": {
+          "must_handoff_accuracy": 0.0,
+          "must_handoff_correct": 0,
+          "rows": 1,
+          "too_cautious": 1,
+          "too_confident": 0
+        },
+        "0.80-0.89": {
+          "must_handoff_accuracy": 0.4,
+          "must_handoff_correct": 6,
+          "rows": 15,
+          "too_cautious": 9,
+          "too_confident": 0
+        },
+        "0.90-1.00": {
+          "must_handoff_accuracy": 0.9344,
+          "must_handoff_correct": 57,
+          "rows": 61,
+          "too_cautious": 4,
+          "too_confident": 0
+        },
+        "missing": {
+          "must_handoff_accuracy": null,
+          "must_handoff_correct": 0,
+          "rows": 0,
+          "too_cautious": 0,
+          "too_confident": 0
+        }
+      },
+      "current_over_handoff_candidates": 11,
+      "duplicate_gold_rows": 0,
+      "field_accuracy": {
+        "answerability": {
+          "accuracy": 0.7722,
+          "correct": 61,
+          "total": 79
+        },
+        "must_handoff": {
+          "accuracy": 0.8182,
+          "correct": 63,
+          "total": 77
+        },
+        "requested_action": {
+          "accuracy": 0.7468,
+          "correct": 59,
+          "total": 79
+        },
+        "risk_class": {
+          "accuracy": 0.7089,
+          "correct": 56,
+          "total": 79
+        }
+      },
+      "labeled_rows": 79,
+      "missing_transcript_examples": [],
+      "missing_transcript_rows": 0,
+      "must_handoff_accuracy": 0.8182,
+      "p0_misses": 0,
+      "review_labels": {
+        "frame_correct": 48,
+        "frame_too_cautious": 29,
+        "unclear": 2
+      },
+      "safe_self_candidates": 32,
+      "skipped_rows": 2,
+      "too_cautious": 14,
+      "too_confident": 0
+    },
+    "manager_only_root_cause": {
+      "conversation_plan_lacks_product_scope": 1,
+      "frame_manager_action": 1,
+      "low_confidence": 1,
+      "manager_only_exact_proof_rows": 1,
+      "readiness_strict_f3_draft_candidates": 0,
+      "runtime_exact_proof_missing": 1
+    },
+    "overhandoff": {
+      "danger_adjacent_blocked": 2,
+      "dialogs_total": 131,
+      "draft_candidates_for_future_active": 0,
+      "existence_format_needs_fact_verification_blocked": 0,
+      "gold_compared_rows": 79,
+      "gold_safe_self_rows": 32,
+      "harmless_context_ack_status_candidates": 0,
+      "manager_only_candidates_need_policy_decision": 0,
+      "missing_gold_turn_examples": [],
+      "missing_gold_turns": 0,
+      "safe_already_self": 21,
+      "safe_draft_for_manager": 3,
+      "safe_handoff_total": 11,
+      "safe_manager_only": 8,
+      "turns_total": 241
+    }
+  },
+  "source_rev": "f1a00156",
+  "totals": {
+    "current_safe_over_handoff": 11,
+    "gold_compared_rows": 77,
+    "manager_only_exact_proof_rows": 1,
+    "manual_too_cautious_labels": 29,
+    "safe_self_rows": 32,
+    "strict_active_candidates_now": 0,
+    "true_frame_too_cautious": 14,
+    "true_frame_too_confident": 0,
+    "work_items_total": 69
+  },
+  "workstreams": {
+    "already_self_no_active_leverage": {
+      "by_requested_action": {
+        "answer_question": 20,
+        "enroll": 1
+      },
+      "count": 21,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "wappi_pair_missing_72h_020",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "forward_payment_unpk_semester_year_01",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_foton_refund_sneaky_info_03",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_foton_offline_price_06",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_foton_offline_price_06",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_unpk_offline_price_07",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.94,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_unpk_offline_price_07",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 3,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "ra1_foton_address_and_trial",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "enroll",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_p0_foton_payment_dispute_close",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_fabrication_foton_camp_laptop",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_brand_foton_unpk_compare",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.96,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_brand_foton_mipt_place",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "current_route_already_self_no_route_leverage",
+          "calibration_target": [],
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "current_route_already_self_or_not_handoff"
+          ],
+          "recommended_review_question": "No action for autonomy; use only to calibrate frame quality.",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "already_self_no_active_leverage"
+        }
+      ]
+    },
+    "conversation_plan_scope_missing": {
+      "by_requested_action": {
+        "answer_question": 1
+      },
+      "count": 1,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "conversation_plan_does_not_carry_product_scope_or_required_fact_keys",
+          "calibration_target": [
+            "conversation_intent_plan",
+            "answer_contract",
+            "required_fact_keys"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "conversation_plan_no_product_scope"
+          ],
+          "recommended_review_question": "Where should product scope and required fact keys be carried before route policy?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "conversation_plan_scope_missing"
+        }
+      ]
+    },
+    "danger_adjacent_do_not_lower": {
+      "by_requested_action": {
+        "answer_question": 1,
+        "handoff_manager": 1
+      },
+      "count": 2,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "danger_p0_money_or_fabrication_adjacent",
+          "calibration_target": [
+            "manual_safety_review"
+          ],
+          "dialog_id": "p0_model_led_pos_how_next",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "danger_adjacent_dialog"
+          ],
+          "recommended_review_question": "Keep out of active candidates unless a human review proves the neighboring risk is irrelevant.",
+          "requested_action": "answer_question",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "danger_adjacent_do_not_lower"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "danger_p0_money_or_fabrication_adjacent",
+          "calibration_target": [
+            "manual_safety_review"
+          ],
+          "dialog_id": "p0_model_led_pos_anxiety_level",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "reasons": [
+            "danger_adjacent_dialog"
+          ],
+          "recommended_review_question": "Keep out of active candidates unless a human review proves the neighboring risk is irrelevant.",
+          "requested_action": "handoff_manager",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "danger_adjacent_do_not_lower"
+        }
+      ]
+    },
+    "measurement_review_unclear": {
+      "by_requested_action": {
+        "answer_question": 3
+      },
+      "count": 3,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "measurement_or_gold_review_required",
+          "calibration_target": [
+            "gold_label",
+            "measurement"
+          ],
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "runtime_handoff_but_frame_fields_are_correct"
+          ],
+          "recommended_review_question": "Is this a gold-label issue, a frame issue, or a runtime route issue?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 2,
+          "workstream": "measurement_review_unclear"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "measurement_or_gold_review_required",
+          "calibration_target": [
+            "gold_label",
+            "measurement"
+          ],
+          "dialog_id": "tz147_un_benign_link_sent_01",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.92,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "runtime_handoff_but_frame_fields_are_correct"
+          ],
+          "recommended_review_question": "Is this a gold-label issue, a frame issue, or a runtime route issue?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 2,
+          "workstream": "measurement_review_unclear"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "measurement_or_gold_review_required",
+          "calibration_target": [
+            "gold_label",
+            "measurement"
+          ],
+          "dialog_id": "tz147_ft_benign_activated_01",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.95,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "runtime_handoff_but_frame_fields_are_correct"
+          ],
+          "recommended_review_question": "Is this a gold-label issue, a frame issue, or a runtime route issue?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "measurement_review_unclear"
+        }
+      ]
+    },
+    "policy_context_update_exact_proof": {
+      "by_requested_action": {
+        "answer_question": 1
+      },
+      "count": 1,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "context_update_route_requires_separate_owner_policy_decision",
+          "calibration_target": [
+            "DecisionPolicy",
+            "route_policy"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "context_update_policy_blocks_even_with_fresh_exact_proof"
+          ],
+          "recommended_review_question": "Should context_update be eligible for self-answer only after explicit user question detection is improved?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "policy_context_update_exact_proof"
+        }
+      ]
+    },
+    "policy_manager_only_exact_proof": {
+      "by_requested_action": {
+        "answer_question": 1
+      },
+      "count": 1,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "manager_only_route_requires_separate_owner_policy_decision",
+          "calibration_target": [
+            "DecisionPolicy",
+            "route_policy"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "manager_only_policy_blocks_even_with_fresh_exact_proof"
+          ],
+          "recommended_review_question": "Should a future policy ever allow manager_only to become self-answer, and under what owner-approved limits?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "policy_manager_only_exact_proof"
+        }
+      ]
+    },
+    "retrieval_delivery_runtime_missing_exact_proof": {
+      "by_requested_action": {
+        "answer_question": 1
+      },
+      "count": 1,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "runtime_retrieval_did_not_deliver_exact_client_safe_fact",
+          "calibration_target": [
+            "retrieval_trace",
+            "required_fact_keys",
+            "product_scope"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "runtime_did_not_receive_exact_kb_proof"
+          ],
+          "recommended_review_question": "Why did runtime retrieval miss the exact KB fact found by the offline verifier?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "retrieval_delivery_runtime_missing_exact_proof"
+        }
+      ]
+    },
+    "semanticframe_existence_vs_availability": {
+      "by_requested_action": {
+        "answer_question": 9
+      },
+      "count": 9,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_002",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_confuses_safe_reference_with_live_availability_or_enrollment",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "requested_action",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_existence_or_format_labeled_as_manager_or_operational",
+            "frame_risk:missing_facts",
+            "frame_answerability:manager_only"
+          ],
+          "recommended_review_question": "Is the user asking for a stable existence/format fact, not live seats, booking, payment, or enrollment?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_existence_vs_availability"
+        }
+      ]
+    },
+    "semanticframe_low_confidence": {
+      "by_requested_action": {
+        "answer_question": 15,
+        "handoff_manager": 1
+      },
+      "count": 16,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_003",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "forward_payment_unpk_semester_year_01",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "p0_model_led_pos_how_next",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "p0_model_led_pos_anxiety_level",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "manager_action",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "handoff_manager",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 2,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 3,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_p0_foton_payment_dispute_close",
+          "frame_answerability": "answer_self",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": false,
+          "frame_risk_class": "safe",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "semantic_frame_confidence_below_shadow_threshold",
+          "calibration_target": [
+            "confidence"
+          ],
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "confidence_below:0.9"
+          ],
+          "recommended_review_question": "Why is a safe/self reference below the confidence threshold on the production stack?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_low_confidence"
+        }
+      ]
+    },
+    "semanticframe_safe_reference_missing_facts": {
+      "by_requested_action": {
+        "answer_question": 14
+      },
+      "count": 14,
+      "examples": [
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_001",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.78,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_002",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_003",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "wappi_pair_missing_72h_020",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.93,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "p0_model_led_pos_how_next",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "draft_for_manager",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "ra1_foton_platform_and_price",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.9,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "manager_only",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "ra1_unpk_unknown_slot_price",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 2,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_pos_unpk_exam_group_signup",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.88,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_p0_unpk_paid_transfer",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_medical",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_fabrication_unpk_camp_security",
+          "frame_answerability": "uncertain",
+          "frame_confidence": 0.82,
+          "frame_must_handoff": false,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        },
+        {
+          "active_allowed": false,
+          "active_block_reason": "frame_or_prompt_marks_safe_reference_as_missing_facts",
+          "calibration_target": [
+            "risk_class",
+            "answerability",
+            "must_handoff"
+          ],
+          "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+          "frame_answerability": "manager_only",
+          "frame_confidence": 0.86,
+          "frame_must_handoff": true,
+          "frame_risk_class": "missing_facts",
+          "reasons": [
+            "safe_reference_promoted_to_missing_facts_or_manager_only"
+          ],
+          "recommended_review_question": "Can the frame distinguish missing live facts from enough stable facts for a safe reference answer?",
+          "requested_action": "answer_question",
+          "route": "bot_answer_self_for_pilot",
+          "turn": 1,
+          "workstream": "semanticframe_safe_reference_missing_facts"
+        }
+      ]
+    }
+  }
+}

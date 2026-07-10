@@ -24,7 +24,9 @@ from mango_mvp.channels.semantic_roles import tag_message_roles
         ("Есть рассрочка на год?", "payment_method", "rassrochka"),
         ("Можно оплатить материнским капиталом?", "payment_source", "matkap"),
         ("Дадите справку на налоговый вычет?", "payment_source", "tax_deduction"),
+        ("Возврат по 3-НДФЛ оформляете?", "payment_source", "tax_deduction"),
         ("Сколько можно вернуть по налоговому вычету?", "refund_frame", "none"),
+        ("Возврат по 3-НДФЛ оформляете?", "refund_frame", "none"),
         ("А если передумаю до начала, деньги вернут?", "refund_frame", "presale_policy"),
         ("Перед оплатой хочу понять условия возврата", "refund_frame", "presale_policy"),
         ("Если ребёнку не понравится, можно вернуть деньги?", "refund_frame", "presale_policy"),
@@ -142,6 +144,38 @@ def test_semantic_roles_negated_refund_topic_does_not_become_refund() -> None:
     assert "refund_presale" not in roles.topics
     assert roles.enrollment_vs_recording == "recording"
     assert "recording" in roles.topics
+
+
+def test_tax_deduction_return_word_is_not_payment_refund() -> None:
+    roles = tag_message_roles("Сколько можно вернуть по налоговому вычету?")
+    plan = build_answer_plan(roles)
+
+    assert roles.payment_source == "tax_deduction"
+    assert roles.refund_frame == "none"
+    assert "tax" in roles.topics
+    assert "refund_dispute" not in roles.topics
+    assert plan.p0_required is False
+
+
+def test_3ndfl_return_word_is_not_payment_refund() -> None:
+    roles = tag_message_roles("Возврат по 3-НДФЛ оформляете?")
+    plan = build_answer_plan(roles)
+
+    assert roles.payment_source == "tax_deduction"
+    assert roles.refund_frame == "none"
+    assert "tax" in roles.topics
+    assert "refund_dispute" not in roles.topics
+    assert plan.p0_required is False
+
+
+def test_paid_refund_stays_dispute_even_when_tax_deduction_is_mentioned() -> None:
+    roles = tag_message_roles("Я уже оплатил курс, хочу вернуть оплату, это не про налоговый вычет.")
+    plan = build_answer_plan(roles)
+
+    assert roles.refund_frame == "dispute"
+    assert "refund_dispute" in roles.topics
+    assert plan.p0_required is True
+    assert plan.route == "manager_only"
 
 
 def test_semantic_roles_recording_link_and_cabinet_followup_stay_recording() -> None:

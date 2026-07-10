@@ -1,0 +1,61 @@
+{
+  "created_at": "2026-07-02T00:04:46+0300",
+  "files": [
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_frame_gold_calibration_report.json",
+      "sha256": "d055669385ee2ebe6b54f507a8d6898e357397ca7b87dd690326fe5dbe1fef72",
+      "size_bytes": 75819
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_frame_gold_calibration_report.md",
+      "sha256": "e79358ccccc0bb9c48838a480b5165b746ec54f49a06602273634600aa737be3",
+      "size_bytes": 1070
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_semantic_frame_eval_report.json",
+      "sha256": "952a37692fdc1c1250360919b62a9425c86b24ec1f850e3102001a8717aa8ac3",
+      "size_bytes": 56130
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/adr003_semantic_frame_eval_report.md",
+      "sha256": "a6203adb3c5cc61878c22c9aadb28a69abf2ab402909e982895714d05d955aa5",
+      "size_bytes": 855
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/backward_compatibility.md",
+      "sha256": "de436e462e6bd6686341fe1b6479c41638a5c300b2f7ee418fabcc22b70f9dcb",
+      "size_bytes": 268
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/changed_files.txt",
+      "sha256": "2bfafdcccf20068bd5a37843ab4c4fc5b055e9b8b8007dc2a648ab44a75f0f5b",
+      "size_bytes": 882
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/implementation_notes.md",
+      "sha256": "004a15d5e09b2d21aeda5c837fb4ee07463e12b214329b793674c5c2fe46b889",
+      "size_bytes": 1153
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/risk_review.md",
+      "sha256": "e725410a84940da68efe92a2d79eaeaf1c9dbc1026bd95dd55bf7971e1838866",
+      "size_bytes": 865
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/semantic_review.md",
+      "sha256": "69b63b1eddceab601d18c5c540420045f391fdd0bf998cb6244aa84e007a897a",
+      "size_bytes": 778
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/sha_manifest.json",
+      "sha256": "71112559e1e96dbdb6fa149f2c492910aae723f0ad3ee0a1ca5b920465489356",
+      "size_bytes": 2284
+    },
+    {
+      "path": "audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/test_output.txt",
+      "sha256": "f2d19f8905c3a1a58f8429fc9c4845b8a9ad113066170fb1b789054667bff2b9",
+      "size_bytes": 1548
+    }
+  ],
+  "schema_version": "audit_pack_manifest_v1"
+}

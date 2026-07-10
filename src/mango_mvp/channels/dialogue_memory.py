@@ -31,9 +31,15 @@ DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
+SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
+SLOTS_GSF_KNOWN_MERGE_ENV = "TELEGRAM_SLOTS_GSF_KNOWN_MERGE"
+DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
+P0_LATCH_AUTORELEASE_V2_ENV = "TELEGRAM_P0_LATCH_AUTORELEASE_V2"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
+    DIALOG_SUMMARY_ROLLING_ENV,
+    P0_LATCH_AUTORELEASE_V2_ENV,
 )
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
@@ -133,6 +139,8 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 )
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
+P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS = 3
+P0_LATCH_AUTORELEASE_V2_EVENT = "p0_latch_autorelease_v2"
 HARD_P0_LATCH_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 HARD_P0_HISTORY_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 MEMORY_LLM_RECOMMENDED_REASONING = "low"
@@ -157,6 +165,7 @@ _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE = re.compile(
     re.I,
 )
 _MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES = {"dialogue_memory", "memory_llm", "bot_inferred", "unknown"}
+_SLOTS_GSF_KNOWN_MERGE_KEYS = ("grade", "subject", "format")
 
 
 @dataclass(frozen=True)
@@ -254,13 +263,15 @@ class DialogueMemory:
     current_message_roles: Mapping[str, Any] = field(default_factory=dict)
     proactive_state: Mapping[str, Any] = field(default_factory=dict)
     slot_history: tuple[Mapping[str, Any], ...] = ()
+    last_semantic_reading: Mapping[str, Any] = field(default_factory=dict)
+    semantic_reading_slots: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     schema_version: str = DIALOGUE_MEMORY_SCHEMA_VERSION
 
     def to_json_dict(self) -> Mapping[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
             "active_brand": self.active_brand,
@@ -287,18 +298,33 @@ class DialogueMemory:
             "current_message_roles": dict(self.current_message_roles),
             "proactive_state": dict(self.proactive_state),
             "slot_history": [dict(item) for item in self.slot_history],
+            "last_semantic_reading": dict(self.last_semantic_reading),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
         }
+        if self.semantic_reading_slots:
+            payload["semantic_reading_slots"] = {
+                str(key): dict(value)
+                for key, value in self.semantic_reading_slots.items()
+                if str(key).strip() and isinstance(value, Mapping)
+            }
+        return payload
 
     def to_prompt_view(self) -> Mapping[str, Any]:
         provenance_enabled = _memory_provenance_enabled()
-        known_values = {
+        base_known_values = {
             key: slot.value
             for key, slot in self.known_slots.items()
             if slot.value and (not provenance_enabled or slot.source != "memory_provenance" or bool(slot.quote))
         }
+        known_values = dict(base_known_values)
+        slot_sources = {key: slot.source for key, slot in self.known_slots.items() if slot.value}
+        semantic_merge = _slots_gsf_known_merge_view(
+            known_values=known_values,
+            slot_sources=slot_sources,
+            semantic_slots=self.semantic_reading_slots,
+        )
         slot_provenance = {
             key: {
                 "value": slot.value,
@@ -317,7 +343,7 @@ class DialogueMemory:
             "active_brand": self.active_brand,
             "recent_turns": [turn.to_json_dict() for turn in self.turns[-MAX_PROMPT_TURNS:]],
             "known_slots": known_values,
-            "slot_sources": {key: slot.source for key, slot in self.known_slots.items() if slot.value},
+            "slot_sources": slot_sources,
             "slot_provenance": slot_provenance,
             "memory_provenance": {
                 "enabled": provenance_enabled,
@@ -341,7 +367,9 @@ class DialogueMemory:
             "client_confirmed_slots": dict(self.client_confirmed_slots),
             "crm_known_slots": dict(self.crm_known_slots),
             "bot_inferred_slots": dict(self.bot_inferred_slots),
-            "do_not_ask_again": list(self.do_not_reask_slots) or sorted(known_values),
+            "semantic_inferred_slots": semantic_merge["semantic_inferred_slots"],
+            "slots_merge_trace": semantic_merge["slots_merge_trace"],
+            "do_not_ask_again": list(self.do_not_reask_slots) or sorted(base_known_values),
             "held_state": self.held_state.to_prompt_view(),
             "current_message_roles": dict(self.current_message_roles),
             "proactive_state": dict(self.proactive_state),
@@ -430,6 +458,21 @@ def build_dialogue_memory(
     topic_focus = _topic_focus(slot_map, open_question=open_question, active_brand=brand)
     client_confirmed = _slots_by_source(slot_map, {"dialogue_memory", "memory_provenance"})
     crm_known = _slots_by_source(slot_map, {"provided_context"})
+    do_not_reask = _do_not_reask_slots(slot_map)
+    if _slots_reask_enabled(context):
+        semantic_slot_names = _semantic_reading_slot_names(_prev_semantic_reading_slots(previous_memory))
+        if semantic_slot_names:
+            do_not_reask = tuple(sorted({*do_not_reask, *semantic_slot_names}))
+    prev_summary = ""
+    if isinstance(previous, DialogueMemory):
+        prev_summary = str(previous.conversation_summary_short or "")[:500]
+    elif isinstance(previous_memory, Mapping):
+        prev_summary = str(previous_memory.get("conversation_summary_short") or "")[:500]
+    summary = (
+        prev_summary
+        if _dialog_summary_rolling_enabled(context) and prev_summary
+        else _conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question)
+    )
     return DialogueMemory(
         session_id=session_id or _stable_session_id(brand, turns),
         active_brand=brand,
@@ -451,12 +494,12 @@ def build_dialogue_memory(
         client_confirmed_slots=client_confirmed,
         crm_known_slots=crm_known,
         bot_inferred_slots=_bot_inferred_slots(previous_memory),
-        do_not_reask_slots=_do_not_reask_slots(slot_map),
+        do_not_reask_slots=do_not_reask,
         held_state=held_state,
         current_message_roles=current_roles.to_prompt_view(),
         proactive_state=dict(previous.proactive_state) if isinstance(previous, DialogueMemory) else {},
         slot_history=slot_history,
-        conversation_summary_short=_conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question),
+        conversation_summary_short=summary,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=_pending_manager_actions(commitments)),
     )
 
@@ -468,7 +511,11 @@ def update_dialogue_memory_after_answer(
     route: str = "",
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
+    semantic_reading: Mapping[str, Any] | None = None,
+    semantic_frame: Mapping[str, Any] | None = None,
+    dialog_summary: str | None = None,
     memory_llm_fn: Callable[[str], object] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
     answer = _clean(answer_text)
@@ -478,17 +525,32 @@ def update_dialogue_memory_after_answer(
     route_history = tuple(dict.fromkeys([*current.route_history, str(route or "").strip()]))[-8:]
     safety_risks = _risk_flags_from_safety(safety_flags)
     risks = tuple(dict.fromkeys([*current.risk_flags, *safety_risks]))
+    latch_context = {
+        **(dict(context) if isinstance(context, Mapping) else {}),
+        "route": route,
+        "safety_flags": list(safety_flags),
+    }
+    if semantic_reading is not None:
+        latch_context["semantic_reading"] = dict(semantic_reading)
+    if semantic_frame is not None:
+        latch_context["semantic_frame"] = dict(semantic_frame)
     p0_latch = _next_p0_latch(
         current.p0_latch,
         current_message="",
         current_risk_flags=safety_risks,
-        context={"route": route, "safety_flags": list(safety_flags)},
+        context=latch_context,
         session_id=current.session_id,
-        turns=turns,
+        turns=current.turns,
     )
+    latch_released = _p0_latch_released(current.p0_latch, p0_latch)
+    if latch_released:
+        risks = tuple(dict.fromkeys(safety_risks))
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = tuple(dict.fromkeys([*current.last_bot_commitments, *_detect_commitments(turns)]))[-8:]
+    semantic_reading_slots = dict(current.semantic_reading_slots)
+    if semantic_reading is not None:
+        semantic_reading_slots.update(_semantic_reading_slots_from_payload(semantic_reading, turns))
     answered = current.answered_questions
     open_question = current.open_question
     unanswered = tuple(current.unanswered_questions)
@@ -496,7 +558,8 @@ def update_dialogue_memory_after_answer(
         answered = (*answered, open_question.text)[-8:]
         open_question = DialogueQuestion(open_question.text, open_question.kind, True)
         unanswered = tuple(item for item in unanswered if item != current.open_question.text)
-    handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
+    base_handoff = "none" if latch_released else current.handoff_state
+    handoff = "required" if p0_latch.active or risks or route == "manager_only" else base_handoff
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
     proactive_state = _proactive_state_after_answer(current.proactive_state, answer)
@@ -522,13 +585,23 @@ def update_dialogue_memory_after_answer(
         crm_known_slots=dict(current.crm_known_slots),
         bot_inferred_slots=dict(current.bot_inferred_slots),
         do_not_reask_slots=tuple(current.do_not_reask_slots),
-        held_state=current.held_state,
+        held_state=replace(current.held_state, p0_latched=False, p0_codes=()) if latch_released else current.held_state,
         current_message_roles=dict(current.current_message_roles),
         proactive_state=proactive_state,
         slot_history=tuple(current.slot_history),
+        last_semantic_reading=(
+            _semantic_reading_memory_mapping(semantic_reading)
+            if semantic_reading is not None
+            else dict(current.last_semantic_reading)
+        ),
+        semantic_reading_slots=semantic_reading_slots,
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
+    if _dialog_summary_rolling_enabled(context):
+        candidate = _dialog_summary_candidate(dialog_summary, active_brand=current.active_brand)
+        if candidate:
+            updated = replace(updated, conversation_summary_short=candidate[:500])
     if _memory_provenance_enabled():
         return updated
     if memory_llm_fn is None:
@@ -628,6 +701,11 @@ def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any])
         **dict(memory.bot_inferred_slots),
         **_slots_by_source(slots, {"memory_llm"}),
     }
+    do_not_reask = _do_not_reask_slots(slots)
+    if _slots_reask_enabled(None):
+        semantic_slot_names = _semantic_reading_slot_names(memory.semantic_reading_slots)
+        if semantic_slot_names:
+            do_not_reask = tuple(sorted({*do_not_reask, *semantic_slot_names}))
     return replace(
         memory,
         known_slots=slots,
@@ -637,7 +715,7 @@ def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any])
         topic_focus=topic_focus,
         client_confirmed_slots=client_confirmed,
         bot_inferred_slots=bot_inferred,
-        do_not_reask_slots=_do_not_reask_slots(slots),
+        do_not_reask_slots=do_not_reask,
         pending_manager_actions=_pending_manager_actions(commitments),
         conversation_summary_short=summary[:500],
         open_loop_summary=_open_loop_summary(
@@ -802,6 +880,64 @@ def _memory_llm_summary(value: Any) -> str:
     return text[:500]
 
 
+def _dialog_summary_rolling_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return _memory_profile_flag_enabled(DIALOG_SUMMARY_ROLLING_ENV, context)
+
+
+def _dialog_summary_candidate(value: Any, *, active_brand: str = "") -> str:
+    summary = _memory_llm_summary(value)
+    if not summary:
+        return ""
+    if _summary_has_unsupported_number(summary):
+        return ""
+    if _summary_mentions_other_brand(summary, active_brand):
+        return ""
+    if _summary_has_pii(summary):
+        return ""
+    return summary[:500]
+
+
+def _summary_has_pii(text: str) -> bool:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.support import (  # noqa: PLC0415
+            _A2_PHONE_RE,
+            _CLIENT_EMAIL_RE,
+        )
+    except Exception:
+        return False
+    return bool(_A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text))
+
+
+def _summary_has_unsupported_number(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("\u00a0", " ")
+    if "процент" in normalized:
+        return True
+    digits = [char if char.isdigit() else " " for char in normalized]
+    groups = "".join(digits).split()
+    if sum(len(group) for group in groups) >= 4:
+        return True
+    if any(sep in normalized for sep in (".", "/")):
+        parts = [part for part in normalized.replace("/", ".").split(".") if part]
+        for first, second in zip(parts, parts[1:]):
+            left = "".join(char for char in first[-2:] if char.isdigit())
+            right = "".join(char for char in second[:2] if char.isdigit())
+            if len(left) in {1, 2} and len(right) in {1, 2}:
+                return True
+    return False
+
+
+def _summary_mentions_other_brand(text: str, active_brand: str = "") -> bool:
+    normalized = str(text or "").casefold()
+    brand = str(active_brand or "").strip().casefold()
+    if brand == "foton":
+        foreign_terms = ("унпк", "унфт", "мфти", "unpk", "mipt")
+    elif brand == "unpk":
+        foreign_terms = ("фотон", "foton", "cdpo", "цдпо")
+    else:
+        foreign_terms = ("унпк", "унфт", "мфти", "unpk", "mipt", "фотон", "foton", "cdpo", "цдпо")
+    return any(term in normalized for term in foreign_terms)
+
+
 def _coerce_turn(raw: DialogueTurn | Mapping[str, Any]) -> DialogueTurn:
     if isinstance(raw, DialogueTurn):
         return raw
@@ -898,6 +1034,8 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         current_message_roles=dict(data.get("current_message_roles") or {}) if isinstance(data.get("current_message_roles"), Mapping) else {},
         proactive_state=dict(data.get("proactive_state") or {}) if isinstance(data.get("proactive_state"), Mapping) else {},
         slot_history=tuple(dict(item) for item in (data.get("slot_history") or ()) if isinstance(item, Mapping))[-40:],
+        last_semantic_reading=_semantic_reading_memory_mapping(data.get("last_semantic_reading")),
+        semantic_reading_slots=_semantic_reading_slots_mapping(data.get("semantic_reading_slots")),
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )
@@ -969,13 +1107,20 @@ def _memory_provenance_enabled() -> bool:
     return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
-def _memory_profile_flag_enabled(env_name: str) -> bool:
+def _memory_profile_flag_enabled(env_name: str, context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, Mapping) and env_name in context:
+        return str(context.get(env_name) or "").strip().lower() in {"1", "true", "yes", "on", "да"}
     explicit = os.getenv(env_name)
     if explicit is not None:
-        return str(explicit).strip().lower() in {"1", "true", "yes", "on"}
+        return str(explicit).strip().lower() in {"1", "true", "yes", "on", "да"}
+    profile = ""
+    if isinstance(context, Mapping):
+        profile = str(context.get(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
+    if not profile:
+        profile = str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
     return (
         env_name in MEMORY_PROFILE_DEFAULT_ON_FLAGS
-        and str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
+        and profile == DIRECT_PATH_PILOT_CONFIG_VERSION
     )
 
 
@@ -1017,6 +1162,23 @@ _CHILD_NAME_MARKER_RE = re.compile(
     r"\b(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\s+зовут\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\b"
     r"|\b(?:зовут|фио|для)\s*[:\-]?\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\b",
     re.I,
+)
+_CHILD_NAME_STOPWORDS = frozenset(
+    {
+        "запись",
+        "записи",
+        "заявка",
+        "заявки",
+        "курс",
+        "курса",
+        "урок",
+        "урока",
+        "занятие",
+        "занятия",
+        "обучение",
+        "оплата",
+        "оплаты",
+    }
 )
 _NAME_GRADE_RE = re.compile(r"\b(?P<name>[А-ЯЁ][а-яё]{2,20})\s+в\s+(?:[1-9]|1[01])\s*(?:класс|кл\.?)\b", re.I)
 _CHILD_GRADE_RE = re.compile(
@@ -1140,7 +1302,9 @@ def _extract_provenance_slots_from_client_text(
     name_match = _CHILD_NAME_MARKER_RE.search(text) or _NAME_GRADE_RE.search(text)
     if name_match:
         name = name_match.groupdict().get("name") or name_match.groupdict().get("name2") or ""
-        result["child_name"] = _provenance_slot("child_name", _normalize_child_name(name), name_match.group(0), turn_index, message_id, child_key)
+        normalized_name = _normalize_child_name(name)
+        if _valid_child_name_from_client_text(normalized_name):
+            result["child_name"] = _provenance_slot("child_name", normalized_name, name_match.group(0), turn_index, message_id, child_key)
     return result
 
 
@@ -1237,6 +1401,14 @@ def _normalize_child_name(name: str) -> str:
     if not text:
         return ""
     return text[:1].upper() + text[1:].lower()
+
+
+def _valid_child_name_from_client_text(name: str) -> bool:
+    value = _clean(name).strip(".,:;!?")
+    if not value:
+        return False
+    normalized = value.casefold().replace("ё", "е")
+    return normalized not in _CHILD_NAME_STOPWORDS
 
 
 def _extract_slots_from_turns(turns: Sequence[DialogueTurn]) -> Mapping[str, Any]:
@@ -1463,6 +1635,102 @@ def _plain_str_mapping(value: Any) -> Mapping[str, str]:
     return {str(key): str(raw)[:160] for key, raw in value.items() if str(key).strip() and str(raw or "").strip()}
 
 
+def _semantic_reading_memory_mapping(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed_text_keys = (
+        "schema_version",
+        "source",
+        "primary_intent",
+        "sense",
+        "scope",
+        "requested_action",
+        "product_grade",
+        "product_subject",
+        "product_format",
+        "product_raw_text",
+    )
+    allowed_float_keys = ("intent_confidence", "frame_confidence")
+    out: dict[str, Any] = {}
+    for key in allowed_text_keys:
+        raw = value.get(key)
+        if str(raw or "").strip():
+            out[key] = str(raw).strip()[:160]
+    for key in allowed_float_keys:
+        try:
+            number = float(value.get(key, 0.0))
+        except (TypeError, ValueError):
+            number = 0.0
+        out[key] = max(0.0, min(1.0, number))
+    if str(out.get("source") or "") not in {"inline", "posthoc"}:
+        out.pop("source", None)
+    if not out.get("schema_version"):
+        out["schema_version"] = "semantic_reading_v1_2026_07_03"
+    return out
+
+
+def _semantic_reading_slots_mapping(value: Any) -> Mapping[str, Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}
+    out: dict[str, Mapping[str, Any]] = {}
+    for key in ("grade", "subject", "format"):
+        raw = value.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        slot_value = str(raw.get("value") or "").strip()[:80]
+        if not slot_value:
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        out[key] = {
+            "value": slot_value,
+            "source_name": str(raw.get("source_name") or "semantic_reading_llm").strip()[:80],
+            "confidence": max(0.0, min(1.0, confidence)),
+            "evidence": str(raw.get("evidence") or "").strip()[:160],
+        }
+    return out
+
+
+def _semantic_reading_slots_from_payload(
+    value: Mapping[str, Any],
+    turns: Sequence[DialogueTurn],
+) -> Mapping[str, Mapping[str, Any]]:
+    try:
+        from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
+            SemanticReading,
+            reading_class_enabled,
+            slots_reading_candidates,
+        )
+    except Exception:
+        return {}
+    if not reading_class_enabled(None, "slots_gsf"):
+        return {}
+    reading_payload = _semantic_reading_memory_mapping(value)
+    if not reading_payload:
+        return {}
+    reading = SemanticReading(
+        source=str(reading_payload.get("source") or ""),
+        primary_intent=str(reading_payload.get("primary_intent") or ""),
+        sense=str(reading_payload.get("sense") or ""),
+        scope=str(reading_payload.get("scope") or ""),
+        intent_confidence=float(reading_payload.get("intent_confidence") or 0.0),
+        requested_action=str(reading_payload.get("requested_action") or ""),
+        product_grade=str(reading_payload.get("product_grade") or ""),
+        product_subject=str(reading_payload.get("product_subject") or ""),
+        product_format=str(reading_payload.get("product_format") or ""),
+        product_raw_text=str(reading_payload.get("product_raw_text") or ""),
+        frame_confidence=float(reading_payload.get("frame_confidence") or 0.0),
+    )
+    history_texts = tuple(
+        f"{turn.role}: {turn.text}"
+        for turn in turns
+        if isinstance(turn, DialogueTurn) and str(turn.text or "").strip()
+    )
+    return _semantic_reading_slots_mapping(slots_reading_candidates(reading, history_texts=history_texts))
+
+
 def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:
     if not isinstance(value, Mapping):
         return DialogueP0Latch()
@@ -1511,6 +1779,36 @@ def _next_p0_latch(
         )
         return result
     if previous.active:
+        v2_release, v2_trace = _p0_latch_autorelease_v2_event(
+            previous,
+            turns=turns,
+            context=context,
+            current_risk_flags=current_risk_flags,
+        )
+        if v2_release:
+            result = DialogueP0Latch(
+                release_event_id=v2_release,
+                had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+            )
+            trace_event(context, "p0_latch_autorelease_v2", {**v2_trace, "released": True})
+            trace_event(
+                context,
+                "_next_p0_latch",
+                {
+                    "previous_active": previous.active,
+                    "previous_codes": list(previous.codes),
+                    "current_risk_flags": list(current_risk_flags),
+                    "release_event": v2_release,
+                    "autonomous_release": True,
+                    "next_active": result.active,
+                    "next_codes": list(result.codes),
+                    "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                    "next_had_hard_p0_claim": result.had_hard_p0_claim,
+                },
+            )
+            return result
+        if v2_trace:
+            trace_event(context, "p0_latch_autorelease_v2", {**v2_trace, "released": False})
         autonomous_release = _autonomous_p0_latch_release_event(
             previous,
             turns=turns,
@@ -1649,6 +1947,129 @@ def _autonomous_p0_latch_release_event(
     return AUTONOMOUS_P0_LATCH_RELEASE_EVENT
 
 
+def _p0_latch_autorelease_v2_event(
+    previous: DialogueP0Latch,
+    *,
+    turns: Sequence[DialogueTurn],
+    context: Mapping[str, Any] | None,
+    current_risk_flags: Sequence[str],
+) -> tuple[str, Mapping[str, Any]]:
+    if not _p0_latch_autorelease_v2_enabled(context):
+        return "", {}
+    trace: dict[str, Any] = {
+        "schema_version": "p0_latch_autorelease_v2_2026_07_07",
+        "previous_codes": list(previous.codes),
+    }
+    if not previous.active:
+        return "", {**trace, "reason": "previous_not_active"}
+    if any(str(code or "").strip() in {"legal", "legal_threat", "refund", "payment_dispute"} for code in previous.codes):
+        return "", {**trace, "reason": "hard_p0_latch"}
+    if _latchable_p0_codes(current_risk_flags):
+        return "", {**trace, "reason": "current_risk_flags_latchable", "current_risk_flags": list(current_risk_flags)}
+    if _has_pending_manager_event(context):
+        return "", {**trace, "reason": "pending_manager"}
+    frame = _p0_latch_autorelease_v2_frame(context)
+    frame_status = _p0_latch_autorelease_v2_frame_status(frame)
+    trace["frame"] = frame_status
+    if frame_status.get("status") != "ok":
+        return "", {**trace, "reason": str(frame_status.get("status") or "frame_not_ok")}
+    client_texts = [turn.text for turn in turns if turn.role == "client"]
+    recent_client_texts = client_texts[-P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS:]
+    trace["recent_client_turns"] = len(recent_client_texts)
+    if len(recent_client_texts) < P0_LATCH_AUTORELEASE_V2_NEUTRAL_TURNS:
+        return "", {**trace, "reason": "not_enough_neutral_client_turns"}
+    unsafe_recent: list[Mapping[str, Any]] = []
+    for index, text in enumerate(recent_client_texts):
+        flags = tuple(_latchable_p0_codes(_detect_risk_flags(text)))
+        if flags and not _safe_frame_negates_current_false_complaint(index, recent_client_texts, flags, text):
+            unsafe_recent.append({"offset": index, "codes": list(flags), "text_hash": _text_hash(text)})
+    if unsafe_recent:
+        return "", {**trace, "reason": "recent_client_turn_latchable", "unsafe_recent": unsafe_recent}
+    return P0_LATCH_AUTORELEASE_V2_EVENT, {**trace, "reason": "safe_frame_after_three_neutral_client_turns"}
+
+
+def _p0_latch_autorelease_v2_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(P0_LATCH_AUTORELEASE_V2_ENV)
+    if value is None:
+        value = os.getenv(P0_LATCH_AUTORELEASE_V2_ENV)
+    if value is not None:
+        return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+    return _memory_profile_flag_enabled(P0_LATCH_AUTORELEASE_V2_ENV, context)
+
+
+def _p0_latch_autorelease_v2_frame(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    for key in ("semantic_frame", "bot_semantic_frame"):
+        frame = context.get(key)
+        if isinstance(frame, Mapping):
+            return frame
+    reading = context.get("semantic_reading")
+    return reading if isinstance(reading, Mapping) else {}
+
+
+def _p0_latch_autorelease_v2_frame_status(frame: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(frame, Mapping) or not frame:
+        return {"status": "missing_frame"}
+    source = str(frame.get("source") or "").strip()
+    if source != "inline":
+        return {"status": "frame_source_not_inline", "source": source}
+    try:
+        confidence = float(frame.get("confidence", frame.get("frame_confidence", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    risk_class = str(frame.get("risk_class") or "").strip()
+    must_handoff = frame.get("must_handoff")
+    if confidence < 0.90:
+        return {"status": "frame_confidence_low", "confidence": round(confidence, 3)}
+    if risk_class != "safe":
+        return {"status": "frame_risk_not_safe", "risk_class": risk_class, "confidence": round(confidence, 3)}
+    if must_handoff is not False:
+        return {
+            "status": "frame_must_handoff_not_false",
+            "must_handoff": must_handoff,
+            "risk_class": risk_class,
+            "confidence": round(confidence, 3),
+        }
+    return {
+        "status": "ok",
+        "source": source,
+        "risk_class": risk_class,
+        "must_handoff": False,
+        "confidence": round(confidence, 3),
+        "requested_action": str(frame.get("requested_action") or "")[:80],
+    }
+
+
+def _has_pending_manager_event(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    pending = context.get("pending_manager_actions")
+    if isinstance(pending, Sequence) and not isinstance(pending, (str, bytes, bytearray)):
+        return any(str(item or "").strip() for item in pending)
+    return False
+
+
+def _safe_frame_negates_current_false_complaint(
+    index: int,
+    recent_client_texts: Sequence[str],
+    flags: Sequence[str],
+    text: str,
+) -> bool:
+    if index != len(recent_client_texts) - 1:
+        return False
+    if any(flag in {"refund", "payment_dispute"} for flag in flags):
+        return False
+    normalized = normalize_text(text)
+    return "нет претенз" in normalized and set(flags).issubset({"complaint", "legal_threat"})
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
 def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
     return any(str(code or "").strip() in HARD_P0_LATCH_CODES for code in codes)
 
@@ -1662,7 +2083,10 @@ def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> b
 
 
 def _previous_autonomous_p0_latch_released(previous: DialogueP0Latch) -> bool:
-    return bool(not previous.active and previous.release_event_id == AUTONOMOUS_P0_LATCH_RELEASE_EVENT)
+    return bool(
+        not previous.active
+        and previous.release_event_id in {AUTONOMOUS_P0_LATCH_RELEASE_EVENT, P0_LATCH_AUTORELEASE_V2_EVENT}
+    )
 
 
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:
@@ -1675,6 +2099,95 @@ def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) 
 
 def _do_not_reask_slots(slots: Mapping[str, DialogueSlot]) -> tuple[str, ...]:
     return tuple(sorted(key for key, slot in slots.items() if slot.value))
+
+
+def _slots_reask_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(SLOTS_REASK_ENV)
+    if value is None:
+        value = os.getenv(SLOTS_REASK_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _slots_gsf_known_merge_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    value: Any = None
+    if isinstance(context, Mapping):
+        value = context.get(SLOTS_GSF_KNOWN_MERGE_ENV)
+    if value is None:
+        value = os.getenv(SLOTS_GSF_KNOWN_MERGE_ENV)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _slots_gsf_known_merge_view(
+    *,
+    known_values: dict[str, str],
+    slot_sources: dict[str, str],
+    semantic_slots: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not _slots_gsf_known_merge_enabled(None):
+        return {"semantic_inferred_slots": {}, "slots_merge_trace": []}
+    inferred: dict[str, Mapping[str, Any]] = {}
+    trace: list[Mapping[str, Any]] = []
+    for key in _SLOTS_GSF_KNOWN_MERGE_KEYS:
+        raw = semantic_slots.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        value = str(raw.get("value") or "").strip()[:80]
+        if not value:
+            continue
+        source_name = str(raw.get("source_name") or "semantic_reading_llm").strip()[:80] or "semantic_reading_llm"
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        payload = {
+            "value": value,
+            "source": source_name,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "status": "llm_inferred_not_client_confirmed",
+        }
+        inferred[key] = payload
+        existing = str(known_values.get(key) or "").strip()
+        if existing:
+            trace.append(
+                {
+                    "slot": key,
+                    "status": "kept_existing",
+                    "existing_source": slot_sources.get(key, ""),
+                    "semantic_source": source_name,
+                    "conflict": existing != value,
+                }
+            )
+            continue
+        known_values[key] = value
+        slot_sources[key] = source_name
+        trace.append(
+            {
+                "slot": key,
+                "status": "merged_from_semantic_reading",
+                "semantic_source": source_name,
+                "confidence": payload["confidence"],
+                "client_confirmed": False,
+            }
+        )
+    return {"semantic_inferred_slots": inferred, "slots_merge_trace": trace}
+
+
+def _prev_semantic_reading_slots(previous_memory: Mapping[str, Any] | DialogueMemory | None) -> Mapping[str, Mapping[str, Any]]:
+    if isinstance(previous_memory, DialogueMemory):
+        return previous_memory.semantic_reading_slots
+    if isinstance(previous_memory, Mapping):
+        return _semantic_reading_slots_mapping(previous_memory.get("semantic_reading_slots"))
+    return {}
+
+
+def _semantic_reading_slot_names(value: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    return {
+        key
+        for key, payload in value.items()
+        if isinstance(payload, Mapping) and str(payload.get("value") or "").strip()
+    }
 
 
 def _topic_focus(

@@ -1,0 +1,1592 @@
+{
+  "acceptance": {
+    "flags": {
+      "extra_model_calls_expected": true,
+      "hard_gate_failures_zero": true,
+      "input_turns_match": true,
+      "route_text_diff_zero": true,
+      "semantic_frame_present_on_all_turns": true,
+      "semantic_frame_required_fields_complete": true
+    },
+    "notes": [
+      "ON run is paired SemanticFrame enrichment; model calls are only post-hoc frame metadata calls."
+    ],
+    "status": "pass"
+  },
+  "created_at": "2026-07-01T21:00:37.643546+00:00",
+  "decision_readiness": {
+    "active_behavior_allowed": false,
+    "reason": "SemanticFrame has no filled expected-frame gold labels in this report.",
+    "semantic_decision_status": "not_pass",
+    "technical_shadow_status": "pass"
+  },
+  "frame_decision_shadow": {
+    "action_status": {
+      "unknown": 241
+    },
+    "mismatch_examples": [
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_004",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_005",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_006",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "check_availability"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_009",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "check_availability"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_010",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_013",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "send_payment_link",
+            "requested_action": "send_payment_link"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "wappi_pair_missing_72h_014",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_020",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "check_availability"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_021",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "wappi_pair_missing_72h_022",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "forward_payment_foton_installment_01",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "forward_payment_foton_installment_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_model_led_pos_enroll_steps",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_model_led_pos_how_next",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_model_led_pos_support_question",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "send_materials",
+            "requested_action": "send_materials"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "p0_ft_paid_no_access_01",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "refund_or_cancel"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_ctrl_benign_presale_refund_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "refund_or_cancel"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_ctrl_benign_presale_refund_02",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "p0_un_paid_invite_missing_01",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "p0_ctrl_paid_yesterday_future_lessons_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "p0_ctrl_paid_two_courses_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_foton_refund_prepay_rules_01",
+        "status": "observed",
+        "turn": 4
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "check_availability"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_unpk_weekend_partial_04",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_foton_offline_price_06",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_foton_offline_price_06",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_unpk_offline_price_07",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_unpk_offline_price_07",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "ra1_foton_address_and_trial",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "ra1_unpk_documents_and_payment",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "ra1_foton_platform_and_price",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": true,
+          "close_veto_vs_close_detect": "match",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "ra1_unpk_unknown_slot_price",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_foton_online_math_signup",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_foton_offline_physics_next",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_foton_online_info_record",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_foton_oge_math_signup",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_unpk_online_physics_signup",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_unpk_offline_math_next",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_unpk_camp_dates_signup",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_unpk_exam_group_signup",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "enroll"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_pos_unpk_exam_group_signup",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "refund_or_cancel"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "cf142_p0_unpk_paid_transfer",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_fabrication_unpk_camp_medical",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "capture_lead",
+            "requested_action": "check_availability"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_fabrication_foton_camp_laptop",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_fabrication_foton_camp_laptop",
+        "status": "observed",
+        "turn": 3
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "answer_only",
+            "requested_action": "answer_question"
+          },
+          "answerability_vs_route": "mismatch",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "mismatch",
+          "p0_vs_actual": "match"
+        },
+        "dialog_id": "cf142_over_handoff_unpk_clean_ready",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "send_materials",
+            "requested_action": "send_materials"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "tz147_ft_paid_link_01",
+        "status": "observed",
+        "turn": 1
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "tz147_ft_paid_link_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "tz147_ft_payment_login_01",
+        "status": "observed",
+        "turn": 2
+      },
+      {
+        "comparisons": {
+          "action": {
+            "actual_deal_action": "",
+            "alignment": "unknown",
+            "expected_deal_action": "handoff_manager",
+            "requested_action": "handoff_manager"
+          },
+          "answerability_vs_route": "match",
+          "close_veto_candidate": false,
+          "close_veto_vs_close_detect": "not_applicable",
+          "must_handoff_vs_route": "match",
+          "p0_vs_actual": "mismatch"
+        },
+        "dialog_id": "tz147_un_platform_not_connected_01",
+        "status": "observed",
+        "turn": 2
+      }
+    ],
+    "must_handoff_vs_route": {
+      "match": 193,
+      "mismatch": 48
+    },
+    "p0_vs_actual": {
+      "match": 226,
+      "mismatch": 15
+    },
+    "status": {
+      "observed": 241
+    },
+    "turn_count": 241
+  },
+  "hard_gate_failures": {
+    "off": 0,
+    "on": 0
+  },
+  "inputs": {
+    "off_summary": "audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/off/dynamic_summary.json",
+    "off_transcripts": "audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/off/dynamic_dialog_transcripts.jsonl",
+    "on_summary": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/on/dynamic_summary.json",
+    "on_transcripts": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/on/dynamic_dialog_transcripts.jsonl"
+  },
+  "llm_calls": {
+    "enrichment_status": "all",
+    "extra_semantic_frame_shadow": 241,
+    "extra_total": 241,
+    "mode": "semantic_frame_enrichment",
+    "off": {
+      "avg_calls_per_dialog": 4.1,
+      "bot_critic": 0,
+      "bot_direct_draft": 186,
+      "bot_draft": 0,
+      "bot_faithfulness": 0,
+      "bot_retriever": 186,
+      "bot_selling_compose": 0,
+      "bot_semantic_frame_shadow": 0,
+      "bot_semantic_output_regen": 0,
+      "bot_semantic_output_verifier": 165,
+      "client": 0,
+      "dialogs": 131,
+      "judge": 0,
+      "memory": 0,
+      "total": 537,
+      "turns": 241
+    },
+    "off_total": 537,
+    "on": {
+      "avg_calls_per_dialog": 1.84,
+      "bot_critic": 0,
+      "bot_direct_draft": 0,
+      "bot_draft": 0,
+      "bot_faithfulness": 0,
+      "bot_retriever": 0,
+      "bot_selling_compose": 0,
+      "bot_semantic_frame_shadow": 241,
+      "bot_semantic_output_regen": 0,
+      "bot_semantic_output_verifier": 0,
+      "client": 0,
+      "dialogs": 131,
+      "judge": 0,
+      "memory": 0,
+      "total": 241,
+      "turns": 241
+    },
+    "on_non_frame_total": 0,
+    "on_total": 241,
+    "raw_total_delta": -296
+  },
+  "off_on_diff": {
+    "compared_turns": 241,
+    "diff_examples": [],
+    "input_diff_count": 0,
+    "input_diff_examples": [],
+    "missing_off_turns": 0,
+    "missing_on_turns": 0,
+    "route_text_diff_count": 0,
+    "status": "compared"
+  },
+  "schema_version": "adr003_semantic_frame_eval_report_v1_2026_07_01",
+  "semantic_frame": {
+    "complete_required_count": 241,
+    "complete_required_rate": 1.0,
+    "confidence": {
+      "avg": 0.9312,
+      "count": 241,
+      "max": 0.98,
+      "min": 0.82
+    },
+    "mismatch_examples": [
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_001",
+        "frame_must_handoff": true,
+        "intent": "Проверить, подходит ли летняя школа УНПК ребёнку после 5 класса, и продолжить консультацию по смене",
+        "risk_class": "missing_facts",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_002",
+        "frame_must_handoff": true,
+        "intent": "узнать условия обеих летних школ УНПК: выездной и городской",
+        "risk_class": "missing_facts",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_003",
+        "frame_must_handoff": true,
+        "intent": "клиент уточняет, подходит ли августовская смена для ребёнка после 5 класса",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_004",
+        "frame_must_handoff": false,
+        "intent": "клиент сообщает, что пока не принял решение и будет думать",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": true,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_005",
+        "frame_must_handoff": true,
+        "intent": "просит администратора связаться для записи на смену, оформления и оплаты",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_006",
+        "frame_must_handoff": true,
+        "intent": "клиент просит внести детей в лист ожидания на июль/август",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_007",
+        "frame_must_handoff": true,
+        "intent": "уточнить наличие мест и условия смены летнего лагеря 6-17 июля",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_009",
+        "frame_must_handoff": true,
+        "intent": "узнать, есть ли очные гуманитарные курсы для ученика 7 класса в Фотоне",
+        "risk_class": "missing_facts",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_010",
+        "frame_must_handoff": true,
+        "intent": "просит прислать актуальное расписание для 1 класса на площадке у Сухаревской",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_012",
+        "frame_must_handoff": true,
+        "intent": "сообщает об оплате и отправке документов на почту",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_013",
+        "frame_must_handoff": false,
+        "intent": "клиент благодарит за информацию и берет паузу на обдумывание",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_017",
+        "frame_must_handoff": true,
+        "intent": "передать данные ребенка и родителя для внесения в июльский лист ожидания ЛВШ Фотона и уточнить применимость Grade 8 / 7 ",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_020",
+        "frame_must_handoff": false,
+        "intent": "уточняет стоимость второго семестра и влияет ли она на общую цену годового курса",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_021",
+        "frame_must_handoff": true,
+        "intent": "узнать расписание занятий по вероятной физике",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "wappi_pair_missing_72h_022",
+        "frame_must_handoff": true,
+        "intent": "клиент благодарит и сообщает о чеке после оплаты",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "wappi_pair_missing_72h_023",
+        "frame_must_handoff": true,
+        "intent": "проверить наличие мест на смену 6-17 июля и узнать адрес проведения",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "forward_payment_foton_hold_price_01",
+        "frame_must_handoff": true,
+        "intent": "возможность оплатить курс за год заранее и зафиксировать цену",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "forward_payment_foton_hold_price_01",
+        "frame_must_handoff": true,
+        "intent": "уточнить, будет ли место закреплено за клиентом при решении сейчас",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "forward_payment_unpk_semester_year_01",
+        "frame_must_handoff": true,
+        "intent": "уточняет выгоду годовой оплаты",
+        "risk_class": "missing_facts",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "forward_payment_unpk_semester_year_01",
+        "frame_must_handoff": true,
+        "intent": "уточняет возможность внести частичный платеж для записи",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "forward_payment_foton_installment_01",
+        "frame_must_handoff": true,
+        "intent": "Уточняет возможность оплаты обучения частями или в рассрочку",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "forward_payment_foton_installment_01",
+        "frame_must_handoff": true,
+        "intent": "уточняет, кто оформляет рассрочку и кто принимает решение",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": true,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "manager_only",
+        "dialog_id": "p0_model_led_pos_enroll_steps",
+        "frame_must_handoff": false,
+        "intent": "уточняет, нужно ли вступительное тестирование перед распределением в группу для 6 класса",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "p0_model_led_pos_how_next",
+        "frame_must_handoff": false,
+        "intent": "уточнить общий порядок перед распределением в группу",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "p0_model_led_pos_anxiety_level",
+        "frame_must_handoff": true,
+        "intent": "вопрос, как в Фотоне помогают восьмикласснику со слабой физикой, если есть риск не справиться",
+        "risk_class": "missing_facts",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "p0_model_led_pos_support_question",
+        "frame_must_handoff": true,
+        "intent": "Помочь ребёнку после расстройства на занятии и понять, подходит ли группа по уровню",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "p0_ctrl_benign_presale_refund_01",
+        "frame_must_handoff": true,
+        "intent": "уточняет условия возврата до оплаты",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "p0_ctrl_benign_presale_refund_02",
+        "frame_must_handoff": true,
+        "intent": "кратко понять условия и порядок возврата денег до оплаты",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "p0_ctrl_teacher_choice_01",
+        "frame_must_handoff": true,
+        "intent": "подобрать мягкого педагога для стеснительного ребёнка",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "p0_ctrl_pay_later_01",
+        "frame_must_handoff": true,
+        "intent": "клиент сообщает, что оплатит позже",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "p0_ctrl_paid_two_courses_01",
+        "frame_must_handoff": true,
+        "intent": "сообщает об оплате двух курсов",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "p0_ctrl_paid_two_courses_01",
+        "frame_must_handoff": true,
+        "intent": "узнать следующий шаг после заявленной оплаты двух курсов",
+        "risk_class": "manager_action",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "rz_foton_refund_prepay_rules_01",
+        "frame_must_handoff": true,
+        "intent": "кратко узнать условия очного курса по физике для 9 класса и заранее понять правила возврата без передачи email",
+        "risk_class": "manager_action",
+        "turn": 4
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_foton_refund_sneaky_info_03",
+        "frame_must_handoff": true,
+        "intent": "уточнить общий порядок возврата и возможные удержания до оплаты онлайн-курса",
+        "risk_class": "manager_action",
+        "turn": 3
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "rz_unpk_weekend_partial_04",
+        "frame_must_handoff": true,
+        "intent": "уточнение формата и дней занятий",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_foton_offline_price_06",
+        "frame_must_handoff": false,
+        "intent": "узнать стоимость очного курса физики для 9 класса",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_foton_offline_price_06",
+        "frame_must_handoff": false,
+        "intent": "уточняет стоимость очного курса физики за учебный год",
+        "risk_class": "safe",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_unpk_offline_price_07",
+        "frame_must_handoff": false,
+        "intent": "узнать цену очного регулярного курса для 10 класса",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_unpk_offline_price_07",
+        "frame_must_handoff": false,
+        "intent": "уточняет стоимость очного регулярного курса за год для 10 класса",
+        "risk_class": "safe",
+        "turn": 2
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+        "frame_must_handoff": false,
+        "intent": "узнать, можно ли примерно оценить прирост баллов ЕГЭ до диагностики",
+        "risk_class": "safe",
+        "turn": 3
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_foton_price_and_places",
+        "frame_must_handoff": true,
+        "intent": "Узнать стоимость онлайн-курса для 7 класса и наличие мест сейчас",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_unpk_price_and_places",
+        "frame_must_handoff": true,
+        "intent": "узнать стоимость онлайн-курсов по выходным для 6 класса и наличие подходящей группы",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_foton_address_and_trial",
+        "frame_must_handoff": false,
+        "intent": "узнать адрес очных занятий и общий порядок пробного занятия",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_unpk_schedule_and_places",
+        "frame_must_handoff": true,
+        "intent": "спрашивает расписание онлайн-занятий для 5 класса по выходным и наличие свободных мест",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_foton_dates_and_booking",
+        "frame_must_handoff": true,
+        "intent": "узнать даты ЛВШ и забронировать место на физику",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": true,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "ra1_unpk_documents_and_payment",
+        "frame_must_handoff": true,
+        "intent": "узнать документы для договора и возможность сразу оплатить",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_foton_platform_and_price",
+        "frame_must_handoff": false,
+        "intent": "узнать платформу онлайн-занятий и стоимость семестра",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "answer_self",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_unpk_unknown_slot_price",
+        "frame_must_handoff": false,
+        "intent": "узнать стоимость онлайн-обучения в УНПК для 9 класса",
+        "risk_class": "safe",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": true,
+        "answerability": "manager_only",
+        "bot_route": "draft_for_manager",
+        "dialog_id": "ra1_foton_only_availability",
+        "frame_must_handoff": true,
+        "intent": "узнать наличие мест в группе для 8 класса",
+        "risk_class": "manager_action",
+        "turn": 1
+      },
+      {
+        "actual_p0_signal": false,
+        "actual_route_handoff": false,
+        "answerability": "manager_only",
+        "bot_route": "bot_answer_self_for_pilot",
+        "dialog_id": "cf142_pos_foton_online_math_signup",
+        "frame_must_handoff": true,
+        "intent": "записаться на онлайн-математику для 7 класса",
+        "risk_class": "manager_action",
+        "turn": 3
+      }
+    ],
+    "missing_count": 0,
+    "missing_required_fields": {},
+    "must_handoff": {
+      "false": 85,
+      "true": 156
+    },
+    "must_handoff_vs_p0_signal": {
+      "match": 188,
+      "mismatch": 53
+    },
+    "must_handoff_vs_route": {
+      "match": 193,
+      "mismatch": 48
+    },
+    "present_count": 241,
+    "present_rate": 1.0,
+    "turns_total": 241
+  },
+  "totals": {
+    "dialogs": 131,
+    "turns": 241
+  }
+}

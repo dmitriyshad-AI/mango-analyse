@@ -3,6 +3,7 @@ from __future__ import annotations
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     BOT_SAFE_CRM_CONTEXT_ENV,
+    BOT_SAFE_MEMORY_STEP_GUARD_ENV,
     BOT_SAFE_MEMORY_STEP_GUARD_FLAG,
     NO_MEMORY_STEP_FRAME_GUARD_FLAG,
     UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG,
@@ -165,6 +166,21 @@ def test_bot_safe_memory_step_guard_is_default_off() -> None:
     assert guarded == result
 
 
+def test_bot_safe_memory_step_guard_requires_separate_step_guard_flag() -> None:
+    result = _result(
+        "Да, место уже забронировано, заявка подтверждена.",
+        route="bot_answer_self_for_pilot",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(
+        result,
+        context={BOT_SAFE_CRM_CONTEXT_ENV: True, "active_brand": "foton"},
+    )
+
+    assert guarded == result
+
+
 def test_bot_safe_memory_step_guard_off_is_noop_with_memory_context() -> None:
     result = _result(
         "Да, место уже забронировано, заявка подтверждена.",
@@ -192,6 +208,20 @@ def test_bot_safe_memory_step_guard_does_not_double_fire_followup_deadline() -> 
 
     assert guarded == result
     assert not find_bot_safe_memory_disputed_step_claims(result.draft_text, context=_context(flag=True))
+
+
+def test_bot_safe_memory_step_guard_blocks_risky_payment_step() -> None:
+    result = _result(
+        "Следующий шаг — вернуть 15000 рублей клиенту.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded.route == "draft_for_manager"
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
 
 
 def test_unconfirmed_contact_data_claim_guard_rewrites_missing_phone_claim() -> None:
@@ -343,6 +373,7 @@ def _context(
         )
     return {
         BOT_SAFE_CRM_CONTEXT_ENV: flag,
+        BOT_SAFE_MEMORY_STEP_GUARD_ENV: flag,
         "active_brand": "foton",
         "timeline_context": {
             "source": "customer_timeline_bot_context",

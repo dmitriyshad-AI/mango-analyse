@@ -1,0 +1,9 @@
+branch: codex/adr003-semanticframe-migration
+rev: 4c90e76
+
+ M scripts/run_telegram_dynamic_client_sim.py
+ M src/mango_mvp/channels/subscription_llm_parts/__init__.py
+ M src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+ M src/mango_mvp/channels/subscription_llm_parts/provider.py
+ M tests/test_direct_path_semantic_frame_shadow.py
+ M tests/test_telegram_dynamic_client_sim.py

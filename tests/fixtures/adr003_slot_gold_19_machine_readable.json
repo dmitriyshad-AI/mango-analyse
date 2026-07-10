@@ -1,0 +1,296 @@
+{
+ "_meta": {
+  "name": "Машиночитаемый gold 19 grade-строк (v2 вердикты Fable+аудитор; 2 unresolved — глазами Claude #1)",
+  "date": "2026-07-03",
+  "source": "f2v enriched transcripts (c02ada77)",
+  "legend_source_class": "client_history=названо клиентом ранее | client_current_regex_gap=в текущей реплике, regex-дыра | transition_ambiguous=«закончил N» | multi_children | kb_copy=копирование KB-факта | exam_inference=вывод из экзамена | product_vs_child | transition_or_kb"
+ },
+ "rows": [
+  {
+   "dialog_id": "wappi_pair_missing_72h_003",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "5",
+   "expected_slot_write": "none",
+   "source_class": "transition_ambiguous",
+   "note": "мой 5-й закончил",
+   "client_quotes": [
+    "turn_msg: Здравствуйте! Думаю, нет. Это для 7-х, а мой 5-й закончил",
+    "history/persona: …вас. Если речь про смену или направление, рассчитанные на 7–10 классы, то для ребёнка, который окончил 5 кла",
+    "history/persona: …целом на выездную школу УНПК берём детей, которые окончили 5 класс: физико-математическое направление расс",
+    "history/persona: …читано на 5–10 классы. ИТ-направление — для 7–10 классов. Для вашего ребёнка можно ориентирова",
+    "history/persona: …ться на ФизМат для окончивших 5 класс или на городскую летнюю школу для 5–10",
+    "history/persona: …ь! [fio] информацию по Летней выездной школе для учеников 5-10 класса. Даты проведения (смена 9 дней): 18 -"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_004",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "9",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "9 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: Добрый день,пока нет думаем"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_006",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "9",
+   "expected_slot_write": "none",
+   "source_class": "multi_children",
+   "note": "Класс-9 … Класс-7 (двое)",
+   "client_quotes": [
+    "turn_msg: Добрый день,хорошо,можете вносите на июль/август"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_008",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "8",
+   "expected_slot_write": "unresolved",
+   "source_class": "transition_or_kb",
+   "note": "закончил 8 класс + 8 в KB-факте",
+   "client_quotes": [
+    "turn_msg: Ещё вопрос про летнюю школу без ночёвок:17-28 августа - только Долгопрудный?",
+    "history/persona: …орпусе МФТИ. Это очный дневной формат без проживания, для 5–10 классов, по будням в течение двух недель.",
+    "history/persona: …ас вопросы.; Клиент: Да, ребёнок из обычной школы, закончил 8 класс. С математикой, химией и физикой хорошо",
+    "history/persona: …Клиент: [fio], [phone], 8 класс"
+   ],
+   "unresolved": true
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_010",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "1",
+   "expected_slot_write": "yes",
+   "source_class": "client_current_regex_gap",
+   "note": "расписание для 1го класса",
+   "client_quotes": [
+    "turn_msg: Вышлете пожалуйста ещё расписание для 1го класса, на Сухаревской",
+    "history/persona: …Конечно. Для 1 класса подберём актуальные варианты очных гру",
+    "history/persona: …расписание курсов на Сухаревской в новом учебном году, для 5го класса? Интересует математика и информатика.",
+    "history/persona: …проведения занятий и выбрать интересующие Вас направления. 5 класс [fio] [phone] (Олимпиадная)…",
+    "history/persona: …Вышлете пожалуйста ещё расписание для 1го класса, на Сухаревской"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_012",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "10",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "10 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: Все оплатила, отправила на почту",
+    "history/persona: …свои ноуты берут и насколько это нужно в целом:) если что, 10 класс"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_013",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "6",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "6 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: Спасибо за информацию, подумаем ))",
+    "history/persona: …Клиент: Здравствуйте! Ребенок перешел в 6 класс, интересует смена в конце августа в Мос",
+    "history/persona: …ой школе ЦДПО «Фотон» Возраст: Для учеников, окончивших 5 - 10 класс Даты проведения: 3 - 14 августа - 10 уч"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_018",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "10",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "10 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: Спасибо.. подожду до лета",
+    "history/persona: …ствуйте; Клиент: Какие уроки; Клиент: У меня ребенок идёт в 5 класс",
+    "history/persona: …Клиент: В 10 классе",
+    "history/persona: …Ответ: Да. У 11 классов очно по выбору есть занятия в субботу"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_019",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "8",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "8 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: спасибо большое, будем изучать и думать",
+    "history/persona: …Клиент: летний период, закончил 8 класс, очно",
+    "history/persona: …ой школе ЦДПО «Фотон» Возраст: Для учеников, окончивших 5 - 10 класс Даты проведения: 3 - 14 августа - 10 уч",
+    "history/persona: …ебных дней Место проведения - Москва, м. [fio] для 5-10 классов: Физика…"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_020",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "8",
+   "expected_slot_write": "yes",
+   "source_class": "client_history",
+   "note": "годовой курс по математике 8 класс (переписка)",
+   "client_quotes": [
+    "turn_msg: так как не указана стоимость за второй семестр непонятно, меняется ли стоимость общая. Второй семестр [phone]=[id]?",
+    "history/persona: …, почему возник вопрос. По очному годовому курсу УНПК для 5–11 классов на 2026/27 учебный год в прайсе указа",
+    "history/persona: …io] информацию по Летней очной школе «[fio]» для учеников 5-10 класса. Даты проведения: Москва (м. Красносел",
+    "history/persona: …. А можно узнать информацию по годовому курсу по математике 8 класс? Как я понимаю, оплата идет сразу за ве"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_023",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "6",
+   "expected_slot_write": "none",
+   "source_class": "transition_ambiguous",
+   "note": "Закончил 6 класс (переписка) — переходная",
+   "client_quotes": [
+    "turn_msg: 6-17 июля есть места? По какому адресу проходит?",
+    "history/persona: …Клиент: Закончил 6 класс."
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "wappi_pair_missing_72h_024",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "8",
+   "expected_slot_write": "unresolved",
+   "source_class": "product_vs_child",
+   "note": "онлайн школа за 8 класс (продукт) vs окончил 7-й (ребёнок)",
+   "client_quotes": [
+    "turn_msg: Поняла, спасибо. Надо подумать, время еще есть👍",
+    "history/persona: …етние онлайн программы по физике/математики для окончившего 7 класс?",
+    "history/persona: …: К сожалению, нет. А с какого числа осенью онлайн школа за 8 класс начинается обычно?",
+    "history/persona: …расписанием занятий и выбрать интересующие Вас направления. 8 класс [fio], 14:30 - 16:30 (Продвинутый урове",
+    "history/persona: …ебя 35 занятий (за исключением курсов по математике для 9 и 11 классов на расширенных тарифах), только по вы"
+   ],
+   "unresolved": true
+  },
+  {
+   "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "exam_inference",
+   "note": "ЕГЭ→11 вывод, класс не назван",
+   "client_quotes": [
+    "turn_msg: 'очень переживаю за ЕГЭ. расскажите, почему вам вообще можно доверять?'",
+    "turn_msg: 'а результат вы гарантируете?'",
+    "turn_msg: 'ну хоть примерно на сколько баллов поднимете?'"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+   "turn": 2,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "exam_inference",
+   "note": "то же",
+   "client_quotes": [
+    "turn_msg: 'очень переживаю за ЕГЭ. расскажите, почему вам вообще можно доверять?'",
+    "turn_msg: 'а результат вы гарантируете?'",
+    "turn_msg: 'ну хоть примерно на сколько баллов поднимете?'"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "rz_foton_warmth_trust_guarantee_09",
+   "turn": 3,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "exam_inference",
+   "note": "то же",
+   "client_quotes": [
+    "turn_msg: 'очень переживаю за ЕГЭ. расскажите, почему вам вообще можно доверять?'",
+    "turn_msg: 'а результат вы гарантируете?'",
+    "turn_msg: 'ну хоть примерно на сколько баллов поднимете?'"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "tz147_un_paid_lesson_01",
+   "turn": 2,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "kb_copy",
+   "note": "raw='Математика, 11 класс, ЕГЭ, онлайн' = KB-факт; held=10/очно",
+   "client_quotes": [
+    "turn_msg: Оплатили, а занятие не назначили.",
+    "turn_msg: Сегодня уже должно было быть."
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "tz147_un_benign_not_paid_01",
+   "turn": 2,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "kb_copy",
+   "note": "то же KB-копирование",
+   "client_quotes": [
+    "turn_msg: Оплату ещё не вносил, доступ не появился — так и должно быть?",
+    "turn_msg: Когда появится после оплаты?"
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "tz147_un_benign_access_question_01",
+   "turn": 1,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "kb_copy",
+   "note": "то же",
+   "client_quotes": [
+    "turn_msg: Когда обычно дают доступ после оплаты?",
+    "turn_msg: Мы ещё не записались."
+   ],
+   "unresolved": false
+  },
+  {
+   "dialog_id": "tz147_un_benign_access_question_01",
+   "turn": 2,
+   "field": "grade",
+   "frame_value": "11",
+   "expected_slot_write": "none",
+   "source_class": "kb_copy",
+   "note": "то же",
+   "client_quotes": [
+    "turn_msg: Когда обычно дают доступ после оплаты?",
+    "turn_msg: Мы ещё не записались."
+   ],
+   "unresolved": false
+  }
+ ]
+}

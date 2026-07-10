@@ -1,0 +1,9 @@
+branch: codex/adr003-semanticframe-migration
+rev_before_commit: d0946d65
+
+Staged files are intended to be limited to ADR-003 F2ad source-axis blockers:
+
+- scripts/report_adr003_source_axis_blockers.py
+- tests/test_report_adr003_source_axis_blockers.py
+- tasks/_done/2026-07-02_ADR003_F2ad_source_axis_blockers_report.md
+- audits/_inbox/adr003_f2ad_source_axis_blockers_20260702180835/

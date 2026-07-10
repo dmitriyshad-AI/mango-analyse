@@ -1,0 +1,14 @@
+{
+  "audit_pack": "adr003_regex_moratorium_guard_20260701_20260701175845",
+  "branch": "codex/adr003-semanticframe-migration",
+  "created_at_msk": "2026-07-01T17:58:45+03:00",
+  "scope": "ADR-003 regex understanding moratorium guard",
+  "status": "formal_pass",
+  "semantic_review": "PASS_WITH_NOTES",
+  "tests": {
+    "targeted": "11 passed in 1.69s",
+    "full_pytest": "3773 passed, 5 skipped, 1 warning in 84.39s"
+  },
+  "live_touched": false,
+  "external_writes": false
+}

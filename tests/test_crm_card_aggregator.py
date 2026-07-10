@@ -6,6 +6,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from mango_mvp.crm_card_aggregator import (
+    _mango_call_history_eligible,
     apply_deal_card_payload,
     build_crm_card_projection,
     compact_objection_explicit,
@@ -390,6 +391,20 @@ def test_crm_card_uses_manager_only_call_summary_fallback_without_call_analysis(
     assert card["bot_safety"]["bot_safe_fields"] == []
     assert card["bot_safety"]["manager_only_fields"]
     assert card["workbook"]["ready"] == "да"
+
+
+def test_crm_card_filters_call_fallback_when_dial_attempt_word_is_inflected() -> None:
+    assert not _mango_call_history_eligible(
+        {
+            "event_type": "mango_call",
+            "event_at": "2026-07-10T12:00:00+00:00",
+            "source_system": "mango_processed_summary",
+            "summary": (
+                "Менеджер пытался связаться с клиентом, но не удалось дозвониться. "
+                "Содержательного разговора с клиентом не было, новых фактов по запросу нет."
+            ),
+        }
+    )
 
 
 def test_crm_card_history_uses_cached_summary_and_excludes_email_handoff(tmp_path: Path) -> None:

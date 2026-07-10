@@ -3,10 +3,9 @@ from __future__ import annotations
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     BOT_SAFE_CRM_CONTEXT_ENV,
+    BOT_SAFE_MEMORY_STEP_GUARD_ENV,
     BOT_SAFE_MEMORY_STEP_GUARD_FLAG,
-    NO_MEMORY_STEP_FRAME_GUARD_FLAG,
     apply_bot_safe_memory_step_guard,
-    apply_no_memory_step_frame_guard,
     find_bot_safe_memory_disputed_step_claims,
 )
 
@@ -79,6 +78,19 @@ def test_bot_safe_memory_step_guard_is_default_off() -> None:
     assert guarded == result
 
 
+def test_bot_safe_memory_step_guard_requires_separate_guard_flag() -> None:
+    result = _result(
+        "Да, место уже забронировано, заявка подтверждена.",
+        route="bot_answer_self_for_pilot",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, guard=False))
+
+    assert guarded is result
+    assert guarded.route == "bot_answer_self_for_pilot"
+
+
 def test_bot_safe_memory_step_guard_off_is_noop_with_memory_context() -> None:
     result = _result(
         "Да, место уже забронировано, заявка подтверждена.",
@@ -119,64 +131,121 @@ def test_bot_safe_memory_step_guard_rewrites_soft_next_step_frame() -> None:
 
     assert guarded.route == "bot_answer_self_for_pilot"
     assert "Следующий шаг" not in guarded.draft_text
-    assert guarded.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошибся с подбором."
+    assert guarded.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошиблась с подбором."
     assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
     assert guarded.metadata["bot_safe_memory_step_guard"]["claims"]
 
 
-def test_no_memory_step_frame_guard_rewrites_without_statuses() -> None:
+def test_bot_safe_memory_step_guard_matches_inserted_word_next_step_frame() -> None:
     result = _result(
-        "Дальше нужно проверить формат и написать вам.",
+        "Здравствуйте! Следующий шаг сейчас — уточнить класс ребёнка.",
         route="bot_answer_self_for_pilot",
-        statuses=[],
+        statuses=["empty"],
     )
 
-    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
 
     assert guarded.route == result.route
-    assert guarded.draft_text == "Уточните, пожалуйста, формат, чтобы я не ошибся с подбором."
-    assert NO_MEMORY_STEP_FRAME_GUARD_FLAG in guarded.safety_flags
-    assert guarded.metadata["no_memory_step_frame_guard"]["next_step_statuses"] == []
+    assert guarded.draft_text == "Здравствуйте! Уточните, пожалуйста, класс ученика, чтобы я не ошиблась с подбором."
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
 
 
-def test_no_memory_step_frame_guard_drops_dangerous_body_details() -> None:
+def test_bot_safe_memory_step_guard_ignores_past_tense_next_step_payment() -> None:
     result = _result(
-        "Следующий шаг — вернуть оплату клиенту 5000 рублей.",
+        "Следующим шагом была оплата.",
         route="bot_answer_self_for_pilot",
-        statuses=[],
+        statuses=["empty"],
     )
 
-    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
-
-    assert guarded.draft_text == "Уточните, пожалуйста, недостающие детали, чтобы я не ошибся с подбором."
-    assert "оплат" not in guarded.draft_text
-    assert "5000" not in guarded.draft_text
-    assert NO_MEMORY_STEP_FRAME_GUARD_FLAG in guarded.safety_flags
-
-
-def test_no_memory_step_frame_guard_keeps_active_next_step() -> None:
-    result = _result(
-        "Следующий шаг — уточнить класс ученика.",
-        route="bot_answer_self_for_pilot",
-        statuses=["active"],
-    )
-
-    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=True))
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
 
     assert guarded == result
 
 
-def test_no_memory_step_frame_guard_is_off_without_bot_safe_context_flag() -> None:
+def test_bot_safe_memory_step_guard_keeps_safe_current_payment_link_without_statuses() -> None:
     result = _result(
-        "Следующий шаг — уточнить класс ученика.",
+        "Следующий шаг — оплата по ссылке.",
         route="bot_answer_self_for_pilot",
         statuses=[],
     )
 
-    guarded = apply_no_memory_step_frame_guard(result, context=_context(flag=False))
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded == result
+
+
+def test_bot_safe_memory_step_guard_keeps_payment_link_confirmation_without_risky_money() -> None:
+    result = _result(
+        "Следующий шаг — подтвердить оплату по ссылке.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
+
+    assert guarded == result
+
+
+def test_bot_safe_memory_step_guard_suppresses_concrete_unconfirmed_memory_step() -> None:
+    result = _result(
+        "Место уже забронировано, заявка подтверждена.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == "Уточню актуальный шаг с менеджером и вернусь с ответом."
+    assert "забронировано" not in guarded.draft_text
+
+
+def test_bot_safe_memory_step_guard_suppresses_risky_payment_step_with_amount() -> None:
+    result = _result(
+        "Следующий шаг — вернуть оплату клиенту 5000 рублей.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == "Уточню актуальный шаг с менеджером и вернусь с ответом."
+    assert "5000" not in guarded.draft_text
+    assert "вернуть оплату" not in guarded.draft_text
+
+
+def test_bot_safe_memory_step_guard_suppresses_better_start_with_risky_payment() -> None:
+    result = _result(
+        "Лучше начать с возврата оплаты 5000 рублей.",
+        route="bot_answer_self_for_pilot",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == "Уточню актуальный шаг с менеджером и вернусь с ответом."
+
+
+def test_bot_safe_memory_step_guard_fail_open_when_rewrite_breaks(monkeypatch) -> None:
+    result = _result(
+        "Следующий шаг сейчас — уточнить класс ребёнка.",
+        route="bot_answer_self_for_pilot",
+        statuses=["empty"],
+    )
+
+    def fail(_draft_text: str) -> str:
+        raise RuntimeError("rewrite failed")
+
+    monkeypatch.setattr(
+        "mango_mvp.channels.subscription_llm_parts.post_layers._rewrite_bot_safe_memory_soft_step_frame",
+        fail,
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True, statuses=["empty"]))
 
     assert guarded is result
-    assert "Следующий шаг" in guarded.draft_text
 
 
 def _result(
@@ -199,10 +268,10 @@ def _result(
     )
 
 
-def _context(*, flag: bool, statuses: list[str] | None = None) -> dict:
-    return {
-        BOT_SAFE_CRM_CONTEXT_ENV: flag,
+def _context(*, flag: bool, statuses: list[str] | None = None, guard: bool | None = True) -> dict:
+    context = {
         "active_brand": "foton",
+        BOT_SAFE_CRM_CONTEXT_ENV: flag,
         "timeline_context": {
             "source": "customer_timeline_bot_context",
             "found": True,
@@ -222,4 +291,9 @@ def _context(*, flag: bool, statuses: list[str] | None = None) -> dict:
                 ],
             },
         },
+    }
+    if guard is not None:
+        context[BOT_SAFE_MEMORY_STEP_GUARD_ENV] = guard
+    return {
+        **context,
     }

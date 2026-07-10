@@ -12644,6 +12644,7 @@ def test_direct_path_bot_safe_memory_step_guard_runs_without_semantic_verifier(t
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
             "timeline_context": {
                 "source": "customer_timeline_bot_context",
                 "found": True,
@@ -12719,12 +12720,12 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
-def test_direct_path_no_memory_step_frame_guard_runs_without_active_next_step(tmp_path: Path) -> None:
+def test_direct_path_bot_safe_memory_step_guard_rewrites_soft_frame_with_empty_step(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
-            draft_text="Следующий шаг — уточнить класс ученика и предмет, чтобы подобрать группу.",
+            draft_text="Следующий шаг сейчас — уточнить класс ученика и предмет, чтобы подобрать группу.",
             metadata={"direct_path": {"model_response": "raw"}},
             safety_flags=(),
         )
@@ -12737,24 +12738,43 @@ def test_direct_path_no_memory_step_frame_guard_runs_without_active_next_step(tm
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Фотон: следующий шаг требует проверки.",
+                            "next_step_status": "empty",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
         },
     )
 
     assert provider.calls == 1
     assert result.route == "bot_answer_self_for_pilot"
-    assert result.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошибся с подбором."
+    assert result.draft_text == "Уточните, пожалуйста, класс ученика, предмет, чтобы я не ошиблась с подбором."
     assert "Следующий шаг" not in result.draft_text
-    assert "no_memory_step_frame_rewritten" in result.safety_flags
-    assert result.metadata["no_memory_step_frame_guard"]["applied"] is True
+    assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
+    assert result.metadata["bot_safe_memory_step_guard"]["applied"] is True
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
-def test_direct_path_no_memory_step_frame_guard_does_not_run_after_authoritative_gate(tmp_path: Path) -> None:
+def test_direct_path_bot_safe_memory_step_guard_keeps_payment_link_without_statuses(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
-            draft_text="Следующий шаг — уточнить класс ученика.",
+            draft_text="Следующий шаг — оплата по ссылке.",
             metadata={
                 "direct_path": {"model_response": "raw"},
                 "authoritative_output_gate": {"checked": True},
@@ -12770,11 +12790,13 @@ def test_direct_path_no_memory_step_frame_guard_does_not_run_after_authoritative
             DIRECT_PATH_ENV: "1",
             "snapshot_path": str(snapshot_path),
             "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "1",
+            "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD": "1",
         },
     )
 
     assert provider.calls == 1
-    assert "Следующий шаг" not in result.draft_text
+    assert result.draft_text == "Следующий шаг — оплата по ссылке."
+    assert "bot_safe_memory_step_guard" not in result.metadata
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
@@ -16667,6 +16689,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.FACT_SELECT_FRAME_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PAYMENT_REFUND_DISPUTE_SPLIT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.SEATS_DEFAULT_OPEN_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD" not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._text_hygiene_payment_fix_enabled(
         {**context, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"}
     ) is False

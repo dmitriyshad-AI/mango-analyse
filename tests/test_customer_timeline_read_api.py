@@ -78,6 +78,7 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert {item["allowed_for_bot"] for item in profile["bot_context"]["items"]} == {False, True}
         assert {item["requires_manager_review"] for item in profile["bot_context"]["items"]} == {False, True}
         assert profile["bot_context"]["items"][0]["next_step_status"] == "needs_manager_review"
+        assert all("display_text" not in item for item in profile["bot_context"]["items"])
         assert "Спорный текст шага" not in raw_text
         assert "path" not in profile["timeline"]["items"][0]["artifacts"][0]
         assert profile["readiness"]["bot_allowed_chunks"] == 1

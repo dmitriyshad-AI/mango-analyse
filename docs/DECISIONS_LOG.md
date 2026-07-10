@@ -1752,3 +1752,26 @@ Staging result:
 Safety caveat: brand-agnostic applies only to input memory. Draft/output still
 must pass active-brand and fact guards. Regrade must track
 `brand_leak_in_draft`.
+
+### D-085. Live truth is owned centrally; Timeline deploy must include Phase1b live commit
+
+Координационное решение владельца 2026-07-10: текущая точка правды живого
+бота после отдельного SWAP трека «Понимание» — `2cc82b13` (Phase1b), с
+10.07 14:35 МСК. Любой следующий live-deploy/SWAP бота запрещён, если
+собираемый код не содержит этот live-коммит или его проверенный эквивалент.
+
+Практическое следствие для консолидации Timeline:
+
+- локальный `main` после merge `codex/email-pipeline-restore` и
+  `codex/calls-two-processes` сам по себе недостаточен для live-deploy;
+- перед live-сборкой нужно влить `codex/next-step-proactivity-port`
+  (`2cc82b13`) в `main` семантическим union-merge, сохранив Timeline data hooks;
+- перед каждым следующим SWAP фиксировать SHA отката и live_truth snapshot;
+- один владелец состояния живого бота; параллельные деплои без записи
+  live_truth запрещены.
+
+Read-only sentinel `scripts/skills/live_truth.py` был запущен 2026-07-10
+17:21 МСК и записал snapshot в Foton `_daily`. Наблюдение: sentinel сейчас
+может ложно классифицировать собственный процесс, если имя marker встречается
+в аргументах команды; это требует отдельного hardening, но не отменяет
+координационное правило выше.

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.canonical_readonly_import import infer_offline_brand
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
     MAIL_STAGE2_SOURCE_SYSTEM,
@@ -129,8 +130,6 @@ _PROMPT_INJECTION_RE = re.compile(
     r"|выполни(?:те)?\s+(?:команд|инструкц)|не\s+слушай(?:те)?\s+(?:систем|инструкц)"
     r")"
 )
-_FOTON_BRAND_MENTION_RE = re.compile(r"\b(?:фотон(?:а|е|ом|ы|ов)?|foton)\b", re.I)
-_UNPK_BRAND_MENTION_RE = re.compile(r"\b(?:унпк|мфти|unpk|mipt)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -577,12 +576,8 @@ def _mango_call_item_visible_for_bot(tags: Sequence[str]) -> bool:
 
 
 def _text_mentions_other_brand(text: object, *, active_brand: str) -> bool:
-    value = str(text or "")
-    if active_brand == "foton":
-        return bool(_UNPK_BRAND_MENTION_RE.search(value))
-    if active_brand == "unpk":
-        return bool(_FOTON_BRAND_MENTION_RE.search(value))
-    return True
+    inferred = infer_offline_brand({"text": str(text or "")})
+    return inferred in _KNOWN_BRANDS and inferred != active_brand
 
 
 def _channel_history_item_visible_for_active_brand(

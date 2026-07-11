@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.email_pipeline.archive_sources import resolve_data_path, scan_eml_metadata
+from scripts.email_pipeline.archive_sources import default_archive_specs, resolve_data_path, scan_eml_metadata
 from scripts.email_pipeline.classification import (
     ClassificationInput,
     OWN_DOMAINS,
@@ -39,8 +39,7 @@ FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
 
 
 def discover_archive_dbs(source_root: Path) -> list[Path]:
-    handoffs = source_root / "_external_handoffs"
-    return sorted(path for path in handoffs.glob("mail_archive_*/**/mail_archive.sqlite") if path.is_file())
+    return [spec.path for spec in default_archive_specs(source_root) if spec.path.is_file()]
 
 
 def load_stage2_source_ids(db_path: Path) -> set[str]:

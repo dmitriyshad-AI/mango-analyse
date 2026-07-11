@@ -7,6 +7,8 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Iterable
 
+from mango_mvp.productization.mail_archive import CANONICAL_MAIL_ARCHIVE_DB
+
 from scripts.email_pipeline.classification import (
     ClassificationInput,
     EML_HDR_BYTES,
@@ -24,17 +26,6 @@ from scripts.email_pipeline.contact import Participant
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
 DEFAULT_PROD_TIMELINE = DEFAULT_SOURCE_ROOT / "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
-
-FULL_ARCHIVES = (
-    "full_60d_remaining_20260513_v2",
-    "full_180_to_60d_20260513",
-    "full_365_to_180d_20260513",
-    "full_730_to_365d_20260513",
-    "full_730_to_365d_sent_20260513",
-    "full_730_to_365d_other_mailboxes_20260513",
-    "full_older_than_730d_20260513",
-)
-
 
 @dataclass(frozen=True)
 class ArchiveSpec:
@@ -71,16 +62,7 @@ class ArchiveMessage:
 
 
 def default_archive_specs(source_root: Path = DEFAULT_SOURCE_ROOT) -> list[ArchiveSpec]:
-    base = source_root / "_external_handoffs/mail_archive_2026-05-12/regru_edu"
-    specs = [ArchiveSpec(name, base / name / "archive/mail_archive.sqlite") for name in FULL_ARCHIVES]
-    specs.append(
-        ArchiveSpec(
-            "incremental_20260513_to_20260620",
-            source_root
-            / "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/archive/mail_archive.sqlite",
-        )
-    )
-    return specs
+    return [ArchiveSpec("canonical", source_root / CANONICAL_MAIL_ARCHIVE_DB)]
 
 
 def existing_archive_paths(specs: Iterable[ArchiveSpec]) -> list[Path]:

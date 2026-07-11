@@ -30,15 +30,16 @@ from mango_mvp.customer_timeline import (  # noqa: E402
     stable_customer_id,
     stable_digest,
 )
+from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_IDENTITY_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+    CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+)
 
 
 SCHEMA_VERSION = "mail_fresh_relink_customer_timeline_bridge_v1"
 DEFAULT_TENANT_ID = "foton"
 DEFAULT_MAIN_PROJECT_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
-DEFAULT_FRESH_RELINK_ROOT = Path(
-    "/Users/dmitrijfabarisov/Projects/mango-tz33-perf/_external_handoffs/mail_archive_2026-06-20/regru_edu/"
-    "stage2_customer_relink_contacts_20260620"
-)
 DEFAULT_EMAIL_FALLBACK_AT = "2026-06-21T00:00:00+00:00"
 
 
@@ -91,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
     parser.add_argument("--data-project-root", default=str(DEFAULT_MAIN_PROJECT_ROOT))
-    parser.add_argument("--fresh-relink-root", default=str(DEFAULT_FRESH_RELINK_ROOT))
+    parser.add_argument("--fresh-relink-root")
     parser.add_argument("--identity-db")
     parser.add_argument("--corpus-events")
     parser.add_argument("--delta-events")
@@ -113,7 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
 def run_bridge(args: argparse.Namespace) -> Mapping[str, Any]:
     tenant_id = str(args.tenant_id)
     data_project_root = Path(args.data_project_root).expanduser().resolve(strict=False)
-    fresh_relink_root = Path(args.fresh_relink_root).expanduser().resolve(strict=False)
+    fresh_relink_root = (
+        Path(args.fresh_relink_root).expanduser().resolve(strict=False) if args.fresh_relink_root else None
+    )
     out_root = (
         Path(args.out_root).expanduser().resolve(strict=False)
         if args.out_root
@@ -123,11 +126,20 @@ def run_bridge(args: argparse.Namespace) -> Mapping[str, Any]:
     out_root.mkdir(parents=True, exist_ok=True)
     generated_at = parse_datetime(args.generated_at)
 
-    identity_db = Path(args.identity_db).expanduser().resolve(strict=False) if args.identity_db else default_identity_db(fresh_relink_root)
+    identity_db = (
+        Path(args.identity_db).expanduser().resolve(strict=False)
+        if args.identity_db
+        else default_identity_db(data_project_root)
+    )
     event_paths = (
         Path(args.corpus_events).expanduser().resolve(strict=False) if args.corpus_events else default_corpus_events(data_project_root),
         Path(args.delta_events).expanduser().resolve(strict=False) if args.delta_events else default_delta_events(data_project_root),
     )
+    if not fresh_relink_root and (not args.corpus_decisions or not args.delta_decisions):
+        raise ValueError(
+            "relink decision CSVs are required: pass --corpus-decisions and --delta-decisions, "
+            "or pass --fresh-relink-root"
+        )
     decision_paths = (
         Path(args.corpus_decisions).expanduser().resolve(strict=False)
         if args.corpus_decisions
@@ -271,33 +283,16 @@ def run_bridge(args: argparse.Namespace) -> Mapping[str, Any]:
     return report
 
 
-def default_identity_db(fresh_relink_root: Path) -> Path:
-    external_handoffs = fresh_relink_root.parents[2]
-    sibling = external_handoffs / "tallanto_contacts_export_2026-06-20" / "identity_map" / "tallanto_email_identity_map.sqlite"
-    if sibling.exists():
-        return sibling
-    return (
-        DEFAULT_FRESH_RELINK_ROOT.parents[2]
-        / "tallanto_contacts_export_2026-06-20"
-        / "identity_map"
-        / "tallanto_email_identity_map.sqlite"
-    )
+def default_identity_db(data_project_root: Path) -> Path:
+    return data_project_root / CANONICAL_MAIL_IDENTITY_DB
 
 
 def default_corpus_events(data_project_root: Path) -> Path:
-    return (
-        data_project_root
-        / "_external_handoffs/mail_archive_2026-05-12/regru_edu/full_all_mail_combined_20260513/"
-        "stage2_email_ingest_20260620/stage2_full_corpus_events.jsonl"
-    )
+    return data_project_root / CANONICAL_MAIL_STAGE2_FULL_EVENTS
 
 
 def default_delta_events(data_project_root: Path) -> Path:
-    return (
-        data_project_root
-        / "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/"
-        "stage2_delta_ingest_20260621/stage2_delta_full_events.jsonl"
-    )
+    return data_project_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS
 
 
 def assert_existing_files(paths: Sequence[Path]) -> None:

@@ -26,6 +26,10 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest
 from mango_mvp.customer_timeline.safety import customer_timeline_safety_contract, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_sqlite_safety_contract
+from mango_mvp.productization.mail_archive import (
+    CANONICAL_MAIL_HISTORY_HANDOFF_DB,
+    CANONICAL_MAIL_MANGO_BRIDGE_DB,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -417,15 +421,8 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
     amo_root = project_root / "stable_runtime" / "deal_aware_amo_live_snapshot_20260513_v2"
     amo_contacts = resolve_existing(config.amo_contacts_csv or amo_root / "amo_contacts_snapshot.csv")
     amo_deals = resolve_existing(config.amo_deals_csv or amo_root / "amo_deals_snapshot.csv")
-    mail_root = project_root / "_external_handoffs" / "mail_archive_2026-05-12" / "regru_edu" / "full_all_mail_combined_20260513"
-    mail_handoff = resolve_existing(
-        config.mail_handoff_db
-        or mail_root / "customer_history_handoff_full_all_mail" / "mail_customer_history_handoff.sqlite"
-    )
-    mail_bridge = resolve_existing(
-        config.mail_bridge_db
-        or mail_root / "mango_bridge_preview_full_all_mail_extended_phone_index" / "mail_mango_bridge_preview.sqlite"
-    )
+    mail_handoff = resolve_existing(config.mail_handoff_db or project_root / CANONICAL_MAIL_HISTORY_HANDOFF_DB)
+    mail_bridge = resolve_existing(config.mail_bridge_db or project_root / CANONICAL_MAIL_MANGO_BRIDGE_DB)
     return CanonicalReadonlyTimelineConfig(
         project_root=project_root,
         out_root=out_root,

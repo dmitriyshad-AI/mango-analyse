@@ -52,6 +52,7 @@ from mango_mvp.customer_timeline.store import (
     scrub_timeline_persisted_json,
     timeline_email_content_signature,
 )
+from mango_mvp.productization.mail_archive import CANONICAL_MAIL_IDENTITY_DB
 
 
 A2V3_MAIL_INGEST_SCHEMA_VERSION = "a2v3_mail_timeline_ingest_v1"
@@ -64,10 +65,7 @@ DEFAULT_BRAND_DOMINANCE_RATIO = 4.0
 CHUNK_RICH_TEXT_LIMIT = 6000
 EMAIL_OR_DOMAIN_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zа-я]{2,}|\b(?:https?://)?[\w.-]+\.[a-zа-я]{2,}(?:/\S*)?", re.I)
 DEFAULT_A2V3_INPUT = Path(".codex_local/email_pipeline/A2v3_100_review_full_storage.jsonl")
-DEFAULT_TALLANTO_IDENTITY_DB = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/"
-    "_external_handoffs/mail_archive_2026-05-12/regru_edu/identity_map/tallanto_email_identity_map.sqlite"
-)
+DEFAULT_TALLANTO_IDENTITY_DB = Path("/Users/dmitrijfabarisov/Projects/Mango analyse") / CANONICAL_MAIL_IDENTITY_DB
 DEFAULT_PROD_TIMELINE_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/"
     "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"

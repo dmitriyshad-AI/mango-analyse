@@ -72,7 +72,7 @@ def _protected_paths() -> set[Path]:
             PROJECT_ROOT / "product_data" / "audio_working_store_20260523_v1",
             PROJECT_ROOT / "product_data" / "CURRENT_AUDIO_WORKING_STORE.txt",
             PROJECT_ROOT / "product_data" / "customer_timeline" / "canonical_readonly_20260521_v5",
-            PROJECT_ROOT / "_external_handoffs" / "mail_archive_2026-05-12",
+            PROJECT_ROOT / "_external_handoffs" / "mail_archive_canonical_20260711",
             PROJECT_ROOT / "telegram_exports (2)",
             PROJECT_ROOT / "TP UNPK DataExport_2026-05-21",
             PROJECT_ROOT / "stable_runtime" / "sales_master_export_20260523_audio_working_store_v1",

@@ -24,6 +24,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_INCOMING_ROOT,
     DEFAULT_ATTACHMENT_PARSE_ALLOW_EXTENSIONS,
     DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS,
     DEFAULT_ATTACHMENT_PARSE_REVIEW_EXTENSIONS,
@@ -82,7 +83,7 @@ DEFAULT_ACCOUNT_LABEL = "regru_edu"
 DEFAULT_TALLANTO_CSV = (
     "_external_handoffs/tallanto_students_export_2026-05-12/Ученики.csv"
 )
-DEFAULT_MAIL_ARCHIVE_ROOT = "_external_handoffs/mail_archive_2026-05-12"
+DEFAULT_MAIL_ARCHIVE_ROOT = str(CANONICAL_MAIL_INCOMING_ROOT)
 DEFAULT_MANGO_PRODUCT_DB = (
     "_local_archive_mango_api_downloads_20260507/product_appliance/mango_product_appliance.sqlite"
 )

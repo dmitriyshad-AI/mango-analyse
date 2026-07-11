@@ -21,6 +21,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_ARCHIVE_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+)
+
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
 DEFAULT_OUT_ROOT = ROOT / ".codex_local" / "staging" / "nightly_dv2_sources"
 DEFAULT_TIMELINE_DB = ROOT / ".codex_local" / "staging" / "customer_timeline_staging.sqlite"
@@ -111,15 +116,10 @@ def build_mail_increment(
     seen: set[str] = set()
     existing_state = load_existing_mail_link_state(timeline_db) if timeline_db else {}
     stage2_paths = [
-        source_root
-        / "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/"
-        / "stage2_delta_ingest_20260621/stage2_delta_full_events.jsonl",
+        source_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     ]
     archive_dbs = [
-        source_root
-        / "_external_handoffs/mail_archive_2026-05-12/regru_edu/increment_since_20260629_20260630_manual/archive/mail_archive.sqlite",
-        source_root
-        / "_external_handoffs/mail_archive_2026-05-12/regru_edu/increment_since_20260630_20260707_manual/archive/mail_archive.sqlite",
+        source_root / CANONICAL_MAIL_ARCHIVE_DB,
     ]
     inputs: list[Mapping[str, Any]] = []
     for path in stage2_paths:

@@ -21,6 +21,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_INCOMING_ROOT,
     MailArchiveIngestConfig,
     MailArchivePreflightConfig,
     MailArchiveVerificationConfig,
@@ -42,10 +43,7 @@ DEFAULT_HOST = "mail.hosting.reg.ru"
 DEFAULT_PORT = 993
 DEFAULT_PASSWORD_ENV = "MAIL_IMAP_PASSWORD"
 DEFAULT_ACCOUNT_LABEL = "regru_edu"
-DEFAULT_ROOT = (
-    "_external_handoffs/mail_archive_2026-05-12/"
-    "regru_edu/full_60d_remaining_20260513"
-)
+DEFAULT_ROOT = str(CANONICAL_MAIL_INCOMING_ROOT / "regru_edu/full_60d_remaining")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

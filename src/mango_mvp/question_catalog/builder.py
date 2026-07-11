@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from mango_mvp.productization.mail_archive import CANONICAL_MAIL_ARCHIVE_ROOT
 from mango_mvp.question_catalog.contracts import (
     ANSWER_STATUS_APPROVED,
     ANSWER_STATUS_DRAFT_NEEDS_REVIEW,
@@ -126,7 +127,7 @@ def default_config(project_root: Path, out_root: Path | None = None) -> CatalogB
         / "sales_insight_knowledge_base_after_quality_backfill_20260510_v11_frozen_gate"
         / "enriched_reviews.csv",
         telegram_messages_jsonl=project_root / "telegram_exports (2)" / "local_vm_2024-04-01" / "messages.jsonl",
-        mail_archive_root=project_root / "_external_handoffs" / "mail_archive_2026-05-12",
+        mail_archive_root=project_root / CANONICAL_MAIL_ARCHIVE_ROOT,
         fact_source_roots=(
             project_root / ".codex_local" / "kc_source_extract_20260513" / "texts",
             project_root / "docs",

@@ -28,32 +28,18 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
 )
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.productization.mail_archive import (
+    CANONICAL_MAIL_IDENTITY_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+    CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+)
 
 
 FULL_MEMORY_INGEST_SCHEMA_VERSION = "customer_timeline_full_memory_ingest_v1"
 DEFAULT_PRODUCTION_DB = Path("product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite")
-DEFAULT_FRESH_IDENTITY_DB = Path(
-    "/Users/dmitrijfabarisov/Projects/mango-tz33-perf/_external_handoffs/"
-    "tallanto_contacts_export_2026-06-20/identity_map/tallanto_email_identity_map.sqlite"
-)
-DEFAULT_STAGE2_CORPUS_EVENTS = Path(
-    "_external_handoffs/mail_archive_2026-05-12/regru_edu/full_all_mail_combined_20260513/"
-    "stage2_email_ingest_20260620/stage2_full_corpus_events.jsonl"
-)
-DEFAULT_STAGE2_DELTA_EVENTS = Path(
-    "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/"
-    "stage2_delta_ingest_20260621/stage2_delta_full_events.jsonl"
-)
-DEFAULT_FRESH_RELINK_ROOT = Path(
-    "/Users/dmitrijfabarisov/Projects/mango-tz33-perf/_external_handoffs/"
-    "mail_archive_2026-06-20/regru_edu/stage2_customer_relink_contacts_20260620"
-)
-DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS = (
-    DEFAULT_FRESH_RELINK_ROOT / "corpus_27009" / "mail_stage2_customer_relink_preview_decisions.csv"
-)
-DEFAULT_STAGE2_DELTA_RELINK_DECISIONS = (
-    DEFAULT_FRESH_RELINK_ROOT / "delta_3084" / "mail_stage2_customer_relink_preview_decisions.csv"
-)
+DEFAULT_FRESH_IDENTITY_DB = CANONICAL_MAIL_IDENTITY_DB
+DEFAULT_STAGE2_CORPUS_EVENTS = CANONICAL_MAIL_STAGE2_FULL_EVENTS
+DEFAULT_STAGE2_DELTA_EVENTS = CANONICAL_MAIL_STAGE2_DELTA_EVENTS
 CANONICAL_SOURCE_SYSTEMS = (
     MASTER_CONTACT_SOURCE,
     MANGO_SOURCE,
@@ -71,10 +57,7 @@ class FullMemoryIngestConfig:
     tenant_id: str = "foton"
     identity_db: Path = DEFAULT_FRESH_IDENTITY_DB
     event_jsonl_paths: Sequence[Path] = (DEFAULT_STAGE2_CORPUS_EVENTS, DEFAULT_STAGE2_DELTA_EVENTS)
-    relink_decision_paths: Sequence[Path] = (
-        DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS,
-        DEFAULT_STAGE2_DELTA_RELINK_DECISIONS,
-    )
+    relink_decision_paths: Sequence[Path] = ()
     generated_at: Optional[datetime] = None
     email_limit: Optional[int] = None
     max_call_events_per_contact: int = 0

@@ -20,26 +20,21 @@ if str(SRC) not in sys.path:
 from mango_mvp.customer_timeline.ids import stable_digest  # noqa: E402
 from mango_mvp.customer_timeline.mail_stage2_ingest import file_sha256  # noqa: E402
 from mango_mvp.customer_timeline.store import scrub_timeline_persisted_json  # noqa: E402
+from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_ARCHIVE_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+    CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+)
 
 
 DEFAULT_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
-DEFAULT_STAGE2_FULL = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/_external_handoffs/mail_archive_2026-05-12/"
-    "regru_edu/full_all_mail_combined_20260513/stage2_email_ingest_20260620/"
-    "stage2_full_corpus_events.jsonl"
-)
-DEFAULT_STAGE2_DELTA = Path(
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/_external_handoffs/mail_archive_2026-06-20/"
-    "regru_edu/incremental_20260513_to_20260620/stage2_delta_ingest_20260621/"
-    "stage2_delta_full_events.jsonl"
-)
-DEFAULT_ARCHIVE_ROOTS = (
-    Path("/Users/dmitrijfabarisov/Projects/Mango analyse/_external_handoffs/mail_archive_2026-05-12/regru_edu"),
-    Path("/Users/dmitrijfabarisov/Projects/Mango analyse/_external_handoffs/mail_archive_2026-06-20/regru_edu"),
-)
+DATA_PROJECT_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
+DEFAULT_STAGE2_FULL = DATA_PROJECT_ROOT / CANONICAL_MAIL_STAGE2_FULL_EVENTS
+DEFAULT_STAGE2_DELTA = DATA_PROJECT_ROOT / CANONICAL_MAIL_STAGE2_DELTA_EVENTS
+DEFAULT_ARCHIVE_ROOTS = (DATA_PROJECT_ROOT / CANONICAL_MAIL_ARCHIVE_DB.parent,)
 SOURCE_REF_RE = re.compile(r"^mail_stage2:([^:]+):(\d+):")
 
 

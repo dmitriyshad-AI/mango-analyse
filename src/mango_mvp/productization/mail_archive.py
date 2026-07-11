@@ -44,6 +44,14 @@ from mango_mvp.productization.mail_imap_snapshot import (
 
 
 MAIL_ARCHIVE_SCHEMA_VERSION = "mail_archive_v1"
+CANONICAL_MAIL_ARCHIVE_ROOT = Path("_external_handoffs/mail_archive_canonical_20260711")
+CANONICAL_MAIL_ARCHIVE_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "archive/mail_archive.sqlite"
+CANONICAL_MAIL_STAGE2_FULL_EVENTS = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/stage2_full_corpus_events.jsonl"
+CANONICAL_MAIL_STAGE2_DELTA_EVENTS = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/stage2_delta_full_events.jsonl"
+CANONICAL_MAIL_HISTORY_HANDOFF_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/mail_customer_history_handoff.sqlite"
+CANONICAL_MAIL_MANGO_BRIDGE_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/mail_mango_bridge_preview.sqlite"
+CANONICAL_MAIL_IDENTITY_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "identity/tallanto_email_identity_map.sqlite"
+CANONICAL_MAIL_INCOMING_ROOT = CANONICAL_MAIL_ARCHIVE_ROOT / "incoming"
 TALLANTO_IDENTITY_MAP_SCHEMA_VERSION = "tallanto_email_identity_map_v1"
 MAIL_MATCHING_REPORT_SCHEMA_VERSION = "mail_matching_report_v1"
 MAIL_MANGO_BRIDGE_PREVIEW_SCHEMA_VERSION = "mail_mango_bridge_preview_v1"

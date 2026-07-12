@@ -57,6 +57,7 @@ from mango_mvp.productization.mail_archive import (
     build_tallanto_identity_map_union,
     extract_email_addresses,
     extract_phone_numbers,
+    git_check_ignored,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
     load_tallanto_customer_address_book,
@@ -218,6 +219,16 @@ def test_mail_archive_normalizers_and_stable_runtime_guards(tmp_path: Path) -> N
                 delimiter="\t",
             )
         )
+
+
+def test_git_check_ignored_uses_repository_that_owns_output_path(tmp_path: Path) -> None:
+    repo = tmp_path / "other_worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("_external_handoffs/\n", encoding="utf-8")
+
+    assert git_check_ignored(repo / "_external_handoffs/mail/inbox") is True
+    assert git_check_ignored(repo / "tracked_output/mail") is False
 
 
 def test_mail_archive_identity_map_duplicate_handling(tmp_path: Path) -> None:
@@ -550,6 +561,14 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     )
 
     first = build_mail_archive_ingest(credentials=credentials, config=config, client=fake_imap)
+    archive_db = tmp_path / "archive" / "mail_archive.sqlite"
+    with sqlite3.connect(archive_db) as con:
+        timestamps_before = con.execute(
+            """
+            SELECT m.updated_at, s.ingested_at
+            FROM messages m JOIN message_sources s ON s.message_sha256 = m.sha256
+            """
+        ).fetchone()
     second = build_mail_archive_ingest(credentials=credentials, config=config, client=fake_imap)
 
     assert first["raw_eml_written"] == 1
@@ -558,15 +577,24 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     assert second["attachments_written"] == 0
     assert second["text_files_written"] == 0
 
-    archive_db = tmp_path / "archive" / "mail_archive.sqlite"
     with sqlite3.connect(archive_db) as con:
         assert con.execute("select count(*) from messages").fetchone()[0] == 1
         assert con.execute("select count(*) from message_sources").fetchone()[0] == 1
         assert con.execute("select count(*) from attachments").fetchone()[0] == 1
+        timestamps_after = con.execute(
+            """
+            SELECT m.updated_at, s.ingested_at
+            FROM messages m JOIN message_sources s ON s.message_sha256 = m.sha256
+            """
+        ).fetchone()
+    assert timestamps_after == timestamps_before
 
-    assert "not-written" not in (tmp_path / "archive" / "mail_ingest_report.json").read_text(
+    ingest_report_text = (tmp_path / "archive" / "mail_ingest_report.json").read_text(
         encoding="utf-8"
     )
+    assert "not-written" not in ingest_report_text
+    assert "school@kmipt.ru" not in ingest_report_text
+    assert json.loads(ingest_report_text)["email_present"] is True
     assert b"not-written" not in archive_db.read_bytes()
 
     verification = verify_mail_archive_pilot(
@@ -646,6 +674,35 @@ def test_mail_archive_zero_max_messages_fetches_nothing(tmp_path: Path) -> None:
     assert report["messages_attempted"] == 0
     assert report["raw_eml_written"] == 0
     assert fake_imap.fetch_queries == []
+
+
+def test_mail_archive_explicit_unlimited_fetches_all_messages(tmp_path: Path) -> None:
+    fake_imap = FakeImapClient([_raw_message(), _raw_message(message_id="second@example.com")])
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials(
+            host="mail.example.test",
+            port=993,
+            email_address="school@kmipt.ru",
+            password="not-written",
+        ),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "archive",
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=3,
+            max_messages=0,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+            allow_unlimited=True,
+        ),
+        client=fake_imap,
+    )
+
+    assert report["max_messages"] is None
+    assert report["messages_found_since"] == 2
+    assert report["messages_attempted"] == 2
+    assert report["selection_truncated"] is False
 
 
 def test_mail_archive_detects_transient_imap_fetch_errors() -> None:

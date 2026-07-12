@@ -292,6 +292,7 @@ class MailArchiveIngestConfig:
     internal_domains: Sequence[str] = DEFAULT_INTERNAL_DOMAINS
     extracted_text_max_chars: int = 250_000
     exclude_message_sha256s: Sequence[str] = ()
+    allow_unlimited: bool = False
 
 
 @dataclass(frozen=True)
@@ -918,7 +919,8 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
             f"{'batch' if config.allow_large_batch else 'pilot'}_window_days_must_be_"
             f"{window_min}_to_{window_max}"
         )
-    if not (messages_min <= int(config.max_messages) <= messages_max):
+    unlimited_batch = config.allow_large_batch and int(config.max_messages) == 0
+    if not unlimited_batch and not (messages_min <= int(config.max_messages) <= messages_max):
         blocking_risks.append(
             f"{'batch' if config.allow_large_batch else 'pilot'}_max_messages_must_be_"
             f"{messages_min}_to_{messages_max}"
@@ -1044,7 +1046,7 @@ def build_mail_archive_ingest(
         "account_label": config.account_label,
         "host": credentials.host,
         "port": credentials.port,
-        "email": credentials.email_address,
+        "email_present": bool(normalize_email(credentials.email_address)),
         "mailbox": config.mailbox_label,
         "mailbox_raw": config.mailbox,
         "since_days": since_days,
@@ -1053,7 +1055,8 @@ def build_mail_archive_ingest(
         "before_imap": before_imap,
         "window_days": since_days - before_days if before_days is not None else since_days,
         "search_criteria": search_criteria,
-        "max_messages": max_messages,
+        "max_messages": None if config.allow_unlimited else max_messages,
+        "selection_truncated": False,
         "safety": {
             "readonly_select": True,
             "fetch_uses_body_peek": True,
@@ -1104,7 +1107,12 @@ def build_mail_archive_ingest(
         report["search_status"] = search_status
         message_ids = parse_search_ids(search_status, search_data)
         report["messages_found_since"] = len(message_ids)
-        selected_ids = message_ids[-max_messages:] if max_messages > 0 else []
+        selected_ids = (
+            message_ids
+            if config.allow_unlimited
+            else message_ids[-max_messages:] if max_messages > 0 else []
+        )
+        report["selection_truncated"] = len(selected_ids) < len(message_ids)
         report["messages_attempted"] = len(selected_ids)
 
         def record_fetched_message(fetched: Mapping[str, Any]) -> None:
@@ -6266,9 +6274,14 @@ def best_effort_git_provenance() -> Mapping[str, Any]:
 
 
 def git_check_ignored(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    candidates = (resolved, *resolved.parents)
+    git_root = next((item for item in candidates if (item / ".git").exists()), None)
+    if git_root is None:
+        return False
     try:
         completed = subprocess.run(
-            ["git", "check-ignore", "-q", str(path)],
+            ["git", "-C", str(git_root), "check-ignore", "-q", "--", str(resolved)],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -6431,11 +6444,10 @@ def upsert_message(
     extracted_text_chars: int,
 ) -> None:
     now = utc_now()
-    existing = con.execute("SELECT first_ingested_at FROM messages WHERE sha256 = ?", (sha256,)).fetchone()
-    first_ingested_at = existing["first_ingested_at"] if existing else now
+    first_ingested_at = now
     con.execute(
         """
-        INSERT OR REPLACE INTO messages (
+        INSERT OR IGNORE INTO messages (
           sha256, message_id, message_date_header, message_date_iso, subject,
           from_header, to_header, cc_header, mailbox, mailbox_raw, message_kind,
           raw_eml_path, extracted_text_path, raw_size_bytes, extracted_text_chars,
@@ -6464,7 +6476,7 @@ def upsert_message(
     )
     con.execute(
         """
-        INSERT OR REPLACE INTO message_sources (
+        INSERT OR IGNORE INTO message_sources (
           source_key, message_sha256, account_label, mailbox, mailbox_raw,
           imap_seq, source_message_id, ingested_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

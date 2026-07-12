@@ -307,6 +307,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         report = execute(parse_args(argv))
     except Exception as exc:  # noqa: BLE001
+        if str(exc) == "mail_download_already_running":
+            print(json.dumps({"status": "already_running", "stop_reason": "already_running"}, sort_keys=True))
+            return 75
         print(json.dumps({"status": "failed", "error": type(exc).__name__}, sort_keys=True))
         return 2
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

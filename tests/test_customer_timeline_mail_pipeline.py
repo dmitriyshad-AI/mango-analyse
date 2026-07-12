@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import plistlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,6 +12,7 @@ import pytest
 from scripts import run_customer_timeline_mail_download as download
 from scripts import run_customer_timeline_mail_process as process
 from scripts import run_customer_timeline_mail_import as mail_import
+from scripts import run_customer_timeline_mail_chain as mail_chain
 
 
 class FakeDiscoveryImap:
@@ -633,19 +634,150 @@ def test_mail_import_execute_restores_full_cursor_after_enrich_failure(
     assert mail_import.read_mail_cursor_state(timeline) == before
 
 
-def test_mail_launchd_templates_are_ordered_and_use_one_worktree() -> None:
-    deploy = download.ROOT / "deploy/customer_timeline_daily_captures"
-    expected = {
-        "download": ("mail-download", 0),
-        "process": ("mail-process", 30),
-        "import": ("mail-import", 50),
+def test_mail_chain_stops_after_busy_stage_and_does_not_start_next(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def runner(task: str) -> mail_chain.StageRun:
+        calls.append(task)
+        if task == "mail-download":
+            return mail_chain.StageRun(task=task, rc=0, payload={"status": "ok"})
+        return mail_chain.StageRun(
+            task=task,
+            rc=75,
+            payload={"status": "already_running", "stop_reason": "already_running"},
+        )
+
+    report = mail_chain.run_chain(
+        lock_path=tmp_path / "mail_chain.lock",
+        runner=runner,
+        preflight=lambda _task: "",
+    )
+
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "mail-process:already_running"
+    assert calls == ["mail-download", "mail-process"]
+    assert report["stages"][1]["status"] == "stopped"
+
+
+@pytest.mark.parametrize(
+    ("module", "argv"),
+    [
+        (download, []),
+        (process, ["--data-root", "/tmp/test-mail-data"]),
+        (mail_import, []),
+    ],
+)
+def test_mail_stage_main_reports_busy_lock_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    module: object,
+    argv: list[str],
+) -> None:
+    monkeypatch.setattr(module, "execute", lambda _args: (_ for _ in ()).throw(RuntimeError("mail_download_already_running")))
+
+    assert module.main(argv) == 75
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "already_running",
+        "stop_reason": "already_running",
     }
-    worktrees = set()
-    for suffix, (task, minute) in expected.items():
+
+
+def test_mail_chain_reports_already_running_when_chain_lock_is_busy(tmp_path: Path) -> None:
+    lock_path = tmp_path / "mail_chain.lock"
+    with mail_chain.chain_lock(lock_path) as acquired:
+        assert acquired is True
+        report = mail_chain.run_chain(
+            lock_path=lock_path,
+            runner=lambda _task: pytest.fail("stage must not start when chain lock is busy"),
+            preflight=lambda _task: "",
+        )
+
+    assert report["status"] == "stopped"
+    assert report["result"] == "already_running"
+    assert report["stop_reason"] == "already_running"
+    assert report["stages"] == []
+
+
+def test_mail_chain_stale_manifest_blocks_next_stage(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def runner(task: str) -> mail_chain.StageRun:
+        calls.append(task)
+        return mail_chain.StageRun(task=task, rc=0, payload={"status": "ok"})
+
+    def preflight(task: str) -> str:
+        return "stage manifest is stale" if task == "mail-process" else ""
+
+    report = mail_chain.run_chain(
+        lock_path=tmp_path / "mail_chain.lock",
+        runner=runner,
+        preflight=preflight,
+    )
+
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "mail-process:stage manifest is stale"
+    assert calls == ["mail-download"]
+    assert report["stages"][1] == {
+        "task": "mail-process",
+        "status": "stopped",
+        "stop_reason": "stage manifest is stale",
+        "started": False,
+    }
+
+
+def test_mail_chain_detects_manifest_stale_by_actual_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = {"head": "abc", "worktree": "tree"}
+    old = datetime.now(timezone.utc) - timedelta(hours=5)
+    (tmp_path / "mail_download_manifest.json").write_text(
+        json.dumps({"status": "ok", "finished_at": old.isoformat(), "runtime": runtime}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mail_chain.codex_task, "MAIL_STATE_DIR", tmp_path)
+    monkeypatch.setattr(mail_chain.codex_task, "current_runtime", lambda: runtime)
+
+    assert mail_chain.stage_preflight_stop_reason("mail-process") == "stage manifest is stale"
+
+
+def test_mail_chain_first_unsuccessful_stage_stops_chain(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def runner(task: str) -> mail_chain.StageRun:
+        calls.append(task)
+        if task == "mail-download":
+            return mail_chain.StageRun(task=task, rc=0, payload={"status": "ok"})
+        return mail_chain.StageRun(task=task, rc=2, payload={"status": "failed", "stop_reason": "gate_failed"})
+
+    report = mail_chain.run_chain(
+        lock_path=tmp_path / "mail_chain.lock",
+        runner=runner,
+        preflight=lambda _task: "",
+    )
+
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "mail-process:gate_failed"
+    assert calls == ["mail-download", "mail-process"]
+    assert [stage["task"] for stage in report["stages"]] == ["mail-download", "mail-process"]
+
+
+def test_mail_launchd_uses_single_chain_calendar_trigger_and_deprecates_split_plists() -> None:
+    deploy = download.ROOT / "deploy/customer_timeline_daily_captures"
+    chain_path = deploy / "com.mango.customer-timeline-mail-chain.plist.template"
+    with chain_path.open("rb") as fh:
+        chain_payload = plistlib.load(fh)
+    assert chain_payload["Label"] == "com.mango.customer-timeline-mail-chain"
+    assert chain_payload["ProgramArguments"] == [
+        "/usr/bin/python3",
+        str(download.ROOT / "scripts/run_customer_timeline_mail_chain.py"),
+    ]
+    assert chain_payload["StartCalendarInterval"] == {"Hour": 2, "Minute": 0}
+
+    split_payloads = []
+    for suffix in ("download", "process", "import"):
         path = deploy / f"com.mango.customer-timeline-mail-{suffix}.plist.template"
         with path.open("rb") as fh:
-            payload = plistlib.load(fh)
-        assert payload["ProgramArguments"][-2:] == ["--task", task]
-        assert payload["StartCalendarInterval"] == {"Hour": 2, "Minute": minute}
-        worktrees.add(payload["WorkingDirectory"])
-    assert worktrees == {str(download.ROOT)}
+            split_payloads.append(plistlib.load(fh))
+    assert all(payload.get("Disabled") is True for payload in split_payloads)
+    assert all("StartCalendarInterval" not in payload for payload in split_payloads)
+    assert all(payload["WorkingDirectory"] == str(download.ROOT) for payload in [chain_payload, *split_payloads])

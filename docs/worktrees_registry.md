@@ -22,6 +22,7 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_calls_tzv_20260712` | `ea8f57d` | `codex/tzv-calls-schedule-brand` | Параллельная задача расписания звонков/бренда. | Не трогать. |
 | `/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore` | `b415ef7` | `codex/email-pipeline-restore` | Активный почтовый/Timeline трек другого исполнителя. | Не менять; из этой задачи только читать. |
 | `/Users/dmitrijfabarisov/Projects/Mango_frame_gate_3_defects` | `e1fbbba` | `codex/frame-gate-3-defects` | Параллельная задача frame-gate. | Не трогать. |
+| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | `7126f6d` | `codex/integrate-d3-d4-20260712` | Чистое дерево для проверенного слияния почты Д3 и звонков Д4. | Менять только в интеграционном этапе этой задачи. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_cca8aeb4_consolidated` | `cca8aeb` | detached, live | Фактический live-код. | Не трогать без отдельного live-ТЗ. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_next_step_phase1b` | `2cc82b1` | detached, rollback | Точка полного отката live. | Не трогать. |
 | `/Users/dmitrijfabarisov/Projects/Mango_m1_memory_exam_build` | `796c0b8` | `codex/m1-memory-exam-build-20260711` | Сборка экзамена памяти для M1. | Не трогать. |

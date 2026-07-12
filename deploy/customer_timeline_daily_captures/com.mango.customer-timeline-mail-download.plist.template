@@ -22,13 +22,8 @@
   <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
   <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stderr.log</string>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>2</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <key>Disabled</key>
+  <true/>
   <key>RunAtLoad</key>
   <false/>
   <key>KeepAlive</key>

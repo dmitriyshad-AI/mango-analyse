@@ -27,6 +27,10 @@ from scripts.run_customer_timeline_mail_download import (  # noqa: E402
     utc_now,
 )
 from scripts.run_customer_timeline_mail_process import staging_root_for  # noqa: E402
+from mango_mvp.customer_timeline.mail_link_enrich import (  # noqa: E402
+    MailLinkEnrichConfig,
+    run_mail_link_enrich,
+)
 
 
 def parse_time(value: Any) -> datetime:
@@ -36,18 +40,56 @@ def parse_time(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def read_mail_cursor(timeline_db: Path) -> str | None:
+def read_mail_cursor_state(timeline_db: Path) -> Mapping[str, Any] | None:
     if not timeline_db.is_file():
         return None
     try:
         with sqlite3.connect(timeline_db.as_uri() + "?mode=ro", uri=True) as con:
+            con.row_factory = sqlite3.Row
             row = con.execute(
-                "SELECT last_cursor_ts FROM ingestion_cursors WHERE tenant_id=? AND source_system=?",
+                """
+                SELECT tenant_id, source_system, last_cursor_ts, updated_at, metadata_json
+                FROM ingestion_cursors
+                WHERE tenant_id=? AND source_system=?
+                """,
                 ("foton", "mail_archive_stage2"),
             ).fetchone()
     except sqlite3.Error:
         return None
-    return str(row[0]) if row and row[0] else None
+    return dict(row) if row else None
+
+
+def read_mail_cursor(timeline_db: Path) -> str | None:
+    state = read_mail_cursor_state(timeline_db)
+    return str(state["last_cursor_ts"]) if state and state.get("last_cursor_ts") else None
+
+
+def restore_mail_cursor(timeline_db: Path, previous: Mapping[str, Any] | None) -> None:
+    with sqlite3.connect(timeline_db) as con:
+        if previous is None:
+            con.execute(
+                "DELETE FROM ingestion_cursors WHERE tenant_id=? AND source_system=?",
+                ("foton", "mail_archive_stage2"),
+            )
+        else:
+            con.execute(
+                """
+                INSERT INTO ingestion_cursors (
+                  tenant_id, source_system, last_cursor_ts, updated_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, source_system) DO UPDATE SET
+                  last_cursor_ts=excluded.last_cursor_ts,
+                  updated_at=excluded.updated_at,
+                  metadata_json=excluded.metadata_json
+                """,
+                (
+                    previous["tenant_id"],
+                    previous["source_system"],
+                    previous["last_cursor_ts"],
+                    previous["updated_at"],
+                    previous["metadata_json"],
+                ),
+            )
 
 
 def load_inputs(
@@ -114,6 +156,18 @@ def run_incremental(code_root: Path, config_path: Path) -> subprocess.CompletedP
     )
 
 
+def enrich_mail_links(*, timeline_db: Path, allowed_root: Path, out_dir: Path) -> Mapping[str, Any]:
+    return run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=timeline_db,
+            allowed_root=allowed_root,
+            out_dir=out_dir,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+
 def execute(args: argparse.Namespace) -> Mapping[str, Any]:
     code_root = Path(args.code_root).resolve()
     state_dir = Path(args.state_dir).resolve()
@@ -126,7 +180,12 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             max_age_hours=args.max_process_age_hours,
         )
         timeline_db = Path(str(config["timeline_db"])).resolve()
-        cursor_before = read_mail_cursor(timeline_db)
+        cursor_before_state = read_mail_cursor_state(timeline_db)
+        cursor_before = (
+            str(cursor_before_state["last_cursor_ts"])
+            if cursor_before_state and cursor_before_state.get("last_cursor_ts")
+            else None
+        )
         completed = run_incremental(code_root, config_path)
         try:
             result = json.loads(completed.stdout)
@@ -134,14 +193,41 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             result = {"overall_status": "failed", "gate_passed": False}
         gate_passed = result.get("gate_passed") is True
         failed_required = result.get("failed_required_sources") or []
-        status = (
-            "ok"
-            if completed.returncode == 0
+        incremental_ok = (
+            completed.returncode == 0
             and gate_passed
             and not failed_required
             and result.get("overall_status") != "partial"
-            else "failed"
         )
+        enrich_report: Mapping[str, Any] = {}
+        enrich_error = ""
+        if incremental_ok:
+            try:
+                enrich_report = enrich_mail_links(
+                    timeline_db=timeline_db,
+                    allowed_root=Path(str(config["allowed_root"])).resolve(),
+                    out_dir=state_dir / "mail_link_enrich",
+                )
+            except Exception as exc:  # noqa: BLE001
+                enrich_error = type(exc).__name__
+        enrich_safety = enrich_report.get("safety") if isinstance(enrich_report, Mapping) else {}
+        if not isinstance(enrich_safety, Mapping):
+            enrich_safety = {}
+        visibility_changed = bool(
+            enrich_safety.get("allowed_for_bot_changed")
+            or enrich_safety.get("mail_stage2_allowed_for_bot_changed")
+        )
+        enrich_ok = incremental_ok and not enrich_error and not visibility_changed
+        counts = enrich_report.get("counts") if isinstance(enrich_report, Mapping) else {}
+        apply_counts = enrich_report.get("apply") if isinstance(enrich_report, Mapping) else {}
+        if not isinstance(counts, Mapping):
+            counts = {}
+        if not isinstance(apply_counts, Mapping):
+            apply_counts = {}
+        applied = apply_counts.get("counts") if isinstance(apply_counts.get("counts"), Mapping) else {}
+        status = "ok" if enrich_ok else "failed"
+        if incremental_ok and not enrich_ok:
+            restore_mail_cursor(timeline_db, cursor_before_state)
         report = {
             "schema_version": "mail_import_manifest_v1",
             "status": status,
@@ -155,6 +241,20 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             "overall_status": result.get("overall_status"),
             "gate_passed": result.get("gate_passed"),
             "failed_required_sources": failed_required,
+            "mail_link_enrich": {
+                "status": "ok" if enrich_ok else "failed",
+                "error": enrich_error or None,
+                "target_events": int(enrich_report.get("target_events") or 0),
+                "planned": {
+                    "strong": int(counts.get("planned.strong") or 0),
+                    "weak_email": int(counts.get("planned.weak_email") or 0),
+                    "unmatched": int(counts.get("planned.unmatched") or 0),
+                    "blocked": int(counts.get("planned.blocked") or 0),
+                },
+                "updated_events": int(applied.get("updated_events") or 0),
+                "created_chunks": int(applied.get("created_chunks") or 0),
+                "visibility_changed": visibility_changed,
+            },
             "cursor_before": cursor_before,
             "cursor_after": read_mail_cursor(timeline_db),
             "writes_prod_db": False,

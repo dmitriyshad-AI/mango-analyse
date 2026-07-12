@@ -236,7 +236,10 @@ def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
             CREATE TABLE ingestion_cursors (
               tenant_id TEXT,
               source_system TEXT,
-              last_cursor_ts TEXT
+              last_cursor_ts TEXT,
+              updated_at TEXT,
+              metadata_json TEXT,
+              PRIMARY KEY (tenant_id, source_system)
             );
             CREATE TABLE timeline_events (
               source_id TEXT,
@@ -249,8 +252,20 @@ def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
             """
         )
         con.execute(
-            "INSERT INTO ingestion_cursors VALUES (?, ?, ?)",
-            ("foton", "mail_archive_stage2", cursor),
+            "INSERT INTO ingestion_cursors VALUES (?, ?, ?, ?, ?)",
+            (
+                "foton",
+                "mail_archive_stage2",
+                cursor,
+                cursor,
+                json.dumps(
+                    {
+                        "source_refs": {
+                            "mail_pipeline:mail_archive_stage2": {"last_cursor_ts": cursor}
+                        }
+                    }
+                ),
+            ),
         )
 
 
@@ -431,6 +446,11 @@ def test_mail_import_is_fail_loud_when_incremental_gate_fails(
         )
 
     monkeypatch.setattr(mail_import, "run_incremental", lambda *_args, **_kwargs: Result())
+    monkeypatch.setattr(
+        mail_import,
+        "enrich_mail_links",
+        lambda **_kwargs: pytest.fail("enrich must not run after failed incremental gate"),
+    )
 
     report = mail_import.execute(
         mail_import.parse_args(
@@ -441,6 +461,176 @@ def test_mail_import_is_fail_loud_when_incremental_gate_fails(
     assert report["status"] == "failed"
     assert report["gate_passed"] is False
     assert report["cursor_before"] == report["cursor_after"]
+
+
+def test_mail_import_runs_existing_link_enrich_and_preserves_bot_visibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    process_dir = state / "process"
+    process_dir.mkdir(parents=True)
+    runtime = download.runtime_identity(download.ROOT)
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    source = process_dir / "increment.jsonl"
+    source.write_text("", encoding="utf-8")
+    config = process_dir / "mail_incremental_config.json"
+    download.atomic_write_json(
+        config,
+        {
+            "runtime": runtime,
+            "timeline_db": str(timeline),
+            "allowed_root": str(tmp_path / ".codex_local/staging"),
+            "journal_path": str(process_dir / "journal.jsonl"),
+            "sources": [
+                {
+                    "source_system": "mail_archive_stage2",
+                    "normalizer": "mail_archive_stage2",
+                    "required": True,
+                    "path": str(source),
+                }
+            ],
+        },
+    )
+    download.atomic_write_json(
+        state / "mail_process_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "config": str(config),
+            "config_sha256": download.sha256_file(config),
+            "output_jsonl": str(source),
+            "output_sha256": download.sha256_file(source),
+            "rows_written": 1,
+        },
+    )
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {"overall_status": "ok", "gate_passed": True, "failed_required_sources": []}
+        )
+
+    monkeypatch.setattr(mail_import, "run_incremental", lambda *_args, **_kwargs: Result())
+    monkeypatch.setattr(
+        mail_import,
+        "enrich_mail_links",
+        lambda **_kwargs: {
+            "target_events": 1,
+            "counts": {"planned.strong": 1},
+            "apply": {"counts": {"updated_events": 1, "created_chunks": 1}},
+            "safety": {
+                "allowed_for_bot_changed": False,
+                "mail_stage2_allowed_for_bot_changed": False,
+            },
+        },
+    )
+
+    report = mail_import.execute(
+        mail_import.parse_args(
+            ["--code-root", str(download.ROOT), "--state-dir", str(state)]
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["mail_link_enrich"] == {
+        "status": "ok",
+        "error": None,
+        "target_events": 1,
+        "planned": {"strong": 1, "weak_email": 0, "unmatched": 0, "blocked": 0},
+        "updated_events": 1,
+        "created_chunks": 1,
+        "visibility_changed": False,
+    }
+
+
+def test_mail_import_execute_restores_full_cursor_after_enrich_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    process_dir = state / "process"
+    process_dir.mkdir(parents=True)
+    runtime = download.runtime_identity(download.ROOT)
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    before = mail_import.read_mail_cursor_state(timeline)
+    source = process_dir / "increment.jsonl"
+    source.write_text("", encoding="utf-8")
+    config = process_dir / "mail_incremental_config.json"
+    download.atomic_write_json(
+        config,
+        {
+            "runtime": runtime,
+            "timeline_db": str(timeline),
+            "allowed_root": str(tmp_path / ".codex_local/staging"),
+            "journal_path": str(process_dir / "journal.jsonl"),
+            "sources": [
+                {
+                    "source_system": "mail_archive_stage2",
+                    "normalizer": "mail_archive_stage2",
+                    "required": True,
+                    "path": str(source),
+                }
+            ],
+        },
+    )
+    download.atomic_write_json(
+        state / "mail_process_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "config": str(config),
+            "config_sha256": download.sha256_file(config),
+            "output_jsonl": str(source),
+            "output_sha256": download.sha256_file(source),
+            "rows_written": 1,
+        },
+    )
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {"overall_status": "ok", "gate_passed": True, "failed_required_sources": []}
+        )
+
+    def advance_both_cursors(*_args: object, **_kwargs: object) -> Result:
+        with sqlite3.connect(timeline) as con:
+            con.execute(
+                "UPDATE ingestion_cursors SET last_cursor_ts=?, metadata_json=? WHERE tenant_id=? AND source_system=?",
+                (
+                    "2026-07-12T11:00:00+00:00",
+                    json.dumps(
+                        {
+                            "source_refs": {
+                                "mail_pipeline:mail_archive_stage2": {
+                                    "last_cursor_ts": "2026-07-12T11:00:00+00:00"
+                                }
+                            }
+                        }
+                    ),
+                    "foton",
+                    "mail_archive_stage2",
+                ),
+            )
+        return Result()
+
+    monkeypatch.setattr(mail_import, "run_incremental", advance_both_cursors)
+    monkeypatch.setattr(
+        mail_import,
+        "enrich_mail_links",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("late stage failed")),
+    )
+
+    report = mail_import.execute(
+        mail_import.parse_args(
+            ["--code-root", str(download.ROOT), "--state-dir", str(state)]
+        )
+    )
+
+    assert report["status"] == "failed"
+    assert mail_import.read_mail_cursor_state(timeline) == before
 
 
 def test_mail_launchd_templates_are_ordered_and_use_one_worktree() -> None:

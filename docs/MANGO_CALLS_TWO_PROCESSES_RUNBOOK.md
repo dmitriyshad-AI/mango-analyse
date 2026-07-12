@@ -7,7 +7,9 @@
 - `sync`, AMO, CRM, Tallanto, prod timeline и `stable_runtime` не используются.
 - Resolve/Analyze вызывают Codex через изолированную оболочку без desktop-приложений, плагинов и MCP; используется только подписочная авторизация.
 - `--stage-limit` ограничивает один цикл. Полный дренаж обеспечивает worker-loop с `--poll-sec` и `--max-idle-cycles`.
-- Один launchd-trigger вызывает `cycle`: сначала A, затем B. Другой trigger для этой staging DB не устанавливается.
+- Launchd запускает по расписанию только `process-a`. После явного `status=ok` его оболочка запускает отдельную demand-only службу `process-b`; при `failed`, `deferred` или `locked` B не стартует. `cycle` остаётся только для ручной совместимости.
+- Каждый процесс пишет собственный `state/process_*_status.json`; команда `status` считает свежесть по `data_through`, а не по времени запуска.
+- `brand_evidence` (`single`/`both`/`none`) определяется простым поиском маркеров `Фотон`, `УНПК`, `МФТИ` в уже готовом тексте и анализе; модель не вызывается.
 
 ## Конфигурация
 
@@ -29,7 +31,8 @@
   "stage_limit": 20,
   "asr_mode": "mlx_dual",
   "poll_seconds": 10,
-  "max_idle_cycles": 30
+  "max_idle_cycles": 30,
+  "freshness_max_age_minutes": 90
 }
 ```
 
@@ -53,14 +56,24 @@ set +a
 
 ## Расписание
 
-После приёмочных прогонов:
+Сначала безопасно отрендерить два plist без установки:
 
 ```bash
 /usr/bin/python3 scripts/install_mango_calls_two_processes_service.py \
   --config <config.json> \
   --env-file ~/.mango_secrets/mango_office.env \
-  --interval-seconds 900 \
-  --install
+  --process-a-interval-seconds 1800 \
+  --out-dir <папка-проверки>
 ```
+
+В результате A имеет `StartInterval`, а B не имеет собственного календаря или интервала. После проверки добавить `--install`. Установка сначала загружает demand-only B, затем scheduled A и только после этого выгружает старый общий label; при частичном сбое новые задачи откатываются.
+
+Проверка водяных меток:
+
+```bash
+<configured-python> scripts/run_mango_calls_pipeline.py --config <config.json> status
+```
+
+`fresh` означает, что дата последнего фактически обработанного звонка моложе заданного порога. Свежий запуск при старых данных остаётся `stale`.
 
 Перед публикацией агрегатного отчёта в `Foton/_daily` встроенный гейт удаляет пути/идентификаторы и блокирует телефон, email или секрет.

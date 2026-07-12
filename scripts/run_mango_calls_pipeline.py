@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
     run_cycle,
     run_process_a,
     run_process_b,
+    pipeline_freshness,
 )
 
 
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     process_a.add_argument("--skip-capture", action="store_true")
     process_a.add_argument("--skip-workers", action="store_true")
     sub.add_parser("process-b", help="Build mango_processed_summary and import it into timeline staging.")
+    sub.add_parser("status", help="Check data watermarks for both scheduled processes.")
     cycle = sub.add_parser("cycle", help="Run process A, then process B from one scheduler trigger.")
     cycle.add_argument("--since")
     cycle.add_argument("--until")
@@ -52,7 +54,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         elif args.command == "process-b":
             report = run_process_b(config)
-        else:
+        elif args.command == "cycle":
             report = run_cycle(
                 config,
                 since=args.since,
@@ -60,6 +62,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 skip_capture=args.skip_capture,
                 skip_workers=args.skip_workers,
             )
+        else:
+            report = pipeline_freshness(config)
     except Exception as exc:
         report = {
             "schema_version": "mango_calls_two_processes_v1",
@@ -69,7 +73,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "counters": {},
         }
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report.get("status") in {"ok", "idle", "locked", "deferred"} else 1
+    return 0 if report.get("status") in {"ok", "idle", "locked", "deferred", "fresh"} else 1
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ PARALLEL_PIPELINE_STAGES = (
     "resolve",
     "analyze",
 )
+REQUIRED_PIPELINE_MODULES = ("sqlalchemy", "dotenv", "mlx_whisper", "gigaam", "mango_mvp.cli")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 SECRET_RE = re.compile(
@@ -77,6 +78,7 @@ class CallsTwoProcessesConfig:
     stage_limit: int = 20
     poll_seconds: int = 10
     max_idle_cycles: int = 30
+    freshness_max_age_minutes: int = 90
     asr_mode: str = "mlx_dual"
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
@@ -107,6 +109,7 @@ class CallsTwoProcessesConfig:
             stage_limit=int(payload.get("stage_limit", 20)),
             poll_seconds=int(payload.get("poll_seconds", 10)),
             max_idle_cycles=int(payload.get("max_idle_cycles", 30)),
+            freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
             codex_resolve_model=str(payload.get("codex_resolve_model") or "gpt-5.4"),
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
@@ -126,6 +129,8 @@ class CallsTwoProcessesConfig:
         guard_customer_timeline_output_path(timeline_db, timeline_root)
         if self.stage_limit < 1 or self.poll_seconds < 1 or self.max_idle_cycles < 1:
             raise ValueError("worker drain settings must be positive")
+        if self.freshness_max_age_minutes < 15:
+            raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
             raise ValueError("api_window_hours must be between 1 and 24")
         if self.asr_mode != "mlx_dual":
@@ -182,6 +187,18 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "reports"
 
     @property
+    def process_a_status_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_a_status.json"
+
+    @property
+    def process_b_status_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_b_status.json"
+
+    @property
+    def process_b_cursor_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_b_cursor.json"
+
+    @property
     def ingest_dir(self) -> Path:
         return self.timeline_allowed_root / "mango_calls_two_processes"
 
@@ -216,6 +233,24 @@ def run_process_a(
                 run_commands=not skip_workers,
                 require_mango_credentials=not skip_capture,
             )
+            if not bool(environment.get("ok")):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "environment_preflight_failed",
+                    {"disk": disk, "environment": environment, "lock": lock_info},
+                )
+            if not bool(disk.get("ok")):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "insufficient_disk_space",
+                    {"disk": disk, "environment": environment, "lock": lock_info},
+                )
             window_since, window_until = resolve_capture_window(config, since=since, until=until)
             capture = (
                 {"status": "skipped", "reason": "skip_capture"}
@@ -370,6 +405,17 @@ def run_process_b(
     config.ingest_dir.mkdir(parents=True, exist_ok=True)
     if not config.ready_db.exists():
         return finalize_report(config, run_id, "process_b", "idle", "drop_missing", {"events": 0})
+    drop_fingerprint = ready_drop_fingerprint(config)
+    previous_cursor = read_json(config.process_b_cursor_path)
+    if drop_fingerprint.get("sha256") and previous_cursor.get("sha256") == drop_fingerprint.get("sha256"):
+        return finalize_report(
+            config,
+            run_id,
+            "process_b",
+            "idle",
+            "drop_unchanged",
+            {"events": 0, "drop": drop_fingerprint, "cursor_before": previous_cursor},
+        )
     quick_before = sqlite_check(config.timeline_db, "quick_check")
     source_systems_before = call_event_source_systems(config.timeline_db)
     cursor = mango_processed_cursor(config.timeline_db, tenant_id=config.tenant_id)
@@ -417,8 +463,12 @@ def run_process_b(
     integrity_after = sqlite_check(config.timeline_db, "integrity_check")
     source_systems_after = call_event_source_systems(config.timeline_db)
     unexpected = sorted(item for item in source_systems_after if item != "mango_processed_summary")
-    status = "ok" if quick_after == "ok" and integrity_after == "ok" and not unexpected else "failed"
-    stop_reason = "" if status == "ok" else "source_system_or_integrity_failed"
+    import_valid = imported.get("validation_ok") is True
+    status = "ok" if import_valid and quick_after == "ok" and integrity_after == "ok" and not unexpected else "failed"
+    if not import_valid:
+        stop_reason = "import_validation_failed"
+    else:
+        stop_reason = "" if status == "ok" else "source_system_or_integrity_failed"
     counters = {
         "producer": compact_producer_report(producer),
         "import": compact_import_report(imported),
@@ -430,7 +480,19 @@ def run_process_b(
         "unexpected_source_systems": unexpected,
         "cursor_before": cursor,
         "producer_scan_mode": "full_drop_dedupe",
+        "drop": drop_fingerprint,
     }
+    if status == "ok":
+        write_json(
+            config.process_b_cursor_path,
+            {
+                "schema_version": "mango_calls_process_b_cursor_v1",
+                "sha256": drop_fingerprint.get("sha256"),
+                "size_bytes": drop_fingerprint.get("size_bytes"),
+                "data_through": counters["producer"].get("max_event_at"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
     return finalize_report(config, run_id, "process_b", status, stop_reason, counters)
 
 
@@ -665,32 +727,57 @@ def environment_preflight(
     modules_ok = False
     network_ok = codex_network_available() if run_commands else True
     if run_commands and python_ok:
-        probe = subprocess.run(
-            [str(config.python_executable), "-c", "import sqlalchemy,dotenv,mlx_whisper,gigaam,mango_mvp.cli"],
-            cwd=Path(__file__).resolve().parents[3],
-            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=60,
-        )
-        modules_ok = probe.returncode == 0
+        try:
+            probe = subprocess.run(
+                module_probe_command(config),
+                cwd=Path(__file__).resolve().parents[3],
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+            modules_ok = probe.returncode == 0
+        except subprocess.TimeoutExpired:
+            modules_ok = False
     if run_commands and codex_ok:
-        auth = subprocess.run(
-            [str(config.codex_binary), "login", "status"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=30,
-        )
-        auth_ok = auth.returncode == 0
+        try:
+            codex_home = prepare_codex_home(config.codex_home_root / "worker")
+            auth = subprocess.run(
+                [str(config.codex_binary), "login", "status"],
+                env={
+                    **os.environ,
+                    "HOME": str(Path.home()),
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": command_path(config),
+                },
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+            auth_ok = auth.returncode == 0
+        except subprocess.TimeoutExpired:
+            auth_ok = False
     elif not run_commands:
         modules_ok = True
         auth_ok = True
     mango_ok = credentials_present or not require_mango_credentials
-    if run_commands and not (mango_ok and python_ok and codex_ok and auth_ok and modules_ok):
-        raise RuntimeError("process A environment preflight failed")
+    checks = {
+        "mango_credentials": mango_ok,
+        "python_executable": python_ok,
+        "asr_modules": modules_ok,
+        "codex_binary": codex_ok,
+        "codex_auth": auth_ok,
+        "codex_network": network_ok,
+    }
+    required = ("mango_credentials", "python_executable", "asr_modules", "codex_binary", "codex_auth")
+    failed_checks = [name for name in required if run_commands and not checks[name]]
     return {
+        "ok": not failed_checks,
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "degraded_checks": ["codex_network"] if run_commands and not network_ok else [],
         "credentials_present": credentials_present,
         "mango_credentials_required": require_mango_credentials,
         "python_ok": python_ok,
@@ -701,6 +788,21 @@ def environment_preflight(
         "asr_mode": config.asr_mode,
         "parallel_stages": list(pipeline_stages(config, include_llm=network_ok)),
     }
+
+
+def module_probe_command(config: CallsTwoProcessesConfig) -> list[str]:
+    modules = repr(REQUIRED_PIPELINE_MODULES)
+    code = (
+        "import importlib.util,sys; "
+        f"mods={modules}; "
+        "sys.exit(0 if all(importlib.util.find_spec(name) is not None for name in mods) else 1)"
+    )
+    return [str(config.python_executable), "-c", code]
+
+
+def command_path(config: CallsTwoProcessesConfig) -> str:
+    parts = [str(config.codex_binary.parent), os.environ.get("PATH", "")]
+    return os.pathsep.join(part for part in parts if part)
 
 
 def codex_network_available() -> bool:
@@ -715,9 +817,7 @@ def disk_preflight(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     config.pipeline_root.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(config.pipeline_root)
     required = int(config.min_free_gib * 1024**3)
-    if usage.free < required:
-        raise RuntimeError("insufficient free disk space for calls pipeline")
-    return {"free_bytes": usage.free, "required_free_bytes": required, "ok": True}
+    return {"free_bytes": usage.free, "required_free_bytes": required, "ok": usage.free >= required}
 
 
 def resolve_capture_window(
@@ -748,6 +848,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
     codex_home = prepare_codex_home(config.codex_home_root / "worker")
     return {
         **os.environ,
+        "PATH": command_path(config),
         "DATABASE_URL": f"sqlite:///{config.working_db}",
         "TRANSCRIPT_EXPORT_DIR": str(config.transcripts_dir),
         "CODEX_HOME": str(codex_home),
@@ -989,6 +1090,23 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
     return manifest
 
 
+def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
+    manifest = read_json(config.ready_db.with_suffix(".manifest.json"))
+    actual_sha = sha256_file(config.ready_db)
+    manifest_sha = optional_text(manifest.get("sha256"))
+    manifest_size = positive_int(manifest.get("size_bytes")) or None
+    actual_size = config.ready_db.stat().st_size
+    return {
+        "sha256": actual_sha,
+        "size_bytes": actual_size,
+        "manifest_sha256": manifest_sha,
+        "manifest_size_bytes": manifest_size,
+        "manifest_mismatch": bool(
+            manifest_sha and (manifest_sha != actual_sha or manifest_size not in {None, actual_size})
+        ),
+    }
+
+
 def cleanup_sqlite_sidecars(path: Path) -> None:
     for suffix in ("-wal", "-shm"):
         sidecar = Path(str(path) + suffix)
@@ -1015,6 +1133,9 @@ def call_db_counts(path: Path) -> Mapping[str, Any]:
                 "SELECT COUNT(*) FROM call_records WHERE analysis_status='done' AND analysis_json IS NOT NULL AND analysis_json != ''"
             ).fetchone()[0]
         )
+        result["max_analyzed_at"] = con.execute(
+            "SELECT MAX(started_at) FROM call_records WHERE analysis_status='done' AND analysis_json IS NOT NULL AND analysis_json != ''"
+        ).fetchone()[0]
         return result
 
 
@@ -1026,6 +1147,7 @@ def empty_call_counts() -> Mapping[str, Any]:
         "resolve_status": {},
         "analysis_status": {},
         "dead_letter_stage": {},
+        "max_analyzed_at": None,
     }
 
 
@@ -1110,6 +1232,7 @@ def finalize_report(
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     local_path = config.reports_dir / f"{run_id}_{process}.json"
     write_json(local_path, report)
+    write_stage_status(config, report)
     report["report_path"] = str(local_path)
     if config.foton_daily_dir is not None:
         daily_payload = safe_daily_payload(report)
@@ -1201,7 +1324,84 @@ def compact_producer_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
         "events_written": report.get("events_written"),
         "identity_resolution_counts": report.get("identity_resolution_counts"),
         "call_type_counts": report.get("call_type_counts"),
+        "brand_evidence_counts": report.get("brand_evidence_counts"),
+        "brand_counts": report.get("brand_counts"),
+        "max_event_at": report.get("max_event_at"),
     }
+
+
+def write_stage_status(config: CallsTwoProcessesConfig, report: Mapping[str, Any]) -> None:
+    process = str(report.get("process") or "")
+    if process not in {"process_a", "process_b"}:
+        return
+    counters = report.get("counters") if isinstance(report.get("counters"), Mapping) else {}
+    data_through: Any = None
+    checked_through: Any = None
+    if process == "process_a":
+        call_db = counters.get("call_db") if isinstance(counters.get("call_db"), Mapping) else {}
+        window = counters.get("window") if isinstance(counters.get("window"), Mapping) else {}
+        data_through = call_db.get("max_analyzed_at")
+        capture = counters.get("capture") if isinstance(counters.get("capture"), Mapping) else {}
+        checked_through = window.get("until") if capture.get("status") != "skipped" else None
+        path = config.process_a_status_path
+    else:
+        producer = counters.get("producer") if isinstance(counters.get("producer"), Mapping) else {}
+        data_through = producer.get("max_event_at")
+        checked_through = datetime.now(timezone.utc).isoformat()
+        path = config.process_b_status_path
+    previous = read_json(path)
+    if report.get("status") in {"locked", "idle"}:
+        data_through = data_through or previous.get("data_through")
+        checked_through = previous.get("checked_through")
+    write_json(
+        path,
+        {
+            "schema_version": "mango_calls_stage_status_v1",
+            "process": process,
+            "status": report.get("status"),
+            "stop_reason": report.get("stop_reason"),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_through": checked_through,
+            "data_through": data_through,
+        },
+    )
+
+
+def pipeline_freshness(
+    config: CallsTwoProcessesConfig,
+    *,
+    now: Optional[datetime] = None,
+) -> Mapping[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    threshold = config.freshness_max_age_minutes * 60
+    stages: dict[str, Any] = {}
+    for process, path in (
+        ("process_a", config.process_a_status_path),
+        ("process_b", config.process_b_status_path),
+    ):
+        state = read_json(path)
+        raw_checked = optional_text(state.get("checked_through") or state.get("checked_at"))
+        raw_data = optional_text(state.get("data_through"))
+        checked = parse_datetime(raw_checked) if raw_checked else None
+        data_at = parse_datetime(raw_data) if raw_data else None
+        checked_age = max(0.0, (current - checked).total_seconds()) if checked else None
+        data_age = max(0.0, (current - data_at).total_seconds()) if data_at else None
+        status = "missing" if data_at is None else "stale" if data_age > threshold else "fresh"
+        if state.get("status") == "failed":
+            status = "failed"
+        elif state.get("stop_reason") == "drop_missing":
+            status = "missing"
+        stages[process] = {
+            "status": status,
+            "age_seconds": round(data_age, 3) if data_age is not None else None,
+            "checked_age_seconds": round(checked_age, 3) if checked_age is not None else None,
+            "checked_through": raw_checked,
+            "data_through": raw_data,
+            "last_run_status": state.get("status"),
+            "stop_reason": state.get("stop_reason"),
+        }
+    ok = all(item["status"] == "fresh" for item in stages.values())
+    return {"schema_version": "mango_calls_freshness_v1", "status": "fresh" if ok else "stale", "stages": stages}
 
 
 def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

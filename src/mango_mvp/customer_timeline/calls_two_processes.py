@@ -715,8 +715,15 @@ def environment_preflight(
             modules_ok = False
     if run_commands and codex_ok:
         try:
+            codex_home = prepare_codex_home(config.codex_home_root / "worker")
             auth = subprocess.run(
                 [str(config.codex_binary), "login", "status"],
+                env={
+                    **os.environ,
+                    "HOME": str(Path.home()),
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": command_path(config),
+                },
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -766,6 +773,11 @@ def module_probe_command(config: CallsTwoProcessesConfig) -> list[str]:
     return [str(config.python_executable), "-c", code]
 
 
+def command_path(config: CallsTwoProcessesConfig) -> str:
+    parts = [str(config.codex_binary.parent), os.environ.get("PATH", "")]
+    return os.pathsep.join(part for part in parts if part)
+
+
 def codex_network_available() -> bool:
     try:
         socket.getaddrinfo("chatgpt.com", 443, type=socket.SOCK_STREAM)
@@ -809,6 +821,7 @@ def worker_environment(config: CallsTwoProcessesConfig) -> Mapping[str, str]:
     codex_home = prepare_codex_home(config.codex_home_root / "worker")
     return {
         **os.environ,
+        "PATH": command_path(config),
         "DATABASE_URL": f"sqlite:///{config.working_db}",
         "TRANSCRIPT_EXPORT_DIR": str(config.transcripts_dir),
         "CODEX_HOME": str(codex_home),

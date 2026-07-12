@@ -18,6 +18,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     PARALLEL_PIPELINE_STAGES,
     assert_no_pdn,
     call_event_source_systems,
+    command_path,
     capture_mango_window,
     codex_network_available,
     dead_letter_total,
@@ -298,6 +299,12 @@ def test_module_preflight_checks_presence_without_loading_heavy_models(tmp_path:
     assert "find_spec" in command[-1]
     assert "import mlx_whisper" not in command[-1]
     assert "import gigaam" not in command[-1]
+
+
+def test_command_path_includes_codex_binary_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = replace(config_for(tmp_path), codex_binary=tmp_path / "homebrew" / "bin" / "codex")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert command_path(config).split(os.pathsep)[0] == str(config.codex_binary.parent)
 
 
 def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:

@@ -25,5 +25,43 @@ if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
   exit 2
 fi
 
-exec "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/run_mango_calls_pipeline.py" \
-  --config "${CONFIG}" "${COMMAND}"
+set +e
+OUTPUT="$("${PYTHON_EXECUTABLE}" "${ROOT}/scripts/run_mango_calls_pipeline.py" \
+  --config "${CONFIG}" "${COMMAND}")"
+RC=$?
+set -e
+print -r -- "${OUTPUT}"
+if (( RC != 0 )); then
+  exit "${RC}"
+fi
+
+if [[ "${COMMAND}" == "process-a" ]]; then
+  set +e
+  STATUS="$(print -r -- "${OUTPUT}" | "${PYTHON_EXECUTABLE}" -c '
+import json, sys
+text = sys.stdin.read()
+decoder = json.JSONDecoder()
+last = None
+for index, char in enumerate(text):
+    if char != "{":
+        continue
+    try:
+        value, end = decoder.raw_decode(text[index:])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(value, dict) and not text[index + end:].strip():
+        last = value
+if last is None:
+    raise SystemExit(2)
+print(last.get("status", ""))
+')"
+  PARSE_RC=$?
+  set -e
+  if (( PARSE_RC != 0 )); then
+    print -u2 '{"status":"failed","stop_reason":"process_a_status_parse_failed"}'
+    exit 3
+  fi
+  if [[ "${STATUS}" == "ok" ]]; then
+    exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b"
+  fi
+fi

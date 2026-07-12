@@ -62,12 +62,12 @@ def _payload(
     *,
     label: str,
     command: str,
-    interval_seconds: int,
+    interval_seconds: Optional[int],
     config_path: Path,
     env_path: Path,
     log_dir: Path,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "Label": label,
         "ProgramArguments": [
             "/bin/zsh",
@@ -78,12 +78,14 @@ def _payload(
         ],
         "WorkingDirectory": str(ROOT),
         "RunAtLoad": False,
-        "StartInterval": interval_seconds,
         "ProcessType": "Background",
         "ThrottleInterval": 60,
         "StandardOutPath": str(log_dir / f"{command}.stdout.log"),
         "StandardErrorPath": str(log_dir / f"{command}.stderr.log"),
     }
+    if interval_seconds is not None:
+        payload["StartInterval"] = interval_seconds
+    return payload
 
 
 def _write_plist(path: Path, payload: dict[str, object]) -> None:
@@ -115,22 +117,88 @@ def _bootout_if_loaded(domain: str, label: str) -> bool:
     return True
 
 
+def _is_loaded(domain: str, label: str) -> bool:
+    return subprocess.run(
+        ["launchctl", "print", f"{domain}/{label}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def _bootstrap(domain: str, path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["launchctl", "bootstrap", domain, str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def _restore_incumbents(
+    *,
+    domain: str,
+    paths: dict[str, Path],
+    previous_files: dict[str, Optional[bytes]],
+    loaded_before: dict[str, bool],
+) -> list[str]:
+    errors: list[str] = []
+    for label in (LABEL_A, LABEL_B):
+        try:
+            _bootout_if_loaded(domain, label)
+        except RuntimeError:
+            errors.append(f"rollback_bootout_failed:{label}")
+    for label, path in paths.items():
+        previous = previous_files[label]
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                temp = path.with_suffix(".plist.rollback.tmp")
+                temp.write_bytes(previous)
+                temp.replace(path)
+        except OSError:
+            errors.append(f"rollback_file_restore_failed:{label}")
+    for label in (LABEL_B, LABEL_A):
+        if not loaded_before.get(label):
+            continue
+        restored = _bootstrap(domain, paths[label])
+        if restored.returncode != 0:
+            errors.append(f"rollback_bootstrap_failed:{label}")
+    return errors
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.process_b_interval_seconds is not None:
+        raise ValueError("process B is demand-only and must not have an interval")
     config_path = Path(args.config).expanduser().resolve()
     env_path = Path(args.env_file).expanduser().resolve()
     if not config_path.is_file() or not env_path.is_file():
         raise FileNotFoundError("config and env file must exist")
     fallback_interval = _interval(args.interval_seconds, DEFAULT_INTERVAL_SECONDS)
-    intervals = {
+    intervals: dict[str, Optional[int]] = {
         LABEL_A: _interval(args.process_a_interval_seconds, fallback_interval),
-        LABEL_B: _interval(args.process_b_interval_seconds, fallback_interval),
+        # Process B is demand-only. It is kicked off by the Process A wrapper
+        # only after Process A returns an explicit successful status.
+        LABEL_B: None,
     }
     config = json.loads(config_path.read_text(encoding="utf-8"))
     pipeline_root = Path(str(config["pipeline_root"])).expanduser().resolve()
     log_dir = pipeline_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     paths = _plist_paths(args)
+    domain = f"gui/{os.getuid()}"
+    loaded_before = (
+        {label: _is_loaded(domain, label) for label in (LABEL_A, LABEL_B)}
+        if args.install
+        else {}
+    )
+    previous_files = {
+        label: path.read_bytes() if path.is_file() else None
+        for label, path in paths.items()
+    }
     payloads = {
         LABEL_A: _payload(
             label=LABEL_A,
@@ -143,7 +211,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         LABEL_B: _payload(
             label=LABEL_B,
             command="process-b",
-            interval_seconds=intervals[LABEL_B],
+            interval_seconds=None,
             config_path=config_path,
             env_path=env_path,
             log_dir=log_dir,
@@ -159,30 +227,57 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "installed": False,
     }
     if args.install:
-        domain = f"gui/{os.getuid()}"
         installed_labels: list[str] = []
-        for label, plist_path in paths.items():
-            _bootout_if_loaded(domain, label)
-            install = subprocess.run(
-                ["launchctl", "bootstrap", domain, str(plist_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
+        # B must be loaded before scheduled A can ever kick it off.
+        install_order = (LABEL_B, LABEL_A)
+        for label in install_order:
+            plist_path = paths[label]
+            try:
+                _bootout_if_loaded(domain, label)
+            except RuntimeError:
+                rollback_errors = _restore_incumbents(
+                    domain=domain,
+                    paths=paths,
+                    previous_files=previous_files,
+                    loaded_before=loaded_before,
+                )
+                result.update(
+                    status="failed",
+                    stop_reason=f"launchctl_bootout_failed:{label}",
+                    rollback_errors=rollback_errors,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+                return 1
+            install = _bootstrap(domain, plist_path)
             if install.returncode != 0:
-                for installed_label in installed_labels:
-                    _bootout_if_loaded(domain, installed_label)
-                result.update(status="failed", stop_reason=f"launchctl_bootstrap_failed:{label}")
+                rollback_errors = _restore_incumbents(
+                    domain=domain,
+                    paths=paths,
+                    previous_files=previous_files,
+                    loaded_before=loaded_before,
+                )
+                result.update(
+                    status="failed",
+                    stop_reason=f"launchctl_bootstrap_failed:{label}",
+                    rollback_errors=rollback_errors,
+                )
                 print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
                 return 1
             installed_labels.append(label)
         try:
             result["old_label_booted_out"] = _bootout_if_loaded(domain, OLD_LABEL)
         except RuntimeError:
-            for installed_label in installed_labels:
-                _bootout_if_loaded(domain, installed_label)
-            result.update(status="failed", stop_reason="legacy_bootout_failed")
+            rollback_errors = _restore_incumbents(
+                domain=domain,
+                paths=paths,
+                previous_files=previous_files,
+                loaded_before=loaded_before,
+            )
+            result.update(
+                status="failed",
+                stop_reason="legacy_bootout_failed",
+                rollback_errors=rollback_errors,
+            )
             print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
             return 1
         result.update(status="installed", installed=True)

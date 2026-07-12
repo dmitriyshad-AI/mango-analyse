@@ -1,3 +1,5 @@
+> DONE 2026-07-12 20:57 | ветка codex/tzv-calls-schedule-brand | codex
+
 > TAKE 2026-07-12 16:01 | ветка codex/tzv-calls-schedule-brand | codex
 
 Ветка: codex/tzv-calls-schedule-brand

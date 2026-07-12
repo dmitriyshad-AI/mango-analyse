@@ -39,3 +39,13 @@
 - Process B вызывает Mango API, ASR, Resolve или Analyze;
 - бренд определяется моделью либо по `tenant_id`, а не по фактическому тексту;
 - новая служба не сообщает конкретную причину сбоя.
+
+## Контрольная точка 2026-07-12 18:06 MSK
+
+- Код расписаний, подробного preflight, freshness и `brand_evidence` реализован; независимый аудитор дал PASS по этапам 0–2.
+- Установлены две launchd-задачи: Process A каждые 1800 секунд, Process B каждые 900 секунд; legacy label не загружен.
+- Process A завершён успешно: скачано 27 новых звонков, transcription done 268/268, analysis done 265/268, три прежних manual/pending сохранены; новый drop `quick_check=ok`.
+- Внешние ASR worker шли строго последовательно: `transcribe`, затем `backfill-second-asr`; одновременных ASR worker не было.
+- Исправлены реальные launchd-дефекты: тяжёлый import-preflight и отсутствие Homebrew `node` в PATH.
+- Process B на новом drop запущен и в момент контрольной точки завершает импорт только в staging-копию. После него проверить итог, повтор `drop_unchanged`, полный pytest, финальный аудит и отчёт.
+- Код SHA-курсора Process B считает фактический SHA ready DB; stale manifest не может дать false skip. Аудитор дал PASS.

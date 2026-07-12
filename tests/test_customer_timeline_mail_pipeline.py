@@ -769,7 +769,7 @@ def test_mail_launchd_uses_single_chain_calendar_trigger_and_deprecates_split_pl
     assert chain_payload["Label"] == "com.mango.customer-timeline-mail-chain"
     assert chain_payload["ProgramArguments"] == [
         "/usr/bin/python3",
-        str(download.ROOT / "scripts/run_customer_timeline_mail_chain.py"),
+        "__MANGO_CODE_ROOT__/scripts/run_customer_timeline_mail_chain.py",
     ]
     assert chain_payload["StartCalendarInterval"] == {"Hour": 2, "Minute": 0}
 
@@ -780,4 +780,4 @@ def test_mail_launchd_uses_single_chain_calendar_trigger_and_deprecates_split_pl
             split_payloads.append(plistlib.load(fh))
     assert all(payload.get("Disabled") is True for payload in split_payloads)
     assert all("StartCalendarInterval" not in payload for payload in split_payloads)
-    assert all(payload["WorkingDirectory"] == str(download.ROOT) for payload in [chain_payload, *split_payloads])
+    assert all(payload["WorkingDirectory"] == "__MANGO_CODE_ROOT__" for payload in [chain_payload, *split_payloads])

@@ -7,21 +7,21 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/scripts/run_customer_timeline_codex_task.py</string>
+    <string>__MANGO_CODE_ROOT__/scripts/run_customer_timeline_codex_task.py</string>
     <string>--task</string>
     <string>mail-download</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation</string>
+  <string>__MANGO_CODE_ROOT__</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>MANGO_MAIL_DATA_ROOT</key>
     <string>/Users/dmitrijfabarisov/Projects/Mango analyse</string>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stdout.log</string>
+  <string>__MANGO_CODE_ROOT__/.codex_local/staging/mail_pipeline/mail-download.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stderr.log</string>
+  <string>__MANGO_CODE_ROOT__/.codex_local/staging/mail_pipeline/mail-download.launchd.stderr.log</string>
   <key>Disabled</key>
   <true/>
   <key>RunAtLoad</key>

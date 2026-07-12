@@ -43,6 +43,7 @@ bash scripts/uninstall_customer_timeline_nightly_service.sh \
 ```bash
 bash scripts/install_customer_timeline_nightly_service.sh \
   --plist deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-chain.plist.template \
+  --code-root "/absolute/permanent/main/worktree" \
   --target "$HOME/Library/LaunchAgents/com.mango.customer-timeline-mail-chain.plist" --apply
 
 bash scripts/install_customer_timeline_nightly_service.sh \

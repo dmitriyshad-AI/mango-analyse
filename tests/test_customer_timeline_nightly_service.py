@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import plistlib
 import sqlite3
 import subprocess
 import sys
@@ -603,6 +604,49 @@ def test_launchd_install_scripts_are_dry_run_by_default(tmp_path: Path) -> None:
     assert "Dry-run only" in install.stdout
     assert "Dry-run only" in uninstall.stdout
     assert not (tmp_path / "target.plist").exists()
+
+
+def test_launchd_installer_renders_code_root_before_bootstrap(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    source = tmp_path / "template.plist"
+    target = tmp_path / "target.plist"
+    code_root = tmp_path / "permanent&main"
+    source.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>test.render</string>
+<key>WorkingDirectory</key><string>__MANGO_CODE_ROOT__</string>
+</dict></plist>
+""",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_launchctl = fake_bin / "launchctl"
+    fake_launchctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_launchctl.chmod(0o700)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts/install_customer_timeline_nightly_service.sh"),
+            "--plist",
+            str(source),
+            "--target",
+            str(target),
+            "--code-root",
+            str(code_root),
+            "--apply",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "__MANGO_CODE_ROOT__" not in target.read_text(encoding="utf-8")
+    assert plistlib.loads(target.read_bytes())["WorkingDirectory"] == str(code_root.resolve())
 
 
 def test_daily_capture_launchd_templates_and_drivers_are_safe_by_default(tmp_path: Path) -> None:

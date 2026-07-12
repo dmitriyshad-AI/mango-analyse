@@ -57,6 +57,7 @@ from mango_mvp.productization.mail_archive import (
     build_tallanto_identity_map_union,
     extract_email_addresses,
     extract_phone_numbers,
+    git_check_ignored,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
     load_tallanto_customer_address_book,
@@ -218,6 +219,16 @@ def test_mail_archive_normalizers_and_stable_runtime_guards(tmp_path: Path) -> N
                 delimiter="\t",
             )
         )
+
+
+def test_git_check_ignored_uses_repository_that_owns_output_path(tmp_path: Path) -> None:
+    repo = tmp_path / "other_worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("_external_handoffs/\n", encoding="utf-8")
+
+    assert git_check_ignored(repo / "_external_handoffs/mail/inbox") is True
+    assert git_check_ignored(repo / "tracked_output/mail") is False
 
 
 def test_mail_archive_identity_map_duplicate_handling(tmp_path: Path) -> None:

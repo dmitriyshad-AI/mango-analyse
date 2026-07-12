@@ -6274,9 +6274,14 @@ def best_effort_git_provenance() -> Mapping[str, Any]:
 
 
 def git_check_ignored(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    candidates = (resolved, *resolved.parents)
+    git_root = next((item for item in candidates if (item / ".git").exists()), None)
+    if git_root is None:
+        return False
     try:
         completed = subprocess.run(
-            ["git", "check-ignore", "-q", str(path)],
+            ["git", "-C", str(git_root), "check-ignore", "-q", "--", str(resolved)],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

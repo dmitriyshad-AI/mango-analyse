@@ -1,3 +1,5 @@
+> DONE 2026-07-12 17:27 | ветка codex/mail-three-stage-worktree-hygiene | codex
+
 > TAKE 2026-07-12 16:12 | ветка codex/mail-three-stage-worktree-hygiene | codex
 
 Ветка: codex/mail-three-stage-worktree-hygiene

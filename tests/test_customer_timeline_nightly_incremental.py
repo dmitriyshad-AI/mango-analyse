@@ -4,6 +4,9 @@ import json
 import sqlite3
 import threading
 import time
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -350,6 +353,23 @@ def test_nightly_incremental_cli_returns_nonzero_when_required_gate_fails(
     )
 
     assert nightly_cli.main(["--config", str(config), "--summary-only"]) == 1
+
+
+def test_nightly_incremental_cli_starts_without_external_pythonpath() -> None:
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    completed = subprocess.run(
+        [sys.executable, str(Path(__file__).parents[1] / "scripts/run_customer_timeline_nightly_incremental.py"), "--help"],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "--config" in completed.stdout
 
 
 def test_nightly_incremental_fail_soft_keeps_other_sources_running(tmp_path: Path) -> None:

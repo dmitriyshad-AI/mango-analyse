@@ -22,6 +22,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     codex_network_available,
     dead_letter_total,
     dead_letter_mass_failure,
+    environment_preflight,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
@@ -30,8 +31,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     read_known_processed_ids,
     run_parallel_pipeline_workers,
     run_process_b,
+    pipeline_freshness,
     safe_daily_payload,
     worker_command,
+    write_json,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
@@ -272,6 +275,77 @@ def test_codex_network_probe_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> 
     assert codex_network_available() is False
 
 
+def test_environment_preflight_lists_failed_checks(tmp_path: Path) -> None:
+    config = replace(
+        config_for(tmp_path),
+        python_executable=tmp_path / "missing-python",
+        codex_binary=tmp_path / "missing-codex",
+    )
+    report = environment_preflight(config, run_commands=True, require_mango_credentials=True)
+    assert report["ok"] is False
+    assert set(report["failed_checks"]) >= {
+        "mango_credentials",
+        "python_executable",
+        "asr_modules",
+        "codex_binary",
+        "codex_auth",
+    }
+
+
+def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    old = "2026-07-10T01:00:00+00:00"
+    for path, process in (
+        (config.process_a_status_path, "process_a"),
+        (config.process_b_status_path, "process_b"),
+    ):
+        write_json(path, {"process": process, "status": "ok", "checked_through": old, "data_through": old})
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 0, tzinfo=timezone.utc))
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "stale"
+    assert report["stages"]["process_b"]["status"] == "stale"
+
+
+def test_pipeline_freshness_does_not_call_missing_drop_fresh(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    write_json(
+        config.process_b_status_path,
+        {
+            "process": "process_b",
+            "status": "idle",
+            "stop_reason": "drop_missing",
+            "checked_at": "2026-07-10T02:00:00+00:00",
+        },
+    )
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+    assert report["stages"]["process_b"]["status"] == "missing"
+
+
+def test_pipeline_freshness_uses_data_not_recent_check(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": "ok",
+            "checked_through": "2026-07-10T02:00:00+00:00",
+            "data_through": "2026-07-10T01:00:00+00:00",
+        },
+    )
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 5, tzinfo=timezone.utc))
+    assert report["stages"]["process_a"]["status"] == "stale"
+
+
+def test_pipeline_freshness_missing_data_is_not_fresh(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    write_json(
+        config.process_a_status_path,
+        {"process": "process_a", "status": "ok", "checked_through": "2026-07-10T02:00:00+00:00"},
+    )
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+    assert report["stages"]["process_a"]["status"] == "missing"
+
+
 def test_dead_letter_total_ignores_empty_stage_and_counts_failures() -> None:
     assert dead_letter_total({"dead_letter_stage": {"": 200, "transcribe": 2, "analyze": 1}}) == 3
     assert dead_letter_mass_failure({"total": 241, "dead_letter_stage": {"transcribe": 3}}) is False
@@ -400,6 +474,32 @@ def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> 
     assert first["status"] == second["status"] == "ok"
     assert first_count == second_count == 1
     assert call_event_source_systems(config.timeline_db) == ["mango_processed_summary"]
+
+
+def test_process_b_fails_loud_when_import_validation_fails(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+
+    def fake_producer(_: CallsTwoProcessesConfig, out: Path, report: Path, since: str | None) -> dict[str, object]:
+        del since
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("", encoding="utf-8")
+        report.write_text("{}", encoding="utf-8")
+        return {"status": "ok", "events_written": 0}
+
+    def invalid_import(_: object) -> dict[str, object]:
+        return {
+            "validation_ok": False,
+            "summary": {"records_read": 1, "records_accepted": 1, "writes_applied": 1},
+            "writes": {"status_counts": {"updated": 1}},
+            "source_system": "mango_processed_summary",
+        }
+
+    report = run_process_b(config, producer_runner=fake_producer, import_runner=invalid_import)
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "import_validation_failed"
 
 
 def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Path) -> None:

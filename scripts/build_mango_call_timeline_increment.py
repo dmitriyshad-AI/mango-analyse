@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import time
 from collections import Counter
@@ -22,6 +23,8 @@ MANGO_INCREMENT_PRODUCER_SCHEMA_VERSION = "mango_call_timeline_increment_v1"
 MANGO_SOURCE_SYSTEM = "mango_processed_summary"
 MANGO_EVENT_TYPE = "mango_call"
 DEFAULT_TENANT_ID = "foton"
+FOTON_BRAND_RE = re.compile(r"фотон", re.IGNORECASE)
+UNPK_BRAND_RE = re.compile(r"(?:унпк|мфти)", re.IGNORECASE)
 HISTORY_CALL_TYPES = {"sales_call", "existing_client_progress", "technical_call"}
 UNSAFE_LINK_CLASSES = {
     IdentityMatchClass.AMBIGUOUS.value,
@@ -52,6 +55,8 @@ class SourceRow:
     direction: str | None
     duration_sec: float | None
     analysis_json: str
+    brand_evidence: str = "none"
+    brand_evidence_brands: tuple[str, ...] = ()
     amocrm_contact_id: str | None = None
     amocrm_lead_id: str | None = None
 
@@ -101,6 +106,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolution_counts: Counter[str] = Counter()
     source_counts: Counter[str] = Counter()
     call_type_counts: Counter[str] = Counter()
+    brand_evidence_counts: Counter[str] = Counter()
+    brand_counts: Counter[str] = Counter()
     examples: list[Mapping[str, Any]] = []
     with open_timeline_ro(Path(args.timeline_db)) as timeline:
         for row in filtered:
@@ -109,6 +116,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 continue
             call_type = analysis_call_type(analysis)
             call_type_counts[call_type or "unknown"] += 1
+            brand_evidence_counts[row.brand_evidence] += 1
+            brand_counts.update(row.brand_evidence_brands)
             resolution = resolve_phone_identity(timeline, args.tenant_id, row.phone)
             resolution_counts[resolution.match_class] += 1
             source_counts[row.source_kind] += 1
@@ -165,6 +174,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_counts": dict(source_counts),
         "identity_resolution_counts": dict(resolution_counts),
         "call_type_counts": dict(call_type_counts),
+        "brand_evidence_counts": dict(brand_evidence_counts),
+        "brand_counts": dict(brand_counts),
+        "max_event_at": max((event["event_at"] for event in events), default=None),
         "examples": examples,
         "duration_seconds": round(time.monotonic() - started, 3),
     }
@@ -231,6 +243,7 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
                     analysis_json=str(row.get("analysis_json") or ""),
+                    **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),
                     amocrm_lead_id=first_text(row, "amocrm_lead_id"),
                 )
@@ -276,6 +289,7 @@ def read_duplicate_source_ids(
                     direction=first_text(row, "direction", "Направление звонка"),
                     duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
                     analysis_json=str(row.get("analysis_json") or ""),
+                    **brand_evidence_fields(row),
                     amocrm_contact_id=first_text(row, "amocrm_contact_id"),
                     amocrm_lead_id=first_text(row, "amocrm_lead_id"),
                 )
@@ -317,6 +331,8 @@ def build_event_payload(
         "analysis_summary": summary,
         "call_type": call_type,
         "analysis_json": analysis,
+        "brand_evidence": row.brand_evidence,
+        "brand_evidence_brands": list(row.brand_evidence_brands),
         "amocrm_contact_id": row.amocrm_contact_id,
         "amocrm_lead_id": row.amocrm_lead_id,
         "identity_authority": "existing_timeline_increment",
@@ -332,6 +348,28 @@ def build_event_payload(
         payload["customer_id"] = resolution.customer_id
         payload["resolved_customer_id"] = resolution.customer_id
     return payload
+
+
+def brand_evidence_fields(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    evidence, brands = detect_brand_evidence(
+        first_text(row, "transcript_text", "transcript", "resolved_transcript_text") or "",
+        str(row.get("analysis_json") or ""),
+    )
+    return {"brand_evidence": evidence, "brand_evidence_brands": brands}
+
+
+def detect_brand_evidence(*texts: str) -> tuple[str, tuple[str, ...]]:
+    haystack = " ".join(texts).casefold().replace("ё", "е")
+    brands = tuple(
+        brand
+        for brand, pattern in (("foton", FOTON_BRAND_RE), ("unpk", UNPK_BRAND_RE))
+        if pattern.search(haystack)
+    )
+    if not brands:
+        return "none", ()
+    if len(brands) == 1:
+        return "single", brands
+    return "both", brands
 
 
 def resolve_phone_identity(con: sqlite3.Connection, tenant_id: str, phone: str | None) -> IdentityResolution:

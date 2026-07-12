@@ -77,6 +77,7 @@ class CallsTwoProcessesConfig:
     stage_limit: int = 20
     poll_seconds: int = 10
     max_idle_cycles: int = 30
+    freshness_max_age_minutes: int = 90
     asr_mode: str = "mlx_dual"
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
@@ -107,6 +108,7 @@ class CallsTwoProcessesConfig:
             stage_limit=int(payload.get("stage_limit", 20)),
             poll_seconds=int(payload.get("poll_seconds", 10)),
             max_idle_cycles=int(payload.get("max_idle_cycles", 30)),
+            freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
             codex_resolve_model=str(payload.get("codex_resolve_model") or "gpt-5.4"),
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
@@ -126,6 +128,8 @@ class CallsTwoProcessesConfig:
         guard_customer_timeline_output_path(timeline_db, timeline_root)
         if self.stage_limit < 1 or self.poll_seconds < 1 or self.max_idle_cycles < 1:
             raise ValueError("worker drain settings must be positive")
+        if self.freshness_max_age_minutes < 15:
+            raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
             raise ValueError("api_window_hours must be between 1 and 24")
         if self.asr_mode != "mlx_dual":
@@ -182,6 +186,14 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "reports"
 
     @property
+    def process_a_status_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_a_status.json"
+
+    @property
+    def process_b_status_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_b_status.json"
+
+    @property
     def ingest_dir(self) -> Path:
         return self.timeline_allowed_root / "mango_calls_two_processes"
 
@@ -216,6 +228,24 @@ def run_process_a(
                 run_commands=not skip_workers,
                 require_mango_credentials=not skip_capture,
             )
+            if not bool(environment.get("ok")):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "environment_preflight_failed",
+                    {"disk": disk, "environment": environment, "lock": lock_info},
+                )
+            if not bool(disk.get("ok")):
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "failed",
+                    "insufficient_disk_space",
+                    {"disk": disk, "environment": environment, "lock": lock_info},
+                )
             window_since, window_until = resolve_capture_window(config, since=since, until=until)
             capture = (
                 {"status": "skipped", "reason": "skip_capture"}
@@ -417,8 +447,12 @@ def run_process_b(
     integrity_after = sqlite_check(config.timeline_db, "integrity_check")
     source_systems_after = call_event_source_systems(config.timeline_db)
     unexpected = sorted(item for item in source_systems_after if item != "mango_processed_summary")
-    status = "ok" if quick_after == "ok" and integrity_after == "ok" and not unexpected else "failed"
-    stop_reason = "" if status == "ok" else "source_system_or_integrity_failed"
+    import_valid = imported.get("validation_ok") is True
+    status = "ok" if import_valid and quick_after == "ok" and integrity_after == "ok" and not unexpected else "failed"
+    if not import_valid:
+        stop_reason = "import_validation_failed"
+    else:
+        stop_reason = "" if status == "ok" else "source_system_or_integrity_failed"
     counters = {
         "producer": compact_producer_report(producer),
         "import": compact_import_report(imported),
@@ -688,9 +722,21 @@ def environment_preflight(
         modules_ok = True
         auth_ok = True
     mango_ok = credentials_present or not require_mango_credentials
-    if run_commands and not (mango_ok and python_ok and codex_ok and auth_ok and modules_ok):
-        raise RuntimeError("process A environment preflight failed")
+    checks = {
+        "mango_credentials": mango_ok,
+        "python_executable": python_ok,
+        "asr_modules": modules_ok,
+        "codex_binary": codex_ok,
+        "codex_auth": auth_ok,
+        "codex_network": network_ok,
+    }
+    required = ("mango_credentials", "python_executable", "asr_modules", "codex_binary", "codex_auth")
+    failed_checks = [name for name in required if run_commands and not checks[name]]
     return {
+        "ok": not failed_checks,
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "degraded_checks": ["codex_network"] if run_commands and not network_ok else [],
         "credentials_present": credentials_present,
         "mango_credentials_required": require_mango_credentials,
         "python_ok": python_ok,
@@ -715,9 +761,7 @@ def disk_preflight(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     config.pipeline_root.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(config.pipeline_root)
     required = int(config.min_free_gib * 1024**3)
-    if usage.free < required:
-        raise RuntimeError("insufficient free disk space for calls pipeline")
-    return {"free_bytes": usage.free, "required_free_bytes": required, "ok": True}
+    return {"free_bytes": usage.free, "required_free_bytes": required, "ok": usage.free >= required}
 
 
 def resolve_capture_window(
@@ -1015,6 +1059,9 @@ def call_db_counts(path: Path) -> Mapping[str, Any]:
                 "SELECT COUNT(*) FROM call_records WHERE analysis_status='done' AND analysis_json IS NOT NULL AND analysis_json != ''"
             ).fetchone()[0]
         )
+        result["max_analyzed_at"] = con.execute(
+            "SELECT MAX(started_at) FROM call_records WHERE analysis_status='done' AND analysis_json IS NOT NULL AND analysis_json != ''"
+        ).fetchone()[0]
         return result
 
 
@@ -1026,6 +1073,7 @@ def empty_call_counts() -> Mapping[str, Any]:
         "resolve_status": {},
         "analysis_status": {},
         "dead_letter_stage": {},
+        "max_analyzed_at": None,
     }
 
 
@@ -1110,6 +1158,7 @@ def finalize_report(
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     local_path = config.reports_dir / f"{run_id}_{process}.json"
     write_json(local_path, report)
+    write_stage_status(config, report)
     report["report_path"] = str(local_path)
     if config.foton_daily_dir is not None:
         daily_payload = safe_daily_payload(report)
@@ -1201,7 +1250,84 @@ def compact_producer_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
         "events_written": report.get("events_written"),
         "identity_resolution_counts": report.get("identity_resolution_counts"),
         "call_type_counts": report.get("call_type_counts"),
+        "brand_evidence_counts": report.get("brand_evidence_counts"),
+        "brand_counts": report.get("brand_counts"),
+        "max_event_at": report.get("max_event_at"),
     }
+
+
+def write_stage_status(config: CallsTwoProcessesConfig, report: Mapping[str, Any]) -> None:
+    process = str(report.get("process") or "")
+    if process not in {"process_a", "process_b"}:
+        return
+    counters = report.get("counters") if isinstance(report.get("counters"), Mapping) else {}
+    data_through: Any = None
+    checked_through: Any = None
+    if process == "process_a":
+        call_db = counters.get("call_db") if isinstance(counters.get("call_db"), Mapping) else {}
+        window = counters.get("window") if isinstance(counters.get("window"), Mapping) else {}
+        data_through = call_db.get("max_analyzed_at")
+        capture = counters.get("capture") if isinstance(counters.get("capture"), Mapping) else {}
+        checked_through = window.get("until") if capture.get("status") != "skipped" else None
+        path = config.process_a_status_path
+    else:
+        producer = counters.get("producer") if isinstance(counters.get("producer"), Mapping) else {}
+        data_through = producer.get("max_event_at")
+        checked_through = datetime.now(timezone.utc).isoformat()
+        path = config.process_b_status_path
+    previous = read_json(path)
+    if report.get("status") in {"locked", "idle"}:
+        data_through = data_through or previous.get("data_through")
+        checked_through = previous.get("checked_through")
+    write_json(
+        path,
+        {
+            "schema_version": "mango_calls_stage_status_v1",
+            "process": process,
+            "status": report.get("status"),
+            "stop_reason": report.get("stop_reason"),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_through": checked_through,
+            "data_through": data_through,
+        },
+    )
+
+
+def pipeline_freshness(
+    config: CallsTwoProcessesConfig,
+    *,
+    now: Optional[datetime] = None,
+) -> Mapping[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    threshold = config.freshness_max_age_minutes * 60
+    stages: dict[str, Any] = {}
+    for process, path in (
+        ("process_a", config.process_a_status_path),
+        ("process_b", config.process_b_status_path),
+    ):
+        state = read_json(path)
+        raw_checked = optional_text(state.get("checked_through") or state.get("checked_at"))
+        raw_data = optional_text(state.get("data_through"))
+        checked = parse_datetime(raw_checked) if raw_checked else None
+        data_at = parse_datetime(raw_data) if raw_data else None
+        checked_age = max(0.0, (current - checked).total_seconds()) if checked else None
+        data_age = max(0.0, (current - data_at).total_seconds()) if data_at else None
+        status = "missing" if data_at is None else "stale" if data_age > threshold else "fresh"
+        if state.get("status") == "failed":
+            status = "failed"
+        elif state.get("stop_reason") == "drop_missing":
+            status = "missing"
+        stages[process] = {
+            "status": status,
+            "age_seconds": round(data_age, 3) if data_age is not None else None,
+            "checked_age_seconds": round(checked_age, 3) if checked_age is not None else None,
+            "checked_through": raw_checked,
+            "data_through": raw_data,
+            "last_run_status": state.get("status"),
+            "stop_reason": state.get("stop_reason"),
+        }
+    ok = all(item["status"] == "fresh" for item in stages.values())
+    return {"schema_version": "mango_calls_freshness_v1", "status": "fresh" if ok else "stale", "stages": stages}
 
 
 def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

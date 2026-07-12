@@ -21,6 +21,13 @@ sys.modules[spec.name] = producer
 spec.loader.exec_module(producer)
 
 
+def test_brand_evidence_is_deterministic_single_both_none() -> None:
+    assert producer.detect_brand_evidence("Позвонили из центра Фотон") == ("single", ("foton",))
+    assert producer.detect_brand_evidence("УНПК МФТИ") == ("single", ("unpk",))
+    assert producer.detect_brand_evidence("Фотон и УНПК") == ("both", ("foton", "unpk"))
+    assert producer.detect_brand_evidence("Обсудили занятия") == ("none", ())
+
+
 def seed_customer_with_phone(db_path: Path, allowed_root: Path, *, customer_id: str, phone: str) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
         store.upsert_customer(
@@ -69,6 +76,7 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
               duration_sec REAL,
               analysis_status TEXT,
               analysis_json TEXT,
+              transcript_text TEXT,
               amocrm_contact_id TEXT,
               amocrm_lead_id TEXT
             )
@@ -78,16 +86,16 @@ def create_call_records_db(path: Path, rows: list[dict]) -> None:
             """
             INSERT INTO call_records (
               id, source_call_id, source_filename, source_file, started_at, phone,
-              manager_name, direction, duration_sec, analysis_status, analysis_json,
+              manager_name, direction, duration_sec, analysis_status, analysis_json, transcript_text,
               amocrm_contact_id, amocrm_lead_id
             )
             VALUES (
               :id, :source_call_id, :source_filename, :source_file, :started_at, :phone,
-              :manager_name, :direction, :duration_sec, :analysis_status, :analysis_json,
+              :manager_name, :direction, :duration_sec, :analysis_status, :analysis_json, :transcript_text,
               :amocrm_contact_id, :amocrm_lead_id
             )
             """,
-            rows,
+            [{**row, "transcript_text": row.get("transcript_text", "")} for row in rows],
         )
 
 
@@ -201,6 +209,7 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
                 "duration_sec": 120,
                 "analysis_status": "done",
                 "analysis_json": analysis(),
+                "transcript_text": "Обсуждали центр Фотон.",
                 "amocrm_contact_id": "amo-contact-1",
                 "amocrm_lead_id": "amo-lead-1",
             },
@@ -215,7 +224,7 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
                 "direction": "inbound",
                 "duration_sec": 140,
                 "analysis_status": "done",
-                "analysis_json": analysis(),
+                "analysis_json": analysis("Обсуждали УНПК."),
                 "amocrm_contact_id": None,
                 "amocrm_lead_id": None,
             },
@@ -232,6 +241,10 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
     assert events[1]["match_class"] == "ambiguous"
     assert events[1]["identity_resolution_reason"] == "multiple_existing_customers"
     assert report["identity_resolution_counts"] == {"strong_unique": 1, "ambiguous": 1}
+    assert [event["brand_evidence"] for event in events] == ["single", "single"]
+    assert [event["brand_evidence_brands"] for event in events] == [["foton"], ["unpk"]]
+    assert report["brand_evidence_counts"] == {"single": 2}
+    assert report["brand_counts"] == {"foton": 1, "unpk": 1}
     assert report["safety"]["writes_amo"] is False
     assert report["safety"]["runs_analyze"] is False
     assert "+79161112233" not in json.dumps(report, ensure_ascii=False)

@@ -6444,11 +6444,10 @@ def upsert_message(
     extracted_text_chars: int,
 ) -> None:
     now = utc_now()
-    existing = con.execute("SELECT first_ingested_at FROM messages WHERE sha256 = ?", (sha256,)).fetchone()
-    first_ingested_at = existing["first_ingested_at"] if existing else now
+    first_ingested_at = now
     con.execute(
         """
-        INSERT OR REPLACE INTO messages (
+        INSERT OR IGNORE INTO messages (
           sha256, message_id, message_date_header, message_date_iso, subject,
           from_header, to_header, cc_header, mailbox, mailbox_raw, message_kind,
           raw_eml_path, extracted_text_path, raw_size_bytes, extracted_text_chars,
@@ -6477,7 +6476,7 @@ def upsert_message(
     )
     con.execute(
         """
-        INSERT OR REPLACE INTO message_sources (
+        INSERT OR IGNORE INTO message_sources (
           source_key, message_sha256, account_label, mailbox, mailbox_raw,
           imap_seq, source_message_id, ingested_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

@@ -561,6 +561,14 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     )
 
     first = build_mail_archive_ingest(credentials=credentials, config=config, client=fake_imap)
+    archive_db = tmp_path / "archive" / "mail_archive.sqlite"
+    with sqlite3.connect(archive_db) as con:
+        timestamps_before = con.execute(
+            """
+            SELECT m.updated_at, s.ingested_at
+            FROM messages m JOIN message_sources s ON s.message_sha256 = m.sha256
+            """
+        ).fetchone()
     second = build_mail_archive_ingest(credentials=credentials, config=config, client=fake_imap)
 
     assert first["raw_eml_written"] == 1
@@ -569,11 +577,17 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     assert second["attachments_written"] == 0
     assert second["text_files_written"] == 0
 
-    archive_db = tmp_path / "archive" / "mail_archive.sqlite"
     with sqlite3.connect(archive_db) as con:
         assert con.execute("select count(*) from messages").fetchone()[0] == 1
         assert con.execute("select count(*) from message_sources").fetchone()[0] == 1
         assert con.execute("select count(*) from attachments").fetchone()[0] == 1
+        timestamps_after = con.execute(
+            """
+            SELECT m.updated_at, s.ingested_at
+            FROM messages m JOIN message_sources s ON s.message_sha256 = m.sha256
+            """
+        ).fetchone()
+    assert timestamps_after == timestamps_before
 
     ingest_report_text = (tmp_path / "archive" / "mail_ingest_report.json").read_text(
         encoding="utf-8"

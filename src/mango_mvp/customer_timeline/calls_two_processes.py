@@ -195,6 +195,10 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "state" / "process_b_status.json"
 
     @property
+    def process_b_cursor_path(self) -> Path:
+        return self.pipeline_root / "state" / "process_b_cursor.json"
+
+    @property
     def ingest_dir(self) -> Path:
         return self.timeline_allowed_root / "mango_calls_two_processes"
 
@@ -401,6 +405,17 @@ def run_process_b(
     config.ingest_dir.mkdir(parents=True, exist_ok=True)
     if not config.ready_db.exists():
         return finalize_report(config, run_id, "process_b", "idle", "drop_missing", {"events": 0})
+    drop_fingerprint = ready_drop_fingerprint(config)
+    previous_cursor = read_json(config.process_b_cursor_path)
+    if drop_fingerprint.get("sha256") and previous_cursor.get("sha256") == drop_fingerprint.get("sha256"):
+        return finalize_report(
+            config,
+            run_id,
+            "process_b",
+            "idle",
+            "drop_unchanged",
+            {"events": 0, "drop": drop_fingerprint, "cursor_before": previous_cursor},
+        )
     quick_before = sqlite_check(config.timeline_db, "quick_check")
     source_systems_before = call_event_source_systems(config.timeline_db)
     cursor = mango_processed_cursor(config.timeline_db, tenant_id=config.tenant_id)
@@ -465,7 +480,19 @@ def run_process_b(
         "unexpected_source_systems": unexpected,
         "cursor_before": cursor,
         "producer_scan_mode": "full_drop_dedupe",
+        "drop": drop_fingerprint,
     }
+    if status == "ok":
+        write_json(
+            config.process_b_cursor_path,
+            {
+                "schema_version": "mango_calls_process_b_cursor_v1",
+                "sha256": drop_fingerprint.get("sha256"),
+                "size_bytes": drop_fingerprint.get("size_bytes"),
+                "data_through": counters["producer"].get("max_event_at"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
     return finalize_report(config, run_id, "process_b", status, stop_reason, counters)
 
 
@@ -1061,6 +1088,23 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
     }
     write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
     return manifest
+
+
+def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
+    manifest = read_json(config.ready_db.with_suffix(".manifest.json"))
+    actual_sha = sha256_file(config.ready_db)
+    manifest_sha = optional_text(manifest.get("sha256"))
+    manifest_size = positive_int(manifest.get("size_bytes")) or None
+    actual_size = config.ready_db.stat().st_size
+    return {
+        "sha256": actual_sha,
+        "size_bytes": actual_size,
+        "manifest_sha256": manifest_sha,
+        "manifest_size_bytes": manifest_size,
+        "manifest_mismatch": bool(
+            manifest_sha and (manifest_sha != actual_sha or manifest_size not in {None, actual_size})
+        ),
+    }
 
 
 def cleanup_sqlite_sidecars(path: Path) -> None:

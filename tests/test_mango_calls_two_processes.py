@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     process_lease,
     pipeline_stages,
     publish_ready_db,
+    read_json,
     read_known_processed_ids,
     run_parallel_pipeline_workers,
     run_process_b,
@@ -486,7 +487,9 @@ def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> 
             con.execute("SELECT COUNT(*) FROM timeline_events WHERE event_type='mango_call'").fetchone()[0]
         )
 
-    assert first["status"] == second["status"] == "ok"
+    assert first["status"] == "ok"
+    assert second["status"] == "idle"
+    assert second["stop_reason"] == "drop_unchanged"
     assert first_count == second_count == 1
     assert call_event_source_systems(config.timeline_db) == ["mango_processed_summary"]
 
@@ -524,6 +527,13 @@ def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Pat
     store.close()
     first = run_process_b(config)
     assert first["status"] == "ok"
+    old_sha = read_json(config.process_b_cursor_path)["sha256"]
+    write_json(
+        config.ready_db.with_suffix(".manifest.json"),
+        {"sha256": old_sha, "size_bytes": config.ready_db.stat().st_size},
+    )
+    with sqlite3.connect(config.ready_db) as con:
+        con.execute("UPDATE call_records SET duration_sec=61 WHERE id=1")
     seen_since: list[str | None] = []
 
     def fake_producer(_: CallsTwoProcessesConfig, out: Path, report: Path, since: str | None) -> dict[str, object]:

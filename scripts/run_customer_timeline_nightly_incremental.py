@@ -84,7 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = run_nightly_incremental(config_from_json(Path(args.config)))
     output = summarize_report(report) if args.summary_only else report
     print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    failed_required = report.get("failed_required_sources") or []
+    return 0 if report.get("gate_passed") is not False and not failed_required else 1
 
 
 if __name__ == "__main__":

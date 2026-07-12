@@ -14,6 +14,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
     single_run_lock,
 )
+from scripts import run_customer_timeline_nightly_incremental as nightly_cli
 
 
 NOW = datetime(2026, 6, 21, 10, 0, tzinfo=timezone.utc)
@@ -317,6 +318,38 @@ def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failu
     assert cursor is not None
     assert cursor.metadata["consecutive_failures"] == 2
     assert cursor.metadata["alert"] is True
+
+
+def test_nightly_incremental_cli_returns_nonzero_when_required_gate_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(tmp_path / "timeline.sqlite"),
+                "journal_path": str(tmp_path / "journal.jsonl"),
+                "sources": [
+                    {
+                        "source_system": "mail_archive_stage2",
+                        "path": str(tmp_path / "missing.jsonl"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        nightly_cli,
+        "run_nightly_incremental",
+        lambda _config: {
+            "gate_passed": False,
+            "failed_required_sources": ["mail_archive_stage2"],
+            "overall_status": "partial",
+        },
+    )
+
+    assert nightly_cli.main(["--config", str(config), "--summary-only"]) == 1
 
 
 def test_nightly_incremental_fail_soft_keeps_other_sources_running(tmp_path: Path) -> None:

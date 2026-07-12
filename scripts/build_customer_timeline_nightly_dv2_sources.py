@@ -111,6 +111,7 @@ def build_mail_increment(
     since: datetime,
     text_limit: int,
     timeline_db: Path | None = None,
+    archive_db_paths: Sequence[Path] | None = None,
 ) -> Mapping[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -118,9 +119,7 @@ def build_mail_increment(
     stage2_paths = [
         source_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     ]
-    archive_dbs = [
-        source_root / CANONICAL_MAIL_ARCHIVE_DB,
-    ]
+    archive_dbs = list(archive_db_paths or (source_root / CANONICAL_MAIL_ARCHIVE_DB,))
     inputs: list[Mapping[str, Any]] = []
     for path in stage2_paths:
         count_before = len(rows)

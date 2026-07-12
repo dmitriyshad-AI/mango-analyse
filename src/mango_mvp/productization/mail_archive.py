@@ -292,6 +292,7 @@ class MailArchiveIngestConfig:
     internal_domains: Sequence[str] = DEFAULT_INTERNAL_DOMAINS
     extracted_text_max_chars: int = 250_000
     exclude_message_sha256s: Sequence[str] = ()
+    allow_unlimited: bool = False
 
 
 @dataclass(frozen=True)
@@ -918,7 +919,8 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
             f"{'batch' if config.allow_large_batch else 'pilot'}_window_days_must_be_"
             f"{window_min}_to_{window_max}"
         )
-    if not (messages_min <= int(config.max_messages) <= messages_max):
+    unlimited_batch = config.allow_large_batch and int(config.max_messages) == 0
+    if not unlimited_batch and not (messages_min <= int(config.max_messages) <= messages_max):
         blocking_risks.append(
             f"{'batch' if config.allow_large_batch else 'pilot'}_max_messages_must_be_"
             f"{messages_min}_to_{messages_max}"
@@ -1044,7 +1046,7 @@ def build_mail_archive_ingest(
         "account_label": config.account_label,
         "host": credentials.host,
         "port": credentials.port,
-        "email": credentials.email_address,
+        "email_present": bool(normalize_email(credentials.email_address)),
         "mailbox": config.mailbox_label,
         "mailbox_raw": config.mailbox,
         "since_days": since_days,
@@ -1053,7 +1055,8 @@ def build_mail_archive_ingest(
         "before_imap": before_imap,
         "window_days": since_days - before_days if before_days is not None else since_days,
         "search_criteria": search_criteria,
-        "max_messages": max_messages,
+        "max_messages": None if config.allow_unlimited else max_messages,
+        "selection_truncated": False,
         "safety": {
             "readonly_select": True,
             "fetch_uses_body_peek": True,
@@ -1104,7 +1107,12 @@ def build_mail_archive_ingest(
         report["search_status"] = search_status
         message_ids = parse_search_ids(search_status, search_data)
         report["messages_found_since"] = len(message_ids)
-        selected_ids = message_ids[-max_messages:] if max_messages > 0 else []
+        selected_ids = (
+            message_ids
+            if config.allow_unlimited
+            else message_ids[-max_messages:] if max_messages > 0 else []
+        )
+        report["selection_truncated"] = len(selected_ids) < len(message_ids)
         report["messages_attempted"] = len(selected_ids)
 
         def record_fetched_message(fetched: Mapping[str, Any]) -> None:

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mango.customer-timeline-mail-download</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/scripts/run_customer_timeline_codex_task.py</string>
+    <string>--task</string>
+    <string>mail-download</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MANGO_MAIL_DATA_ROOT</key>
+    <string>/Users/dmitrijfabarisov/Projects/Mango analyse</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dmitrijfabarisov/Projects/Mango_timeline_main_consolidation/.codex_local/staging/mail_pipeline/mail-download.launchd.stderr.log</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ThrottleInterval</key>
+  <integer>3600</integer>
+</dict>
+</plist>

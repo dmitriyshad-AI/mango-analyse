@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import plistlib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Sequence
+
+import pytest
+
+from scripts import run_customer_timeline_mail_download as download
+from scripts import run_customer_timeline_mail_process as process
+from scripts import run_customer_timeline_mail_import as mail_import
+
+
+class FakeDiscoveryImap:
+    def __init__(self, *, host: str, port: int) -> None:
+        assert host == "mail.example.test"
+        assert port == 993
+
+    def login(self, _user: str, _password: str) -> tuple[str, Sequence[bytes]]:
+        return "OK", []
+
+    def list(self) -> tuple[str, Sequence[bytes]]:
+        return "OK", [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren \\Sent) "/" "Sent"',
+            b'(\\HasNoChildren) "/" "Sent Messages"',
+        ]
+
+    def logout(self) -> tuple[str, Sequence[bytes]]:
+        return "BYE", []
+
+
+def test_mail_download_discovers_exact_required_mailboxes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(download, "ImapLibClient", FakeDiscoveryImap)
+
+    result = download.discover_required_mailboxes(
+        host="mail.example.test",
+        port=993,
+        email_address="hidden@example.test",
+        password="hidden",
+        sent_name="Sent",
+    )
+
+    assert result == {
+        "inbox": {"name": "INBOX", "raw": '"INBOX"'},
+        "sent": {"name": "Sent", "raw": '"Sent"'},
+    }
+
+
+def test_mail_download_fails_on_ambiguous_sent_mailbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Ambiguous(FakeDiscoveryImap):
+        def list(self) -> tuple[str, Sequence[bytes]]:
+            return "OK", [b'() "/" "INBOX"', b'() "/" "Sent"', b'() "/" "Sent"']
+
+    monkeypatch.setattr(download, "ImapLibClient", Ambiguous)
+
+    with pytest.raises(RuntimeError, match="mailbox_sent_match_count=2"):
+        download.discover_required_mailboxes(
+            host="mail.example.test",
+            port=993,
+            email_address="hidden@example.test",
+            password="hidden",
+            sent_name="Sent",
+        )
+
+
+def test_mail_download_dry_run_has_no_network_or_secret_requirement(tmp_path: Path) -> None:
+    report = download.execute(
+        download.parse_args(
+            [
+                "--code-root",
+                str(download.ROOT),
+                "--data-root",
+                str(tmp_path / "data"),
+                "--state-dir",
+                str(tmp_path / "state"),
+            ]
+        )
+    )
+
+    assert report["status"] == "dry_run"
+    assert report["network_calls"] is False
+    assert report["max_messages"] is None
+    assert not (tmp_path / "state").exists()
+
+
+def test_mail_download_updates_cursor_only_after_both_mailboxes_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = tmp_path / "mail.env"
+    secret.write_text("unused=true\n", encoding="utf-8")
+    secret.chmod(0o600)
+    monkeypatch.setattr(
+        download,
+        "load_dotenv_file",
+        lambda _path: __import__("os").environ.update(
+            {
+                "MAIL_IMAP_EMAIL": "hidden@example.test",
+                "MAIL_IMAP_PASSWORD": "hidden",
+                "MAIL_IMAP_HOST": "mail.example.test",
+                "MAIL_IMAP_PORT": "993",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        download,
+        "discover_required_mailboxes",
+        lambda **_kwargs: {
+            "inbox": {"name": "INBOX", "raw": '"INBOX"'},
+            "sent": {"name": "Sent", "raw": '"Sent"'},
+        },
+    )
+    monkeypatch.setattr(
+        download,
+        "run_ingest",
+        lambda **_kwargs: (
+            0,
+            {
+                "messages_found_since": 2,
+                "messages_attempted": 2,
+                "messages_inserted_or_seen": 2,
+                "errors": [],
+                "selection_truncated": False,
+            },
+        ),
+    )
+
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    report = download.execute(
+        download.parse_args(
+            [
+                "--apply",
+                "--code-root",
+                str(download.ROOT),
+                "--data-root",
+                str(tmp_path / "data"),
+                "--state-dir",
+                str(state),
+                "--dotenv",
+                str(secret),
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert set(report["mailbox_reports"]) == {"inbox", "sent"}
+    assert json.loads((state / "mail_download_cursor.json").read_text())["cursor_kind"] == (
+        "overlap_waterline_sha"
+    )
+
+
+def test_mail_download_failure_does_not_advance_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = tmp_path / "mail.env"
+    secret.write_text("unused=true\n", encoding="utf-8")
+    secret.chmod(0o600)
+    monkeypatch.setattr(
+        download,
+        "load_dotenv_file",
+        lambda _path: __import__("os").environ.update(
+            {"MAIL_IMAP_EMAIL": "x", "MAIL_IMAP_PASSWORD": "x"}
+        ),
+    )
+    monkeypatch.setattr(
+        download,
+        "discover_required_mailboxes",
+        lambda **_kwargs: {
+            "inbox": {"name": "INBOX", "raw": '"INBOX"'},
+            "sent": {"name": "Sent", "raw": '"Sent"'},
+        },
+    )
+    calls = iter(
+        [
+            (0, {"messages_attempted": 1, "messages_inserted_or_seen": 1, "errors": []}),
+            (1, {"messages_attempted": 1, "errors": [{"error": "safe"}]}),
+        ]
+    )
+    monkeypatch.setattr(download, "run_ingest", lambda **_kwargs: next(calls))
+
+    state = tmp_path / "state"
+    report = download.execute(
+        download.parse_args(
+            [
+                "--apply",
+                "--code-root",
+                str(download.ROOT),
+                "--data-root",
+                str(tmp_path / "data"),
+                "--state-dir",
+                str(state),
+                "--dotenv",
+                str(secret),
+            ]
+        )
+    )
+
+    assert report["status"] == "failed"
+    assert not (state / "mail_download_cursor.json").exists()
+
+
+def _write_archive(path: Path, *, sha: str, event_at: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            CREATE TABLE messages (
+              sha256 TEXT PRIMARY KEY,
+              message_date_iso TEXT,
+              subject TEXT,
+              message_kind TEXT,
+              mailbox TEXT,
+              extracted_text_path TEXT,
+              updated_at TEXT
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sha, event_at, "Тема", "external", "INBOX", "", event_at),
+        )
+
+
+def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        con.executescript(
+            """
+            CREATE TABLE ingestion_cursors (
+              tenant_id TEXT,
+              source_system TEXT,
+              last_cursor_ts TEXT
+            );
+            CREATE TABLE timeline_events (
+              source_id TEXT,
+              customer_id TEXT,
+              match_status TEXT,
+              confidence REAL,
+              record_json TEXT,
+              source_system TEXT
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO ingestion_cursors VALUES (?, ?, ?)",
+            ("foton", "mail_archive_stage2", cursor),
+        )
+
+
+def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
+    incoming = data_root / download.CANONICAL_RELATIVE_ROOT / "incoming/regru_edu/inbox/mail_archive.sqlite"
+    _write_archive(canonical, sha="a" * 64, event_at="2026-07-12T10:02:00+00:00")
+    _write_archive(incoming, sha="b" * 64, event_at="2026-07-12T10:03:00+00:00")
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    state.mkdir(parents=True)
+    runtime = download.runtime_identity(download.ROOT)
+    download.atomic_write_json(
+        state / "mail_download_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "truncated": False,
+            "errors": 0,
+            "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            "archive_db_paths": [str(incoming)],
+        },
+    )
+
+    report = process.execute(
+        process.parse_args(
+            [
+                "--code-root",
+                str(download.ROOT),
+                "--data-root",
+                str(data_root),
+                "--state-dir",
+                str(state),
+                "--timeline-db",
+                str(timeline),
+            ]
+        )
+    )
+
+    assert report["status"] == "ok"
+    assert report["cursor_start_with_overlap"] == "2026-07-12T10:00:00+00:00"
+    assert report["rows_written"] == 2
+    assert len(report["archive_databases"]) == 2
+    config = json.loads(Path(report["config"]).read_text(encoding="utf-8"))
+    assert [item["source_system"] for item in config["sources"]] == ["mail_archive_stage2"]
+
+
+def test_mail_process_requires_explicit_bootstrap_when_cursor_missing(tmp_path: Path) -> None:
+    timeline = tmp_path / "timeline.sqlite"
+    with sqlite3.connect(timeline):
+        pass
+
+    with pytest.raises(RuntimeError, match="mail_cursor_unavailable_and_no_bootstrap"):
+        process.read_cursor(timeline, bootstrap=None, overlap_seconds=300)
+
+
+def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path) -> None:
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    with pytest.raises(RuntimeError, match="timeline_db_outside_codex_staging"):
+        process.staging_root_for(
+            state_dir=state,
+            timeline_db=tmp_path / "product_data/customer_timeline/customer_timeline_prod_1/db.sqlite",
+        )
+    with pytest.raises(RuntimeError, match="mail_state_dir_not_under_codex_staging"):
+        process.staging_root_for(
+            state_dir=tmp_path / "shared/mail_pipeline",
+            timeline_db=tmp_path / "shared/timeline.sqlite",
+        )
+
+
+def test_mail_process_rejects_failed_download_manifest(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "runtime": {"head": "x", "worktree": "y"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="download_manifest_not_ok"):
+        process.load_success_manifest(
+            path,
+            expected_runtime={"head": "x", "worktree": "y"},
+            max_age_hours=4,
+        )
+
+
+def test_mail_import_rejects_non_mail_config(tmp_path: Path) -> None:
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    process_dir = state / "process"
+    process_dir.mkdir(parents=True)
+    runtime = {"head": "abc", "worktree": "tree"}
+    config = process_dir / "mail_incremental_config.json"
+    download.atomic_write_json(
+        config,
+        {
+            "runtime": runtime,
+            "timeline_db": str(tmp_path / "timeline.sqlite"),
+            "sources": [
+                {"source_system": "mail_archive_stage2", "required": True},
+                {"source_system": "amocrm_snapshot", "required": True},
+            ],
+        },
+    )
+    download.atomic_write_json(
+        state / "mail_process_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "config": str(config),
+            "config_sha256": download.sha256_file(config),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="process_config_not_mail_only"):
+        mail_import.load_inputs(state_dir=state, runtime=runtime, max_age_hours=4)
+
+
+def test_mail_import_is_fail_loud_when_incremental_gate_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    process_dir = state / "process"
+    process_dir.mkdir(parents=True)
+    runtime = download.runtime_identity(download.ROOT)
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    source = process_dir / "increment.jsonl"
+    source.write_text("", encoding="utf-8")
+    config = process_dir / "mail_incremental_config.json"
+    download.atomic_write_json(
+        config,
+        {
+            "runtime": runtime,
+            "timeline_db": str(timeline),
+            "allowed_root": str(tmp_path / ".codex_local/staging"),
+            "journal_path": str(process_dir / "mail_incremental_journal.jsonl"),
+            "sources": [
+                {
+                    "source_system": "mail_archive_stage2",
+                    "normalizer": "mail_archive_stage2",
+                    "required": True,
+                    "path": str(source),
+                }
+            ],
+        },
+    )
+    download.atomic_write_json(
+        state / "mail_process_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "config": str(config),
+            "config_sha256": download.sha256_file(config),
+            "rows_written": 0,
+            "output_jsonl": str(source),
+            "output_sha256": download.sha256_file(source),
+        },
+    )
+
+    class Result:
+        returncode = 1
+        stdout = json.dumps(
+            {
+                "overall_status": "partial",
+                "gate_passed": False,
+                "failed_required_sources": ["mail_archive_stage2"],
+            }
+        )
+
+    monkeypatch.setattr(mail_import, "run_incremental", lambda *_args, **_kwargs: Result())
+
+    report = mail_import.execute(
+        mail_import.parse_args(
+            ["--code-root", str(download.ROOT), "--state-dir", str(state)]
+        )
+    )
+
+    assert report["status"] == "failed"
+    assert report["gate_passed"] is False
+    assert report["cursor_before"] == report["cursor_after"]
+
+
+def test_mail_launchd_templates_are_ordered_and_use_one_worktree() -> None:
+    deploy = download.ROOT / "deploy/customer_timeline_daily_captures"
+    expected = {
+        "download": ("mail-download", 0),
+        "process": ("mail-process", 30),
+        "import": ("mail-import", 50),
+    }
+    worktrees = set()
+    for suffix, (task, minute) in expected.items():
+        path = deploy / f"com.mango.customer-timeline-mail-{suffix}.plist.template"
+        with path.open("rb") as fh:
+            payload = plistlib.load(fh)
+        assert payload["ProgramArguments"][-2:] == ["--task", task]
+        assert payload["StartCalendarInterval"] == {"Hour": 2, "Minute": minute}
+        worktrees.add(payload["WorkingDirectory"])
+    assert worktrees == {str(download.ROOT)}

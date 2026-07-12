@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
 LOG_ROOT = ROOT / ".codex_local" / "staging" / "codex_dev_tasks"
 NIGHTLY_DV2_CONFIG = ROOT / ".codex_local" / "staging" / "nightly_service" / "customer_timeline_nightly_service_dv2_config.json"
+MAIL_STATE_DIR = ROOT / ".codex_local" / "staging" / "mail_pipeline"
+MAIL_DATA_ROOT = Path(os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Projects/Mango analyse"))
 PROD_TIMELINE_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
@@ -37,7 +39,80 @@ class TaskSpec:
     stop_reason: str = ""
 
 
+def current_runtime() -> Mapping[str, str]:
+    return {
+        "head": subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+        "worktree": str(ROOT),
+    }
+
+
+def stage_manifest_stop_reason(path: Path, *, max_age_hours: float = 4.0) -> str:
+    if not path.is_file():
+        return f"stage manifest is missing: {path}"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        finished = datetime.fromisoformat(str(payload["finished_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return "stage manifest is invalid"
+    if payload.get("status") != "ok":
+        return "stage manifest status is not ok"
+    if payload.get("runtime") != current_runtime():
+        return "stage manifest runtime does not match current HEAD/worktree"
+    age = datetime.now(timezone.utc) - finished.astimezone(timezone.utc)
+    if age < timedelta(0) or age > timedelta(hours=max_age_hours):
+        return "stage manifest is stale"
+    return ""
+
+
 def build_task_spec(task: str, *, tallanto_phone_limit: int) -> TaskSpec:
+    if task == "mail-download":
+        return TaskSpec(
+            task=task,
+            command=(
+                sys.executable,
+                "scripts/run_customer_timeline_mail_download.py",
+                "--apply",
+                "--data-root",
+                str(MAIL_DATA_ROOT),
+                "--state-dir",
+                str(MAIL_STATE_DIR),
+            ),
+            expected_output=MAIL_STATE_DIR / "mail_download_manifest.json",
+        )
+    if task == "mail-process":
+        download_manifest = MAIL_STATE_DIR / "mail_download_manifest.json"
+        return TaskSpec(
+            task=task,
+            command=(
+                sys.executable,
+                "scripts/run_customer_timeline_mail_process.py",
+                "--data-root",
+                str(MAIL_DATA_ROOT),
+                "--state-dir",
+                str(MAIL_STATE_DIR),
+            ),
+            expected_output=MAIL_STATE_DIR / "mail_process_manifest.json",
+            stop_reason=stage_manifest_stop_reason(download_manifest),
+        )
+    if task == "mail-import":
+        process_manifest = MAIL_STATE_DIR / "mail_process_manifest.json"
+        stop_reason = stage_manifest_stop_reason(process_manifest)
+        return TaskSpec(
+            task=task,
+            command=(
+                sys.executable,
+                "scripts/run_customer_timeline_mail_import.py",
+                "--state-dir",
+                str(MAIL_STATE_DIR),
+            ),
+            expected_output=MAIL_STATE_DIR / "mail_import_manifest.json",
+            stop_reason=stop_reason,
+        )
     if task == "mail-capture":
         return TaskSpec(
             task=task,
@@ -137,9 +212,16 @@ def status_from_payload(payload: Mapping[str, Any], rc: int, stop_reason: str) -
         return "stopped", status
     if payload.get("partial_failure") is True:
         return "stopped", "partial_failure"
+    if payload.get("gate_passed") is False:
+        return "stopped", "gate_failed"
+    if status == "partial":
+        return "stopped", "partial"
     failed_required = payload.get("failed_required_steps")
     if isinstance(failed_required, Sequence) and not isinstance(failed_required, (str, bytes)) and failed_required:
         return "stopped", "failed_required_steps"
+    failed_sources = payload.get("failed_required_sources")
+    if isinstance(failed_sources, Sequence) and not isinstance(failed_sources, (str, bytes)) and failed_sources:
+        return "stopped", "failed_required_sources"
     return "ok", ""
 
 
@@ -302,7 +384,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--task",
         required=True,
-        choices=("mail-capture", "mango-capture", "tallanto-api-capture", "nightly-warehouse"),
+        choices=(
+            "mail-download",
+            "mail-process",
+            "mail-import",
+            "mail-capture",
+            "mango-capture",
+            "tallanto-api-capture",
+            "nightly-warehouse",
+        ),
     )
     parser.add_argument("--tallanto-phone-limit", type=int, default=250)
     args = parser.parse_args(argv)

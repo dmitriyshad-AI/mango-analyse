@@ -1,0 +1,7 @@
+Independent GPT-5.5 high review:
+
+- Stage A PASS after removing raw mailbox email from mail_ingest_report.json.
+- Stages B/C PASS after restricting writes to .codex_local/staging, moving all input reads under the common lock, validating config/source/journal paths and SHA, and making required-source failures return non-zero.
+- DECISIONS_LOG semantic union preserves all reviewed decisions and has 91 unique IDs.
+- Worktree rule and three launchd templates accepted after registry refresh and explicit deprecation inside the old mail-capture plist.
+- Host launchd cutover remains prohibited until three manual clean cycles and separate owner approval.

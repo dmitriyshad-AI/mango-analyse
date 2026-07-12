@@ -564,9 +564,12 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
         assert con.execute("select count(*) from message_sources").fetchone()[0] == 1
         assert con.execute("select count(*) from attachments").fetchone()[0] == 1
 
-    assert "not-written" not in (tmp_path / "archive" / "mail_ingest_report.json").read_text(
+    ingest_report_text = (tmp_path / "archive" / "mail_ingest_report.json").read_text(
         encoding="utf-8"
     )
+    assert "not-written" not in ingest_report_text
+    assert "school@kmipt.ru" not in ingest_report_text
+    assert json.loads(ingest_report_text)["email_present"] is True
     assert b"not-written" not in archive_db.read_bytes()
 
     verification = verify_mail_archive_pilot(
@@ -646,6 +649,35 @@ def test_mail_archive_zero_max_messages_fetches_nothing(tmp_path: Path) -> None:
     assert report["messages_attempted"] == 0
     assert report["raw_eml_written"] == 0
     assert fake_imap.fetch_queries == []
+
+
+def test_mail_archive_explicit_unlimited_fetches_all_messages(tmp_path: Path) -> None:
+    fake_imap = FakeImapClient([_raw_message(), _raw_message(message_id="second@example.com")])
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials(
+            host="mail.example.test",
+            port=993,
+            email_address="school@kmipt.ru",
+            password="not-written",
+        ),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "archive",
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=3,
+            max_messages=0,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+            allow_unlimited=True,
+        ),
+        client=fake_imap,
+    )
+
+    assert report["max_messages"] is None
+    assert report["messages_found_since"] == 2
+    assert report["messages_attempted"] == 2
+    assert report["selection_truncated"] is False
 
 
 def test_mail_archive_detects_transient_imap_fetch_errors() -> None:

@@ -1,0 +1,15 @@
+Focused mail pipeline suite:
+93 passed in 2.86s
+
+Full repository suite:
+4671 passed, 5 skipped, 2 warnings in 136.04s
+
+Warnings:
+- urllib3 LibreSSL environment warning.
+- Expected fail-soft missing canonical DB warning in CRM export package test.
+
+Static checks:
+- git diff --check: pass
+- py_compile changed Python modules: pass
+- plutil -lint all three new mail templates and deprecated legacy template: pass
+- project preflight: pass

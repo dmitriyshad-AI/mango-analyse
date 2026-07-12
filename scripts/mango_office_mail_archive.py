@@ -262,6 +262,7 @@ def run_ingest(args: argparse.Namespace) -> int:
                 internal_domains=tuple(args.internal_domain or []),
                 extracted_text_max_chars=args.extracted_text_max_chars,
                 exclude_message_sha256s=tuple(excluded_sha256s),
+                allow_unlimited=args.allow_large_batch and args.max_messages == 0,
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -694,6 +695,7 @@ def print_summary(report: Mapping[str, object]) -> None:
         "window_days",
         "search_criteria",
         "max_messages",
+        "selection_truncated",
         "messages_found_since",
         "messages_attempted",
         "messages_inserted_or_seen",

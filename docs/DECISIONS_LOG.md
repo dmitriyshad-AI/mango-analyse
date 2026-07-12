@@ -240,7 +240,10 @@ Live-запись в AMO/Tallanto в рамках этого обновлени�
 
 ## 2026-05-23
 
-### D-022. Current runtime переключён на Mango update 2026-05-21 v4
+### D-088. Current runtime переключён на Mango update 2026-05-21 v4
+
+Перенумеровано 2026-07-12 из второго конфликтующего `D-022`; содержание
+решения сохранено без смысловых изменений.
 
 Решение: текущая точка правды для звонков и AMO-ready слоя:
 
@@ -1813,3 +1816,94 @@ Cleanup refs после deploy: после archive-tag в обоих remote уд
 `codex/email-pipeline-restore` намеренно сохранена, потому что в её worktree
 обнаружены незакоммиченные изменения параллельного трека; чужие изменения не
 трогались.
+
+## 2026-07-12
+
+### D-087. Frame gate defects use existing semantics and remain default-OFF
+
+Решение 2026-07-11:
+
+- manager-action gate принимает inline SemanticFrame только с явно переданной
+  актуальной схемой; неизвестная или пустая схема fail-closed;
+- P0 при manager-gate не просит ФИО: сохраняется manager-only и zero-collect
+  текст;
+- Z2 делает не более одной регенерации длинного почти дословного повтора;
+  поздний antirepeat остаётся страховкой;
+- missed-call использует уже замороженный catalog pattern, новая понимающая
+  регулярка не добавляется;
+- registration-data-complete опирается только на client-confirmed provenance
+  текущего хода и структурный phone_known канала;
+- presale refund может снять ложный model-P0 только для существующего
+  benign-hypothetical класса; post-payment/refund dispute остаётся P0.
+
+Все новые поведенческие режимы default-OFF и включаются только в измерительном
+плече до отдельного решения владельца.
+
+Источник переноса: `codex/frame-gate-3-defects`, исходный номер `D-087`,
+снимок блока `7239a84155e5`.
+
+### D-089. Codex workflow skills are mandatory gates for repeated failure classes
+
+Решение: добавлены read-only skill-скрипты в `scripts/skills/`, чтобы закрыть
+повторяющиеся ошибки процесса без новых live-write путей.
+
+- `tz_lint.py` запускается при взятии любого ТЗ; первая строка ревью должна
+  содержать PASS/FAIL линта.
+- `inventory_before_build.py` прикладывается к ревью каждого ТЗ, где предлагается
+  «построить X», чтобы сначала проверить уже существующие символы/скрипты/историю.
+- `fail_raw_export.py` обязателен при любом FAIL в прогоне: без сырья по ходам,
+  rationale, fact/number audit и контексту вердикт не принимается.
+- `wappi_draft_loop_replay.py` обязателен перед изменениями Wappi draft-loop.
+- `live_truth.py` запускается перед публикацией, включением флагов и в daily
+  сводке, чтобы фиксировать фактический PID/worktree/HEAD/env/DB-path.
+
+Все скрипты переиспользуют существующие источники истины: парсер шапки из
+`scripts/preflight.py`, маску ПДн из `scripts/make_audit_pack.py`, инвентарь
+`build_project_inventory.py`, Graphify query и Wappi ops. Второй парсер,
+сканер или маскер для этих задач не вводится.
+
+Источник переноса: `codex/skills-top5-tools`, исходный конфликтующий номер
+`D-069`, снимок блока `9c1e9f97ea5c`.
+
+### D-090. First-draft gate uses a bounded ON-only replay; full memory exam remains prohibited
+
+Решение владельца 2026-07-10: полный экзамен памяти `100x2` не запускать.
+Для первого смыслового контроля разрешён только ON-прогон максимум на пяти
+диалогах; OFF-плечо не запускается. Сырые replay-данные остаются в
+`.codex_local`, клиентские отправки и внешние CRM-write отсутствуют.
+
+Операционные предохранители этого захода:
+
+- prefix-replay стенд сохранён коммитом `b34fb439` и архивным тегом
+  `archive/email-pipeline-restore-memory-prefix-20260710` в `origin` и
+  `yandex`;
+- LaunchAgent `com.mango.calls-two-processes`, который повторно падал на
+  environment preflight и не выполнял write-операций, выгружен и помечен
+  disabled; plist и runtime-данные сохранены;
+- полный rollback-контракт пары старого снимка и старого live-кода:
+  `prod_swap4_epoch1_20260710T103746Z_38be4961` +
+  `2cc82b1355efd911bd16357fa954584a89ff5763`;
+- rollback dry-run обязан читать backup DB и сверять `quick_check`, FK,
+  SHA-256, counts и `user_version` с `build_manifest.json`, не меняя prod.
+
+Источник переноса: `codex/email-pipeline-restore`, исходный конфликтующий номер
+`D-085`, снимок блока `f12c56fd449f`.
+
+### D-091. Mail runs as three fail-loud stages in one dedicated worktree
+
+Решение: почтовое обновление Customer Timeline состоит из трёх независимых
+задач: read-only IMAP download, обработка через существующий
+`build_mail_increment()`, импорт через существующий `nightly_incremental`.
+Каждая следующая стадия проверяет свежий успешный манифест, HEAD и worktree
+предыдущей. Усечение или ошибка обязательного источника возвращают ненулевой
+код; курсор обновляется только после полного успеха.
+
+Гарантия загрузки называется `overlap_waterline_sha`: это перекрывающееся окно
+и SHA-дедупликация, а не точный IMAP UID-курсор. Расписание можно установить
+только после трёх чистых ручных циклов, audit pack и отдельного решения
+владельца. Боевая Timeline, AMO, Tallanto и клиентские каналы не меняются.
+
+Операционное правило: один активный worktree принадлежит одному исполнителю и
+одной крупной задаче. Чужой worktree, его `.codex_local` и runtime нельзя
+переключать или чистить. Новые номера решений выделяются только после проверки
+актуального журнала и активных веток на конфликт.

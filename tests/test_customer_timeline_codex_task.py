@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -44,6 +45,50 @@ def test_status_marks_not_configured_as_stopped() -> None:
 
     assert status == "stopped"
     assert reason == "not_configured"
+
+
+def test_status_marks_failed_incremental_gate_as_stopped() -> None:
+    status, reason = module.status_from_payload(
+        {"overall_status": "partial", "gate_passed": False, "failed_required_sources": ["mail"]},
+        0,
+        "",
+    )
+
+    assert status == "stopped"
+    assert reason == "gate_failed"
+
+
+def test_mail_process_task_requires_fresh_download_manifest(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(module, "MAIL_STATE_DIR", tmp_path)
+
+    task = module.build_task_spec("mail-process", tallanto_phone_limit=1)
+
+    assert task.command
+    assert "stage manifest is missing" in task.stop_reason
+
+
+def test_mail_import_task_uses_mail_only_import_wrapper(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(module, "MAIL_STATE_DIR", tmp_path)
+    monkeypatch.setattr(module, "current_runtime", lambda: {"head": "abc", "worktree": "tree"})
+    (tmp_path / "mail_process_manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "finished_at": module.datetime.now(module.timezone.utc).isoformat(),
+                "runtime": {"head": "abc", "worktree": "tree"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = module.build_task_spec("mail-import", tallanto_phone_limit=1)
+
+    assert task.stop_reason == ""
+    assert task.command[1:] == (
+        "scripts/run_customer_timeline_mail_import.py",
+        "--state-dir",
+        str(tmp_path),
+    )
 
 
 def test_summary_is_exactly_five_lines(tmp_path, monkeypatch) -> None:

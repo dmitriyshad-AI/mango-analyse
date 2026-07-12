@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- DEPRECATED: do not install. Replaced by the download/process/import chain. -->
 <dict>
   <key>Label</key>
   <string>com.mango.customer-timeline-mail-capture</string>

@@ -1,0 +1,21 @@
+M AGENTS.md
+ M deploy/customer_timeline_daily_captures/README.md
+ M deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-capture.plist.template
+ M docs/DECISIONS_LOG.md
+ M docs/worktrees_registry.md
+ M scripts/build_customer_timeline_nightly_dv2_sources.py
+ M scripts/mango_office_mail_archive.py
+ M scripts/run_customer_timeline_codex_task.py
+ M scripts/run_customer_timeline_nightly_incremental.py
+ M src/mango_mvp/productization/mail_archive.py
+ M tests/test_customer_timeline_codex_task.py
+ M tests/test_customer_timeline_nightly_incremental.py
+ M tests/test_productization_mail_archive.py
+?? deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-download.plist.template
+?? deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-import.plist.template
+?? deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-process.plist.template
+?? scripts/run_customer_timeline_mail_download.py
+?? scripts/run_customer_timeline_mail_import.py
+?? scripts/run_customer_timeline_mail_process.py
+?? tasks/_running/2026-07-12_TZ_mail_three_stage_worktree_hygiene.md
+?? tests/test_customer_timeline_mail_pipeline.py

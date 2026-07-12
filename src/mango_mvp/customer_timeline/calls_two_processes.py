@@ -49,6 +49,7 @@ PARALLEL_PIPELINE_STAGES = (
     "resolve",
     "analyze",
 )
+REQUIRED_PIPELINE_MODULES = ("sqlalchemy", "dotenv", "mlx_whisper", "gigaam", "mango_mvp.cli")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 SECRET_RE = re.compile(
@@ -699,25 +700,31 @@ def environment_preflight(
     modules_ok = False
     network_ok = codex_network_available() if run_commands else True
     if run_commands and python_ok:
-        probe = subprocess.run(
-            [str(config.python_executable), "-c", "import sqlalchemy,dotenv,mlx_whisper,gigaam,mango_mvp.cli"],
-            cwd=Path(__file__).resolve().parents[3],
-            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=60,
-        )
-        modules_ok = probe.returncode == 0
+        try:
+            probe = subprocess.run(
+                module_probe_command(config),
+                cwd=Path(__file__).resolve().parents[3],
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+            modules_ok = probe.returncode == 0
+        except subprocess.TimeoutExpired:
+            modules_ok = False
     if run_commands and codex_ok:
-        auth = subprocess.run(
-            [str(config.codex_binary), "login", "status"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=30,
-        )
-        auth_ok = auth.returncode == 0
+        try:
+            auth = subprocess.run(
+                [str(config.codex_binary), "login", "status"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+            auth_ok = auth.returncode == 0
+        except subprocess.TimeoutExpired:
+            auth_ok = False
     elif not run_commands:
         modules_ok = True
         auth_ok = True
@@ -747,6 +754,16 @@ def environment_preflight(
         "asr_mode": config.asr_mode,
         "parallel_stages": list(pipeline_stages(config, include_llm=network_ok)),
     }
+
+
+def module_probe_command(config: CallsTwoProcessesConfig) -> list[str]:
+    modules = repr(REQUIRED_PIPELINE_MODULES)
+    code = (
+        "import importlib.util,sys; "
+        f"mods={modules}; "
+        "sys.exit(0 if all(importlib.util.find_spec(name) is not None for name in mods) else 1)"
+    )
+    return [str(config.python_executable), "-c", code]
 
 
 def codex_network_available() -> bool:

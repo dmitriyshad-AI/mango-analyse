@@ -23,6 +23,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     dead_letter_total,
     dead_letter_mass_failure,
     environment_preflight,
+    module_probe_command,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
@@ -290,6 +291,13 @@ def test_environment_preflight_lists_failed_checks(tmp_path: Path) -> None:
         "codex_binary",
         "codex_auth",
     }
+
+
+def test_module_preflight_checks_presence_without_loading_heavy_models(tmp_path: Path) -> None:
+    command = module_probe_command(config_for(tmp_path))
+    assert "find_spec" in command[-1]
+    assert "import mlx_whisper" not in command[-1]
+    assert "import gigaam" not in command[-1]
 
 
 def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:

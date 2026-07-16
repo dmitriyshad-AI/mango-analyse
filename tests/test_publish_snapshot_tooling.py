@@ -540,7 +540,7 @@ def test_replace_sqlite_retries_only_transient_open(monkeypatch, tmp_path: Path)
             raise sqlite3.OperationalError("unable to open database file")
         return "ok"
 
-    monkeypatch.setattr(publish_common, "quick_check", fake_quick_check)
+    monkeypatch.setattr(publish_common, "immutable_quick_check", fake_quick_check)
     monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
 
     report = publish_common.replace_sqlite_verified(source, target)
@@ -553,6 +553,31 @@ def test_replace_sqlite_retries_only_transient_open(monkeypatch, tmp_path: Path)
     assert target.read_bytes() == b"new"
 
 
+def test_replace_sqlite_verifies_checkpointed_wal_snapshot_without_sidecars(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "target.sqlite"
+    con = sqlite3.connect(source)
+    try:
+        assert con.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        con.execute("CREATE TABLE sample (value TEXT NOT NULL)")
+        con.execute("INSERT INTO sample VALUES ('kept')")
+        con.commit()
+        assert con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+    finally:
+        con.close()
+    for suffix in ("-wal", "-shm"):
+        Path(str(source) + suffix).unlink(missing_ok=True)
+    target.write_bytes(b"old")
+
+    report = publish_common.replace_sqlite_verified(source, target, attempts=1, delay_seconds=0)
+
+    assert report["ok"] is True
+    assert report["quick_check"] == "ok"
+    assert report["post_replace_sidecars"] == []
+    with sqlite3.connect(f"file:{target}?mode=ro&immutable=1", uri=True) as con:
+        assert con.execute("SELECT value FROM sample").fetchone()[0] == "kept"
+
+
 def test_replace_sqlite_does_not_retry_other_sqlite_errors(monkeypatch, tmp_path: Path) -> None:
     source = tmp_path / "source.sqlite"
     target = tmp_path / "target.sqlite"
@@ -563,7 +588,7 @@ def test_replace_sqlite_does_not_retry_other_sqlite_errors(monkeypatch, tmp_path
     def locked_quick_check(_path: Path) -> str:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(publish_common, "quick_check", locked_quick_check)
+    monkeypatch.setattr(publish_common, "immutable_quick_check", locked_quick_check)
     monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
 
     report = publish_common.replace_sqlite_verified(source, target)
@@ -585,7 +610,7 @@ def test_replace_sqlite_stops_after_configured_transient_attempts(monkeypatch, t
     def unavailable_quick_check(_path: Path) -> str:
         raise sqlite3.OperationalError("unable to open database file")
 
-    monkeypatch.setattr(publish_common, "quick_check", unavailable_quick_check)
+    monkeypatch.setattr(publish_common, "immutable_quick_check", unavailable_quick_check)
     monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
 
     report = publish_common.replace_sqlite_verified(source, target, attempts=3, delay_seconds=0.5)
@@ -603,7 +628,7 @@ def test_replace_sqlite_fails_if_post_replace_sidecar_exists(monkeypatch, tmp_pa
     source.write_bytes(b"new")
     target.write_bytes(b"old")
     Path(str(target) + "-wal").write_bytes(b"stale")
-    monkeypatch.setattr(publish_common, "quick_check", lambda _path: "ok")
+    monkeypatch.setattr(publish_common, "immutable_quick_check", lambda _path: "ok")
 
     report = publish_common.replace_sqlite_verified(source, target)
 

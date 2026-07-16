@@ -27,6 +27,7 @@ from scripts.publish_snapshot.common import (
     run_command,
     sha256_file,
     split_ignored_lsof_holders,
+    wal_checkpoint_truncate,
 )
 
 
@@ -111,6 +112,18 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "ignored_holders": ignored_holders,
         }, False
 
+    try:
+        prod_checkpoint = wal_checkpoint_truncate(prod_db)
+        snapshot_checkpoint = wal_checkpoint_truncate(snapshot_db)
+        snapshot_removed_sidecars = remove_sidecars(snapshot_db, execute=True)
+    except Exception as exc:
+        return {
+            **report,
+            "status": "blocked_checkpoint",
+            "stop_results": stop_results,
+            "exception": {"type": type(exc).__name__, "message": str(exc), "attempt": 0},
+        }, False
+
     backup_root = cfg.backup_root
     if backup_root is None:
         return {**report, "status": "blocked_backup_root_missing", "backup": backup_check}, False
@@ -143,6 +156,9 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "async_backup_db": str(async_backup_db),
             "async_backup_copy": async_backup_copy,
             "backup_sha256": backup_sha,
+            "prod_checkpoint": prod_checkpoint,
+            "snapshot_checkpoint": snapshot_checkpoint,
+            "snapshot_removed_sidecars": snapshot_removed_sidecars,
             "removed_sidecars": removed_sidecars,
         }, False
     replacement = replace_sqlite_verified(tmp_target, prod_db)
@@ -156,6 +172,9 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "async_backup_db": str(async_backup_db),
             "async_backup_copy": async_backup_copy,
             "backup_sha256": backup_sha,
+            "prod_checkpoint": prod_checkpoint,
+            "snapshot_checkpoint": snapshot_checkpoint,
+            "snapshot_removed_sidecars": snapshot_removed_sidecars,
             "removed_sidecars": removed_sidecars,
             "ignored_lsof_holders": ignored_holders,
             "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,
@@ -197,6 +216,9 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "async_backup_copy": async_backup_copy,
             "backup_sha256": backup_sha,
             "new_sha256": new_sha,
+            "prod_checkpoint": prod_checkpoint,
+            "snapshot_checkpoint": snapshot_checkpoint,
+            "snapshot_removed_sidecars": snapshot_removed_sidecars,
             "removed_sidecars": removed_sidecars,
             "ignored_lsof_holders": ignored_holders,
             "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,

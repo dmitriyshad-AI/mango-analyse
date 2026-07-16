@@ -123,6 +123,11 @@ def quick_check(path: Path) -> str:
         return str(con.execute("PRAGMA quick_check").fetchone()[0])
 
 
+def immutable_quick_check(path: Path) -> str:
+    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True, timeout=30) as con:
+        return str(con.execute("PRAGMA quick_check").fetchone()[0])
+
+
 def foreign_key_check(path: Path) -> list[tuple[Any, ...]]:
     with sqlite_ro(path) as con:
         return [tuple(row) for row in con.execute("PRAGMA foreign_key_check").fetchall()]
@@ -241,7 +246,7 @@ def replace_sqlite_verified(
     for attempt in range(1, max_attempts + 1):
         report["quick_check_attempts"] = attempt
         try:
-            result = quick_check(target)
+            result = immutable_quick_check(target)
         except Exception as exc:
             transient = isinstance(exc, sqlite3.OperationalError) and "unable to open database file" in str(exc).lower()
             error = {

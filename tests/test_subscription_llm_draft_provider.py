@@ -133,6 +133,7 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
+from mango_mvp.channels.subscription_llm_parts.post_layers import TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -5283,6 +5284,119 @@ def test_tone_close_detect_replaces_handoff_on_clean_thanks_without_repeating_nu
     assert closed.draft_text.startswith("Рада была помочь!")
     assert "позвоним" in closed.draft_text.casefold()
     assert "49 000" not in closed.draft_text
+
+
+@pytest.mark.parametrize(
+    "finding_code",
+    [
+        "fake_enrollment_claim",
+        "brand_leak",
+        "unsupported_product_number",
+        "cross_brand",
+    ],
+)
+def test_tone_close_gate_findings_floor_preserves_authoritative_demotion(finding_code: str) -> None:
+    source = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        safety_flags=(
+            "authoritative_output_gate_blocked",
+            f"authoritative_gate:{finding_code}",
+            "manager_approval_required",
+            "no_auto_send",
+        ),
+        metadata={
+            "authoritative_output_gate": {
+                "action": "block",
+                "findings": [{"code": finding_code, "source": "test"}],
+            }
+        },
+    )
+
+    result = apply_tone_close_detect_layer(
+        source,
+        client_message="Спасибо, всё понятно",
+        context={
+            "active_brand": "foton",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1",
+        },
+    )
+
+    assert result.route == source.route
+    assert result.draft_text == source.draft_text
+    assert result.safety_flags == source.safety_flags
+    assert result.metadata["close_detect"]["status"] == "suppressed_authoritative_gate"
+
+
+@pytest.mark.parametrize(
+    ("gate", "flags"),
+    [
+        ({"action": "downgrade", "findings": []}, ()),
+        ({"action": "pass", "findings": [{"code": "brand_leak"}]}, ()),
+        ({"action": "pass", "findings": []}, ("authoritative_gate:brand_leak",)),
+    ],
+)
+def test_tone_close_gate_findings_floor_accepts_each_gate_signal(
+    gate: dict[str, object],
+    flags: tuple[str, ...],
+) -> None:
+    source = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        safety_flags=flags,
+        metadata={"authoritative_output_gate": gate},
+    )
+
+    result = apply_tone_close_detect_layer(
+        source,
+        client_message="Спасибо, всё понятно",
+        context={TONE_CLOSE_DETECT_ENV: "1", TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1"},
+    )
+
+    assert result.route == source.route
+    assert result.draft_text == source.draft_text
+    assert result.metadata["close_detect"]["status"] == "suppressed_authoritative_gate"
+
+
+def test_tone_close_gate_findings_floor_stays_default_off() -> None:
+    source = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        safety_flags=("authoritative_gate:brand_leak", "manager_approval_required", "no_auto_send"),
+        metadata={"authoritative_output_gate": {"action": "block", "findings": [{"code": "brand_leak"}]}},
+    )
+
+    result = apply_tone_close_detect_layer(
+        source,
+        client_message="Спасибо, всё понятно",
+        context={"active_brand": "foton", TONE_CLOSE_DETECT_ENV: "1"},
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text != source.draft_text
+
+
+def test_tone_close_gate_findings_floor_keeps_clean_thanks_warm() -> None:
+    source = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        safety_flags=("manager_approval_required", "no_auto_send"),
+        metadata={"authoritative_output_gate": {"action": "pass", "findings": []}},
+    )
+
+    result = apply_tone_close_detect_layer(
+        source,
+        client_message="Спасибо, всё понятно",
+        context={
+            "active_brand": "foton",
+            TONE_CLOSE_DETECT_ENV: "1",
+            TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text != source.draft_text
 
 
 def test_tone_close_detect_contact_step_records_contact_requested() -> None:

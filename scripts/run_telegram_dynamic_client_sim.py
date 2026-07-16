@@ -37,7 +37,17 @@ from mango_mvp.channels.subscription_llm_parts.provider import (
     apply_semantic_frame_proof_reconciliation_shadow,
     apply_semantic_frame_self_answer_shadow,
 )
-from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
+from mango_mvp.channels.pilot_profile_runtime import (
+    pilot_profile_selfcheck,
+    pilot_profile_summary_failures,
+    raise_for_failed_selfcheck,
+)
+from mango_mvp.channels.subscription_llm_parts.support import (
+    DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
+    INTENT_MODEL_LED_ENV,
+    _intent_model_led_enabled,
+    _pilot_profile_default_on_flag_enabled,
+)
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
 from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
@@ -660,6 +670,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_V7_PATH)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--allow-non-pilot-profile",
+        action="store_true",
+        help="Allow an intentional non-pilot experiment. Bot-generating measurements require pilot_gold_v1 by default.",
+    )
     parser.add_argument("--brand", choices=("all", "foton", "unpk"), default="all")
     parser.add_argument("--limit", type=int, default=0, help="Limit personas for smoke runs.")
     parser.add_argument("--max-turns", type=int, default=0, help="Override persona max_turns.")
@@ -798,12 +813,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     ) and not args.snapshot.exists():
         raise FileNotFoundError(f"Knowledge snapshot not found: {args.snapshot}")
 
-    sim_input = load_dynamic_sim_input(args.scenarios)
-    personas = [item for item in sim_input.personas if args.brand == "all" or item.get("brand") == args.brand]
-    if args.limit > 0:
-        personas = personas[: args.limit]
-
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     transcripts_path = args.out_dir / "dynamic_dialog_transcripts.jsonl"
     judge_path = args.out_dir / "dynamic_judge_results.jsonl"
     turns_path = args.out_dir / "dynamic_turns.csv"
@@ -812,11 +821,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     per_dialog_dir = args.out_dir / "transcripts_md"
     summary_path = args.out_dir / "dynamic_summary.json"
     summary_md_path = args.out_dir / "dynamic_summary.md"
-    persona_order = {
-        str(persona.get("dialog_id") or ""): index
-        for index, persona in enumerate(personas)
-    }
-
     exclusive_inputs = [value is not None for value in (args.transcripts_in, args.replay_from, args.semantic_frame_enrich_from)]
     if sum(exclusive_inputs) > 1:
         raise ValueError("--transcripts-in, --replay-from, and --semantic-frame-enrich-from are mutually exclusive")
@@ -824,6 +828,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--replay-from must differ from --out-dir/dynamic_dialog_transcripts.jsonl")
     if args.semantic_frame_enrich_from is not None and args.semantic_frame_enrich_from.resolve(strict=False) == transcripts_path.resolve(strict=False):
         raise ValueError("--semantic-frame-enrich-from must differ from --out-dir/dynamic_dialog_transcripts.jsonl")
+
+    profile_required = args.transcripts_in is None and args.semantic_frame_enrich_from is None
+    profile_gate_enabled = profile_required and not args.allow_non_pilot_profile
+    if profile_gate_enabled:
+        try:
+            raise_for_failed_selfcheck(
+                pilot_profile_selfcheck(
+                    require=True,
+                    dialogue_contract_pipeline_enabled=True,
+                    require_all_default_on=True,
+                )
+            )
+        except SystemExit as exc:
+            raise SystemExit(
+                f"Dynamic simulator pilot-profile preflight failed: {exc}. "
+                "Set TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1 and keep all profile defaults enabled, "
+                "or pass --allow-non-pilot-profile only for an intentional experiment."
+            ) from exc
+
+    sim_input = load_dynamic_sim_input(args.scenarios)
+    personas = [item for item in sim_input.personas if args.brand == "all" or item.get("brand") == args.brand]
+    if args.limit > 0:
+        personas = personas[: args.limit]
+    persona_order = {
+        str(persona.get("dialog_id") or ""): index
+        for index, persona in enumerate(personas)
+    }
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.semantic_frame_enrich_from is not None:
         bot_provider = build_bot_provider(args)
@@ -989,6 +1022,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     llm_calls=llm_call_counter.snapshot(),
                     judge_prompt_version=args.judge_prompt_version,
                     replay_source_run=replay_source_run,
+                    allow_non_pilot_profile=args.allow_non_pilot_profile,
+                    profile_gate_enabled=profile_gate_enabled,
                     progress_path=args.progress_json,
                     progress_leg=args.progress_leg,
                     progress_total=len(personas),
@@ -998,7 +1033,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
                     flush=True,
                 )
-                config_invalid = _direct_path_config_invalid(transcripts, persona_order=persona_order)
+                config_invalid = _direct_path_config_invalid(
+                    transcripts,
+                    persona_order=persona_order,
+                    enabled=profile_gate_enabled,
+                )
                 if config_invalid.get("invalid"):
                     print(json.dumps(config_invalid, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
                     return 2
@@ -1061,6 +1100,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         llm_calls=llm_call_counter.snapshot(),
                         judge_prompt_version=args.judge_prompt_version,
                         replay_source_run=replay_source_run,
+                        allow_non_pilot_profile=args.allow_non_pilot_profile,
+                        profile_gate_enabled=profile_gate_enabled,
                         progress_path=args.progress_json,
                         progress_leg=args.progress_leg,
                         progress_total=len(personas),
@@ -1070,7 +1111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
                         flush=True,
                     )
-                    config_invalid = _direct_path_config_invalid(transcripts, persona_order=persona_order)
+                    config_invalid = _direct_path_config_invalid(
+                        transcripts,
+                        persona_order=persona_order,
+                        enabled=profile_gate_enabled,
+                    )
                     if config_invalid.get("invalid"):
                         print(json.dumps(config_invalid, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
                         return 2
@@ -1094,11 +1139,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         llm_calls=llm_call_counter.snapshot(),
         judge_prompt_version=args.judge_prompt_version,
         replay_source_run=str(args.replay_from or ""),
+        allow_non_pilot_profile=args.allow_non_pilot_profile,
+        profile_gate_enabled=profile_gate_enabled,
         progress_path=args.progress_json,
         progress_leg=args.progress_leg,
         progress_total=len(personas),
         progress_last_dialog_id="",
     )
+    if profile_gate_enabled:
+        profile_failures = pilot_profile_summary_failures(
+            summary,
+            require_bot_direct_draft=True,
+            require_all_default_on=True,
+        )
+        if profile_failures:
+            print(
+                json.dumps(
+                    {"error": "pilot_profile_post_run_invalid", "failures": list(profile_failures)},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            return 2
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
@@ -1122,6 +1186,8 @@ def write_dynamic_outputs(
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
     replay_source_run: str = "",
+    allow_non_pilot_profile: bool = False,
+    profile_gate_enabled: bool = False,
     progress_path: Path | None = None,
     progress_leg: str = "",
     progress_total: int = 0,
@@ -1146,6 +1212,8 @@ def write_dynamic_outputs(
         llm_calls=llm_calls,
         judge_prompt_version=judge_prompt_version,
         replay_source_run=replay_source_run,
+        allow_non_pilot_profile=allow_non_pilot_profile,
+        profile_gate_enabled=profile_gate_enabled,
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
@@ -1584,6 +1652,13 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
 
     return {
         "profile": {"env": profile, "effective": profile_enabled},
+        "profile_default_on_flags": {
+            env_name: {
+                "env": str(os.getenv(env_name) or ""),
+                "effective": _pilot_profile_default_on_flag_enabled(None, env_name),
+            }
+            for env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+        },
         "render": flag_state("TELEGRAM_TEMPLATE_FROM_KB"),
         "rubric": flag_state("TELEGRAM_ROUTE_RUBRIC"),
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
@@ -1717,8 +1792,11 @@ def _direct_path_config_invalid(
     *,
     persona_order: Mapping[str, int],
     window: int = DIRECT_PATH_FAIL_FAST_DIALOGS,
+    enabled: bool | None = None,
 ) -> Mapping[str, Any]:
-    if not _direct_path_fail_fast_enabled() or window <= 0:
+    if enabled is None:
+        enabled = _direct_path_fail_fast_enabled()
+    if not enabled or window <= 0:
         return {"invalid": False}
     completed_by_id = {
         str(dialog.get("dialog_id") or ""): dialog
@@ -3635,6 +3713,8 @@ def build_summary(
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
     replay_source_run: str = "",
+    allow_non_pilot_profile: bool = False,
+    profile_gate_enabled: bool = False,
 ) -> Mapping[str, Any]:
     verdicts = Counter(str(item.get("verdict") or "") for item in judge_results)
     brands = Counter(str(item.get("brand") or "") for item in judge_results)
@@ -3736,6 +3816,8 @@ def build_summary(
             "key_flags": _run_key_flags(snapshot_path),
             "replay": bool(replay_source_run),
             "replay_source_run": replay_source_run,
+            "allow_non_pilot_profile": bool(allow_non_pilot_profile),
+            "profile_gate_enabled": bool(profile_gate_enabled),
             "answer_quality_llm_rewrite_enabled": (
                 os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
                 or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}

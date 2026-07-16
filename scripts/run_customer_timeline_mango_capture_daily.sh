@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NIGHTLY_HOME="${CUSTOMER_TIMELINE_NIGHTLY_HOME:-${HOME}/.mango_local/customer_timeline_nightly}"
+STAGING_ROOT="${NIGHTLY_HOME}/.codex_local/staging"
 APPLY=0
-LOCK_DIR="${ROOT}/.codex_local/staging/daily_capture/mango_capture.lock"
-MANIFEST="${ROOT}/.codex_local/staging/daily_capture/mango_capture_manifest.json"
+LOCK_DIR="${STAGING_ROOT}/daily_capture/mango_capture.lock"
+MANIFEST="${STAGING_ROOT}/daily_capture/mango_capture_manifest.json"
 COMMAND_FILE="${MANGO_CAPTURE_COMMAND_FILE:-}"
 HOLD_LOCK_SECONDS=0
 

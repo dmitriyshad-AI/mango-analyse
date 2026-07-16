@@ -35,6 +35,7 @@ from mango_mvp.integrations.amo_wappi_phase1 import (
     load_env_file,
 )
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
+from mango_mvp.integrations.amo_wappi_auto_resolver import lead_org_brand_guard
 from mango_mvp.integrations.draft_loop import (
     DEFAULT_DRAFT_LOOP_DIR,
     DEFAULT_STOP_PATH,
@@ -76,10 +77,6 @@ DEFAULT_CUSTOMER_TIMELINE_DB = Path(
 )
 DRAFT_LOOP_AUTO_RESOLVER_ENV = "DRAFT_LOOP_AUTO_RESOLVER"
 CLOSED_STATUS_IDS = {"142", "143"}
-ORG_BRAND_KEYWORDS = {
-    "foton": ("фотон", "cdpo", "цдпо"),
-    "unpk": ("унпк", "мфти", "mipt"),
-}
 AMO_CHAT_ORIGIN_BY_CHANNEL = {
     "telegram": "pro.wappi.tg",
     "max": "pro.wappi.3",
@@ -231,6 +228,8 @@ def _build_bot_safe_crm_context_for_draft(
     pair = draft_config.pair_for(key) if draft_config is not None else None
     if pair is None:
         return {}
+    if str(pair.source or "").strip().casefold() == "auto":
+        return {}
     db_path = customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     allowed_root = customer_timeline_allowed_root or db_path.parent
     context = build_bot_safe_crm_context(
@@ -334,21 +333,6 @@ def _is_active_lead(lead: Mapping[str, Any]) -> bool:
     status_id = str(lead.get("status_id") or "").strip()
     closed_at = str(lead.get("closed_at") or "").strip()
     return status_id not in CLOSED_STATUS_IDS and not closed_at
-
-
-def _lead_org_values(lead: Mapping[str, Any]) -> list[str]:
-    return _custom_field_values(lead, "организация", "organization")
-
-
-def _lead_org_brand(lead: Mapping[str, Any]) -> str:
-    values = _lead_org_values(lead)
-    text = " ".join(values).casefold()
-    if not text:
-        return ""
-    for brand, markers in ORG_BRAND_KEYWORDS.items():
-        if any(marker in text for marker in markers):
-            return brand
-    return ""
 
 
 def _load_phone_stoplist(path: Path) -> tuple[set[str], str]:
@@ -678,12 +662,13 @@ class AmoAutoResolver:
                 "contact_id": contact_id,
                 "match_key": "amo_chat_event",
             }
-        org_brand = _lead_org_brand(lead)
-        org_values = _lead_org_values(lead)
-        if org_brand and org_brand != profile.brand:
+        org_brand, org_values, org_reason = lead_org_brand_guard(
+            lead, expected_brand=profile.brand
+        )
+        if org_reason:
             return {
                 "status": "rejected",
-                "reason": "brand_mismatch",
+                "reason": org_reason,
                 "contact_id": contact_id,
                 "lead_id": lead_id,
                 "organization_brand": org_brand,
@@ -768,12 +753,13 @@ class AmoAutoResolver:
         if len(active) != 1:
             return {"status": "rejected", "reason": "multi_active_lead", "contact_id": contact_id, "match_key": match_key}
         lead = active[0]
-        org_brand = _lead_org_brand(lead)
-        org_values = _lead_org_values(lead)
-        if org_brand and org_brand != profile.brand:
+        org_brand, org_values, org_reason = lead_org_brand_guard(
+            lead, expected_brand=profile.brand
+        )
+        if org_reason:
             return {
                 "status": "rejected",
-                "reason": "brand_mismatch",
+                "reason": org_reason,
                 "contact_id": contact_id,
                 "lead_id": str(lead.get("id") or ""),
                 "organization_brand": org_brand,

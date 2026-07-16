@@ -475,6 +475,113 @@ def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path:
     assert chunk_row[0] == 1
 
 
+def test_nightly_service_sweeps_explicit_ready_package_db_before_import(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    seed_phone_link(db_path, tmp_path)
+    ready_db = tmp_path / "drop" / "mango_calls_ready.sqlite"
+    write_processed_call_db(ready_db)
+    out_jsonl = tmp_path / "nightly_dv2_sources" / "mango_processed_sweep.jsonl"
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "config": {
+                    "producer_script": str(
+                        Path(__file__).resolve().parents[1]
+                        / "scripts"
+                        / "build_mango_call_timeline_increment.py"
+                    ),
+                    "scan_roots": [],
+                    "package_dbs": [str(ready_db)],
+                    "out_jsonl": str(out_jsonl),
+                    "report_out": str(tmp_path / "nightly_dv2_sources" / "producer_report.json"),
+                    "manifest_path": str(tmp_path / "nightly_dv2_sources" / "manifest.json"),
+                    "inventory_out": str(tmp_path / "nightly_dv2_sources" / "inventory.json"),
+                },
+            },
+            {
+                "name": "calls_and_amo_incremental",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service" / "journal.jsonl"),
+                    "safety_margin_seconds": 0,
+                    "sources": [
+                        {
+                            "name": "mango_processed_sweep",
+                            "source_system": "mango_processed_summary",
+                            "path": str(out_jsonl),
+                            "source_ref": "mango:processed_sweep:latest",
+                            "normalizer": "mango_processed_summary",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "explicit_ready_service_config.json"
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["summary"]["events_written"] == 1
+    assert report["steps"][1]["summary"]["changed_customer_count"] == 1
+    inventory = json.loads(
+        (tmp_path / "nightly_dv2_sources" / "inventory.json").read_text(encoding="utf-8")
+    )
+    assert [item["db_path"] for item in inventory] == [str(ready_db.resolve())]
+
+
+def test_nightly_service_fails_when_explicit_ready_package_db_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    out_jsonl = tmp_path / "nightly_dv2_sources" / "mango_processed_sweep.jsonl"
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "producer_script": str(
+                        Path(__file__).resolve().parents[1]
+                        / "scripts"
+                        / "build_mango_call_timeline_increment.py"
+                    ),
+                    "package_dbs": [str(tmp_path / "missing/mango_calls_ready.sqlite")],
+                    "out_jsonl": str(out_jsonl),
+                    "report_out": str(tmp_path / "nightly_dv2_sources/producer_report.json"),
+                    "manifest_path": str(tmp_path / "nightly_dv2_sources/manifest.json"),
+                    "inventory_out": str(tmp_path / "nightly_dv2_sources/inventory.json"),
+                },
+            }
+        ],
+    }
+    config_path = tmp_path / "missing_ready_service_config.json"
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["failed_required_steps"] == ["mango_processed_sweep"]
+    assert report["steps"][0]["status"] == "failed"
+
+
 def test_nightly_service_fail_closes_mango_processed_summary_allowed_for_bot_true(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
@@ -616,6 +723,9 @@ def test_launchd_installer_renders_code_root_before_bootstrap(tmp_path: Path) ->
 <plist version="1.0"><dict>
 <key>Label</key><string>test.render</string>
 <key>WorkingDirectory</key><string>__MANGO_CODE_ROOT__</string>
+<key>EnvironmentVariables</key><dict>
+<key>CUSTOMER_TIMELINE_NIGHTLY_HOME</key><string>__CUSTOMER_TIMELINE_NIGHTLY_HOME__</string>
+</dict>
 </dict></plist>
 """,
         encoding="utf-8",
@@ -636,6 +746,8 @@ def test_launchd_installer_renders_code_root_before_bootstrap(tmp_path: Path) ->
             str(target),
             "--code-root",
             str(code_root),
+            "--nightly-home",
+            str(tmp_path / "persistent-nightly"),
             "--apply",
         ],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
@@ -646,7 +758,52 @@ def test_launchd_installer_renders_code_root_before_bootstrap(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "__MANGO_CODE_ROOT__" not in target.read_text(encoding="utf-8")
-    assert plistlib.loads(target.read_bytes())["WorkingDirectory"] == str(code_root.resolve())
+    rendered = plistlib.loads(target.read_bytes())
+    assert rendered["WorkingDirectory"] == str(code_root.resolve())
+    assert rendered["EnvironmentVariables"]["CUSTOMER_TIMELINE_NIGHTLY_HOME"] == str(
+        (tmp_path / "persistent-nightly").resolve()
+    )
+
+
+def test_launchd_templates_use_persistent_runtime_and_no_old_worktree() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    paths = [
+        repo / "deploy/customer_timeline_nightly/com.mango.customer-timeline-nightly.plist.template",
+        repo / "deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-chain.plist.template",
+        repo / "deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mango-capture.plist.template",
+        repo / "deploy/customer_timeline_daily_captures/com.mango.customer-timeline-tallanto-api-capture.plist.template",
+    ]
+    for path in paths:
+        payload = plistlib.loads(path.read_bytes())
+        text = path.read_text(encoding="utf-8")
+        assert "Mango_email_pipeline_restore" not in text
+        assert payload["EnvironmentVariables"]["CUSTOMER_TIMELINE_NIGHTLY_HOME"] == (
+            "__CUSTOMER_TIMELINE_NIGHTLY_HOME__"
+        )
+        assert payload["WorkingDirectory"] == "__MANGO_CODE_ROOT__"
+    tallanto = plistlib.loads(paths[-1].read_bytes())
+    assert tallanto["EnvironmentVariables"]["TALLANTO_API_CAPTURE_ENABLED"] == "1"
+
+
+def test_deprecated_mail_capture_template_cannot_be_scheduled() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    path = repo / "deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-capture.plist.template"
+    payload = plistlib.loads(path.read_bytes())
+
+    assert payload["Disabled"] is True
+    assert "StartCalendarInterval" not in payload
+    assert payload["ProgramArguments"] == ["/usr/bin/false"]
+
+
+def test_customer_timeline_deploy_templates_do_not_reference_retired_worktree() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    roots = [
+        repo / "deploy/customer_timeline_daily_captures",
+        repo / "deploy/customer_timeline_nightly",
+    ]
+    for root in roots:
+        for path in root.glob("*.plist.template"):
+            assert "Mango_email_pipeline_restore" not in path.read_text(encoding="utf-8")
 
 
 def test_daily_capture_launchd_templates_and_drivers_are_safe_by_default(tmp_path: Path) -> None:

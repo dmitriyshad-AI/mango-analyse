@@ -34,6 +34,8 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     read_known_processed_ids,
     run_parallel_pipeline_workers,
     run_process_b,
+    run_command,
+    compact_command_reports,
     pipeline_freshness,
     safe_daily_payload,
     worker_command,
@@ -518,6 +520,69 @@ def test_process_b_fails_loud_when_import_validation_fails(tmp_path: Path) -> No
     report = run_process_b(config, producer_runner=fake_producer, import_runner=invalid_import)
     assert report["status"] == "failed"
     assert report["stop_reason"] == "import_validation_failed"
+
+
+def test_process_b_normalizes_unexpected_exception_and_keeps_cursor(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+    write_json(config.process_b_cursor_path, {"sha256": "previous"})
+
+    def broken_producer(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("unexpected local producer failure")
+
+    report = run_process_b(config, producer_runner=broken_producer)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "process_b_exception:ValueError"
+    assert report["counters"]["diagnostic"]["type"] == "ValueError"
+    assert read_json(config.process_b_cursor_path) == {"sha256": "previous"}
+
+
+def test_process_b_invalid_config_returns_normalized_failure(tmp_path: Path) -> None:
+    config = config_for(tmp_path, timeline_name="customer_timeline_prod_20260713.sqlite")
+
+    report = run_process_b(config)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"].startswith("process_b_config_exception:")
+    assert report["safety"]["writes_timeline_staging"] is False
+
+
+def test_process_b_returns_in_memory_failure_when_report_path_is_broken(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+    config.reports_dir.parent.mkdir(parents=True, exist_ok=True)
+    config.reports_dir.write_text("not a directory", encoding="utf-8")
+
+    def broken_producer(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("producer failed")
+
+    report = run_process_b(config, producer_runner=broken_producer)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "process_b_finalize_exception:FileExistsError"
+    assert report["counters"]["original_stop_reason"] == "process_b_exception:ValueError"
+    assert report["safety"]["writes_timeline_staging"] is False
+
+
+def test_ingest_failure_counts_are_visible_in_compact_worker_report(tmp_path: Path) -> None:
+    command = [
+        sys.executable,
+        "-c",
+        "import json; print(json.dumps({'processed': 2, 'inserted': 1, 'failed': 1, 'failure_types': {'ValueError': 1}}))",
+        "ingest",
+    ]
+
+    raw = run_command(command, os.environ, tmp_path)
+    compact = compact_command_reports([raw])
+
+    assert compact[0]["command"] == "ingest"
+    assert compact[0]["metrics"]["failed"] == 1
+    assert compact[0]["metrics"]["failure_types"] == {"ValueError": 1}
 
 
 def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Path) -> None:

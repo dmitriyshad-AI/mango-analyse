@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -66,6 +67,15 @@ def _extract_cwd_from_command(command: str, fallback: Path) -> Path:
     return fallback
 
 
+def _process_marker(command: str) -> str:
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError:
+        tokens = str(command or "").split()
+    token_names = {Path(token).name for token in tokens}
+    return next((marker for marker in PROCESS_MARKERS if marker in token_names), "")
+
+
 def _lsof_db_paths(pid: int) -> list[str]:
     completed = subprocess.run(["lsof", "-p", str(pid)], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if completed.returncode != 0:
@@ -90,7 +100,7 @@ def build_snapshot(
     process_rows: list[LiveProcessRow] = []
     expected_heads = expected_heads or {}
     for process in processes if processes is not None else wappi_ops.list_processes():
-        marker = next((item for item in PROCESS_MARKERS if item in process.command), "")
+        marker = _process_marker(process.command)
         if not marker:
             continue
         env, _source = env_reader(process.pid)

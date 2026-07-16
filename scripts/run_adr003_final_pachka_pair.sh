@@ -229,6 +229,7 @@ run_on_leg() {
 run_b_leg() {
   echo "== B: old pilot profile via explicit overrides =="
   "${b_env[@]}" python3 scripts/run_telegram_dynamic_client_sim.py "${COMMON[@]}" \
+    --allow-non-pilot-profile \
     --out-dir "$OUT/B" \
     --progress-json "$OUT/B/progress.json" \
     --progress-leg B

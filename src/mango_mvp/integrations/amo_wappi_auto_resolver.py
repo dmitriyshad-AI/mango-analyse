@@ -119,6 +119,33 @@ def lead_org_brand(lead: Mapping[str, Any]) -> str:
     return ""
 
 
+def lead_org_brand_guard(
+    lead: Mapping[str, Any], *, expected_brand: str
+) -> tuple[str, list[str], str]:
+    values = lead_org_values(lead)
+    if not values:
+        return "", values, "organization_missing"
+
+    value_brands: list[str] = []
+    for value in values:
+        matched = [
+            brand
+            for brand, markers in ORG_BRAND_KEYWORDS.items()
+            if any(marker in value.casefold() for marker in markers)
+        ]
+        value_brands.append(matched[0] if len(matched) == 1 else ("mixed" if matched else ""))
+
+    known_brands = {brand for brand in value_brands if brand and brand != "mixed"}
+    if "mixed" in value_brands or len(known_brands) > 1 or (known_brands and "" in value_brands):
+        return "mixed", values, "organization_ambiguous"
+    if not known_brands:
+        return "", values, "organization_unknown"
+    brand = next(iter(known_brands))
+    if brand != expected_brand:
+        return brand, values, "brand_mismatch"
+    return brand, values, ""
+
+
 def load_phone_stoplist(path: Path = DEFAULT_STOPLIST_PATH) -> tuple[set[str], str]:
     target = path.expanduser()
     if not target.exists() and target == DEFAULT_STOPLIST_PATH and LEGACY_STOPLIST_PATH.exists():
@@ -164,7 +191,7 @@ class AmoAutoResolver:
     client: AmoReadClient
     shared_phone_stoplist: set[str]
     stoplist_error: str = ""
-    require_known_brand: bool = False
+    require_known_brand: bool = True
 
     def __post_init__(self) -> None:
         self.shared_phone_stoplist = {phone for phone in (normalize_phone(item) for item in self.shared_phone_stoplist) if phone}
@@ -251,20 +278,13 @@ class AmoAutoResolver:
         if len(active) != 1:
             return {"status": "rejected", "reason": "multi_active_lead", "contact_id": contact_id, "match_key": match_key}
         lead = active[0]
-        org_brand = lead_org_brand(lead)
-        org_values = lead_org_values(lead)
-        if self.require_known_brand and not org_brand:
+        org_brand, org_values, org_reason = lead_org_brand_guard(
+            lead, expected_brand=profile.brand
+        )
+        if org_reason:
             return {
                 "status": "rejected",
-                "reason": "brand_unknown",
-                "contact_id": contact_id,
-                "lead_id": str(lead.get("id") or ""),
-                "organization_values": org_values,
-            }
-        if org_brand and org_brand != profile.brand:
-            return {
-                "status": "rejected",
-                "reason": "brand_mismatch",
+                "reason": org_reason,
                 "contact_id": contact_id,
                 "lead_id": str(lead.get("id") or ""),
                 "organization_brand": org_brand,
@@ -291,18 +311,18 @@ def build_amo_auto_resolver(
     amo_mcp_env_file: Path = DEFAULT_AMO_MCP_ENV_PATH,
     shared_phone_stoplist: Path = DEFAULT_STOPLIST_PATH,
     user_agent: str = "mango-wappi-auto-resolver/1.0",
-    require_known_brand: bool = False,
+    require_known_brand: bool = True,
 ) -> AmoAutoResolver:
     stoplist, stoplist_error = load_phone_stoplist(shared_phone_stoplist)
     config = read_mcp_env(amo_mcp_env_file)
-    if config.transport != "curl" or config.user_agent != user_agent:
+    if config.user_agent != user_agent:
         config = AmoMcpConfig(
             connector_url=config.connector_url,
             bearer_token=config.bearer_token,
             timeout_seconds=config.timeout_seconds,
             max_retries=config.max_retries,
             user_agent=user_agent,
-            transport="curl",
+            transport=config.transport,
         )
     return AmoAutoResolver(
         client=AmoMcpClient(config),

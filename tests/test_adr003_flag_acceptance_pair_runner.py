@@ -34,6 +34,7 @@ def test_adr003_flag_acceptance_runner_isolates_sibling_package_flags() -> None:
     assert "TELEGRAM_DIALOG_SUMMARY_ROLLING=0" in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
     assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1" in text
+    assert "--allow-non-pilot-profile" in text
     assert 'run_leg B "${base_env[@]}" "${package_flags_off[@]}"' in text
     assert '"$TARGET_FLAG=$TARGET_FLAG_VALUE"' in text
 

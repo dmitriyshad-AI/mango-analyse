@@ -26,7 +26,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
 )
 from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.amo_wappi_phase1 import WappiClientConfig, WappiPhase1Client
-from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport
+from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
 from mango_mvp.integrations.draft_loop import DraftLoopKey
 
 
@@ -362,7 +362,10 @@ def test_wappi_history_requires_default_deny_transport() -> None:
 
     safe = WappiPhase1Client(
         WappiClientConfig(base_url="https://wappi.pro", telegram_token="token"),
-        transport=DefaultDenyTransport(lambda **_kwargs: {"ok": True}),
+        transport=DefaultDenyTransport(
+            lambda **_kwargs: {"ok": True},
+            policy=SafeTransportPolicy.wappi_read_only(),
+        ),
     )
     assert_readonly_wappi_client(safe)
 
@@ -400,7 +403,10 @@ def test_wappi_history_pages_with_limit_100_and_mark_all_false(tmp_path: Path) -
 
 class FakeWappiClient:
     def __init__(self, chats: Mapping[str, list[Mapping[str, Any]]], messages: Mapping[tuple[str, str, str], list[Mapping[str, Any]]]) -> None:
-        self.transport = DefaultDenyTransport(lambda **_kwargs: {"ok": True})
+        self.transport = DefaultDenyTransport(
+            lambda **_kwargs: {"ok": True},
+            policy=SafeTransportPolicy.wappi_read_only(),
+        )
         self.chats = {key: list(value) for key, value in chats.items()}
         self.messages = {key: list(value) for key, value in messages.items()}
         self.calls: list[dict[str, Any]] = []

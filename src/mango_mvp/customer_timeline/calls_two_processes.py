@@ -392,13 +392,12 @@ def run_process_a(
         )
 
 
-def run_process_b(
+def _run_process_b(
     config: CallsTwoProcessesConfig,
     *,
     producer_runner: ProducerRunner = None,
     import_runner: ImportRunner = run_timeline_import_cli,
 ) -> Mapping[str, Any]:
-    config.validate()
     started = datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ")
     producer_runner = producer_runner or run_increment_producer
@@ -494,6 +493,79 @@ def run_process_b(
             },
         )
     return finalize_report(config, run_id, "process_b", status, stop_reason, counters)
+
+
+def run_process_b(
+    config: CallsTwoProcessesConfig,
+    *,
+    producer_runner: ProducerRunner = None,
+    import_runner: ImportRunner = run_timeline_import_cli,
+) -> Mapping[str, Any]:
+    started = datetime.now(timezone.utc)
+    run_id = started.strftime("%Y%m%dT%H%M%SZ")
+    try:
+        config.validate()
+    except Exception as exc:  # noqa: BLE001 - normalized fail-loud boundary
+        return process_b_failure_report(
+            run_id,
+            f"process_b_config_exception:{type(exc).__name__}",
+            exc,
+        )
+    try:
+        return _run_process_b(
+            config,
+            producer_runner=producer_runner,
+            import_runner=import_runner,
+        )
+    except Exception as exc:  # noqa: BLE001 - Process B must report, never traceback
+        stop_reason = f"process_b_exception:{type(exc).__name__}"
+        try:
+            return finalize_report(
+                config,
+                run_id,
+                "process_b",
+                "failed",
+                stop_reason,
+                {"diagnostic": safe_exception_diagnostic(exc)},
+            )
+        except Exception as finalize_exc:  # noqa: BLE001 - reports path may itself be broken
+            return process_b_failure_report(
+                run_id,
+                f"process_b_finalize_exception:{type(finalize_exc).__name__}",
+                finalize_exc,
+                original_stop_reason=stop_reason,
+            )
+
+
+def process_b_failure_report(
+    run_id: str,
+    stop_reason: str,
+    exc: Exception,
+    *,
+    original_stop_reason: str = "",
+) -> Mapping[str, Any]:
+    counters: dict[str, Any] = {"diagnostic": safe_exception_diagnostic(exc)}
+    if original_stop_reason:
+        counters["original_stop_reason"] = original_stop_reason
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "process": "process_b",
+        "status": "failed",
+        "stop_reason": stop_reason,
+        "counters": counters,
+        "safety": {
+            "writes_timeline_staging": False,
+            "writes_timeline_prod": False,
+            "writes_stable_runtime": False,
+            "writes_amo": False,
+            "writes_crm": False,
+            "writes_tallanto": False,
+            "runs_asr": False,
+            "runs_resolve_analyze": False,
+            "runs_sync": False,
+        },
+    }
 
 
 def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mapping[str, Any]:
@@ -1022,7 +1094,20 @@ def run_command(command: Sequence[str], env: Mapping[str, str], cwd: Path) -> Ma
             stderr=subprocess.STDOUT,
             check=False,
         )
-    return {"rc": proc.returncode, "command": compact_command_name(command), "log_path": str(log_path)}
+    report: dict[str, Any] = {
+        "rc": proc.returncode,
+        "command": compact_command_name(command),
+        "log_path": str(log_path),
+    }
+    if "ingest" in command:
+        payload = parse_json_object(log_path.read_text(encoding="utf-8"))
+        if payload:
+            report["metrics"] = {
+                key: payload.get(key)
+                for key in ("processed", "inserted", "skipped", "failed", "failure_types")
+                if key in payload
+            }
+    return report
 
 
 def run_increment_producer(
@@ -1295,11 +1380,7 @@ def assert_no_pdn(payload: Mapping[str, Any]) -> None:
 
 
 def safe_exception_diagnostic(exc: Exception) -> Mapping[str, str]:
-    text = " ".join(str(exc).split())[:500]
-    text = PHONE_RE.sub("[redacted_phone]", text)
-    text = EMAIL_RE.sub("[redacted_email]", text)
-    text = SECRET_RE.sub("[redacted_secret]", text)
-    return {"type": type(exc).__name__, "message": text}
+    return {"type": type(exc).__name__}
 
 
 def compact_import_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1405,10 +1486,17 @@ def pipeline_freshness(
 
 
 def compact_command_reports(reports: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return [
-        {"rc": item.get("rc"), "command": item.get("command"), "log_path": item.get("log_path")}
-        for item in reports
-    ]
+    compacted: list[Mapping[str, Any]] = []
+    for item in reports:
+        row: dict[str, Any] = {
+            "rc": item.get("rc"),
+            "command": item.get("command"),
+            "log_path": item.get("log_path"),
+        }
+        if isinstance(item.get("metrics"), Mapping):
+            row["metrics"] = dict(item["metrics"])
+        compacted.append(row)
+    return compacted
 
 
 def compact_command_name(command: Sequence[str]) -> str:
@@ -1417,6 +1505,8 @@ def compact_command_name(command: Sequence[str]) -> str:
             return "worker:" + str(command[command.index("--stages") + 1])
         except (ValueError, IndexError):
             return "worker"
+    if "ingest" in command:
+        return "ingest"
     return str(command[-1]) if command else "unknown"
 
 

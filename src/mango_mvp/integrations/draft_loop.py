@@ -180,6 +180,26 @@ def build_draft_loop_config_fingerprint(
     }
 
 
+def build_draft_loop_code_identity(repo_root: Path | str | None = None) -> Mapping[str, str]:
+    root = Path(repo_root).expanduser() if repo_root is not None else Path(__file__).resolve().parents[3]
+    code_root = str(root.resolve())
+    git_sha = "unknown"
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            code_root, git_sha = lines[0], lines[1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"code_root": code_root, "git_sha": git_sha}
+
+
 @dataclass(frozen=True)
 class WappiHistoryMessage:
     profile_id: str
@@ -491,6 +511,7 @@ class AmoWappiDraftLoop:
         state: DraftLoopState | None = None,
         auto_resolver: AutoResolver | None = None,
         now_fn: Callable[[], datetime] | None = None,
+        code_identity: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.wappi_client = wappi_client
@@ -501,6 +522,7 @@ class AmoWappiDraftLoop:
         self.state = state or DraftLoopState(config.state_path)
         self.auto_resolver = auto_resolver
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self.code_identity = dict(code_identity or build_draft_loop_code_identity())
 
     def run_once(self, *, dry_run: bool = True) -> Mapping[str, Any]:
         stop_active = self.config.stop_path.expanduser().exists()
@@ -766,6 +788,8 @@ class AmoWappiDraftLoop:
             "last_cycle_at": self.now_fn().astimezone(timezone.utc).isoformat(),
             "status": str(status or ""),
             "auth_error_count": self.state.auth_error_count(),
+            "code_root": str(self.code_identity.get("code_root") or "unknown"),
+            "git_sha": str(self.code_identity.get("git_sha") or "unknown"),
             "summary": dict(summary),
         }
         data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -895,7 +919,8 @@ class AmoWappiDraftLoop:
                 return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0}
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
         client_message = inbound_new[-1].text
-        previous_memory = self.state.dialogue_memory_for(key)
+        auto_unconfirmed = str(pair.source or "").strip().casefold() == "auto"
+        previous_memory = {} if auto_unconfirmed else self.state.dialogue_memory_for(key)
         history = _prompt_history_lines(
             messages,
             recent_limit=self.config.history_limit,
@@ -911,6 +936,13 @@ class AmoWappiDraftLoop:
             dialogue_memory=previous_memory,
             current_message_id=inbound_new[-1].message_id,
         )
+        if auto_unconfirmed:
+            context = _without_unconfirmed_auto_customer_memory(context)
+            memory_status = "unavailable_auto_unconfirmed"
+        elif isinstance(context.get("read_only_customer_context"), Mapping):
+            memory_status = "connected"
+        else:
+            memory_status = "unavailable"
         result = self.bot_provider.build_draft(client_message, context=context)
         route = str(getattr(result, "route", "") or "")
         safety_flags = tuple(str(item) for item in (getattr(result, "safety_flags", ()) or ()))
@@ -946,6 +978,7 @@ class AmoWappiDraftLoop:
             "safety_flags": list(safety_flags),
             "bot_draft_text": draft_text,
             "auto_note": pair.auto_note,
+            "memory_status": memory_status,
             "config_fingerprint": dict(self.config.config_fingerprint or {}),
             "status": "note_pending",
         }
@@ -1169,6 +1202,9 @@ class AmoWappiDraftLoop:
         auto_note = str(payload.get("auto_note") or "").strip()
         if auto_note:
             outgoing_note = "\n".join(item for item in (auto_note, outgoing_note) if item)
+        memory_note = _manager_memory_status_note(str(payload.get("memory_status") or ""))
+        if memory_note:
+            outgoing_note = "\n".join(item for item in (outgoing_note, memory_note) if item)
         self.amo_client.add_draft_note_to_test_lead(
             str(payload.get("lead_id") or ""),
             config=self.config.phase1_config(),
@@ -1179,6 +1215,35 @@ class AmoWappiDraftLoop:
             safety_flags=tuple(payload.get("safety_flags") or ()),
             outgoing_visibility_note=outgoing_note,
         )
+
+
+def _manager_memory_status_note(status: str) -> str:
+    normalized = str(status or "").strip().casefold()
+    if normalized == "connected":
+        return "Память клиента: подключена."
+    if normalized == "unavailable_auto_unconfirmed":
+        return "Память клиента: недоступна — автоматическая привязка не подтверждена."
+    if normalized == "unavailable":
+        return "Память клиента: недоступна."
+    return ""
+
+
+def _without_unconfirmed_auto_customer_memory(context: Mapping[str, Any]) -> Mapping[str, Any]:
+    cleaned = {
+        str(key): value
+        for key, value in context.items()
+        if str(key) not in _UNCONFIRMED_AUTO_CUSTOMER_CONTEXT_KEYS
+    }
+    for memory_key in ("dialogue_memory_view", "dialogue_memory_state"):
+        memory = cleaned.get(memory_key)
+        if not isinstance(memory, Mapping):
+            continue
+        cleaned[memory_key] = {
+            str(key): value
+            for key, value in memory.items()
+            if str(key) not in _UNCONFIRMED_AUTO_MEMORY_KEYS
+        }
+    return cleaned
 
 
 def _message_event(event: str, message: WappiHistoryMessage, *, status: str) -> dict[str, Any]:
@@ -1196,9 +1261,11 @@ def _message_event(event: str, message: WappiHistoryMessage, *, status: str) -> 
 
 def _auto_pair_note(*, profile: DraftLoopProfile, candidate: Mapping[str, Any]) -> str:
     match_key = str(candidate.get("match_key") or "auto").strip()
+    brand = "Фотон" if profile.brand == "foton" else "УНПК"
+    channel = "Telegram" if profile.channel == "telegram" else "Max"
     return (
-        f"Привязка автоматическая ({match_key}). Канал: {profile.brand} ({profile.channel}). "
-        "Если сделка по другому учебному центру — черновик НЕ использовать, сообщите архитектору."
+        f"Автоматическая привязка не подтверждена ({match_key}). Канал: {brand}, {channel}. "
+        "Проверьте карточку и учебный центр перед использованием черновика."
     )
 
 
@@ -1510,3 +1577,29 @@ def persist_auto_pair(path: Path | str, pair: DraftLoopPair) -> bool:
         handle.write("\n")
     os.replace(tmp_name, target)
     return True
+
+
+_UNCONFIRMED_AUTO_CUSTOMER_CONTEXT_KEYS = frozenset(
+    {
+        "read_only_customer_context",
+        "amo_context",
+        "tallanto_context",
+        "timeline_context",
+        "customer_context_summary",
+        "crm_context_summary",
+        "tallanto_context_summary",
+        "timeline_context_summary",
+        "known_client_fields",
+        "lead_stage",
+        "client_segment",
+        "payment_context",
+    }
+)
+_UNCONFIRMED_AUTO_MEMORY_KEYS = frozenset(
+    {
+        "crm_known_slots",
+        "customer_memory",
+        "read_only_customer_context",
+        "timeline_context",
+    }
+)

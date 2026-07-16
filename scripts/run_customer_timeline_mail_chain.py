@@ -116,7 +116,7 @@ def run_chain(
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lock-path", default=str(ROOT / ".codex_local/staging/mail_pipeline/mail_chain.lock"))
+    parser.add_argument("--lock-path", default=str(codex_task.MAIL_STATE_DIR / "mail_chain.lock"))
     return parser.parse_args(argv)
 
 

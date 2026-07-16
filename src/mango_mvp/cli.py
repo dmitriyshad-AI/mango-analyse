@@ -232,7 +232,9 @@ def cmd_ingest(args) -> int:
             limit=args.limit,
         )
     _json_print(result)
-    return 0
+    processed = int(result.get("processed") or 0)
+    failed = int(result.get("failed") or 0)
+    return 1 if processed > 0 and failed == processed else 0
 
 
 def cmd_transcribe(args) -> int:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpConfig
+from mango_mvp.integrations import amo_wappi_auto_resolver as resolver_module
 from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopProfile
 
@@ -60,7 +62,7 @@ def test_strict_brand_resolver_fails_closed_on_unknown_organization_brand() -> N
     )
 
     assert result["status"] == "rejected"
-    assert result["reason"] == "brand_unknown"
+    assert result["reason"] == "organization_missing"
 
 
 def test_resolver_fails_closed_on_mixed_brand_organization() -> None:
@@ -79,8 +81,88 @@ def test_resolver_fails_closed_on_mixed_brand_organization() -> None:
     )
 
     assert result["status"] == "rejected"
-    assert result["reason"] == "brand_mismatch"
+    assert result["reason"] == "organization_ambiguous"
     assert result["organization_brand"] == "mixed"
+
+
+def test_resolver_fails_closed_on_unrecognized_organization() -> None:
+    resolver = AmoAutoResolver(
+        client=FakeMcp(contacts=[_contact("2002", telegram_id="123456", leads=("1001",))], leads=[_lead("1001", org="ООО Ромашка")]),
+        shared_phone_stoplist=set(),
+    )
+
+    result = resolver(
+        key=DraftLoopKey("p-tg", "123456"),
+        profile=DraftLoopProfile("p-tg", "foton", "telegram"),
+        dialog={},
+        messages=[],
+        message=None,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "organization_unknown"
+
+
+def test_resolver_fails_closed_on_expected_and_unrecognized_organization_values() -> None:
+    lead = _lead("1001", org="Фотон")
+    lead["custom_fields_values"][0]["values"].append({"value": "ООО Ромашка"})
+    resolver = AmoAutoResolver(
+        client=FakeMcp(contacts=[_contact("2002", telegram_id="123456", leads=("1001",))], leads=[lead]),
+        shared_phone_stoplist=set(),
+    )
+
+    result = resolver(
+        key=DraftLoopKey("p-tg", "123456"),
+        profile=DraftLoopProfile("p-tg", "foton", "telegram"),
+        dialog={},
+        messages=[],
+        message=None,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "organization_ambiguous"
+
+
+def test_blank_organization_cannot_be_reenabled_by_legacy_flag() -> None:
+    resolver = AmoAutoResolver(
+        client=FakeMcp(contacts=[_contact("2002", telegram_id="123456", leads=("1001",))], leads=[_lead("1001", org="")]),
+        shared_phone_stoplist=set(),
+        require_known_brand=False,
+    )
+
+    result = resolver(
+        key=DraftLoopKey("p-tg", "123456"),
+        profile=DraftLoopProfile("p-tg", "foton", "telegram"),
+        dialog={},
+        messages=[],
+        message=None,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "organization_missing"
+
+
+def test_builder_preserves_secret_safe_configured_transport(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        resolver_module,
+        "read_mcp_env",
+        lambda _path: AmoMcpConfig(
+            connector_url="https://connector.test",
+            bearer_token="secret",
+            user_agent="old-agent",
+            transport="urllib",
+        ),
+    )
+    monkeypatch.setattr(resolver_module, "load_phone_stoplist", lambda _path: ({"79990000000"}, ""))
+
+    resolver = resolver_module.build_amo_auto_resolver(
+        amo_mcp_env_file=tmp_path / "mcp.env",
+        shared_phone_stoplist=tmp_path / "stoplist.json",
+        user_agent="new-agent",
+    )
+
+    assert resolver.client.config.transport == "urllib"
+    assert resolver.client.config.user_agent == "new-agent"
 
 
 def _contact(contact_id="111", *, telegram_id="", phone="", leads=("49762441",)):

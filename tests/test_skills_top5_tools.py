@@ -151,6 +151,19 @@ def test_live_truth_snapshot_redacts_env_and_reports_head_drift(tmp_path: Path) 
     assert row.db_paths == [str(repo / "customer_timeline.sqlite")]
 
 
+def test_live_truth_ignores_test_process_that_only_mentions_live_script(tmp_path: Path) -> None:
+    process = ProcessInfo(
+        pid=43,
+        ppid=1,
+        command="python3 -m pytest tests/test_run_amo_wappi_draft_loop.py --expect-head run_amo_wappi_draft_loop.py=abc",
+    )
+
+    snapshot = live_truth.build_snapshot(repo_root=tmp_path, processes=[process])
+
+    assert snapshot.status == "PASS"
+    assert snapshot.processes == []
+
+
 def test_inventory_before_build_uses_git_log_and_inventory_summary(tmp_path: Path, monkeypatch) -> None:
     calls: list[list[str]] = []
 

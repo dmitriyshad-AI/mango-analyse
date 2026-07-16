@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from mango_mvp.models import CallRecord
@@ -139,56 +140,76 @@ def ingest_from_directory(
     recordings_dir: Path,
     metadata_csv: Optional[Path] = None,
     limit: Optional[int] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     metadata = load_metadata_index(metadata_csv)
     processed = 0
     inserted = 0
     skipped = 0
+    failed = 0
+    failure_types: Dict[str, int] = {}
 
     files = iter_audio_files(recordings_dir)
     for file_path in files:
         if limit is not None and processed >= limit:
             break
         processed += 1
-        abs_path = str(file_path.resolve())
-        exists = session.scalar(select(CallRecord.id).where(CallRecord.source_file == abs_path))
-        if exists:
-            skipped += 1
-            continue
+        try:
+            with session.begin_nested():
+                abs_path = str(file_path.resolve())
+                exists = session.scalar(select(CallRecord.id).where(CallRecord.source_file == abs_path))
+                if exists:
+                    skipped += 1
+                    continue
 
-        row = metadata.get(file_path.name, {})
-        filename_meta = parse_filename_metadata(file_path.name)
-        audio_meta = probe_audio(file_path)
-        phone = normalize_phone(
-            _pick(row, "phone", "client_phone", "abonent_number", "contact_phone")
-        ) or filename_meta.get("phone")
-        manager_name = (
-            _pick(row, "manager", "manager_name", "operator")
-            or filename_meta.get("manager_name")
-        )
-        source_call_id = _pick(row, "call_id", "id", "record_id") or filename_meta.get(
-            "source_call_id"
-        )
-        started_at = _as_datetime(_pick(row, "started_at", "start_time", "date_time")) or filename_meta.get(
-            "started_at"
-        )
-        call = CallRecord(
-            source_file=abs_path,
-            source_filename=repair_filename_display(file_path.name),
-            source_call_id=source_call_id,
-            audio_codec=audio_meta.get("codec_name"),
-            sample_rate=audio_meta.get("sample_rate"),  # type: ignore[arg-type]
-            channels=audio_meta.get("channels"),  # type: ignore[arg-type]
-            duration_sec=audio_meta.get("duration_sec"),  # type: ignore[arg-type]
-            phone=phone,
-            manager_name=repair_manager_name(manager_name),
-            direction=_pick(row, "direction", "call_direction"),
-            started_at=started_at,
-        )
-        session.add(call)
-        inserted += 1
+                row = metadata.get(file_path.name, {})
+                filename_meta = parse_filename_metadata(file_path.name)
+                audio_meta = probe_audio(file_path)
+                phone = normalize_phone(
+                    _pick(row, "phone", "client_phone", "abonent_number", "contact_phone")
+                ) or filename_meta.get("phone")
+                manager_name = (
+                    _pick(row, "manager", "manager_name", "operator")
+                    or filename_meta.get("manager_name")
+                )
+                source_call_id = _pick(row, "call_id", "id", "record_id") or filename_meta.get(
+                    "source_call_id"
+                )
+                started_at = _as_datetime(
+                    _pick(row, "started_at", "start_time", "date_time")
+                ) or filename_meta.get("started_at")
+                session.add(
+                    CallRecord(
+                        source_file=abs_path,
+                        source_filename=repair_filename_display(file_path.name),
+                        source_call_id=source_call_id,
+                        audio_codec=audio_meta.get("codec_name"),
+                        sample_rate=audio_meta.get("sample_rate"),  # type: ignore[arg-type]
+                        channels=audio_meta.get("channels"),  # type: ignore[arg-type]
+                        duration_sec=audio_meta.get("duration_sec"),  # type: ignore[arg-type]
+                        phone=phone,
+                        manager_name=repair_manager_name(manager_name),
+                        direction=_pick(row, "direction", "call_direction"),
+                        started_at=started_at,
+                    )
+                )
+            inserted += 1
+        except SQLAlchemyError:
+            # Database/connection failures are fatal for the run, not bad-audio counters.
+            session.rollback()
+            raise
+        except (ValueError, EOFError, UnicodeError) as exc:
+            failed += 1
+            name = type(exc).__name__
+            failure_types[name] = failure_types.get(name, 0) + 1
+            continue
         if inserted % 200 == 0:
             session.commit()
 
     session.commit()
-    return {"processed": processed, "inserted": inserted, "skipped": skipped}
+    return {
+        "processed": processed,
+        "inserted": inserted,
+        "skipped": skipped,
+        "failed": failed,
+        "failure_types": failure_types,
+    }

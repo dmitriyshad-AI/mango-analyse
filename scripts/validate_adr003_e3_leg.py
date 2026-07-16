@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.pilot_profile_runtime import pilot_profile_summary_failures
+
 INFRA_PROVIDER_ERRORS = {
     "timeout",
     "binary_not_found",
@@ -73,17 +75,10 @@ def validate_leg(
         _fail(leg, f"missing transcripts: {transcripts_path}")
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    profile = (
-        summary.get("run_config", {})
-        .get("key_flags", {})
-        .get("profile", {})
-    )
-    if profile.get("env") != "pilot_gold_v1" or profile.get("effective") is not True:
-        _fail(leg, f"pilot profile not active: {profile!r}")
-
-    llm_calls = summary.get("llm_calls") or {}
-    if int(llm_calls.get("bot_direct_draft") or 0) <= 0:
-        _fail(leg, f"bot_direct_draft is not positive: {llm_calls!r}")
+    llm_calls = summary.get("llm_calls") if isinstance(summary.get("llm_calls"), Mapping) else {}
+    profile_failures = pilot_profile_summary_failures(summary, require_bot_direct_draft=True)
+    if profile_failures:
+        _fail(leg, f"pilot profile invalid: {list(profile_failures)!r}")
 
     dialogs = [
         json.loads(line)

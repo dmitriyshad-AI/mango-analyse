@@ -49,6 +49,7 @@ COMMON=(
   --client-mode scripted
   --parallel 4
   --judge-prompt-version v9.1
+  --allow-non-pilot-profile
 )
 if [[ "$DRY_CHECK" == "1" ]]; then
   COMMON+=(--limit 2)

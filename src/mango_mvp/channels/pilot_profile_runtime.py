@@ -14,6 +14,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _verifier_handoff_claims_enabled,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
+    DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     INTENT_MODEL_LED_ENV,
@@ -185,6 +186,7 @@ def pilot_profile_selfcheck(
     require: bool | None = None,
     dialogue_contract_pipeline_enabled: bool = True,
     env: Mapping[str, str] | None = None,
+    require_all_default_on: bool = False,
 ) -> PilotProfileSelfCheck:
     source = os.environ if env is None else env
     required = strict_one_enabled(source, ENFORCE_CANONICAL_PROFILE_ENV) if require is None else bool(require)
@@ -213,6 +215,10 @@ def pilot_profile_selfcheck(
         for key in REQUIRED_GUARD_KEYS:
             if not active_guards.get(key):
                 failures.append(f"{key}_disabled")
+        if require_all_default_on:
+            for env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS:
+                if not _pilot_profile_default_on_flag_enabled(None, env_name):
+                    failures.append(f"profile_default_flag_disabled:{env_name}")
     for key in QUALITY_GUARD_KEYS:
         if not quality_guards.get(key):
             warnings.append(f"{key}_disabled")
@@ -227,6 +233,34 @@ def pilot_profile_selfcheck(
         failures=tuple(dict.fromkeys(failures)),
         warnings=tuple(dict.fromkeys(warnings)),
     )
+
+
+def pilot_profile_summary_failures(
+    summary: Mapping[str, Any],
+    *,
+    require_bot_direct_draft: bool = False,
+    require_all_default_on: bool = False,
+) -> tuple[str, ...]:
+    run_config = summary.get("run_config") if isinstance(summary.get("run_config"), Mapping) else {}
+    key_flags = run_config.get("key_flags") if isinstance(run_config.get("key_flags"), Mapping) else {}
+    profile = key_flags.get("profile") if isinstance(key_flags.get("profile"), Mapping) else {}
+    failures: list[str] = []
+    if profile.get("env") != DIRECT_PATH_PILOT_CONFIG_VERSION or profile.get("effective") is not True:
+        failures.append("pilot_gold_profile_not_active")
+    if require_all_default_on:
+        matrix = key_flags.get("profile_default_on_flags")
+        if not isinstance(matrix, Mapping):
+            failures.append("profile_default_on_flags_missing")
+        else:
+            for env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS:
+                state = matrix.get(env_name) if isinstance(matrix.get(env_name), Mapping) else {}
+                if state.get("effective") is not True:
+                    failures.append(f"profile_default_flag_disabled:{env_name}")
+    if require_bot_direct_draft:
+        llm_calls = summary.get("llm_calls") if isinstance(summary.get("llm_calls"), Mapping) else {}
+        if int(llm_calls.get("bot_direct_draft") or 0) <= 0:
+            failures.append("bot_direct_draft_not_positive")
+    return tuple(failures)
 
 
 def raise_for_failed_selfcheck(check: PilotProfileSelfCheck) -> None:

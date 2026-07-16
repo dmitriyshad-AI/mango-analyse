@@ -5,6 +5,7 @@ APPLY=0
 PLIST_SOURCE=""
 PLIST_TARGET="${HOME}/Library/LaunchAgents/com.mango.customer-timeline-nightly.plist"
 CODE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NIGHTLY_HOME="${CUSTOMER_TIMELINE_NIGHTLY_HOME:-${HOME}/.mango_local/customer_timeline_nightly}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,6 +25,10 @@ while [[ $# -gt 0 ]]; do
       CODE_ROOT="$2"
       shift 2
       ;;
+    --nightly-home)
+      NIGHTLY_HOME="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -40,6 +45,7 @@ echo "Would install launchd plist:"
 echo "  source: ${PLIST_SOURCE}"
 echo "  target: ${PLIST_TARGET}"
 echo "  code root: ${CODE_ROOT}"
+echo "  nightly home: ${NIGHTLY_HOME}"
 echo "  launchctl bootstrap gui/$(id -u) ${PLIST_TARGET}"
 
 if [[ "${APPLY}" != "1" ]]; then
@@ -48,19 +54,22 @@ if [[ "${APPLY}" != "1" ]]; then
 fi
 
 install -d -m 0755 "$(dirname "${PLIST_TARGET}")"
-python3 - "${PLIST_SOURCE}" "${PLIST_TARGET}" "${CODE_ROOT}" <<'PY'
+python3 - "${PLIST_SOURCE}" "${PLIST_TARGET}" "${CODE_ROOT}" "${NIGHTLY_HOME}" <<'PY'
 import os
 import plistlib
 import sys
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-source, target, code_root = map(Path, sys.argv[1:])
+source, target, code_root, nightly_home = map(Path, sys.argv[1:])
 rendered = source.read_text(encoding="utf-8").replace(
     "__MANGO_CODE_ROOT__", escape(str(code_root.resolve()))
 )
-if "__MANGO_CODE_ROOT__" in rendered:
-    raise SystemExit("unresolved code-root marker")
+rendered = rendered.replace(
+    "__CUSTOMER_TIMELINE_NIGHTLY_HOME__", escape(str(nightly_home.expanduser().resolve()))
+)
+if "__MANGO_CODE_ROOT__" in rendered or "__CUSTOMER_TIMELINE_NIGHTLY_HOME__" in rendered:
+    raise SystemExit("unresolved template marker")
 plistlib.loads(rendered.encode("utf-8"))
 temp = target.with_suffix(target.suffix + ".tmp")
 temp.write_text(rendered, encoding="utf-8")

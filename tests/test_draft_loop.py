@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,8 +22,10 @@ from mango_mvp.integrations.draft_loop import (
     DraftWindow,
     OutgoingWindowMessage,
     WappiHistoryMessage,
+    _auto_pair_note,
     _prompt_history_lines,
     build_draft_loop_config_fingerprint,
+    build_draft_loop_code_identity,
     classify_manager_edit_windows,
     load_pairs_file,
     load_profiles_file,
@@ -608,6 +611,79 @@ def test_draft_loop_never_writes_note_for_auto_candidate_without_explicit_pair(t
     assert rows[0]["auto_candidate"]["lead_id"] == "49832125"
 
 
+def test_manager_note_marks_unconfirmed_auto_pair_memory_unavailable(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(
+        key=key,
+        lead_id="49832125",
+        expected_brand="foton",
+        source="auto",
+        auto_note="Привязка автоматическая.",
+    )
+    amo = FakeAmo()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, amo=amo)
+
+    loop.run_once(dry_run=False)
+
+    note = amo.notes[0]
+    assert "Память клиента: недоступна — автоматическая привязка не подтверждена." in note["outgoing_visibility_note"]
+    assert "49832125" not in note["outgoing_visibility_note"]
+
+
+def test_auto_pair_manager_note_is_actionable_without_internal_roles() -> None:
+    text = _auto_pair_note(
+        profile=DraftLoopProfile("profile-foton", "foton", "telegram"),
+        candidate={"match_key": "Telegram ID"},
+    )
+
+    assert "Фотон, Telegram" in text
+    assert "Проверьте карточку" in text
+    assert "архитектор" not in text.casefold()
+
+
+def test_manager_note_marks_manual_pair_memory_connected(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    amo = FakeAmo()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, amo=amo)
+    loop.context_builder = lambda *_args, **_kwargs: {"read_only_customer_context": {"found": True}}
+
+    loop.run_once(dry_run=False)
+
+    assert "Память клиента: подключена." in amo.notes[0]["outgoing_visibility_note"]
+
+
+def test_unconfirmed_auto_pair_core_strips_customer_memory_from_custom_builder(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton", source="auto")
+    bot = FakeBot()
+    received_dialogue_memory: list[Mapping[str, object]] = []
+
+    def malicious_builder(*_args, dialogue_memory=None, **_kwargs):
+        received_dialogue_memory.append(dict(dialogue_memory or {}))
+        return {
+            "read_only_customer_context": {"summary": "Чужая память"},
+            "timeline_context": {"bot_context": ["Чужой факт"]},
+            "dialogue_memory_view": {
+                "conversation_summary_short": "Текущий диалог",
+                "crm_known_slots": {"grade": "7"},
+            },
+        }
+
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, bot=bot)
+    loop.context_builder = malicious_builder
+    loop.state.set_dialogue_memory(key, {"crm_known_slots": {"phone": "+70000000000"}})
+
+    loop.run_once(dry_run=True)
+
+    context = bot.calls[0]["context"]
+    assert received_dialogue_memory == [{}]
+    assert "read_only_customer_context" not in context
+    assert "timeline_context" not in context
+    assert "crm_known_slots" not in context["dialogue_memory_view"]
+    assert context["dialogue_memory_view"]["conversation_summary_short"] == "Текущий диалог"
+
+
 def test_draft_loop_stop_fetches_but_does_not_call_bot_or_mark_processed(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
@@ -992,6 +1068,7 @@ def test_draft_loop_run_once_writes_manager_edit_match_from_outgoing_history(tmp
 
 def test_draft_loop_writes_heartbeat_on_success(tmp_path: Path) -> None:
     loop = _loop(tmp_path, messages=[], pairs={})
+    loop.code_identity = {"code_root": "/repo/live", "git_sha": "a" * 40}
 
     summary = loop.run_once(dry_run=True)
 
@@ -999,6 +1076,20 @@ def test_draft_loop_writes_heartbeat_on_success(tmp_path: Path) -> None:
     assert heartbeat["status"] == "ok"
     assert heartbeat["summary"]["processed"] == summary["processed"]
     assert heartbeat["last_cycle_at"]
+    assert heartbeat["code_root"] == "/repo/live"
+    assert heartbeat["git_sha"] == "a" * 40
+
+
+def test_build_draft_loop_code_identity_reads_git_root_and_full_head() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    identity = build_draft_loop_code_identity(repo_root)
+
+    assert identity["code_root"] == str(repo_root)
+    expected_sha = subprocess.check_output(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    assert identity["git_sha"] == expected_sha
 
 
 def test_draft_loop_auth_error_series_stops_without_calling_bot(tmp_path: Path) -> None:

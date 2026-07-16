@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NIGHTLY_HOME="${CUSTOMER_TIMELINE_NIGHTLY_HOME:-${HOME}/.mango_local/customer_timeline_nightly}"
+STAGING_ROOT="${NIGHTLY_HOME}/.codex_local/staging"
 APPLY=0
-LOCK_DIR="${ROOT}/.codex_local/staging/daily_capture/mail_capture.lock"
-MANIFEST="${ROOT}/.codex_local/staging/daily_capture/mail_capture_manifest.json"
+LOCK_DIR="${STAGING_ROOT}/daily_capture/mail_capture.lock"
+MANIFEST="${STAGING_ROOT}/daily_capture/mail_capture_manifest.json"
 HOLD_LOCK_SECONDS=0
 
 while [[ $# -gt 0 ]]; do
@@ -49,7 +51,8 @@ if [[ "${APPLY}" != "1" ]]; then
 fi
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${ROOT}/src" python3 "${ROOT}/scripts/build_customer_timeline_nightly_dv2_sources.py" \
-  --out-root "${ROOT}/.codex_local/staging/nightly_dv2_sources" \
-  --service-config-out "${ROOT}/.codex_local/staging/nightly_service/customer_timeline_nightly_service_dv2_config.json" \
+  --out-root "${STAGING_ROOT}/nightly_dv2_sources" \
+  --timeline-db "${STAGING_ROOT}/customer_timeline_staging.sqlite" \
+  --base-service-config "${STAGING_ROOT}/nightly_service/customer_timeline_nightly_service_config.json" \
+  --service-config-out "${STAGING_ROOT}/nightly_service/customer_timeline_nightly_service_dv2_config.json" \
   > "${MANIFEST}"
-

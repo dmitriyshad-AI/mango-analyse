@@ -52,6 +52,8 @@ def test_adr003_final_pachka_runner_emulates_old_profile_in_b_leg() -> None:
     ):
         assert flag in text
     assert 'b_env=(' in text
+    b_run_section = text[text.index("run_b_leg()") : text.index("run_report()", text.index("run_b_leg()"))]
+    assert "--allow-non-pilot-profile" in b_run_section
     assert 'TELEGRAM_SEMANTIC_READING_CLASSES="$OLD_READING_CLASSES"' in text
     assert 'TELEGRAM_READING_APPLY_CLASSES="$OLD_APPLY_CLASSES"' in text
     assert '"$flag=0"' in text
@@ -61,12 +63,14 @@ def test_adr003_final_pachka_runner_emulates_old_profile_in_b_leg() -> None:
 def test_adr003_final_pachka_runner_uses_current_profile_in_on_leg() -> None:
     text = _final_pachka_runner_text()
     on_section = text[text.index("on_env=(") : text.index("b_env=(")]
+    on_run_section = text[text.index("run_on_leg()") : text.index("run_b_leg()", text.index("run_on_leg()"))]
 
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in on_section
     assert "-u TELEGRAM_READING_APPLY_CLASSES" in on_section
     assert '"current HEAD pilot profile as-is; no manual env for target flags"' in text
     assert '--require-trace-class "$TARGET_READING_CLASSES"' in text
     assert 'RUN_ORDER="${RUN_ORDER:-ON_FIRST}"' in text
+    assert "--allow-non-pilot-profile" not in on_run_section
 
 
 def test_adr003_e3_runner_avoids_empty_expect_arg_array_for_bash32() -> None:

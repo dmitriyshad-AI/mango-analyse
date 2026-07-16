@@ -1240,6 +1240,7 @@ def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch
             str(tmp_path / "snapshot.json"),
             "--out-dir",
             str(out_dir),
+            "--allow-non-pilot-profile",
             "--client-mode",
             "fake",
             "--judge-mode",
@@ -1264,6 +1265,110 @@ def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch
     transcript = (out_dir / "full_transcripts.md").read_text(encoding="utf-8")
     assert "**Клиент:**" in transcript
     assert "**Бот:**" in transcript
+
+
+def test_dynamic_sim_requires_pilot_profile_before_provider_build(tmp_path, monkeypatch):
+    scenarios = tmp_path / "scenarios.jsonl"
+    _write_scenarios(scenarios)
+    out_dir = tmp_path / "out"
+    monkeypatch.delenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", raising=False)
+    provider_built = False
+
+    def _unexpected_provider(_args):
+        nonlocal provider_built
+        provider_built = True
+        raise AssertionError("provider must not be built before profile preflight")
+
+    monkeypatch.setattr(sim, "build_bot_provider", _unexpected_provider)
+
+    with pytest.raises(SystemExit, match="--allow-non-pilot-profile"):
+        sim.main(
+            [
+                "--scenarios",
+                str(scenarios),
+                "--out-dir",
+                str(out_dir),
+                "--client-mode",
+                "fake",
+                "--judge-mode",
+                "fake",
+                "--bot-mode",
+                "fake",
+                "--memory-mode",
+                "fake",
+            ]
+        )
+
+    assert provider_built is False
+    assert not out_dir.exists()
+
+
+def test_dynamic_sim_post_run_gate_rejects_missing_direct_draft(tmp_path, monkeypatch, capsys):
+    scenarios = tmp_path / "scenarios.jsonl"
+    _write_scenarios(scenarios)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    rc = sim.main(
+        [
+            "--scenarios",
+            str(scenarios),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--client-mode",
+            "fake",
+            "--judge-mode",
+            "fake",
+            "--bot-mode",
+            "fake",
+            "--memory-mode",
+            "fake",
+            "--limit",
+            "1",
+        ]
+    )
+
+    assert rc == 2
+    assert "bot_direct_draft_not_positive" in capsys.readouterr().err
+
+
+def test_dynamic_summary_records_and_validates_full_profile_matrix(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    for env_name in sim.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS:
+        monkeypatch.delenv(env_name, raising=False)
+    summary = {
+        "run_config": {"key_flags": sim._run_key_flags(tmp_path / "snapshot.json")},
+        "llm_calls": {"bot_direct_draft": 1},
+    }
+
+    assert sim.pilot_profile_summary_failures(
+        summary,
+        require_bot_direct_draft=True,
+        require_all_default_on=True,
+    ) == ()
+
+    disabled = sim.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS[0]
+    monkeypatch.setenv(disabled, "0")
+    summary["run_config"]["key_flags"] = sim._run_key_flags(tmp_path / "snapshot.json")
+    assert f"profile_default_flag_disabled:{disabled}" in sim.pilot_profile_summary_failures(
+        summary,
+        require_bot_direct_draft=True,
+        require_all_default_on=True,
+    )
+
+
+def test_dynamic_summary_records_explicit_non_pilot_override(tmp_path):
+    summary = sim.build_summary(
+        [],
+        [],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        allow_non_pilot_profile=True,
+        profile_gate_enabled=False,
+    )
+
+    assert summary["run_config"]["allow_non_pilot_profile"] is True
+    assert summary["run_config"]["profile_gate_enabled"] is False
 
 
 def test_replay_from_uses_saved_client_messages_and_marks_summary(tmp_path, monkeypatch):
@@ -1296,6 +1401,7 @@ def test_replay_from_uses_saved_client_messages_and_marks_summary(tmp_path, monk
             str(out_dir),
             "--replay-from",
             str(source),
+            "--allow-non-pilot-profile",
             "--client-mode",
             "fake",
             "--judge-mode",
@@ -1355,6 +1461,7 @@ def test_scripted_client_mode_uses_persona_behaviors_without_client_llm(tmp_path
             str(snapshot),
             "--out-dir",
             str(out_dir),
+            "--allow-non-pilot-profile",
             "--client-mode",
             "scripted",
             "--judge-mode",
@@ -4257,6 +4364,7 @@ def test_fake_parallel_run_writes_all_dialogs(tmp_path, monkeypatch):
             str(tmp_path / "snapshot.json"),
             "--out-dir",
             str(out_dir),
+            "--allow-non-pilot-profile",
             "--client-mode",
             "fake",
             "--judge-mode",
@@ -4311,6 +4419,7 @@ def test_resume_only_failed_reruns_failed_dialogs_and_keeps_completed(tmp_path, 
             str(tmp_path / "snapshot.json"),
             "--out-dir",
             str(out_dir),
+            "--allow-non-pilot-profile",
             "--client-mode",
             "fake",
             "--judge-mode",

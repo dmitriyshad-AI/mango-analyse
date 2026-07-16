@@ -2,21 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CUSTOMER_TIMELINE_NIGHTLY_HOME</key>
+    <string>__CUSTOMER_TIMELINE_NIGHTLY_HOME__</string>
+  </dict>
   <key>Label</key>
   <string>com.mango.customer-timeline-mango-capture</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
+    <string>__MANGO_CODE_ROOT__/scripts/run_customer_timeline_codex_task.py</string>
     <string>--task</string>
     <string>mango-capture</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>
+  <string>__MANGO_CODE_ROOT__</string>
   <key>StandardOutPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mango_capture.launchd.stdout.log</string>
+  <string>__CUSTOMER_TIMELINE_NIGHTLY_HOME__/.codex_local/staging/daily_capture/mango_capture.launchd.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mango_capture.launchd.stderr.log</string>
+  <string>__CUSTOMER_TIMELINE_NIGHTLY_HOME__/.codex_local/staging/daily_capture/mango_capture.launchd.stderr.log</string>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>

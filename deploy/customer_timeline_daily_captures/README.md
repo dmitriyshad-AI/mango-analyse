@@ -3,6 +3,12 @@
 This package only prepares launchd templates. Installing or running them is a
 manual owner action.
 
+Persistent state is kept outside any Git worktree under
+`CUSTOMER_TIMELINE_NIGHTLY_HOME` (default
+`~/.mango_local/customer_timeline_nightly`). The selected worktree supplies
+code only; changing or removing it must never remove the staging DB, cursors,
+locks, or logs.
+
 ## Services
 
 - `com.mango.customer-timeline-mango-capture`: prepares the daily Mango calls
@@ -44,15 +50,20 @@ bash scripts/uninstall_customer_timeline_nightly_service.sh \
 bash scripts/install_customer_timeline_nightly_service.sh \
   --plist deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mail-chain.plist.template \
   --code-root "/absolute/permanent/main/worktree" \
+  --nightly-home "$HOME/.mango_local/customer_timeline_nightly" \
   --target "$HOME/Library/LaunchAgents/com.mango.customer-timeline-mail-chain.plist" --apply
 
 bash scripts/install_customer_timeline_nightly_service.sh \
   --plist deploy/customer_timeline_daily_captures/com.mango.customer-timeline-mango-capture.plist.template \
+  --code-root "/absolute/permanent/main/worktree" \
+  --nightly-home "$HOME/.mango_local/customer_timeline_nightly" \
   --target "$HOME/Library/LaunchAgents/com.mango.customer-timeline-mango-capture.plist" \
   --apply
 
 bash scripts/install_customer_timeline_nightly_service.sh \
   --plist deploy/customer_timeline_daily_captures/com.mango.customer-timeline-tallanto-api-capture.plist.template \
+  --code-root "/absolute/permanent/main/worktree" \
+  --nightly-home "$HOME/.mango_local/customer_timeline_nightly" \
   --target "$HOME/Library/LaunchAgents/com.mango.customer-timeline-tallanto-api-capture.plist" \
   --apply
 ```
@@ -64,3 +75,9 @@ Do not install or bootstrap these templates before three clean manual cycles,
 an audit pack, and a separate owner approval. The code worktree in the installed
 template is a permanent runtime dependency while the agent is installed; do not
 remove or switch it.
+
+Before first installation, place a verified staging DB and the complete base
+`customer_timeline_nightly_service_config.json` under
+`$CUSTOMER_TIMELINE_NIGHTLY_HOME/.codex_local/staging/`. Missing inputs stop the
+nightly task; the self-heal refuses to generate a partial config without the
+required calls step.

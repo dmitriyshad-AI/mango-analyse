@@ -3,28 +3,20 @@
 <plist version="1.0">
 <!-- DEPRECATED: do not install. Replaced by the download/process/import chain. -->
 <dict>
+  <key>Disabled</key>
+  <true/>
   <key>Label</key>
   <string>com.mango.customer-timeline-mail-capture</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/run_customer_timeline_codex_task.py</string>
-    <string>--task</string>
-    <string>mail-capture</string>
+    <string>/usr/bin/false</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>
+  <string>/tmp</string>
   <key>StandardOutPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mail_capture.launchd.stdout.log</string>
+  <string>/tmp/com.mango.customer-timeline-mail-capture.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/.codex_local/staging/daily_capture/mail_capture.launchd.stderr.log</string>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>2</integer>
-    <key>Minute</key>
-    <integer>10</integer>
-  </dict>
+  <string>/tmp/com.mango.customer-timeline-mail-capture.stderr.log</string>
   <key>RunAtLoad</key>
   <false/>
   <key>KeepAlive</key>

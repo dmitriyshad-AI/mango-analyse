@@ -624,10 +624,52 @@ def run_mango_processed_sweep(
     scan_roots = tuple(Path(str(item)).expanduser() for item in config.get("scan_roots") or ())
     package_globs = tuple(str(item) for item in config.get("package_globs") or ("mango_update_after_*",))
     inventory = discover_mango_processed_call_dbs(scan_roots, package_globs=package_globs, since=since)
-    package_dbs = [item["db_path"] for item in inventory if item.get("usable") and int(item.get("selected_after_cursor") or 0) > 0]
+    seen_package_dbs = {
+        Path(str(item["db_path"])).expanduser().resolve(strict=False)
+        for item in inventory
+        if item.get("db_path")
+    }
+    since_dt = parse_iso_datetime(since) if since else None
+    for raw_db in config.get("package_dbs") or ():
+        db_path = Path(str(raw_db)).expanduser().resolve(strict=False)
+        if db_path in seen_package_dbs:
+            continue
+        seen_package_dbs.add(db_path)
+        inventory.append(inspect_mango_call_db(db_path.parent, db_path, since_dt=since_dt))
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)
     report_out.parent.mkdir(parents=True, exist_ok=True)
     inventory_out.write_text(json.dumps(inventory, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    explicit_package_dbs = {
+        Path(str(item)).expanduser().resolve(strict=False)
+        for item in config.get("package_dbs") or ()
+    }
+    unusable_explicit = [
+        item
+        for item in inventory
+        if Path(str(item.get("db_path") or "")).expanduser().resolve(strict=False) in explicit_package_dbs
+        and not item.get("usable")
+    ]
+    if unusable_explicit:
+        manifest = mango_sweep_manifest(
+            status="failed",
+            reason="explicit_package_db_unusable",
+            timeline_db=timeline_db,
+            out_jsonl=out_jsonl,
+            report_out=report_out,
+            manifest_path=manifest_path,
+            inventory_out=inventory_out,
+            cursor=cursor,
+            inventory=inventory,
+            producer_report={"unusable_explicit_package_dbs": unusable_explicit},
+            command=(),
+            rc=78,
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return manifest
+    package_dbs = [item["db_path"] for item in inventory if item.get("usable") and int(item.get("selected_after_cursor") or 0) > 0]
     command = [
         sys.executable,
         str(producer_script),

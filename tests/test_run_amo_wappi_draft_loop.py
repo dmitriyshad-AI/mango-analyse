@@ -137,6 +137,36 @@ def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path
     assert context["read_only_customer_context"]["timeline_context"]["safety"]["customer_profile_included"] is False
 
 
+def test_context_builder_blocks_customer_memory_for_unconfirmed_auto_pair(tmp_path: Path, monkeypatch) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
+    timeline_db, _customer_id = _seed_bot_safe_timeline(tmp_path)
+    key = DraftLoopKey("profile-foton", "chat-auto")
+    config = DraftLoopConfig(
+        profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton")},
+        pairs={
+            key: DraftLoopPair(
+                key=key,
+                lead_id="5001",
+                contact_id="7001",
+                expected_brand="foton",
+                source="auto",
+            )
+        },
+    )
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
+    build_context = runner.build_context_builder(
+        snapshot,
+        draft_config=config,
+        customer_timeline_db=timeline_db,
+        customer_timeline_allowed_root=tmp_path,
+    )
+
+    context = build_context(key, (), "Что дальше?", "foton")
+
+    assert "read_only_customer_context" not in context
+
+
 def test_context_builder_keeps_bot_safe_crm_context_off_by_default(tmp_path: Path, monkeypatch) -> None:
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
@@ -382,7 +412,7 @@ def test_auto_resolver_prefers_unique_amo_chat_event_over_contact_search() -> No
     previous_outgoing = _wappi_message(profile_id=profile.profile_id, message_id="15624", ts=1006, from_me=True)
     resolver = _resolver(
         contacts=[],
-        leads=[_lead("50101349", contacts=("77345755",), org="")],
+        leads=[_lead("50101349", contacts=("77345755",), org="УНПК МФТИ")],
         events=[
             _event(),
             _event(event_id="evt-2", event_type="outgoing_chat_message", ts=1006),
@@ -409,7 +439,7 @@ def test_auto_resolver_rejects_ambiguous_amo_chat_event_without_fallback() -> No
     previous_outgoing = _wappi_message(profile_id=profile.profile_id, chat_id="123456", message_id="prev", ts=990, from_me=True)
     resolver = _resolver(
         contacts=[_contact(telegram_id="123456", leads=("1",))],
-        leads=[_lead("1", contacts=("111",))],
+        leads=[_lead("1", contacts=("111",), org="Фотон")],
         events=[
             _event(event_id="evt-1", lead_id="1", contact_id="111", talk_id="10"),
             _event(event_id="evt-1-out", event_type="outgoing_chat_message", ts=990, lead_id="1", contact_id="111", talk_id="10"),
@@ -508,7 +538,7 @@ def test_auto_resolver_falls_back_to_exact_telegram_when_event_is_absent() -> No
     key = DraftLoopKey("profile-foton", "123456")
     resolver = _resolver(
         contacts=[_contact(telegram_id="123456", leads=("1",))],
-        leads=[_lead("1", contacts=("111",))],
+        leads=[_lead("1", contacts=("111",), org="Фотон")],
         events=[],
     )
 
@@ -573,7 +603,7 @@ def test_auto_resolver_rejects_max_numeric_id_shared_phone_text_phone_and_multi_
     assert resolver(key=key, profile=profile, dialog={"phone": "+7 999 000-00-01"}, messages=[], message=None)["reason"] == "multi_contact"
 
 
-def test_auto_resolver_rejects_brand_mismatch_and_accepts_empty_organization() -> None:
+def test_auto_resolver_rejects_brand_mismatch_and_empty_organization() -> None:
     profile = DraftLoopProfile("profile-foton", "foton", "telegram")
     key = DraftLoopKey("profile-foton", "123456")
     mismatch = _resolver(
@@ -587,8 +617,8 @@ def test_auto_resolver_rejects_brand_mismatch_and_accepts_empty_organization() -
         leads=[_lead("1", org="")],
     )
     result = ok(key=key, profile=profile, dialog={}, messages=[], message=None)
-    assert result["status"] == "matched"
-    assert result["lead_id"] == "1"
+    assert result["status"] == "rejected"
+    assert result["reason"] == "organization_missing"
 
 
 def test_auto_resolver_includes_organization_snapshot_for_review() -> None:

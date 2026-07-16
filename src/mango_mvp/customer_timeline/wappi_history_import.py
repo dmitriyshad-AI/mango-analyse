@@ -194,6 +194,7 @@ class WappiChatResolution:
     pair_source: str = ""
     resolution_source: str = "draft_loop_pair"
     match_key: str = ""
+    evidence: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def resolved(self) -> bool:
@@ -766,6 +767,8 @@ class WappiPairCustomerResolver:
         contact_id = str(auto_result.get("contact_id") or "").strip()
         match_key = str(auto_result.get("match_key") or "").strip()
         if status != "matched":
+            lead_snapshot = auto_result.get("lead_snapshot") if isinstance(auto_result.get("lead_snapshot"), Mapping) else {}
+            organization_values = auto_result.get("organization_values") or lead_snapshot.get("organization_values") or ()
             return WappiChatResolution(
                 status="pending_attribution",
                 lead_id=lead_id,
@@ -774,6 +777,10 @@ class WappiPairCustomerResolver:
                 reason=reason,
                 resolution_source="amo_auto_resolver",
                 match_key=match_key,
+                evidence={
+                    "organization_brand": str(auto_result.get("organization_brand") or lead_snapshot.get("organization_brand") or ""),
+                    "organization_value_count": len(organization_values) if isinstance(organization_values, Sequence) and not isinstance(organization_values, (str, bytes, bytearray)) else 0,
+                },
             )
         return self._resolve_amo_candidate_to_customer(
             profile=profile,
@@ -822,6 +829,23 @@ class WappiPairCustomerResolver:
             )
         candidate_sets = [items for items in (lead_ids, contact_ids, opportunity_ids) if items]
         candidate_union = set().union(*candidate_sets) if candidate_sets else set()
+        lead_snapshot = auto_result.get("lead_snapshot") if isinstance(auto_result.get("lead_snapshot"), Mapping) else {}
+        organization_values = lead_snapshot.get("organization_values") or ()
+        evidence = {
+            "exact_match_kind": match_key,
+            "single_active_lead": True,
+            "organization_brand": str(lead_snapshot.get("organization_brand") or ""),
+            "organization_value_count": len(organization_values) if isinstance(organization_values, Sequence) and not isinstance(organization_values, (str, bytes, bytearray)) else 0,
+            "timeline_identity_sources": tuple(
+                source
+                for source, values in (
+                    ("amo_lead_id", lead_ids),
+                    ("amo_contact_id", contact_ids),
+                    ("amo_opportunity", opportunity_ids),
+                )
+                if values
+            ),
+        }
         if candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
             return WappiChatResolution(
                 status="resolved",
@@ -833,6 +857,7 @@ class WappiPairCustomerResolver:
                 pair_source="amo_auto_resolver",
                 resolution_source="amo_auto_resolver",
                 match_key=match_key,
+                evidence=evidence,
             )
         if len(candidate_union) > 1:
             return WappiChatResolution(
@@ -845,6 +870,7 @@ class WappiPairCustomerResolver:
                 pair_source="amo_auto_resolver",
                 resolution_source="amo_auto_resolver",
                 match_key=match_key,
+                evidence=evidence,
             )
         return WappiChatResolution(
             status="pending_attribution",
@@ -855,6 +881,7 @@ class WappiPairCustomerResolver:
             pair_source="amo_auto_resolver",
             resolution_source="amo_auto_resolver",
             match_key=match_key,
+            evidence=evidence,
         )
 
 
@@ -1083,8 +1110,11 @@ def build_wappi_readonly_transport(config: WappiClientConfig) -> DefaultDenyTran
 
 
 def assert_readonly_wappi_client(client: WappiHistoryClient) -> None:
-    if not isinstance(getattr(client, "transport", None), DefaultDenyTransport):
+    transport = getattr(client, "transport", None)
+    if not isinstance(transport, DefaultDenyTransport):
         raise RuntimeError("Wappi history import requires WappiPhase1Client with DefaultDenyTransport.")
+    if transport.policy.amo_read_hosts or transport.policy.ai_office_hosts:
+        raise RuntimeError("Wappi history import requires a Wappi-only read-only transport policy.")
 
 
 def profiles_from_phase1_config(config: AmoWappiPhase1Config) -> tuple[WappiProfileSpec, ...]:

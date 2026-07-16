@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -27,9 +28,18 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
 )
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
-DEFAULT_OUT_ROOT = ROOT / ".codex_local" / "staging" / "nightly_dv2_sources"
-DEFAULT_TIMELINE_DB = ROOT / ".codex_local" / "staging" / "customer_timeline_staging.sqlite"
+MANGO_READY_PACKAGE_DB = (
+    DEFAULT_SOURCE_ROOT / "product_data" / "mango_calls_two_processes" / "drop" / "mango_calls_ready.sqlite"
+)
+DEFAULT_NIGHTLY_HOME = Path(
+    os.getenv("CUSTOMER_TIMELINE_NIGHTLY_HOME", "~/.mango_local/customer_timeline_nightly")
+).expanduser()
+DEFAULT_STAGING_ROOT = DEFAULT_NIGHTLY_HOME / ".codex_local" / "staging"
+DEFAULT_OUT_ROOT = DEFAULT_STAGING_ROOT / "nightly_dv2_sources"
+DEFAULT_TIMELINE_DB = DEFAULT_STAGING_ROOT / "customer_timeline_staging.sqlite"
+DEFAULT_BASE_SERVICE_CONFIG = DEFAULT_STAGING_ROOT / "nightly_service" / "customer_timeline_nightly_service_config.json"
 DEFAULT_CURSOR = "2026-06-19T14:53:27+00:00"
+REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--timeline-db", default=str(DEFAULT_TIMELINE_DB))
     parser.add_argument("--mail-cursor", default=DEFAULT_CURSOR)
+    parser.add_argument("--base-service-config", default=str(DEFAULT_BASE_SERVICE_CONFIG))
     parser.add_argument("--service-config-out")
     parser.add_argument("--text-limit", type=int, default=1200)
     return parser
@@ -48,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     source_root = Path(args.source_root).expanduser().resolve(strict=False)
     out_root = Path(args.out_root).expanduser().resolve(strict=False)
     timeline_db = Path(args.timeline_db).expanduser().resolve(strict=False)
+    base_service_config = Path(args.base_service_config).expanduser().resolve(strict=False)
     out_root.mkdir(parents=True, exist_ok=True)
     mail_cursor = parse_dt(args.mail_cursor)
 
@@ -72,6 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mail_manifest=mail_manifest,
         mango_manifest=mango_manifest,
         tallanto_manifest=tallanto_manifest,
+        base_service_config=base_service_config,
     )
     config_out = (
         Path(args.service_config_out).expanduser().resolve(strict=False)
@@ -79,7 +92,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         else out_root / "customer_timeline_nightly_service_dv2_config.json"
     )
     config_out.parent.mkdir(parents=True, exist_ok=True)
-    config_out.write_text(json.dumps(service_config, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary_config = config_out.with_suffix(config_out.suffix + ".tmp")
+    temporary_config.write_text(
+        json.dumps(service_config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_config.replace(config_out)
     report = {
         "schema_version": "customer_timeline_nightly_dv2_source_builder_v1",
         "source_root": str(source_root),
@@ -305,7 +323,8 @@ def build_mango_freshness(source_root: Path, manifest_path: Path) -> Mapping[str
 
 
 def build_tallanto_freshness(manifest_path: Path) -> Mapping[str, Any]:
-    snapshot = ROOT / ".codex_local" / "staging" / "block2_tallanto" / "tallanto_money_snapshot.json"
+    staging_root = manifest_path.parent.parent
+    snapshot = staging_root / "block2_tallanto" / "tallanto_money_snapshot.json"
     report = {
         "schema_version": "tallanto_freshness_manifest_v1",
         "snapshot_path": str(snapshot),
@@ -327,8 +346,9 @@ def build_service_config(
     mail_manifest: Path,
     mango_manifest: Path,
     tallanto_manifest: Path,
+    base_service_config: Path | None = None,
 ) -> Mapping[str, Any]:
-    allowed_root = ROOT / ".codex_local" / "staging"
+    allowed_root = timeline_db.parent.resolve(strict=False)
     steps: list[Mapping[str, Any]] = []
     mango_sweep_jsonl = out_root / "mango_processed_sweep.jsonl"
     steps.append(
@@ -341,6 +361,7 @@ def build_service_config(
                 "producer_script": str(ROOT / "scripts" / "build_mango_call_timeline_increment.py"),
                 "scan_roots": [str(Path("/Users/dmitrijfabarisov/Projects/Mango analyse/product_data"))],
                 "package_globs": ["mango_update_after_*"],
+                "package_dbs": [str(MANGO_READY_PACKAGE_DB)],
                 "out_jsonl": str(mango_sweep_jsonl),
                 "report_out": str(out_root / "mango_processed_sweep_producer_report.json"),
                 "manifest_path": str(out_root / "mango_processed_sweep_manifest.json"),
@@ -348,21 +369,73 @@ def build_service_config(
             },
         }
     )
-    existing_config = allowed_root / "nightly_service" / "customer_timeline_nightly_service_config.json"
-    if existing_config.exists():
-        payload = json.loads(existing_config.read_text(encoding="utf-8"))
-        for step in payload.get("steps") or ():
-            if step.get("name") == "calls_and_amo_incremental":
-                normalized = dict(step)
-                normalized["required"] = True
-                normalized["enabled"] = True
-                for source in normalized.get("config", {}).get("sources", []):
-                    if source.get("source_system") == "mango_processed_summary":
-                        source["name"] = "mango_processed_sweep"
-                        source["path"] = str(mango_sweep_jsonl)
-                        source["source_ref"] = "mango:processed_sweep:latest"
-                steps.append(normalized)
-                break
+    existing_config = base_service_config or (
+        allowed_root / "nightly_service" / "customer_timeline_nightly_service_config.json"
+    )
+    payload = json.loads(existing_config.read_text(encoding="utf-8")) if existing_config.is_file() else {}
+    calls_step: Mapping[str, Any] | None = None
+    for step in payload.get("steps") or ():
+        if isinstance(step, Mapping) and step.get("name") == "calls_and_amo_incremental":
+            calls_step = step
+            break
+    normalized = json.loads(json.dumps(calls_step)) if calls_step is not None else {
+        "name": "calls_and_amo_incremental",
+        "kind": "nightly_incremental",
+        "config": {
+            "journal_path": str(out_root / "calls_and_amo_incremental_journal.jsonl"),
+            "safety_margin_seconds": 0,
+            "sources": [
+                {
+                    "name": "mango_processed_sweep",
+                    "source_system": "mango_processed_summary",
+                    "path": str(mango_sweep_jsonl),
+                    "source_ref": "mango:processed_sweep:latest",
+                    "normalizer": "mango_processed_summary",
+                    "required": True,
+                }
+            ],
+        },
+    }
+    normalized["required"] = True
+    normalized["enabled"] = True
+    call_sources = {
+        str(source.get("source_system") or ""): source
+        for source in normalized.get("config", {}).get("sources", [])
+        if isinstance(source, Mapping)
+    }
+    missing_call_sources = sorted(REQUIRED_CALL_SOURCES.keys() - call_sources.keys())
+    if missing_call_sources:
+        raise RuntimeError(
+            "calls_and_amo_incremental misses required sources: " + ",".join(missing_call_sources)
+        )
+    for source_system, normalizer in REQUIRED_CALL_SOURCES.items():
+        source = call_sources[source_system]
+        if source.get("normalizer") != normalizer or source.get("required") is not True:
+            raise RuntimeError(f"calls_and_amo_incremental source contract is invalid: {source_system}")
+        source_path = Path(str(source.get("path") or "")).expanduser().resolve(strict=False)
+        try:
+            source_path.relative_to(allowed_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"calls_and_amo_incremental source is outside persistent staging root: {source_system}"
+            ) from exc
+    journal_path = Path(str(normalized.get("config", {}).get("journal_path") or "")).expanduser().resolve(
+        strict=False
+    )
+    try:
+        journal_path.relative_to(allowed_root)
+    except ValueError as exc:
+        raise RuntimeError("calls_and_amo_incremental journal is outside persistent staging root") from exc
+    mango_source_found = False
+    for source in normalized.get("config", {}).get("sources", []):
+        if source.get("source_system") == "mango_processed_summary":
+            mango_source_found = True
+            source["name"] = "mango_processed_sweep"
+            source["path"] = str(mango_sweep_jsonl)
+            source["source_ref"] = "mango:processed_sweep:latest"
+    if not mango_source_found:
+        raise RuntimeError("calls_and_amo_incremental misses mango_processed_summary source")
+    steps.append(normalized)
     steps.append(
         {
             "name": "mail_archive_incremental",

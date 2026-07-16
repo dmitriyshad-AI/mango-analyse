@@ -119,13 +119,19 @@ def sqlite_ro(path: Path) -> sqlite3.Connection:
 
 
 def quick_check(path: Path) -> str:
-    with sqlite_ro(path) as con:
+    con = sqlite_ro(path)
+    try:
         return str(con.execute("PRAGMA quick_check").fetchone()[0])
+    finally:
+        con.close()
 
 
-def immutable_quick_check(path: Path) -> str:
-    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True, timeout=30) as con:
+def writable_quick_check(path: Path) -> str:
+    con = sqlite3.connect(str(path), timeout=30)
+    try:
         return str(con.execute("PRAGMA quick_check").fetchone()[0])
+    finally:
+        con.close()
 
 
 def foreign_key_check(path: Path) -> list[tuple[Any, ...]]:
@@ -213,6 +219,9 @@ def replace_sqlite_verified(
         "quick_check_attempts": 0,
         "quick_check_errors": [],
         "post_replace_sidecars": [],
+        "initialized_sidecars": {},
+        "post_check_checkpoint": None,
+        "read_only_open": False,
         "sha256": None,
     }
     try:
@@ -246,7 +255,7 @@ def replace_sqlite_verified(
     for attempt in range(1, max_attempts + 1):
         report["quick_check_attempts"] = attempt
         try:
-            result = immutable_quick_check(target)
+            result = writable_quick_check(target)
         except Exception as exc:
             transient = isinstance(exc, sqlite3.OperationalError) and "unable to open database file" in str(exc).lower()
             error = {
@@ -266,6 +275,30 @@ def replace_sqlite_verified(
             report["status"] = "quick_check_failed"
             return report
         break
+
+    try:
+        report["post_check_checkpoint"] = wal_checkpoint_truncate(target)
+        report["initialized_sidecars"] = {
+            str(path): path.stat().st_size for path in sidecar_paths(target) if path.exists()
+        }
+        con = sqlite_ro(target)
+        try:
+            con.execute("SELECT 1").fetchone()
+        finally:
+            con.close()
+        report["read_only_open"] = True
+    except Exception as exc:
+        report.update(
+            {
+                "status": "post_check_initialization_exception",
+                "exception": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "attempt": report["quick_check_attempts"],
+                },
+            }
+        )
+        return report
 
     try:
         report["sha256"] = sha256_file(target)

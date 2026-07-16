@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -190,6 +191,93 @@ def remove_sidecars(db_path: Path, *, execute: bool) -> list[str]:
             if execute:
                 path.unlink()
     return removed
+
+
+def replace_sqlite_verified(
+    source: Path,
+    target: Path,
+    *,
+    attempts: int = 5,
+    delay_seconds: float = 2.0,
+) -> Mapping[str, Any]:
+    report: dict[str, Any] = {
+        "ok": False,
+        "status": "replace_pending",
+        "replace_completed": False,
+        "quick_check": None,
+        "quick_check_attempts": 0,
+        "quick_check_errors": [],
+        "post_replace_sidecars": [],
+        "sha256": None,
+    }
+    try:
+        os.replace(source, target)
+    except Exception as exc:
+        report.update(
+            {
+                "status": "replace_exception",
+                "exception": {"type": type(exc).__name__, "message": str(exc), "attempt": 0},
+            }
+        )
+        return report
+
+    report["replace_completed"] = True
+    try:
+        sidecars = [str(path) for path in sidecar_paths(target) if path.exists()]
+    except Exception as exc:
+        report.update(
+            {
+                "status": "sidecar_check_exception",
+                "exception": {"type": type(exc).__name__, "message": str(exc), "attempt": 0},
+            }
+        )
+        return report
+    report["post_replace_sidecars"] = sidecars
+    if sidecars:
+        report["status"] = "post_replace_sidecars_present"
+        return report
+
+    max_attempts = max(1, int(attempts))
+    for attempt in range(1, max_attempts + 1):
+        report["quick_check_attempts"] = attempt
+        try:
+            result = quick_check(target)
+        except Exception as exc:
+            transient = isinstance(exc, sqlite3.OperationalError) and "unable to open database file" in str(exc).lower()
+            error = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "attempt": attempt,
+                "transient_open": transient,
+            }
+            report["quick_check_errors"].append(error)
+            if not transient or attempt == max_attempts:
+                report.update({"status": "quick_check_exception", "exception": error})
+                return report
+            time.sleep(max(0.0, float(delay_seconds)))
+            continue
+        report["quick_check"] = result
+        if result != "ok":
+            report["status"] = "quick_check_failed"
+            return report
+        break
+
+    try:
+        report["sha256"] = sha256_file(target)
+    except Exception as exc:
+        report.update(
+            {
+                "status": "sha256_exception",
+                "exception": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "attempt": report["quick_check_attempts"],
+                },
+            }
+        )
+        return report
+    report.update({"ok": True, "status": "ok"})
+    return report
 
 
 def wal_checkpoint_truncate(db_path: Path) -> Mapping[str, Any]:

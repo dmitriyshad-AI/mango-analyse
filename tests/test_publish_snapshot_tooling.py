@@ -4,7 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from scripts.publish_snapshot import build_snapshot, flip, preflight, reader_smoke
+from scripts.publish_snapshot import build_snapshot, flip, preflight, reader_smoke, rollback
+from scripts.publish_snapshot import common as publish_common
 from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified, run_command
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
@@ -523,6 +524,129 @@ def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Pat
     assert ok is False
     assert report["status"] == "blocked_lsof_before_replace"
     assert flip.sha256_file(prod) == original_sha
+
+
+def test_replace_sqlite_retries_only_transient_open(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "target.sqlite"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    def fake_quick_check(_path: Path) -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("unable to open database file")
+        return "ok"
+
+    monkeypatch.setattr(publish_common, "quick_check", fake_quick_check)
+    monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
+
+    report = publish_common.replace_sqlite_verified(source, target)
+
+    assert report["ok"] is True
+    assert report["replace_completed"] is True
+    assert report["quick_check_attempts"] == 2
+    assert report["quick_check_errors"][0]["transient_open"] is True
+    assert sleeps == [2.0]
+    assert target.read_bytes() == b"new"
+
+
+def test_replace_sqlite_does_not_retry_other_sqlite_errors(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "target.sqlite"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    sleeps: list[float] = []
+
+    def locked_quick_check(_path: Path) -> str:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(publish_common, "quick_check", locked_quick_check)
+    monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
+
+    report = publish_common.replace_sqlite_verified(source, target)
+
+    assert report["ok"] is False
+    assert report["status"] == "quick_check_exception"
+    assert report["quick_check_attempts"] == 1
+    assert report["exception"]["transient_open"] is False
+    assert sleeps == []
+
+
+def test_replace_sqlite_stops_after_configured_transient_attempts(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "target.sqlite"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    sleeps: list[float] = []
+
+    def unavailable_quick_check(_path: Path) -> str:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(publish_common, "quick_check", unavailable_quick_check)
+    monkeypatch.setattr(publish_common.time, "sleep", sleeps.append)
+
+    report = publish_common.replace_sqlite_verified(source, target, attempts=3, delay_seconds=0.5)
+
+    assert report["ok"] is False
+    assert report["status"] == "quick_check_exception"
+    assert report["quick_check_attempts"] == 3
+    assert len(report["quick_check_errors"]) == 3
+    assert sleeps == [0.5, 0.5]
+
+
+def test_replace_sqlite_fails_if_post_replace_sidecar_exists(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "target.sqlite"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    Path(str(target) + "-wal").write_bytes(b"stale")
+    monkeypatch.setattr(publish_common, "quick_check", lambda _path: "ok")
+
+    report = publish_common.replace_sqlite_verified(source, target)
+
+    assert report["ok"] is False
+    assert report["status"] == "post_replace_sidecars_present"
+    assert report["replace_completed"] is True
+    assert report["post_replace_sidecars"] == [str(target) + "-wal"]
+
+
+def test_flip_and_rollback_report_post_replace_failure(monkeypatch, tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    failure = {
+        "ok": False,
+        "status": "quick_check_exception",
+        "replace_completed": True,
+        "quick_check": None,
+        "quick_check_attempts": 1,
+        "quick_check_errors": [],
+        "post_replace_sidecars": [],
+        "sha256": None,
+        "exception": {"type": "OperationalError", "message": "database is locked", "attempt": 1},
+    }
+    monkeypatch.setattr(flip, "replace_sqlite_verified", lambda *_args, **_kwargs: failure)
+
+    flip_report, flip_ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+
+    assert flip_ok is False
+    assert flip_report["status"] == "failed_post_replace_verification"
+    assert flip_report["post_replace_verification"] == failure
+    assert "backup_db" in flip_report
+
+    monkeypatch.setattr(rollback, "replace_sqlite_verified", lambda *_args, **_kwargs: failure)
+    rollback_report, rollback_ok = rollback.rollback(cfg, backup_db=staging, execute=True)
+
+    assert rollback_ok is False
+    assert rollback_report["status"] == "failed"
+    assert rollback_report["post_replace_verification"] == failure
 
 
 def test_run_command_reports_timeout_instead_of_raising() -> None:

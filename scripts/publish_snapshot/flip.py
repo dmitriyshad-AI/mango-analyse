@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -21,8 +20,8 @@ from scripts.publish_snapshot.common import (
     finish_cli,
     lsof_holders,
     load_config,
-    quick_check,
     remove_sidecars,
+    replace_sqlite_verified,
     render_command,
     report_base,
     run_command,
@@ -146,9 +145,24 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "backup_sha256": backup_sha,
             "removed_sidecars": removed_sidecars,
         }, False
-    os.replace(tmp_target, prod_db)
-    new_sha = sha256_file(prod_db)
-    ok = quick_check(prod_db) == "ok"
+    replacement = replace_sqlite_verified(tmp_target, prod_db)
+    if not replacement["ok"]:
+        return {
+            **report,
+            "status": "failed_post_replace_verification",
+            "stop_results": stop_results,
+            "backup_db": str(backup_db),
+            "backup_copy": backup_copy,
+            "async_backup_db": str(async_backup_db),
+            "async_backup_copy": async_backup_copy,
+            "backup_sha256": backup_sha,
+            "removed_sidecars": removed_sidecars,
+            "ignored_lsof_holders": ignored_holders,
+            "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,
+            "post_replace_verification": replacement,
+        }, False
+    new_sha = str(replacement["sha256"])
+    ok = True
 
     start_results = []
     post_start_process_checks = []
@@ -186,7 +200,8 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "removed_sidecars": removed_sidecars,
             "ignored_lsof_holders": ignored_holders,
             "pre_replace_ignored_lsof_holders": pre_replace_ignored_holders,
-            "quick_check": quick_check(prod_db),
+            "quick_check": replacement["quick_check"],
+            "post_replace_verification": replacement,
         }
     )
     return report, ok

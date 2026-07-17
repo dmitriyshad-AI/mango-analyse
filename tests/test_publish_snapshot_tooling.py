@@ -677,12 +677,122 @@ def test_flip_and_rollback_report_post_replace_failure(monkeypatch, tmp_path: Pa
     assert flip_report["post_replace_verification"] == failure
     assert "backup_db" in flip_report
 
+    backup_dir = tmp_path / "prod_backups" / "pre_flip_backup_test"
+    backup_dir.mkdir(parents=True)
+    backup_db = backup_dir / prod.name
+    with sqlite3.connect(staging) as source, sqlite3.connect(backup_db) as target:
+        source.backup(target)
+    with sqlite3.connect(backup_db) as con:
+        con.execute("PRAGMA journal_mode=DELETE")
+    publish_common.remove_sidecars(backup_db, execute=True)
     monkeypatch.setattr(rollback, "replace_sqlite_verified", lambda *_args, **_kwargs: failure)
-    rollback_report, rollback_ok = rollback.rollback(cfg, backup_db=staging, execute=True)
+    rollback_report, rollback_ok = rollback.rollback(
+        cfg,
+        backup_db=backup_db,
+        execute=True,
+        expected_sha256=publish_common.sha256_file(backup_db),
+    )
 
     assert rollback_ok is False
     assert rollback_report["status"] == "failed"
     assert rollback_report["post_replace_verification"] == failure
+
+
+def test_rollback_validates_source_before_dry_run(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    backup_dir = tmp_path / "prod_backups" / "pre_flip_backup_test"
+    backup_dir.mkdir(parents=True)
+    backup_db = backup_dir / prod.name
+    with sqlite3.connect(staging) as source, sqlite3.connect(backup_db) as target:
+        source.backup(target)
+    with sqlite3.connect(backup_db) as con:
+        con.execute("PRAGMA journal_mode=DELETE")
+    publish_common.remove_sidecars(backup_db, execute=True)
+    expected_sha256 = publish_common.sha256_file(backup_db)
+
+    report, ok = rollback.rollback(
+        cfg,
+        backup_db=backup_db,
+        execute=False,
+        expected_sha256=expected_sha256,
+    )
+
+    assert ok is True
+    assert report["status"] == "dry_run_validated"
+    assert report["backup_location_valid"] is True
+    assert report["expected_sha256_match"] is True
+    assert report["backup_quick_check"] == "ok"
+    assert report["backup_foreign_key_check_rows"] == 0
+    assert report["backup_count_tables_complete"] is True
+
+    wrong_sha_report, wrong_sha_ok = rollback.rollback(
+        cfg,
+        backup_db=backup_db,
+        execute=False,
+        expected_sha256="0" * 64,
+    )
+    assert wrong_sha_ok is False
+    assert wrong_sha_report["status"] == "blocked_rollback_source"
+    assert wrong_sha_report["expected_sha256_match"] is False
+
+    sidecar = Path(str(backup_db) + "-wal")
+    sidecar.write_bytes(b"stale")
+    sidecar_report, sidecar_ok = rollback.rollback(cfg, backup_db=backup_db, execute=False)
+    assert sidecar_ok is False
+    assert sidecar_report["backup_sidecars"] == {str(sidecar): 5}
+
+    sidecar.unlink()
+    execute_report, execute_ok = rollback.rollback(cfg, backup_db=backup_db, execute=True)
+    assert execute_ok is False
+    assert execute_report["status"] == "blocked_rollback_source"
+    assert execute_report["expected_sha256_required"] is True
+
+
+def test_rollback_reports_invalid_sqlite_as_blocked_source(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    backup_dir = tmp_path / "prod_backups" / "pre_flip_backup_test"
+    backup_dir.mkdir(parents=True)
+    backup_db = backup_dir / prod.name
+    backup_db.write_text("not sqlite", encoding="utf-8")
+
+    report, ok = rollback.rollback(cfg, backup_db=backup_db, execute=False)
+
+    assert ok is False
+    assert report["status"] == "blocked_rollback_source"
+    assert report["backup_validation_exception"]["type"] == "DatabaseError"
+
+    missing_report, missing_ok = rollback.rollback(cfg, backup_db=backup_dir / "missing.sqlite", execute=False)
+    assert missing_ok is False
+    assert missing_report["status"] == "blocked_rollback_source"
+    assert missing_report["backup_validation_exception"]["type"] == "FileNotFoundError"
+
+
+def test_rollback_rejects_untrusted_source_before_copy(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+
+    report, ok = rollback.rollback(cfg, backup_db=staging, execute=False)
+
+    assert ok is False
+    assert report["status"] == "blocked_rollback_source"
+    assert report["backup_location_valid"] is False
 
 
 def test_run_command_reports_timeout_instead_of_raising() -> None:

@@ -20,8 +20,8 @@
 
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `codex/tz135-direct-wow-tone` (`9e8fb3b`) | Историческая F1-папка; в ней остаётся используемая Wappi база customer timeline. | Не переключать до отдельного регрейда Этапа 3 и решения зависимости runtime-БД. |
-| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | `main` | Канонический dev-worktree; отсюда работают calls и customer-timeline nightly. | Сохранять чистым, использовать для изменений `main`. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (`e6bfc2d0`) | Каноническая папка бота и локальных runtime-данных. | Основной worktree для последовательной разработки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | detached `e6bfc2d0` | Зафиксированный код для calls и customer-timeline nightly. | Не переключать, пока launchd использует этот путь. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi` | detached `5d109c38` | Фактический Wappi draft-loop (`com.mango.wappi-draft-loop`). | Не трогать до отдельного redeploy. |
 
 ## Runtime-истина
@@ -31,8 +31,11 @@
   `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712`.
 - Wappi пока читает customer timeline из
   `/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
-  Это единственная известная runtime-зависимость от F1-папки и блокер её
-  окончательного переключения или удаления.
+  Поэтому папку `Mango analyse` нельзя удалять, но переключение её на `main`
+  путь к базе не меняет.
+- Старый launchd job `com.mango.calls-two-processes` загружен без PID и
+  ссылается на уже отсутствующую папку `Mango_calls_two_processes`. Это
+  отдельный кандидат на удаление конфигурации, не действующая служба.
 
 ## Удалено 2026-07-17
 
@@ -43,3 +46,5 @@
 
 Экспериментальные ветки `overclaim`, `z0` и `tallanto-freshness` удалены после
 проверки существующих archive-тегов. Активный Wappi-worktree сохранён.
+Локальная ветка `codex/tz135-direct-wow-tone` удалена после переноса
+актуальных правил и проверки archive-тега на её вершине.

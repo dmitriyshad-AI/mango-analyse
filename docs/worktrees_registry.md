@@ -20,7 +20,7 @@
 
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (`e6bfc2d0`) | Каноническая папка бота и локальных runtime-данных. | Основной worktree для последовательной разработки. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (`fc7553d5`) | Каноническая папка бота и локальных runtime-данных. | Основной worktree для последовательной разработки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | detached `e6bfc2d0` | Зафиксированный код для calls и customer-timeline nightly. | Не переключать, пока launchd использует этот путь. |
 | `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi` | detached `5d109c38` | Фактический Wappi draft-loop (`com.mango.wappi-draft-loop`). | Не трогать до отдельного redeploy. |
 

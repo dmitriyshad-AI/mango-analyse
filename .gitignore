@@ -223,6 +223,10 @@ sales_workbook.xlsx
 # Local/raw client-question mining exports with possible PII or URL secrets.
 D1_audit_backlog/kb_intake_20260610/questions_all_clients_*.jsonl
 D1_audit_backlog/kb_intake_20260610/questions_clean_*.jsonl
+
+# Finance is a separate local workspace outside the bot repository.
+/Финансовая модель/
+/.mango_finance_m1.env
 АКТУАЛЬНО_*.xlsx
 АКТУАЛЬНО_*.json
 ОТЧЕТ_*.xlsx

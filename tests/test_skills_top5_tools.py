@@ -141,6 +141,7 @@ def test_live_truth_snapshot_redacts_env_and_reports_head_drift(tmp_path: Path) 
         processes=[process],
         env_reader=lambda _pid: ({"TELEGRAM_BOT_TOKEN": "secret", "TELEGRAM_FACT_VENUE_SCOPE": "1"}, "test"),
         lsof_reader=lambda _pid: [str(repo / "customer_timeline.sqlite")],
+        cwd_reader=lambda _pid: repo,
         expected_heads={"run_amo_wappi_draft_loop.py": "expected"},
     )
 
@@ -162,6 +163,25 @@ def test_live_truth_ignores_test_process_that_only_mentions_live_script(tmp_path
 
     assert snapshot.status == "PASS"
     assert snapshot.processes == []
+
+
+def test_live_truth_uses_process_cwd_for_relative_live_command(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    live = tmp_path / "live"
+    repo.mkdir()
+    live.mkdir()
+    process = ProcessInfo(pid=44, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=repo,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: live,
+    )
+
+    assert snapshot.status == "PASS"
+    assert snapshot.processes[0].worktree == str(live)
 
 
 def test_inventory_before_build_uses_git_log_and_inventory_summary(tmp_path: Path, monkeypatch) -> None:

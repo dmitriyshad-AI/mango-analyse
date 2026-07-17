@@ -7,10 +7,15 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore/scripts/start_wappi_draft_loop_live.sh</string>
+    <string>__MANGO_CODE_ROOT__/scripts/start_wappi_draft_loop_phase1b_live.sh</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dmitrijfabarisov/Projects/Mango_email_pipeline_restore</string>
+  <string>__MANGO_CODE_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DRAFT_LOOP_EXPECTED_HEAD</key>
+    <string>__MANGO_EXPECTED_HEAD__</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>/Users/dmitrijfabarisov/.mango_local/draft_loop/launchd.stdout.log</string>
   <key>StandardErrorPath</key>

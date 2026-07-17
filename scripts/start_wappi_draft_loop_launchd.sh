@@ -5,17 +5,77 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="${DRAFT_LOOP_LAUNCHD_LABEL:-com.mango.wappi-draft-loop}"
 PLIST_SOURCE="${DRAFT_LOOP_LAUNCHD_SOURCE:-${ROOT}/deploy/wappi_draft_loop/${LABEL}.plist.template}"
 PLIST_TARGET="${DRAFT_LOOP_LAUNCHD_PLIST:-${HOME}/Library/LaunchAgents/${LABEL}.plist}"
+ROLLBACK_PLIST="${DRAFT_LOOP_LAUNCHD_ROLLBACK:-${HOME}/.mango_local/draft_loop/${LABEL}.rollback.plist}"
+MODE="${1:-}"
 
-install -d -m 0755 "$(dirname "${PLIST_TARGET}")"
-install -m 0644 "${PLIST_SOURCE}" "${PLIST_TARGET}"
-
-if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
-  launchctl kickstart -k "gui/$(id -u)/${LABEL}"
-else
-  launchctl bootstrap "gui/$(id -u)" "${PLIST_TARGET}"
+if [[ -n "$MODE" && "$MODE" != "--render-only" ]]; then
+  echo "Usage: $0 [--render-only]" >&2
+  exit 2
 fi
 
-python3 - <<'PY'
+EXPECTED_HEAD="$(git -C "$ROOT" rev-parse HEAD)"
+RENDERED_PLIST="$(mktemp "${TMPDIR:-/tmp}/mango-wappi-launchd.XXXXXX")"
+trap 'rm -f "$RENDERED_PLIST"' EXIT
+
+python3 - "$PLIST_SOURCE" "$RENDERED_PLIST" "$ROOT" "$EXPECTED_HEAD" <<'PY'
+from pathlib import Path
+import plistlib
+import sys
+from xml.sax.saxutils import escape
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+code_root = sys.argv[3]
+expected_head = sys.argv[4]
+rendered = source.read_text(encoding="utf-8")
+rendered = rendered.replace("__MANGO_CODE_ROOT__", escape(str(Path(code_root).resolve())))
+rendered = rendered.replace("__MANGO_EXPECTED_HEAD__", escape(expected_head))
+if "__MANGO_" in rendered:
+    raise SystemExit("unresolved Wappi launchd placeholder")
+plistlib.loads(rendered.encode("utf-8"))
+target.write_text(rendered, encoding="utf-8")
+PY
+
+plutil -lint "$RENDERED_PLIST" >/dev/null
+if [[ "$MODE" == "--render-only" ]]; then
+  cat "$RENDERED_PLIST"
+  exit 0
+fi
+
+DOMAIN="gui/$(id -u)"
+WAS_LOADED=0
+HAD_PLIST=0
+install -d -m 0755 "$(dirname "${PLIST_TARGET}")" "$(dirname "${ROLLBACK_PLIST}")"
+if [[ -f "$PLIST_TARGET" ]]; then
+  plutil -lint "$PLIST_TARGET" >/dev/null
+  install -m 0644 "$PLIST_TARGET" "$ROLLBACK_PLIST"
+  HAD_PLIST=1
+fi
+if launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
+  WAS_LOADED=1
+  launchctl bootout "${DOMAIN}/${LABEL}"
+fi
+install -m 0644 "${RENDERED_PLIST}" "${PLIST_TARGET}"
+
+rollback() {
+  launchctl bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || true
+  if [[ "$HAD_PLIST" == "1" ]]; then
+    install -m 0644 "$ROLLBACK_PLIST" "$PLIST_TARGET"
+    if [[ "$WAS_LOADED" == "1" ]]; then
+      launchctl bootstrap "$DOMAIN" "$PLIST_TARGET" || true
+    fi
+  else
+    rm -f "$PLIST_TARGET"
+  fi
+}
+
+if ! launchctl bootstrap "$DOMAIN" "$PLIST_TARGET"; then
+  rollback
+  echo "Wappi launchd bootstrap failed; previous plist restored" >&2
+  exit 3
+fi
+
+if ! python3 - <<'PY'
 from __future__ import annotations
 
 import subprocess
@@ -51,3 +111,17 @@ while time.monotonic() < deadline:
 print({"status": "not_started", "pids": last}, file=sys.stderr)
 raise SystemExit(4)
 PY
+then
+  rollback
+  echo "Wappi draft-loop smoke failed; previous plist restored" >&2
+  exit 4
+fi
+
+if ! PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" python3 "$ROOT/scripts/skills/live_truth.py" \
+  --root "$ROOT" \
+  --expect-head "run_amo_wappi_draft_loop.py=$EXPECTED_HEAD" \
+  --no-write; then
+  rollback
+  echo "Wappi live truth check failed; previous plist restored" >&2
+  exit 5
+fi

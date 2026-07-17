@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -14,6 +16,82 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_r
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
 from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile, WappiHistoryMessage
 from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
+
+
+def test_wappi_launchd_renderer_targets_current_clean_code_root() -> None:
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        ["bash", str(root / "scripts" / "start_wappi_draft_loop_launchd.sh"), "--render-only"],
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+
+    payload = plistlib.loads(completed.stdout)
+    assert payload["WorkingDirectory"] == str(root)
+    assert payload["ProgramArguments"] == [
+        "/bin/bash",
+        str(root / "scripts" / "start_wappi_draft_loop_phase1b_live.sh"),
+    ]
+    assert payload["EnvironmentVariables"]["DRAFT_LOOP_EXPECTED_HEAD"] == subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+
+def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    target = tmp_path / "loaded.plist"
+    rollback = tmp_path / "rollback.plist"
+    original = b'<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>old</string></dict></plist>'
+    target.write_bytes(original)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    launch_log = tmp_path / "launchctl.log"
+    bootstrap_count = tmp_path / "bootstrap.count"
+    launchctl = fake_bin / "launchctl"
+    launchctl.write_text(
+        """#!/bin/bash
+echo "$*" >> "$FAKE_LAUNCH_LOG"
+case "$1" in
+  print|bootout) exit 0 ;;
+  bootstrap)
+    count=0
+    [[ -f "$FAKE_BOOTSTRAP_COUNT" ]] && count=$(cat "$FAKE_BOOTSTRAP_COUNT")
+    count=$((count + 1))
+    echo "$count" > "$FAKE_BOOTSTRAP_COUNT"
+    [[ "$count" == "1" ]] && exit 1
+    exit 0 ;;
+esac
+exit 0
+""",
+        encoding="utf-8",
+    )
+    launchctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DRAFT_LOOP_LAUNCHD_LABEL": "com.mango.test-wappi",
+        "DRAFT_LOOP_LAUNCHD_SOURCE": str(root / "deploy" / "wappi_draft_loop" / "com.mango.wappi-draft-loop.plist.template"),
+        "DRAFT_LOOP_LAUNCHD_PLIST": str(target),
+        "DRAFT_LOOP_LAUNCHD_ROLLBACK": str(rollback),
+        "FAKE_LAUNCH_LOG": str(launch_log),
+        "FAKE_BOOTSTRAP_COUNT": str(bootstrap_count),
+    }
+
+    completed = subprocess.run(
+        ["bash", str(root / "scripts" / "start_wappi_draft_loop_launchd.sh")],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert completed.returncode == 3
+    assert target.read_bytes() == original
+    assert rollback.read_bytes() == original
+    commands = launch_log.read_text(encoding="utf-8")
+    assert "bootout gui/" in commands
+    assert commands.count("bootstrap gui/") == 2
 
 
 def test_build_config_loads_profiles_pairs_and_keeps_state_outside_repo(tmp_path: Path) -> None:

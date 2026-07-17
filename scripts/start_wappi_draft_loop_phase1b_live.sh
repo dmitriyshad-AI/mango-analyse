@@ -14,8 +14,12 @@ if [[ -n "$EXPECTED_HEAD" && "$HEAD" != "$EXPECTED_HEAD" ]]; then
   echo "Refusing Phase 1b start: HEAD=$HEAD expected=$EXPECTED_HEAD"
   exit 78
 fi
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Refusing Phase 1b start: candidate worktree is dirty"
+if ! git diff --quiet -- || ! git diff --cached --quiet --; then
+  echo "Refusing Phase 1b start: tracked code is dirty"
+  exit 78
+fi
+if [[ -n "$(git ls-files --others --exclude-standard -- src scripts deploy)" ]]; then
+  echo "Refusing Phase 1b start: untracked code exists under src/scripts/deploy"
   exit 78
 fi
 

@@ -67,6 +67,22 @@ def _extract_cwd_from_command(command: str, fallback: Path) -> Path:
     return fallback
 
 
+def _process_cwd(pid: int) -> Path | None:
+    completed = subprocess.run(
+        ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    for line in completed.stdout.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return Path(line[1:])
+    return None
+
+
 def _process_marker(command: str) -> str:
     try:
         tokens = shlex.split(str(command or ""))
@@ -95,6 +111,7 @@ def build_snapshot(
     processes: Sequence[wappi_ops.ProcessInfo] | None = None,
     env_reader=wappi_ops.read_process_environ,
     lsof_reader=_lsof_db_paths,
+    cwd_reader=_process_cwd,
     expected_heads: Mapping[str, str] | None = None,
 ) -> LiveTruthSnapshot:
     process_rows: list[LiveProcessRow] = []
@@ -104,9 +121,12 @@ def build_snapshot(
         if not marker:
             continue
         env, _source = env_reader(process.pid)
-        worktree = _extract_cwd_from_command(process.command, repo_root)
+        process_cwd = cwd_reader(process.pid)
+        worktree = process_cwd or _extract_cwd_from_command(process.command, repo_root)
         head = _git_value(worktree, "rev-parse", "--short", "HEAD")
         warnings: list[str] = []
+        if process_cwd is None:
+            warnings.append(f"cwd_unavailable command_path_fallback={worktree}")
         expected = expected_heads.get(marker) or expected_heads.get(str(worktree))
         if expected and not head:
             warnings.append(f"head_unavailable expected={expected}")

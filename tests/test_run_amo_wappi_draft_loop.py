@@ -38,6 +38,15 @@ def test_wappi_launchd_renderer_targets_current_clean_code_root() -> None:
     ).strip()
 
 
+def test_wappi_launchers_do_not_depend_on_apple_python_shim() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("start_wappi_draft_loop_launchd.sh", "start_wappi_draft_loop_phase1b_live.sh"):
+        text = (root / "scripts" / name).read_text(encoding="utf-8")
+        assert "Python.app/Contents/MacOS/Python" in text
+        assert '"$PYTHON_BIN"' in text
+
+
 def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     target = tmp_path / "loaded.plist"

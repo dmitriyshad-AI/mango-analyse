@@ -7,6 +7,8 @@ PLIST_SOURCE="${DRAFT_LOOP_LAUNCHD_SOURCE:-${ROOT}/deploy/wappi_draft_loop/${LAB
 PLIST_TARGET="${DRAFT_LOOP_LAUNCHD_PLIST:-${HOME}/Library/LaunchAgents/${LABEL}.plist}"
 ROLLBACK_PLIST="${DRAFT_LOOP_LAUNCHD_ROLLBACK:-${HOME}/.mango_local/draft_loop/${LABEL}.rollback.plist}"
 MODE="${1:-}"
+PYTHON_BIN="/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+[[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3)"
 
 if [[ -n "$MODE" && "$MODE" != "--render-only" ]]; then
   echo "Usage: $0 [--render-only]" >&2
@@ -17,7 +19,7 @@ EXPECTED_HEAD="$(git -C "$ROOT" rev-parse HEAD)"
 RENDERED_PLIST="$(mktemp "${TMPDIR:-/tmp}/mango-wappi-launchd.XXXXXX")"
 trap 'rm -f "$RENDERED_PLIST"' EXIT
 
-python3 - "$PLIST_SOURCE" "$RENDERED_PLIST" "$ROOT" "$EXPECTED_HEAD" <<'PY'
+"$PYTHON_BIN" - "$PLIST_SOURCE" "$RENDERED_PLIST" "$ROOT" "$EXPECTED_HEAD" <<'PY'
 from pathlib import Path
 import plistlib
 import sys
@@ -75,7 +77,7 @@ if ! launchctl bootstrap "$DOMAIN" "$PLIST_TARGET"; then
   exit 3
 fi
 
-if ! python3 - <<'PY'
+if ! "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
 import subprocess
@@ -117,7 +119,7 @@ then
   exit 4
 fi
 
-if ! PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" python3 "$ROOT/scripts/skills/live_truth.py" \
+if ! PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" "$PYTHON_BIN" "$ROOT/scripts/skills/live_truth.py" \
   --root "$ROOT" \
   --expect-head "run_amo_wappi_draft_loop.py=$EXPECTED_HEAD" \
   --no-write; then

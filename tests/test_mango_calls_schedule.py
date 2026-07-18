@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+import shlex
 import subprocess
 import sys
 import importlib.util
@@ -154,7 +155,7 @@ def test_process_b_launchd_path_does_not_use_cycle_or_asr_runner(tmp_path: Path)
     assert "asr" not in runner_text
     assert "resolve" not in runner_text
     assert "analyze" not in runner_text
-    assert "json.load" in runner_text
+    assert "/usr/bin/plutil -extract python_executable" in runner_text
     assert '"${python_executable}" "${root}/scripts/run_mango_calls_pipeline.py"' in runner_text
     assert "launchctl kickstart" in runner_text
 
@@ -199,7 +200,7 @@ def test_process_a_does_not_start_b_without_explicit_success(
     fake_python.write_text(
         f'''#!/bin/zsh
 if [[ "$1" == "-c" ]]; then
-  /usr/bin/python3 "$@"
+  {shlex.quote(sys.executable)} "$@"
 else
   print -r -- '{{"status":"{status}"}}'
 fi
@@ -231,17 +232,17 @@ def test_process_a_success_starts_demand_only_b(tmp_path: Path) -> None:
     capture = tmp_path / "launchctl_args.txt"
     fake_python = tmp_path / "configured-python"
     fake_python.write_text(
-        '''#!/bin/zsh
+        f'''#!/bin/zsh
 if [[ "$1" == "-c" ]]; then
-  /usr/bin/python3 "$@"
+  {shlex.quote(sys.executable)} "$@"
 else
   print -r -- 'diagnostic before result'
-  print -r -- '{'
+  print -r -- '{{'
   print -r -- '  "schema_version": "test_v1",'
   print -r -- '  "process": "process_a",'
   print -r -- '  "status": "ok",'
-  print -r -- '  "counters": {"nested": {"status": "failed"}}'
-  print -r -- '}'
+  print -r -- '  "counters": {{"nested": {{"status": "failed"}}}}'
+  print -r -- '}}'
 fi
 ''',
         encoding="utf-8",
@@ -283,11 +284,11 @@ def test_process_a_reports_kickstart_failure(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     fake_python = tmp_path / "configured-python"
     fake_python.write_text(
-        '''#!/bin/zsh
+        f'''#!/bin/zsh
 if [[ "$1" == "-c" ]]; then
-  /usr/bin/python3 "$@"
+  {shlex.quote(sys.executable)} "$@"
 else
-  print -r -- '{"status":"ok"}'
+  print -r -- '{{"status":"ok"}}'
 fi
 ''',
         encoding="utf-8",

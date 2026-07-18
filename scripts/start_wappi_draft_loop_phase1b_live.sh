@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+[[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3)"
 cd "$ROOT"
 
 LOG_DIR="${DRAFT_LOOP_LOG_DIR:-$HOME/.mango_local/draft_loop}"
@@ -68,7 +70,7 @@ MANIFEST_TMP="$MANIFEST.$$"
 } >"$MANIFEST_TMP"
 mv "$MANIFEST_TMP" "$MANIFEST"
 
-exec python3 scripts/run_amo_wappi_draft_loop.py \
+exec "$PYTHON_BIN" scripts/run_amo_wappi_draft_loop.py \
   --loop \
   --live-write \
   --interval-sec "${DRAFT_LOOP_INTERVAL_SEC:-45}" \

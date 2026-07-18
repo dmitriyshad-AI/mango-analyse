@@ -19,7 +19,7 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-PYTHON_EXECUTABLE="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["python_executable"])' "${CONFIG}")"
+PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}")"
 if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
   print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
   exit 2

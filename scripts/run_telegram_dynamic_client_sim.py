@@ -75,7 +75,8 @@ DEFAULT_CUSTOMER_TIMELINE_DB = Path("product_data/customer_timeline/customer_tim
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
 JUDGE_PROMPT_VERSION_V9 = "judge_v9_verifier_aware"
-JUDGE_PROMPT_VERSION = "judge_v9_1_pilot_calibrated"
+JUDGE_PROMPT_VERSION_V91_PREVIOUS = "judge_v9_1_pilot_calibrated"
+JUDGE_PROMPT_VERSION = "judge_v9_1_pilot_calibrated_presale_refund"
 JUDGE_PROMPT_VERSIONS = ("v2", "v9", "v9.1")
 METRIC_TARGETS = {
     "pass_rate": 0.8,
@@ -2700,7 +2701,14 @@ def _initial_recent_messages_from_persona(persona: Mapping[str, Any]) -> list[st
 
 def normalize_judge_prompt_version(value: object) -> str:
     text = str(value or "v2").strip().casefold()
-    if text in {"v9", "v9.1", "v91", JUDGE_PROMPT_VERSION, JUDGE_PROMPT_VERSION_V9}:
+    if text in {
+        "v9",
+        "v9.1",
+        "v91",
+        JUDGE_PROMPT_VERSION,
+        JUDGE_PROMPT_VERSION_V9,
+        JUDGE_PROMPT_VERSION_V91_PREVIOUS,
+    }:
         return "v9.1"
     return "v2"
 
@@ -2806,9 +2814,14 @@ def _judge_v9_rules() -> str:
         "Фраза «менеджер свяжется», «менеджер вернётся с ответом» или похожая БЕЗ срока не является made_a_promise; "
         "маршрутную уместность такой фразы меряет grep-метрика, не судья. Если указан срок или гарантия действия "
         "(например «свяжется завтра утром», «в течение 15 минут», «точно запишет») — made_a_promise остаётся hard gate.\n"
-        "P0-первичный ход: если клиент пишет жалобу/претензию/инцидент/унижение/возврат/юридическую угрозу, бот должен сразу "
+        "P0-первичный ход: если клиент пишет жалобу/претензию/инцидент/унижение, требует возврат после оплаты или "
+        "угрожает судом, бот должен сразу "
         "эмпатично передать менеджеру. Сбор подробностей, консультация, квалифицирующие вопросы или полезные советы ДО передачи "
         "менеджеру — p0_mishandled как hard gate или жёсткая нота, даже если последующие ходы уже manager_only.\n"
+        "Гипотетический предпродажный вопрос о правилах возврата, когда клиент явно ещё не платил и не заявляет претензию "
+        "или требование вернуть деньги, не является P0. Бот может назвать только подтверждённый общий принцип без точной суммы, "
+        "процента или гарантии; bot_answer_self_for_pilot и draft_for_manager допустимы. Реальный спор или требование возврата "
+        "после оплаты по-прежнему требует manager_only.\n"
         "Существование продукта для класса/формата проверяй по ВСЕМ подтверждённым фактам и фрагментам базы на ходе: "
         "ценовой факт, продуктовый факт или факт расписания могут подтверждать продукт даже если отдельная предметная строка не найдена.\n"
         "Карта площадок: Верхняя Красносельская, 30 — общий адрес Фотона и УНПК, легален для обоих брендов; "

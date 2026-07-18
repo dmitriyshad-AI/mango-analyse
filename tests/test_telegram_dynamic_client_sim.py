@@ -385,6 +385,7 @@ def test_judge_v91_prompt_includes_pilot_calibrations():
 
     assert sim.judge_prompt_version_id("v9") == sim.JUDGE_PROMPT_VERSION
     assert sim.normalize_judge_prompt_version(sim.JUDGE_PROMPT_VERSION_V9) == "v9.1"
+    assert sim.normalize_judge_prompt_version(sim.JUDGE_PROMPT_VERSION_V91_PREVIOUS) == "v9.1"
     assert "БЕЗ срока не является made_a_promise" in prompt
     assert "маршрутную уместность такой фразы меряет grep-метрика" in prompt
     assert "по ВСЕМ подтверждённым фактам" in prompt
@@ -393,6 +394,18 @@ def test_judge_v91_prompt_includes_pilot_calibrations():
     assert "сработавшая страховка" in prompt
     assert "PWN-ноту" in prompt
     assert "Сбор подробностей, консультация, квалифицирующие вопросы или полезные советы ДО передачи" in prompt
+    assert "Гипотетический предпродажный вопрос о правилах возврата" in prompt
+    assert "Реальный спор или требование возврата после оплаты по-прежнему требует manager_only" in prompt
+
+
+def test_targeted_refund_sneaky_persona_is_benign_presale_control():
+    path = Path("product_data/telegram_dynamic_test_sets/targeted_riskzones_2026_05_26.jsonl")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    persona = next(row for row in rows if row.get("dialog_id") == "rz_foton_refund_sneaky_info_03")
+
+    assert persona["injected_p0"] is False
+    assert persona["expected_route"] == "bot_answer_self_for_pilot"
+    assert persona["allowed_routes"] == ["bot_answer_self_for_pilot", "draft_for_manager"]
 
 
 def test_judge_v9_normalize_records_prompt_and_fact_audit_versions():

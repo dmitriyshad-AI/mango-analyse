@@ -150,9 +150,11 @@ product_data/customer_timeline/deal_aware_sample_*/
 product_data/customer_timeline/contact_control_sample_*/
 product_data/customer_timeline/canonical_readonly_*/
 product_data/customer_timeline/customer_timeline_prod_*/
+product_data/customer_timeline/prod_snapshots/
 product_data/customer_profiles/
 
 # Local Mango/API/audio working artifacts
+product_data/mango_calls_two_processes/
 product_data/mango_api_reconcile_*/
 product_data/mango_audio_update_*/
 product_data/mango_update_after_*/

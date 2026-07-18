@@ -6,74 +6,19 @@ import re
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime
-from functools import lru_cache
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
-from zoneinfo import ZoneInfo
 
-import yaml
-
-from mango_mvp.channels.answer_quality_rewriter import (
-    AnswerQualityAssessment,
-    build_answer_quality_llm_rewrite_prompt,
-    apply_answer_quality_rewriter,
-)
-from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
-from mango_mvp.channels.dialogue_debug_trace import trace_event
-from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
-from mango_mvp.channels.dialogue_contract_pipeline import (
-    Toggles as DialogueContractToggles,
-    build_conversation as build_dialogue_contract_conversation,
-    build_fact_store as build_dialogue_contract_fact_store,
-    check_claim_faithfulness as check_dialogue_contract_faithfulness,
-    faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
-    faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
-    faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
-    _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
-    _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
-    _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
-    _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
-    concrete_anchors as dialogue_contract_concrete_anchors,
-    _established_topic_from_context as dialogue_contract_established_topic_from_context,
-    new_concrete_anchors as dialogue_contract_new_concrete_anchors,
-    pipeline_enabled as dialogue_contract_pipeline_enabled,
-    run_pipeline as run_dialogue_contract_pipeline,
-)
-from mango_mvp.channels.humanity_guards import (
-    has_meta_leak,
-    humanity_route_action,
-    is_near_repeat,
-    meta_markers_present,
-    unanswered_direct_question,
-)
-from mango_mvp.channels.humanity_linter import lint_turn
-from mango_mvp.channels.humanity_rewriter import apply_rewrite as apply_humanity_form_rewrite
 from mango_mvp.channels.output_verification_floor import (
     p0_pre_gate as dialogue_contract_p0_pre_gate,
-    parse_contract as parse_dialogue_contract,
-    verify_output as verify_dialogue_contract_output,
 )
-from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
-from mango_mvp.channels.rules_engine import (
-    RuleOutcome,
-    apply_rule as apply_migrated_domain_rule,
-    load_rules_registry,
-    select_rule as select_migrated_domain_rule,
-)
-from mango_mvp.channels.semantic_roles import tag_message_roles
-from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.tone_block import (
     TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
     TONE_SELL_PROMPT_ENV,
     TONE_WARM_FRAME_ENV,
     apply_warm_frame,
-    close_detect_enabled,
-    sell_prompt_enabled,
-    tone_rich_format_enabled,
 )
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
@@ -85,10 +30,6 @@ from mango_mvp.knowledge_base.product_existence_axes_catalog import (
     build_product_existence_axes_catalog,
     verify_product_format_exists,
 )
-from mango_mvp.insights.sanitizers import sanitize_answer
-from mango_mvp.insights.phase2_detectors import detect_anxiety, detect_objection
-from mango_mvp.insights.tone_score import score_tone
-from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
 
 
 from mango_mvp.channels.subscription_llm_parts.codex_exec import (
@@ -109,7 +50,6 @@ from mango_mvp.channels.subscription_llm_parts.codex_exec import (
 )
 
 from mango_mvp.channels.subscription_llm_parts.support import (
-    DIRECT_PATH_ENV,
     LLM_RETRIEVE_ENV,
     TEMPLATE_FROM_KB_ENV,
     ROUTE_RUBRIC_ENV,
@@ -228,7 +168,6 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _CLIENT_PARENT_IDENTITY_PROMPT_RE,
     _direct_path_mission_text,
     _direct_path_route_rubric_block,
-    _direct_path_enabled,
     _llm_retrieve_enabled,
     _route_rubric_enabled,
     _presale_safety_enabled,
@@ -420,7 +359,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _answer_contract,
     _answer_contract_green_template_reduction_enabled,
     _answer_fact_scopes,
-    _answer_quality_was_rewritten,
     _answers_matkap_scope,
     _answers_tax_deduction_scope,
     _apply_migrated_rules_engine,
@@ -601,10 +539,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
 )
 
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
-    ANSWER_QUALITY_LLM_REWRITER_ENV,
-    ANSWER_QUALITY_LLM_REWRITE_ENV,
-    ANSWER_QUALITY_LLM_REWRITE_MODE_ENV,
-    ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV,
     ANTIREPEAT_STRICT_ENV,
     AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
     A_PROACTIVE_ENV,
@@ -612,17 +546,11 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     CONTENT_DELIVERY_ACTION_RE,
     COSMETIC_OPENING_RE,
     DERIVED_PRODUCT_NUMBER_RE,
-    DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV,
-    DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV,
     DIRECT_PATH_REPLACE_TEXT_GATE_CODES,
     DRAFT_PLACEHOLDER_RE,
     FOLLOWUP_DEADLINE_RE,
     GATE_BLOCKING_CODES,
     HUMANITY_BLOCK_A_ROUTE_FIX_ENV,
-    HUMANITY_X2_REWRITE_ENV,
-    HUMANITY_X2_REWRITE_MODEL_ENV,
-    HUMANITY_X2_REWRITE_MODE_ENV,
-    HUMANITY_X2_REWRITE_REASONING_ENV,
     LLM_RETRIEVE_MODEL_ENV,
     LLM_RETRIEVE_REASONING_ENV,
     LLM_RETRIEVE_TIMEOUT_ENV,
@@ -710,9 +638,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _a2_phone_echoed,
     _a2_proactive_enabled,
     _a2_rich_format_enabled,
-    _answer_quality_llm_polish_sales_enabled,
-    _answer_quality_llm_rewrite_enabled,
-    _answer_quality_llm_rewrite_mode,
     _antirepeat_strict_enabled,
     _asks_installment,
     _asks_invoice_monthly_payment,
@@ -929,8 +854,6 @@ class SubscriptionLlmDraftProvider:
         timeout_sec: int = 90,
         max_attempts: int = 2,
         cache_dir: Optional[Path | str] = None,
-        dialogue_contract_semantic_match_fn: Optional[Callable[[str], object]] = None,
-        dialogue_contract_semantic_match_enabled: bool = True,
         runner: Optional[_Runner] = None,
         sleep: Callable[[float], None] = time.sleep,
         base_env: Optional[Mapping[str, str]] = None,
@@ -946,8 +869,6 @@ class SubscriptionLlmDraftProvider:
         self.base_env = dict(base_env) if base_env is not None else None
         self.codex_isolated = bool(codex_isolated)
         self.cache_dir = _guard_cache_dir(cache_dir) if cache_dir is not None else None
-        self._dialogue_contract_semantic_match_override = dialogue_contract_semantic_match_fn
-        self._dialogue_contract_semantic_match_enabled = bool(dialogue_contract_semantic_match_enabled)
 
     def _build_codex_command(
         self,
@@ -972,143 +893,38 @@ class SubscriptionLlmDraftProvider:
         *,
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
-        if _direct_path_enabled(context):
-            direct_result = self._build_direct_path_draft(client_message, context=context)
-            if _deal_action_decision_enabled(context):
-                direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
-                direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
-            dealt = apply_deal_action_decision_layer(
-                direct_result,
-                client_message=client_message,
-                context=context,
-            )
-            reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
-            closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
-            closed = _apply_tone_close_frame_veto(reasked, closed, context=context)
-            scrubbed = scrub_direct_path_p0_text(
-                closed,
-                context=context,
-                client_message=client_message,
-            )
-            guarded = apply_bot_safe_memory_step_guard(scrubbed, context=context)
-            guarded = apply_unconfirmed_contact_data_claim_guard(guarded, client_message=client_message, context=context)
-            framed = self._apply_direct_path_semantic_frame_posthoc_shadow(
-                apply_no_memory_step_frame_guard(guarded, context=context),
-                client_message=client_message,
-                context=context,
-            )
-            proof_shadowed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
-            reconciled_shadowed = apply_semantic_frame_proof_reconciliation_shadow(proof_shadowed, context=context)
-            manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
-            self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
-            decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
-            reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
-            roles_traced = apply_roles_read_trace(reask_traced, context=context)
-            return apply_semantic_reading_trace_finalize(roles_traced, context=context)
-        if dialogue_contract_pipeline_enabled(context):
-            result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
-            guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
-            rewritten = apply_humanity_x2_rewriter(
-                guarded,
-                client_message=client_message,
-                context=context,
-                rewrite_runner=self._humanity_x2_rewrite_runner
-                if _humanity_x2_rewrite_enabled(context)
-                else None,
-            )
-            toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
-            proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
-            closed = apply_tone_close_detect_layer(proactive, client_message=client_message, context=context)
-            observed = apply_tone_sell_prompt_observer(closed, client_message=client_message, context=context)
-            semantic_checked = apply_semantic_output_verifier(
-                observed,
-                client_message=client_message,
-                context=context,
-                verifier_fn=self._semantic_output_verifier_runner_for_context(context),
-                regen_fn=self._semantic_output_regen_runner,
-            )
-            if not _semantic_output_verifier_enabled(context):
-                semantic_checked = apply_semantic_diagnosis_guard(
-                    semantic_checked,
-                    client_message=client_message,
-                    context=context,
-                    classifier_fn=self._semantic_diagnosis_guard_runner
-                    if _semantic_diagnosis_guard_enabled(context)
-                    else None,
-                )
-            if _deal_action_decision_enabled(context):
-                semantic_checked = apply_autonomy_matrix_guard(semantic_checked, client_message=client_message, context=context)
-            return apply_deal_action_decision_layer(
-                apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context),
-                client_message=client_message,
-                context=context,
-            )
-        else:
-            prompt = build_draft_prompt(client_message, context=context)
-            result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
-        result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
-        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
-        result = apply_input_policy_guards(result, client_message=client_message, context=context)
-        result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
-        result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
-        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
-        result = apply_unsupported_promise_guard(result, context=context)
-        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
-        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
-        result = apply_funnel_policy_guard(result, context=context)
-        result = apply_answer_quality_rewriter(
-            result,
-            client_message=client_message,
-            context=context,
-            rewrite_runner=self._answer_quality_llm_rewrite_runner
-            if _answer_quality_llm_rewrite_enabled(context)
-            else None,
-            force_llm_polish=_answer_quality_llm_polish_sales_enabled(context, result),
-        )
-        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
-        result = apply_input_policy_guards(result, client_message=client_message, context=context)
-        result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
-        result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
-        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
-        result = apply_unsupported_promise_guard(result, context=context)
-        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
-        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
-        result = apply_funnel_policy_guard(result, context=context)
-        result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
-        result = apply_humanity_guards(result, client_message=client_message, context=context)
-        result = apply_humanity_x2_rewriter(
-            result,
-            client_message=client_message,
-            context=context,
-            rewrite_runner=self._humanity_x2_rewrite_runner
-            if _humanity_x2_rewrite_enabled(context)
-            else None,
-        )
-        result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
-        result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
-        result = apply_tone_close_detect_layer(result, client_message=client_message, context=context)
-        result = apply_tone_sell_prompt_observer(result, client_message=client_message, context=context)
-        result = apply_semantic_output_verifier(
-            result,
-            client_message=client_message,
-            context=context,
-            verifier_fn=self._semantic_output_verifier_runner_for_context(context),
-            regen_fn=self._semantic_output_regen_runner,
-        )
-        if not _semantic_output_verifier_enabled(context):
-            result = apply_semantic_diagnosis_guard(
-                result,
-                client_message=client_message,
-                context=context,
-                classifier_fn=self._semantic_diagnosis_guard_runner
-                if _semantic_diagnosis_guard_enabled(context)
-                else None,
-            )
-        return apply_deal_action_decision_layer(
-            apply_authoritative_output_gate(result, client_message=client_message, context=context),
+        direct_result = self._build_direct_path_draft(client_message, context=context)
+        if _deal_action_decision_enabled(context):
+            direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
+            direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
+        dealt = apply_deal_action_decision_layer(
+            direct_result,
             client_message=client_message,
             context=context,
         )
+        reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
+        closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
+        closed = _apply_tone_close_frame_veto(reasked, closed, context=context)
+        scrubbed = scrub_direct_path_p0_text(
+            closed,
+            context=context,
+            client_message=client_message,
+        )
+        guarded = apply_bot_safe_memory_step_guard(scrubbed, context=context)
+        guarded = apply_unconfirmed_contact_data_claim_guard(guarded, client_message=client_message, context=context)
+        framed = self._apply_direct_path_semantic_frame_posthoc_shadow(
+            apply_no_memory_step_frame_guard(guarded, context=context),
+            client_message=client_message,
+            context=context,
+        )
+        proof_shadowed = apply_semantic_frame_existence_proof_shadow(framed, context=context)
+        reconciled_shadowed = apply_semantic_frame_proof_reconciliation_shadow(proof_shadowed, context=context)
+        manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
+        self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
+        decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
+        reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
+        roles_traced = apply_roles_read_trace(reask_traced, context=context)
+        return apply_semantic_reading_trace_finalize(roles_traced, context=context)
 
     def _build_direct_path_draft(
         self,
@@ -1280,179 +1096,11 @@ class SubscriptionLlmDraftProvider:
             context=context,
         )
 
-    def _build_dialogue_contract_pipeline_draft(
-        self,
-        client_message: str,
-        *,
-        context: Optional[Mapping[str, Any]] = None,
-    ) -> SubscriptionDraftResult:
-        active_brand = _active_brand(context)
-        conversation = build_dialogue_contract_conversation(client_message, context=context)
-        fact_store = build_dialogue_contract_fact_store(active_brand=active_brand, context=context)
-        semantic_match_fn = (
-            self._dialogue_contract_semantic_match_override
-            if self._dialogue_contract_semantic_match_override is not None
-            else self._dialogue_contract_semantic_match_runner
-            if self._dialogue_contract_semantic_match_enabled
-            else None
-        )
-        pipeline_result = run_dialogue_contract_pipeline(
-            conversation=conversation,
-            active_brand=active_brand,
-            fact_store=fact_store,
-            understand_fn=self._dialogue_contract_understanding_runner,
-            draft_fn=self._dialogue_contract_draft_runner,
-            repair_fn=self._dialogue_contract_repair_runner,
-            faithfulness_fn=self._dialogue_contract_faithfulness_runner,
-            semantic_match_fn=semantic_match_fn,
-            warmth_fn=None,
-            context=context,
-            tone_guide=_dialogue_contract_tone_guide(context),
-            style_examples=_dialogue_contract_style_examples(context),
-            toggles=DialogueContractToggles(form_warmth=False, warmth_mode=_humanity_x2_rewrite_mode(context)),
-        )
-        route = "bot_answer_self_for_pilot" if pipeline_result.route == "bot_answer_self" else pipeline_result.route
-        payload = {
-            "message_type": "manager_only" if pipeline_result.manager_only else "question",
-            "broad_group": "dialogue_contract_pipeline",
-            "topic_id": _topic_id_from_context(context),
-            "confidence_theme": pipeline_result.contract.confidence,
-            "confidence_group": pipeline_result.contract.confidence,
-            "risk_level": "high" if pipeline_result.contract.is_p0 else "low",
-            "route": route,
-            "draft_text": pipeline_result.draft_text,
-            "manager_checklist": [
-                "Параллельный dialogue-contract pipeline: проверить смысл до включения в проде.",
-                *(
-                    [f"Выходной верификатор: {finding.code} — {finding.detail}" for finding in pipeline_result.findings]
-                    if pipeline_result.findings
-                    else []
-                ),
-            ],
-            "missing_facts": list(pipeline_result.missing),
-            "forbidden_promises_detected": [
-                *[finding.code for finding in pipeline_result.findings],
-                *[f"unsupported_claim:{item}" for item in pipeline_result.unsupported_claims],
-            ],
-            "safety_flags": _dialogue_contract_safety_flags(pipeline_result),
-            "context_used": ["dialogue_contract", "client_safe_fact_store", "output_verifier"],
-            "context_warnings": [pipeline_result.fallback_reason] if pipeline_result.fallback_reason else [],
-            "metadata": {
-                "dialogue_contract_pipeline": {
-                    "contract": pipeline_result.contract.to_json_dict(),
-                    "retrieved_fact_keys": list(pipeline_result.facts.keys()),
-                    "retrieved_facts": dict(pipeline_result.facts),
-                    "missing_fact_keys": list(pipeline_result.missing),
-                    "findings": [{"code": f.code, "detail": f.detail} for f in pipeline_result.findings],
-                    "unsupported_claims": list(pipeline_result.unsupported_claims),
-                    "form_findings": [{"code": f.code, "detail": f.detail} for f in pipeline_result.form_findings],
-                    "faithfulness_shadow": list(dialogue_contract_faithfulness_shadow_events(context)),
-                    "warmth_attempted": pipeline_result.warmth_attempted,
-                    "warmth_mode": pipeline_result.warmth_mode,
-                    "warmth_rejected_reason": pipeline_result.warmth_rejected_reason,
-                    "warmth_rejected_findings": [
-                        {"code": f.code, "detail": f.detail} for f in pipeline_result.warmth_rejected_findings
-                    ],
-                    "warmth_rejected_unsupported": list(pipeline_result.warmth_rejected_unsupported),
-                    "warmth_semantic_available": pipeline_result.warmth_semantic_available,
-                    "semantic_match_attempted": pipeline_result.semantic_match_attempted,
-                    "semantic_match_replaced": pipeline_result.semantic_match_replaced,
-                    "semantic_match_reason": pipeline_result.semantic_match_reason,
-                    "fallback_reason": pipeline_result.fallback_reason,
-                    "is_manager_deferral": bool(getattr(pipeline_result, "is_manager_deferral", False)),
-                    "reason_class": str(getattr(pipeline_result, "reason_class", "") or ""),
-                    "reason_evidence": dict(getattr(pipeline_result, "reason_evidence", {}) or {}),
-                    "recovery_candidate": pipeline_result.recovery_candidate,
-                    "recovery_candidate_validated": bool(pipeline_result.recovery_candidate),
-                    "partial_yield_applied": bool(getattr(pipeline_result, "partial_yield_applied", False)),
-                    "partial_yield_fact_keys": list(getattr(pipeline_result, "partial_yield_fact_keys", ())),
-                    "partial_yield_missing": list(getattr(pipeline_result, "partial_yield_missing", ())),
-                    "composite_applied": bool(getattr(pipeline_result, "composite_applied", False)),
-                    "composite_fact_keys": list(getattr(pipeline_result, "composite_fact_keys", ())),
-                    "composite_missing": list(getattr(pipeline_result, "composite_missing", ())),
-                    "next_step_applied": bool(getattr(pipeline_result, "next_step_applied", False)),
-                    "next_step_text": str(getattr(pipeline_result, "next_step_text", "") or ""),
-                    "text_composition_source": str(getattr(pipeline_result, "text_composition_source", "") or ""),
-                    "estimate": {
-                        "is_estimate": bool(pipeline_result.is_estimate),
-                        "estimate_applied": bool(getattr(pipeline_result, "estimate_applied", False) or pipeline_result.is_estimate),
-                        "answer_mode": pipeline_result.estimate_answer_mode,
-                        "estimate_domain": pipeline_result.estimate_domain,
-                    },
-                    "warmed": pipeline_result.warmed,
-                    "repaired": pipeline_result.repaired,
-                }
-            },
-        }
-        if should_force_manager_only(context) and route != "manager_only":
-            payload["route"] = "manager_only"
-            payload["safety_flags"].append("forced_manager_only_by_rop_policy")
-        return normalize_subscription_draft_payload(payload)
 
-    def _dialogue_contract_understanding_runner(self, prompt: str) -> Mapping[str, Any]:
-        try:
-            raw = self._run_prompt_text(
-                prompt,
-                prefix="mango_dialogue_contract_understanding_",
-                suffix=".json",
-                reasoning_effort=self.reasoning_effort,
-            )
-        except subprocess.TimeoutExpired:
-            return {
-                "answerability": "manager_only",
-                "confidence": 0.0,
-                "runtime_error": "understanding_timeout",
-            }
-        try:
-            return extract_json_object(raw)
-        except Exception:
-            return {}
 
-    def _dialogue_contract_draft_runner(self, prompt: str) -> str:
-        return self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_draft_",
-            suffix=".txt",
-            reasoning_effort=self.reasoning_effort,
-        )
 
-    def _dialogue_contract_faithfulness_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        raw = self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_faithfulness_",
-            suffix=".json",
-            reasoning_effort=os.getenv("TELEGRAM_DIALOGUE_CONTRACT_FAITHFULNESS_REASONING") or "medium",
-        )
-        try:
-            return extract_json_object(raw)
-        except Exception:
-            return raw
 
-    def _dialogue_contract_semantic_match_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        raw = self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_semantic_match_",
-            suffix=".json",
-            model=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV) or self.model,
-            reasoning_effort=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV) or "medium",
-        )
-        try:
-            return extract_json_object(raw)
-        except Exception:
-            return raw
 
-    def _semantic_diagnosis_guard_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        raw = self._run_prompt_text(
-            prompt,
-            prefix="mango_semantic_diagnosis_guard_",
-            suffix=".json",
-            model=os.getenv(SEMANTIC_DIAGNOSIS_MODEL_ENV) or self.model,
-            reasoning_effort=os.getenv(SEMANTIC_DIAGNOSIS_REASONING_ENV) or "low",
-        )
-        try:
-            return extract_json_object(raw)
-        except Exception:
-            return raw
 
     def _semantic_output_verifier_runner_for_context(self, context: Optional[Mapping[str, Any]]) -> Callable[[str], Mapping[str, Any] | str]:
         raise_on_provider_error = _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV)
@@ -1511,329 +1159,10 @@ class SubscriptionLlmDraftProvider:
         except Exception:
             return raw
 
-    def _dialogue_contract_repair_runner(self, prompt: str) -> str:
-        return self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_repair_",
-            suffix=".txt",
-            reasoning_effort=os.getenv("TELEGRAM_DIALOGUE_CONTRACT_REPAIR_REASONING") or self.reasoning_effort,
-        )
 
-    def _dialogue_contract_warmth_runner(self, prompt: str) -> str:
-        return self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_warmth_",
-            suffix=".txt",
-            model=os.getenv(HUMANITY_X2_REWRITE_MODEL_ENV) or self.model,
-            reasoning_effort=os.getenv(HUMANITY_X2_REWRITE_REASONING_ENV) or "xhigh",
-        )
 
-    def _apply_dialogue_contract_v2_guard_chain(
-        self,
-        result: SubscriptionDraftResult,
-        *,
-        client_message: str,
-        context: Optional[Mapping[str, Any]],
-    ) -> SubscriptionDraftResult:
-        """v2 post-chain: safety verifiers only; no old intent/template rewrites."""
-        guard_steps: list[dict[str, Any]] = []
 
-        def record_step(name: str, before: SubscriptionDraftResult, after: SubscriptionDraftResult) -> None:
-            before_flags = set(before.safety_flags)
-            after_flags = set(after.safety_flags)
-            guard_steps.append(
-                {
-                    "name": name,
-                    "route_before": before.route,
-                    "route_after": after.route,
-                    "text_changed": before.draft_text != after.draft_text,
-                    "added_flags": sorted(after_flags - before_flags),
-                }
-            )
 
-        guarded = result
-        guarded = apply_payment_confirmation_guard(guarded, client_message=client_message, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("payment_confirmation", result, guarded)
-        result = guarded
-
-        guarded = apply_brand_separation_guard(result, client_message=client_message, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("brand_separation", result, guarded)
-        result = guarded
-
-        guarded = apply_input_policy_guards(result, client_message=client_message, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("input_policy", result, guarded)
-        result = guarded
-
-        guarded = apply_unstated_subject_guard(result, client_message=client_message, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("unstated_subject", result, guarded)
-        result = guarded
-
-        guarded = apply_unsupported_promise_guard(result, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("unsupported_promise", result, guarded)
-        result = guarded
-
-        guarded = apply_unconfirmed_operational_specificity_guard(result, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("unconfirmed_operational_specificity", result, guarded)
-        result = guarded
-
-        guarded = apply_dialogue_contract_v2_template_dispatcher(result, client_message=client_message, context=context)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("safe_template_dispatcher", result, guarded)
-        result = guarded
-
-        guarded = apply_funnel_policy_guard(result, context=context)
-        record_step("funnel_policy", result, guarded)
-        result = guarded
-
-        guarded = self._dialogue_contract_v2_route_permission_guard(result, client_message=client_message, context=context)
-        record_step("route_permission", result, guarded)
-        result = guarded
-
-        guarded = guard_identity_disclosure(result)
-        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        record_step("identity_disclosure", result, guarded)
-
-        sanitized = _sanitize_dialogue_contract_client_text(guarded)
-        record_step("sanitize", guarded, sanitized)
-        trace_event(
-            context,
-            "_apply_dialogue_contract_v2_guard_chain",
-            {
-                "applied_guards": [step["name"] for step in guard_steps],
-                "steps": guard_steps,
-                "route": sanitized.route,
-                "safety_flags": sanitized.safety_flags,
-            },
-        )
-        return sanitized
-
-    def _reverify_dialogue_contract_text_change(
-        self,
-        before: SubscriptionDraftResult,
-        after: SubscriptionDraftResult,
-        *,
-        client_message: str,
-        context: Optional[Mapping[str, Any]],
-    ) -> SubscriptionDraftResult:
-        if before.draft_text == after.draft_text:
-            return after
-        metadata = dict(after.metadata)
-        pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
-        facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
-        fact_texts = {str(k): str(v) for k, v in facts.items()}
-        contract = parse_dialogue_contract(
-            pipeline.get("contract"),
-            active_brand=_active_brand(context),
-            fact_key_catalog=tuple(fact_texts.keys()),
-        )
-        previous_bot_texts = _humanity_previous_bot_texts(context)
-        verified_safe_template = _is_verified_safe_numeric_template(after.draft_text)
-        if verified_safe_template:
-            fact_texts["_verified_safe_numeric_template"] = after.draft_text
-        findings = verify_dialogue_contract_output(
-            after.draft_text,
-            facts=fact_texts,
-            active_brand=_active_brand(context),
-            contract=contract,
-            client_message=client_message,
-            context=context,
-            previous_bot_texts=previous_bot_texts,
-        )
-        if (
-            _is_policy_c_identity_question(after, context=context)
-            and _is_approved_policy_c_identity_text(after.draft_text, active_brand=_active_brand(context))
-            and not contract.is_p0
-            and not detect_high_risk_input_markers(client_message, context=context)
-        ):
-            flags = tuple(
-                dict.fromkeys(
-                    [
-                        *after.safety_flags,
-                        "dialogue_contract_text_change_reverified",
-                        "identity_policy_c_reverified",
-                    ]
-                )
-            )
-            return replace(after, safety_flags=flags)
-        if _rules_engine_result_applied(metadata) and fact_texts and not findings:
-            flags = tuple(
-                dict.fromkeys(
-                    [
-                        *after.safety_flags,
-                        "dialogue_contract_text_change_reverified",
-                        "rules_engine_text_change_reverified",
-                    ]
-                )
-            )
-            return replace(after, safety_flags=flags)
-        semantic_available = True
-        unsupported_claims: tuple[str, ...] = ()
-        shadow_enabled = dialogue_contract_faithfulness_shadow_enabled(context)
-        if facts:
-            semantic_result = check_dialogue_contract_faithfulness(
-                after.draft_text,
-                facts={str(k): str(v) for k, v in facts.items()},
-                client_words=client_message,
-                faithfulness_fn=self._dialogue_contract_faithfulness_runner,
-                established_topic=dialogue_contract_established_topic_from_context(context),
-            )
-            if shadow_enabled:
-                record = dialogue_contract_faithfulness_shadow_record("text_change", semantic_result)
-                pipeline = dict(pipeline)
-                events = pipeline.get("faithfulness_shadow")
-                if not isinstance(events, list):
-                    events = []
-                events.append(record)
-                pipeline["faithfulness_shadow"] = events
-                metadata["dialogue_contract_pipeline"] = pipeline
-                semantic_available = True
-                unsupported_claims = ()
-            else:
-                semantic_available = semantic_result.available
-                unsupported_claims = semantic_result.unsupported
-        if verified_safe_template:
-            findings = [finding for finding in findings if finding.code not in {"fact_grounding", "p0_promise"}]
-        if not findings and not unsupported_claims and semantic_available:
-            flags = tuple(dict.fromkeys([*after.safety_flags, "dialogue_contract_text_change_reverified"]))
-            return replace(after, safety_flags=flags, metadata=metadata)
-        flags = tuple(
-            dict.fromkeys(
-                [
-                    *after.safety_flags,
-                    "dialogue_contract_text_change_blocked",
-                    "manager_approval_required",
-                    "no_auto_send",
-                ]
-            )
-        )
-        checklist = tuple(
-            dict.fromkeys(
-                [
-                    *after.manager_checklist,
-                    "v2 safety-fallback не прошёл повторную проверку: использовать только после ручной правки.",
-                ]
-            )
-        )
-        metadata["dialogue_contract_reverification_findings"] = [
-            {"code": finding.code, "detail": finding.detail} for finding in findings
-        ]
-        if unsupported_claims:
-            metadata["dialogue_contract_reverification_unsupported"] = list(unsupported_claims)
-        metadata["dialogue_contract_reverification_semantic_available"] = semantic_available
-        recovery_candidate = _validated_guardchain_recovery_candidate(
-            replace(after, metadata=metadata),
-            client_message=client_message,
-            context=context,
-        )
-        if recovery_candidate:
-            recovered_flags = tuple(
-                dict.fromkeys([*after.safety_flags, "cite_only_recover_at_guardchain"])
-            )
-            recovered_metadata = {
-                **metadata,
-                "cite_only_recover_at_guardchain": True,
-                "cite_only_recover_at_guardchain_source": "text_change_reverify",
-            }
-            if _step4_keep_answer_enabled(context):
-                recovered_metadata = _metadata_with_self_route_deferral_cleared(recovered_metadata)
-            return replace(
-                after,
-                route="bot_answer_self_for_pilot",
-                draft_text=recovery_candidate,
-                safety_flags=recovered_flags,
-                metadata=recovered_metadata,
-            )
-        yielded_before = _safe_template_yield_before_fallback(
-            before,
-            after,
-            client_message=client_message,
-            context=context,
-        )
-        if yielded_before is not None:
-            return yielded_before
-        return replace(
-            after,
-            route="draft_for_manager" if after.route != "manager_only" else after.route,
-            draft_text=SAFE_FALLBACK_DRAFT_TEXT,
-            safety_flags=flags,
-            manager_checklist=checklist,
-            metadata=metadata,
-        )
-
-    def _dialogue_contract_v2_route_permission_guard(
-        self,
-        result: SubscriptionDraftResult,
-        *,
-        client_message: str,
-        context: Optional[Mapping[str, Any]],
-    ) -> SubscriptionDraftResult:
-        if result.route not in (*AUTONOMOUS_ROUTES, "draft_for_manager"):
-            return result
-        flags = list(result.safety_flags)
-        checklist = list(result.manager_checklist)
-        metadata = dict(result.metadata)
-
-        decision = decide_route(
-            result,
-            client_message=client_message,
-            context=context,
-            allow_default_autonomy=_default_autonomy_flip_enabled(context),
-        )
-        if decision.veto_category:
-            flags.extend(decision.safety_flags)
-            checklist.extend(decision.manager_checklist)
-            metadata.update(decision.metadata)
-            if decision.veto_category == "high_risk" and _is_combined_high_risk_case(
-                result,
-                markers=set(detect_high_risk_input_markers(client_message, context=context)),
-                client_message=client_message,
-                context=context,
-            ):
-                flags.append("combined_high_risk_manager_only")
-                metadata["combined_high_risk_manager_only"] = True
-            return replace(
-                result,
-                route=decision.route,
-                veto_category=decision.veto_category,
-                safety_flags=tuple(dict.fromkeys(flags)),
-                manager_checklist=tuple(dict.fromkeys(checklist)),
-                metadata=metadata,
-            )
-
-        if decision.autonomous_candidate:
-            flags.append("dialogue_contract_route_permission_autonomous_candidate")
-            recovery_candidate = _validated_guardchain_recovery_candidate(
-                replace(result, metadata=metadata, safety_flags=tuple(dict.fromkeys(flags))),
-                client_message=client_message,
-                context=context,
-            )
-            if recovery_candidate:
-                flags.append("cite_only_recover_at_guardchain")
-                metadata["cite_only_recover_at_guardchain"] = True
-                metadata["cite_only_recover_at_guardchain_source"] = "route_permission"
-                return replace(
-                    result,
-                    route="bot_answer_self_for_pilot",
-                    draft_text=recovery_candidate,
-                    veto_category=decision.veto_category,
-                    safety_flags=tuple(dict.fromkeys(flags)),
-                    manager_checklist=tuple(dict.fromkeys(checklist)),
-                    metadata=metadata,
-                )
-        return replace(
-            result,
-            route=decision.route,
-            veto_category=decision.veto_category,
-            safety_flags=tuple(dict.fromkeys(flags)),
-            manager_checklist=tuple(dict.fromkeys(checklist)),
-            metadata=metadata,
-        )
 
     def _run_prompt_text(
         self,
@@ -1874,69 +1203,7 @@ class SubscriptionLlmDraftProvider:
             return ""
         return raw or proc.stdout or proc.stderr or ""
 
-    def _answer_quality_llm_rewrite_runner(
-        self,
-        *,
-        result: SubscriptionDraftResult,
-        client_message: str,
-        context: Mapping[str, Any] | None,
-        assessment: AnswerQualityAssessment,
-    ) -> Mapping[str, Any]:
-        prompt = build_answer_quality_llm_rewrite_prompt(
-            result=result,
-            client_message=client_message,
-            context=context,
-            assessment=assessment,
-        )
-        reasoning = str(os.getenv(ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV) or "xhigh").strip() or "xhigh"
-        with tempfile.NamedTemporaryFile(prefix="mango_answer_quality_rewrite_", suffix=".json") as out_file:
-            output_path = Path(out_file.name)
-            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
-                cmd = self._build_codex_command(output_path=output_path, reasoning_effort=reasoning, isolated_cwd=isolated_cwd)
-                proc = self.runner(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
-                )
-            raw = output_path.read_text(encoding="utf-8", errors="ignore")
-        if proc.returncode != 0:
-            return {}
-        try:
-            payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
-        except Exception:
-            return {}
-        draft_text = str(payload.get("draft_text") or "").strip()
-        if not draft_text:
-            return {}
-        return {
-            "draft_text": draft_text,
-            "reason": str(payload.get("reason") or "")[:300],
-        }
 
-    def _humanity_x2_rewrite_runner(self, prompt: str) -> str:
-        model = str(os.getenv(HUMANITY_X2_REWRITE_MODEL_ENV) or "gpt-5.5").strip() or "gpt-5.5"
-        reasoning = str(os.getenv(HUMANITY_X2_REWRITE_REASONING_ENV) or "xhigh").strip() or "xhigh"
-        with tempfile.NamedTemporaryFile(prefix="mango_humanity_x2_rewrite_", suffix=".txt") as out_file:
-            output_path = Path(out_file.name)
-            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
-                cmd = self._build_codex_command(output_path=output_path, model=model, reasoning_effort=reasoning, isolated_cwd=isolated_cwd)
-                proc = self.runner(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
-                )
-            raw = output_path.read_text(encoding="utf-8", errors="ignore")
-        if proc.returncode != 0:
-            return ""
-        return _extract_humanity_x2_text(raw or proc.stdout or proc.stderr or "")
 
     def _direct_path_semantic_frame_shadow_runner(self, prompt: str) -> str:
         model = str(os.getenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_MODEL") or self.model).strip() or self.model
@@ -2136,35 +1403,7 @@ class FakeSubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
-        result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
-        result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
-        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
-        result = apply_input_policy_guards(result, client_message=client_message, context=context)
-        result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
-        result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
-        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
-        result = apply_unsupported_promise_guard(result, context=context)
-        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
-        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
-        result = apply_funnel_policy_guard(result, context=context)
-        result = apply_answer_quality_rewriter(result, client_message=client_message, context=context)
-        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
-        result = apply_input_policy_guards(result, client_message=client_message, context=context)
-        result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
-        result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
-        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
-        result = apply_unsupported_promise_guard(result, context=context)
-        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
-        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
-        result = apply_funnel_policy_guard(result, context=context)
-        result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
-        result = apply_humanity_guards(result, client_message=client_message, context=context)
-        result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
-        result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
-        result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
-        result = apply_tone_sell_prompt_observer(result, client_message=client_message, context=context)
-        result = apply_semantic_diagnosis_guard(result, client_message=client_message, context=context)
-        return apply_authoritative_output_gate(result, client_message=client_message, context=context)
+        return self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)

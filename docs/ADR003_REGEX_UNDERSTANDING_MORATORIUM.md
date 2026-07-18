@@ -78,7 +78,6 @@ Snapshot `tests/fixtures/adr003_direct_path_text_patterns_snapshot.json` так�
 
 - `src/mango_mvp/channels/text_signals.py`;
 - `src/mango_mvp/channels/actions.py`;
-- `src/mango_mvp/channels/answer_quality_rewriter.py`;
 - `src/mango_mvp/channels/dialogue_memory.py`;
 - `src/mango_mvp/channels/held_state.py`;
 - `src/mango_mvp/channels/new_lead_funnel.py`;

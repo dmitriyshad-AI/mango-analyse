@@ -201,38 +201,6 @@
   },
   {
     "flags": "re.I",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\?|сколько|стоим|цен[ауеы]?|можно|есть\\s+ли|там\\s+есть|это\\s+через|приезжать|что\\s+входит|питани|проживан|места|пробн|фрагмент|вы\\s+бот|ты\\s+бот|кто\\s+вы|с\\s+ке",
-    "pattern_sha256": "2afd6b54b59ba4ab23a28894156375b4399f03d26de872e450591a16739433ac",
-    "qualname": "<module>",
-    "target": "QUESTION_MARKER_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб(?:\\.|лей|ля|ль)?)",
-    "pattern_sha256": "1e4b5237ec109ceb5677f28846838833cf853e6c99edc883ac8752eeb990de17",
-    "qualname": "<module>",
-    "target": "PRICE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб(?:\\.|лей|ля|ль)?|%|процент[а-я]*|месяц[а-я]*|част[а-я]*|рабочих\\s+дн[яей]*)|\\b\\d{1,2}[./-]\\d{1,2}(?:[./-]\\d{2,4})?\\b|\\b\\d{1,2}:",
-    "pattern_sha256": "cbf220499f622b194cf910553f3483020b56e7866bc2aec113d4de97cd832c06",
-    "qualname": "<module>",
-    "target": "PRECISE_CLAIM_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "вам\\s+(?:подойд[её]т|нужн|важн)|ваш[аеуи]?\\s+(?:цель|задач|запрос)|вы\\s+(?:хотите|ищете|планируете)|реб[её]нк[ау]?\\s+(?:нужн|важн|подойд[её]т)|(?:лучше|стоит)\\s",
-    "pattern_sha256": "3ffd103fcbd4b4cd3bb102e7e259ec3fbbb935035776778289861ae819a778d4",
-    "qualname": "<module>",
-    "target": "NEED_ASSUMPTION_RE"
-  },
-  {
-    "flags": "re.I",
     "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
     "pattern_preview": "(?:₽|руб|%|\\b\\d|\\b(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\\w*)",
     "pattern_sha256": "ab36bb0b877e2fc68a0ba621c83d4e91dbe45a176882e49099c1e1a36d65c0e1",

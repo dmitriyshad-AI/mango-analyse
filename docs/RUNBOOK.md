@@ -209,7 +209,6 @@ docs/KB_BUILD_RUNBOOK_2026-05-26.md
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
   tests/test_dialogue_memory.py \
   tests/test_telegram_pilot_context_builder.py \
-  tests/test_answer_quality_rewriter.py \
   tests/test_telegram_pilot_journal_report.py \
   tests/test_telegram_dynamic_client_sim.py \
   tests/test_subscription_llm_draft_provider.py

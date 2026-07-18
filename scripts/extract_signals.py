@@ -131,7 +131,6 @@ def _tone_score(turn: Mapping[str, Any]) -> float | None:
             ("tone_metric", "tone_score"),
             ("bot_tone_score",),
             ("bot_tone_metric", "tone_score"),
-            ("bot_answer_quality", "tone_score"),
         ),
     )
     try:

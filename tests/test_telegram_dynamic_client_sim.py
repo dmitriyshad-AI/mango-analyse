@@ -2335,29 +2335,6 @@ def test_codex_json_model_can_run_isolated(monkeypatch) -> None:
     assert "OPENAI_API_KEY" not in kwargs["env"]
 
 
-def test_semantic_diagnosis_guard_runner_counts_llm_role(monkeypatch, tmp_path: Path) -> None:
-    counter = sim.LlmCallCounter()
-
-    def fake_run(cmd, **kwargs):
-        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
-        output_path.write_text(
-            '{"individual_diagnosis": true, "span": "сможет влиться", "reason": "уверенная оценка"}',
-            encoding="utf-8",
-        )
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(sim.subprocess, "run", fake_run)
-    provider = sim.CountingSubscriptionLlmDraftProvider(
-        runner=sim.subprocess.run,
-        cache_dir=None,
-        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
-        llm_call_counter=counter,
-    )
-
-    assert provider._semantic_diagnosis_guard_runner("Верни JSON")["individual_diagnosis"] is True
-    assert counter.snapshot()["bot_diagnosis_guard"] == 1
-
-
 def test_semantic_output_verifier_runner_counts_llm_role(monkeypatch, tmp_path: Path) -> None:
     counter = sim.LlmCallCounter()
 
@@ -2376,27 +2353,6 @@ def test_semantic_output_verifier_runner_counts_llm_role(monkeypatch, tmp_path: 
 
     assert provider._semantic_output_verifier_runner("Верни JSON")["findings"] == []
     assert counter.snapshot()["bot_semantic_output_verifier"] == 1
-
-
-def test_dialogue_contract_faithfulness_runner_counts_separate_llm_role(monkeypatch, tmp_path: Path) -> None:
-    counter = sim.LlmCallCounter()
-
-    def fake_run(cmd, **kwargs):
-        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
-        output_path.write_text('{"claims": [], "unsupported": []}', encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(sim.subprocess, "run", fake_run)
-    provider = sim.CountingSubscriptionLlmDraftProvider(
-        runner=sim.subprocess.run,
-        cache_dir=None,
-        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
-        llm_call_counter=counter,
-    )
-
-    assert provider._dialogue_contract_faithfulness_runner("Верни JSON")["unsupported"] == []
-    assert counter.snapshot()["bot_faithfulness"] == 1
-    assert counter.snapshot().get("bot_critic", 0) == 0
 
 
 def test_semantic_output_verifier_summary_dedupes_deterministic_same_class() -> None:
@@ -2924,9 +2880,6 @@ def test_build_bot_provider_claude_mode_uses_claude_runner() -> None:
         bot_reasoning="high",
         timeout_sec=180,
         disable_bot_cache=True,
-        semantic_mode="off",
-        semantic_model="gpt-5.5",
-        semantic_reasoning="medium",
         llm_call_counter=None,
     )
 
@@ -3020,9 +2973,6 @@ def test_build_bot_provider_codex_mode_is_isolated_by_default_and_can_disable() 
         bot_reasoning="medium",
         timeout_sec=180,
         disable_bot_cache=True,
-        semantic_mode="off",
-        semantic_model="gpt-5.5",
-        semantic_reasoning="medium",
         llm_call_counter=None,
     )
 
@@ -3042,17 +2992,17 @@ def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:
         "promise": {
             "client": "Гарантируете 100 баллов?",
             "text": "Гарантируем 100 баллов на ЕГЭ.",
-            "expected_flag": "result_guarantee_safe_template_applied",
+            "expected_flag": "authoritative_gate:unsupported_promise",
         },
         "brand": {
             "client": "У Фотона и УНПК одинаковые условия?",
             "text": "У Фотона и УНПК одинаковые условия.",
-            "expected_flag": "brand_separation_guarded",
+            "expected_flag": "authoritative_gate:brand_leak",
         },
         "p0": {
             "client": "Я оплатил, занятий нет, верните деньги",
             "text": "Я помогу, но сначала расскажите, какой курс интересует.",
-            "expected_flag": "high_risk_manager_only",
+            "expected_flag": "payment_dispute_manager_only",
         },
     }
 
@@ -3104,7 +3054,7 @@ def test_run_one_dialog_uses_fake_memory_model(monkeypatch, tmp_path):
     assert memory_after["conversation_summary_short"].startswith("Fake memory:")
 
 
-def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_findings(tmp_path):
+def test_dynamic_summary_keeps_context_tone_and_metric_levels(tmp_path):
     transcripts = [
         {
             "dialog_id": "quality_cases",
@@ -3112,20 +3062,10 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
             "turns": [
                 {
                     "turn": 1,
-                    "bot_answer_quality_findings": [
-                        "ignored_direct_question",
-                        "reasked_known_grade",
-                        "reasked_known_subject",
-                        "reasked_known_format",
-                        "single_topic_answer_to_multitopic_question",
-                    ],
-                    "bot_answer_quality_rewritten": False,
                     "context_parity_checked": True,
                 },
                 {
                     "turn": 2,
-                    "bot_answer_quality_findings": [],
-                    "bot_answer_quality_rewritten": True,
                     "context_parity_checked": True,
                     "bot_tone_sell_prompt": {
                         "enabled": True,
@@ -3157,13 +3097,6 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
         parallel=1,
     )
 
-    findings = summary["answer_quality"]["finding_counts"]
-    assert findings["ignored_direct_question"] == 1
-    assert findings["reasked_known_grade"] == 1
-    assert findings["reasked_known_subject"] == 1
-    assert findings["reasked_known_format"] == 1
-    assert findings["single_topic_answer_to_multitopic_question"] == 1
-    assert summary["answer_quality"]["rewritten_turns"] == 1
     assert summary["answer_quality"]["context_parity_checked"] is True
     assert summary["soft_flags"]["ignored_question"] == 1
     assert summary["metrics_intervals"]["dialog_pass_rate"]["level"] == "dialog"

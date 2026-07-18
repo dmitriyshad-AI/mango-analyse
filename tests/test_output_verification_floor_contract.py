@@ -33,8 +33,6 @@ def test_floor_manifest_has_one_compatibility_owner() -> None:
 
 def test_live_consumers_import_the_floor_directly() -> None:
     assert provider.dialogue_contract_p0_pre_gate is floor.p0_pre_gate
-    assert provider.parse_dialogue_contract is floor.parse_contract
-    assert provider.verify_dialogue_contract_output is floor.verify_output
     assert post_layers.dialogue_contract_p0_pre_gate is floor.p0_pre_gate
     assert post_layers.verify_dialogue_contract_output is floor.verify_output
     assert post_layers.has_meta_leak is floor.has_meta_leak

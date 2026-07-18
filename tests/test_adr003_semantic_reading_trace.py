@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
-from mango_mvp.channels.answer_quality_rewriter import apply_answer_quality_rewriter
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
     SEATS_DEFAULT_OPEN_ENV,
@@ -1176,34 +1175,6 @@ def test_semantic_frame_manager_action_gate_blocks_forged_seats_default_open_met
 
     assert result.route == "draft_for_manager"
     assert result.metadata["semantic_frame_manager_action_gate"]["status"] == "promoted_to_draft_for_manager"
-
-
-def test_rewrite_quality_class_records_rewriter_shadow_without_route_change() -> None:
-    result = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text="Передам вопрос менеджеру.",
-        safety_flags=("manager_approval_required",),
-        metadata={
-            "semantic_frame": {
-                "source": "inline",
-                "requested_action": "answer_question",
-                "confidence": 0.93,
-            }
-        },
-    )
-
-    guarded = apply_answer_quality_rewriter(
-        result,
-        client_message="Хочу пожаловаться.",
-        context={SEMANTIC_READING_CLASSES_ENV: "rewrite_quality"},
-    )
-
-    assert guarded.route == result.route
-    assert guarded.draft_text == result.draft_text
-    trace = guarded.metadata["semantic_reading_trace"][0]
-    assert trace["class"] == "rewrite_quality"
-    assert trace["metadata"]["stage"] == "rewriter"
-    assert trace["metadata"]["text_replacement"] is False
 
 
 def test_post_semantics_class_records_humanity_text_replacement() -> None:

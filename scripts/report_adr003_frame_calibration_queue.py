@@ -1027,9 +1027,6 @@ def _proof_text_readiness_for_turn(
     missing_facts = _listish(turn.get("bot_missing_facts")) or _listish(trace.get("result_missing_facts"))
     if missing_facts:
         blockers.append("missing_facts_present")
-    answer_quality_findings = _listish(turn.get("bot_answer_quality_findings"))
-    if answer_quality_findings:
-        blockers.append("answer_quality_findings_present")
     safety_flags = _listish(turn.get("bot_safety_flags"))
     p0_or_brand_flags = [
         flag
@@ -1070,7 +1067,6 @@ def _proof_text_readiness_for_turn(
         else [],
         **fact_readiness,
         "missing_facts_count": len(missing_facts),
-        "answer_quality_findings_count": len(answer_quality_findings),
         "semantic_verifier_action": verifier.get("action") if isinstance(verifier, Mapping) else "",
         "authoritative_gate_action": auth_gate.get("action") if isinstance(auth_gate, Mapping) else "",
     }

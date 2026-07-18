@@ -16,11 +16,6 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from mango_mvp.channels.answer_quality_rewriter import (
-    AnswerQualityAssessment,
-    build_answer_quality_llm_rewrite_prompt,
-    apply_answer_quality_rewriter,
-)
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
@@ -406,7 +401,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _answer_contract,
     _answer_contract_green_template_reduction_enabled,
     _answer_fact_scopes,
-    _answer_quality_was_rewritten,
     _answers_matkap_scope,
     _answers_tax_deduction_scope,
     _apply_migrated_rules_engine,
@@ -582,18 +576,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     is_high_risk_result,
     known_context_fields,
 )
-
-ANSWER_QUALITY_LLM_REWRITE_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"
-
-
-ANSWER_QUALITY_LLM_REWRITER_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITER"
-
-
-ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_REASONING"
-
-
-ANSWER_QUALITY_LLM_REWRITE_MODE_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_MODE"
-
 
 HUMANITY_BLOCK_A_ROUTE_FIX_ENV = "TELEGRAM_HUMANITY_BLOCK_A_ROUTE_FIX"
 
@@ -6991,49 +6973,6 @@ def _semantic_output_verifier_enabled(context: Optional[Mapping[str, Any]] = Non
     # In a future autonomous send mode Дмитрий may choose fail-closed when this
     # verifier is unavailable; today it is advisory in draft-only mode.
     return _pilot_profile_flag_enabled(context, SEMANTIC_OUTPUT_VERIFIER_ENV, aliases=("semantic_output_verifier_enabled",))
-
-
-def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        value = context.get("answer_quality_llm_rewrite_enabled")
-        if value is not None:
-            return _truthy_value(value)
-    return _truthy_value(os.getenv(ANSWER_QUALITY_LLM_REWRITE_ENV)) or _truthy_value(os.getenv(ANSWER_QUALITY_LLM_REWRITER_ENV))
-
-
-def _answer_quality_llm_rewrite_mode(context: Optional[Mapping[str, Any]] = None) -> str:
-    if isinstance(context, Mapping):
-        value = context.get("answer_quality_llm_rewrite_mode")
-        if value is not None:
-            return str(value or "").strip().casefold()
-    return str(os.getenv(ANSWER_QUALITY_LLM_REWRITE_MODE_ENV) or "").strip().casefold()
-
-
-def _answer_quality_llm_polish_sales_enabled(
-    context: Optional[Mapping[str, Any]],
-    result: SubscriptionDraftResult,
-) -> bool:
-    if not _answer_quality_llm_rewrite_enabled(context):
-        return False
-    mode = _answer_quality_llm_rewrite_mode(context)
-    if mode not in {"polish_sales", "always_sales", "all"}:
-        return False
-    if result.route == "manager_only" or result.topic_id in HIGH_RISK_THEME_IDS:
-        return False
-    if any(marker in " ".join(result.safety_flags).casefold() for marker in ("high_risk", "zero_collect", "legal", "complaint")):
-        return False
-    return result.topic_id in {
-        "theme:001_pricing",
-        "theme:005_discounts",
-        "theme:006_installment",
-        "theme:013_schedule",
-        "theme:014_format",
-        "theme:016_program",
-        "theme:020_enrollment",
-        "theme:023_trial_class",
-        "theme:026_camp_general",
-        "service:S5_general_consultation",
-    }
 
 
 def _humanity_x2_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

@@ -1,13 +1,5 @@
 [
   {
-    "args_preview": "(\"?\", \"как\", \"сколько\", \"можно\", \"есть\")",
-    "args_sha256": "3b0769ba3cb20a1a14914a24cb7b0be86877a9b168bd5f3448207bca57beb62c",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_non_repeating_delta_reply",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"foton\", \"фотон\", \"цдпо\", \"cdpo\")",
     "args_sha256": "307d507372347c19de9ddbc3cdc722582f23a97abbe700c550d55ce26c00c8f6",
     "node_kind": "marker_helper_call",
@@ -16,35 +8,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"offline\", \"очно\", \"офлайн\")",
-    "args_sha256": "b625cf44971bc05d8df5c4ec843cdd74a2e90b2568b1870d5bd6e59c8cc7ac85",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_normalize_known_format",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"online\", \"онлайн\", \"дистанц\")",
-    "args_sha256": "fe6124ed4db13ed356259a598cf6dc11ad5af7c7a9b95b96c823dc8f2ee921ce",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_normalize_known_format",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"unpk\", \"унпк\", \"мфти\", \"mipt\")",
     "args_sha256": "796775f3adaa6a481e55697ba63062e42652632dc1f1fb3f4f4606639fe436f7",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_seats_default_open_brand",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"адрес\", \"площадк\", \"метро\", \"сретен\", \"красносель\", \"пацаева\", \"институт\")",
-    "args_sha256": "7e54786dd9b4898433ada4ad2581c3d0db72f03328e0829352ad7c69515e2308",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "has_any_marker"
   },
   {
@@ -88,30 +56,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"банк\", \"банков\", \"одобрен\", \"одобр\")",
-    "args_sha256": "6ec78985687baa151c58c3b9f730e3179667e91935e244b9d22a23e180518650",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"банк\", \"одобрен\", \"одобр\")",
-    "args_sha256": "d64d87f1a9616517ecfd88c234cc4c311460a5b85e830b545656136e49b6bcfc",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"без оплат\", \"не платить\", \"потом оплат\", \"сразу платить\", \"оплат\")",
-    "args_sha256": "230d5fa766e1298d6daf8e3c74c26630f0c7f74c713766e43a9228399d956dad",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_booking_without_payment",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"без прожив\", \"без проживания\", \"без ночев\")",
     "args_sha256": "b8fa69968f9c17c689630257edf0b7a5f45d6807959772c53250c3454e9ef9a1",
     "node_kind": "marker_helper_call",
@@ -128,35 +72,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"без процент\", \"безпроцент\", \"переплат\", \"проценты\", \"процентами\", \"процентами\")",
-    "args_sha256": "b3982227e0f471a5192411b02e4a97afd2f23ed95c842884b74238150d34f4c2",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_no_interest_or_overpayment",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"брон\", \"заброни\")",
     "args_sha256": "bf0b8b63f2ae9e2cbd4603f068d6b325fc5bef5a4ee27a1c9f837545e55e6f43",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_is_current_terms_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"брон\", \"заброни\", \"закреп\", \"зафикс\")",
-    "args_sha256": "b40482ae11f1e5c84e9d81ffad5d699344b7b33a9822d0825142816111a11f03",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_booking_without_payment",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"ваш вопрос очень важен\", \"оптимальный образовательный продукт\")",
-    "args_sha256": "beb836c2edb0b6bc0cc9a83273ff7dc8054346f0e6e293affb62a9a75d536c09",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_templated_opening",
     "symbol": "has_any_marker"
   },
   {
@@ -344,14 +264,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"зафикс\", \"закреп\", \"подраст\", \"вырос\", \"выраст\", \"повыс\", \"поменя\", \"изменит\")",
-    "args_sha256": "606e9fbcaaa2c39461d521eea644e67d5d99bfe5c7f154348d17b74c77e43d77",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_price_fixation_or_current",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"или только\", \"просто бывают\", \"просто по выходным\", \"вообще там\", \"да или нет\", \"просто сказать\")",
     "args_sha256": "4c41137d16089acf57aec882708312d14f576138027300b8ff8a08a14bf322cf",
     "node_kind": "marker_helper_call",
@@ -432,14 +344,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"лагер\", \"лвш\", \"смен\", \"менделеево\", \"прожив\", \"питан\")",
-    "args_sha256": "edf112b0c784b3b6e2b9b2a47712ae6e076bb60ef9df8b4bd632bcded5af5dd8",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_camp_details",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"лагер\", \"лш\")",
     "args_sha256": "af5cfe5ddbe5958f6f5c5014ddebb4f7033ef2cb4b01775d68104bc439f28604",
     "node_kind": "marker_helper_call",
@@ -491,14 +395,6 @@
     "args_preview": "(\"лвш\", \"лагер\", \"смен\", \"менделеево\")",
     "args_sha256": "0e97525f09b51f6d6eb6c85e70defa690284a5829fe88c4e3089e017b9ebe1bc",
     "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_camp_fact",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"лвш\", \"лагер\", \"смен\", \"менделеево\")",
-    "args_sha256": "0e97525f09b51f6d6eb6c85e70defa690284a5829fe88c4e3089e017b9ebe1bc",
-    "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_live_status_manager_check_text",
     "symbol": "has_any_marker"
@@ -512,36 +408,12 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"лвш\", \"менделеево\")",
-    "args_sha256": "313e2e51fb8f002393532daf2cacd95672ebe381ae166f83df574b1c8d937764",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_camp_fact",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"лвш\", \"менделеево\", \"выезд\", \"смен\")",
-    "args_sha256": "6779cb9e7a6721a3e0faf10f45b968f8892fd79c80d777816608f0cb9042bb4f",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_camp_fact",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"лвш\", \"менделеево\", \"выездн\", \"трансфер\")",
     "args_sha256": "12272464d6298d2099d1e97725c83d118eb2f5a0797bdb1fbd812195ee86c290",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_camp_scope_signals",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"лет\", \"июн\", \"июл\", \"август\", \"каникул\")",
-    "args_sha256": "fd9b7df3195fe3bfeaf1c857fe7ee31fc2694411bc1a80b36a114a7b453717e2",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_online_summer_not_residential",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"личный кабинет\", \"кабинет\", \"платформ\")",
@@ -616,51 +488,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"менделеево\", \"лвш\", \"прожив\")",
-    "args_sha256": "238fadcee5f4ae4d9745f1b969aa2828e7e6caca8a6371d4f6e0068c7620e5eb",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"менделеево\", \"лвш\", \"прожив\")",
-    "args_sha256": "238fadcee5f4ae4d9745f1b969aa2828e7e6caca8a6371d4f6e0068c7620e5eb",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"менеджер провер\", \"менеджер подскаж\", \"менеджер свяж\", \"передам менеджер\")",
-    "args_sha256": "b88b4b5971fede7747a837a3e1d6c3ee5d32885bfa920729f9353c39025e4893",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_handoff_replaces_verified_fact",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"менеджер\", \"напишу\", \"попрошу\")",
     "args_sha256": "7d5039b83f64b57492d242944c36cce862118799c8951ce54799250521f29189",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_unpk_tax_certificate_followup_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"мест\", \"брон\", \"заброни\")",
-    "args_sha256": "b18b9ae9dd22c97035f6266b30bc88ba500c31382370567bb723ff704bdac4d1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_live_seat_or_booking_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"мест\", \"брон\", \"заброни\")",
-    "args_sha256": "b18b9ae9dd22c97035f6266b30bc88ba500c31382370567bb723ff704bdac4d1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_seats",
     "symbol": "has_any_marker"
   },
   {
@@ -752,36 +584,12 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"налог\", \"вычет\", \"фнс\", \"маткап\", \"сфр\", \"документ\", \"справк\")",
-    "args_sha256": "f076fea029decabc1b8aefe2488fdfbca47385641fd99f15e755ef0e7d36fc36",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"напишите\", \"подскажите\", \"можно начать\", \"следующий шаг\", \"менеджер провер\", \"передам менеджер\", \"передам заявку\")",
-    "args_sha256": "15dc44799d4c6b6e761ace4e0c0208968870bdd9fcc4243a48efde1556caab60",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_missing_next_step",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"не лагер\", \"не лвш\", \"не летн\", \"вместо лагер\")",
     "args_sha256": "c5df7e40fe6380c0980ea96ace77d498e5acc2bb5f53a53ac0e387421132eab5",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_is_camp_followup_from_held",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"не очно\", \"не про очно\", \"а не очно\", \"очно не\")",
-    "args_sha256": "c78a5b4e454bc6d2768224b341d4237db1634c2b7f711222d8eab7fe3c56fe2f",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"не про мест\", \"не о мест\", \"не места\")",
@@ -798,14 +606,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_asks_live_availability",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"не про\", \"а не\")",
-    "args_sha256": "22e06bab46b0945a5bbd659aea424c55cb560dd1035d6995fbe7f488bfc9d928",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"не рассроч\", \"не долями\", \"не частями\", \"не через банк\", \"не про рассроч\")",
@@ -952,14 +752,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"очно\", \"онлайн\", \"дистанц\", \"приезж\", \"платформ\", \"формат\")",
-    "args_sha256": "6cbf55d0d3c347bac5125d1f94dbccc8fd2386a6c3131bb9f202c572f05fb728",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"очно\", \"офлайн\")",
     "args_sha256": "631e9824a28ec98329b67623496fdd0549771161222042d8cd0fce712dc4fd7b",
     "node_kind": "marker_helper_call",
@@ -1040,14 +832,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"по местам\", \"наличие мест\", \"конкретной группе\")",
-    "args_sha256": "5b4ff88e80013cf364150ba40a3cda5ec4768d43567842944bad3e2e6d0c627b",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"по счету\", \"по счёту\", \"счет\", \"счёт\", \"банковск\", \"перевод\", \"реквизит\")",
     "args_sha256": "544f9995dcb010efcc7be0f3e84e6f9de93749f102aa785247c34c262f6df68f",
     "node_kind": "marker_helper_call",
@@ -1077,14 +861,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "extract_goal",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"подума\", \"спасибо\", \"понял\", \"поняла\", \"жду\", \"ок\", \"хорошо\")",
-    "args_sha256": "1398ca270ec5352faad88a2ca50cff5cd8201325d8318b1b09de84cf8886cdcb",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_client_is_waiting_or_thinking",
     "symbol": "has_any_marker"
   },
   {
@@ -1171,30 +947,6 @@
     "args_preview": "(\"пробн\", \"фрагмент\")",
     "args_sha256": "0723aaba6641c6c9b2f5bfc3de5d351633c16ed212d0b2c828d3e8d71f6bf2d8",
     "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"пробн\", \"фрагмент\")",
-    "args_sha256": "0723aaba6641c6c9b2f5bfc3de5d351633c16ed212d0b2c828d3e8d71f6bf2d8",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_trial",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"пробн\", \"фрагмент\")",
-    "args_sha256": "0723aaba6641c6c9b2f5bfc3de5d351633c16ed212d0b2c828d3e8d71f6bf2d8",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"пробн\", \"фрагмент\")",
-    "args_sha256": "0723aaba6641c6c9b2f5bfc3de5d351633c16ed212d0b2c828d3e8d71f6bf2d8",
-    "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_answer_closes_question",
     "symbol": "has_any_marker"
@@ -1208,36 +960,12 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"пробн\", \"фрагмент\", \"приезжать не нужно\")",
-    "args_sha256": "99b488cc18de6b3fb7f7f5bacc02707cceed50ec6a769a6bc94386e0312d0c6d",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"прожив\", \"питан\")",
-    "args_sha256": "df63fadd076304526d7d19e1fbdea4d798ee2e2cebc92b940ab7451ed77bdf5e",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_camp_fact",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"прожив\", \"питан\")",
     "args_sha256": "df63fadd076304526d7d19e1fbdea4d798ee2e2cebc92b940ab7451ed77bdf5e",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_camp_scope_signals",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"прожив\", \"питан\", \"трансфер\", \"занят\")",
-    "args_sha256": "906691d8d460cf78fec70d12856e72c6fc15557ef6d96104f1a822a08ac884d3",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"прожив\", \"питан\", \"трансфер\", \"что входит\")",
@@ -1272,14 +1000,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"распис\", \"время\", \"дни\", \"во сколько\", \"когда\")",
-    "args_sha256": "fca41ac56ce72fd8f586ab66cb86420c9e2a00d83eb5fb2dde53dd13f880a2b5",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"распис\", \"дни\", \"время\", \"занятия\", \"группа\")",
     "args_sha256": "6c01a5f04a5ab7a458874473a269db79fc2a6284dbef7941824e259090c9663f",
     "node_kind": "marker_helper_call",
@@ -1299,40 +1019,8 @@
     "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\")",
     "args_sha256": "a1132692cadaaf88664ff12bdc32cb4c14c9c70c5c01f87c1ea9d8d921dd139e",
     "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\")",
-    "args_sha256": "a1132692cadaaf88664ff12bdc32cb4c14c9c70c5c01f87c1ea9d8d921dd139e",
-    "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_answer_closes_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\", \"процент\")",
-    "args_sha256": "2cce5e0b3799b7b554f751fb26660f2d4b0713b9c94fce4358eeca73f469bdd4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_installment",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\", \"семестр\", \"год\")",
-    "args_sha256": "02e0fcd3b9974c88cd03ee568fbd43e739ed42a896e7ced1741178b4a544d18d",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\", \"т-банк\", \"месяц\")",
-    "args_sha256": "8fe1c5ef5a82bc4076ca746ffb7d6b562f41e17eb6dd592ac40d2499c89330ff",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_rewrite_validation_errors",
     "symbol": "has_any_marker"
   },
   {
@@ -1341,14 +1029,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_forbidden_pair_guard_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"семестр\", \"банк\")",
-    "args_sha256": "5479dbf9ca60282a65f17c1e51721a2865020bb0e6eae0bf5d53dab4a8f6daec",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
     "symbol": "has_any_marker"
   },
   {
@@ -1400,14 +1080,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"сколько\", \"част\", \"месяц\", \"срок\", \"услов\")",
-    "args_sha256": "e0409ba78aeebe6af8756232b0d1f0765d462d21a85536c870487b76fc8b1446",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_dolyami_parts",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"смотреть\", \"посмотреть\", \"личн кабинет\", \"личном кабинете\", \"кабинет\", \"ссылк\", \"пришл\", \"доступ\")",
     "args_sha256": "945cbf2e9f1d5e1453c314e1307a830264182d028de8a3bb772cbacfe0eca7b1",
     "node_kind": "marker_helper_call",
@@ -1421,22 +1093,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_unpk_tax_certificate_followup_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"справк\", \"документ\", \"вычет\", \"договор\")",
-    "args_sha256": "8a5a2aac69598a517f486acb21f3ef2e90b1a7c1fb2ee7b2bc0062dee4d9fdd1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"стоим\", \"цен\", \"сколько\")",
-    "args_sha256": "5f2ed8fb2710e7e74635e6c9d321d7b01e5715c1edcfb6b6eef06904ff62e534",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "has_any_marker"
   },
   {
@@ -1496,22 +1152,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"текущ\", \"сейчас\")",
-    "args_sha256": "2bdc6a549b6f76c5e44107ca701cc9d0df757b8a197440dfb6429b8cd2fdad64",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"текущ\", \"сейчас\", \"оформ\", \"цена\", \"стоим\")",
-    "args_sha256": "8c3c2d360a1bdc561856096d88c300d081a46452064971a2161cbc48f0cababa",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"текущ\", \"сейчас\", \"цен\", \"услов\")",
     "args_sha256": "622b9e92bf8b6af0bd843d107d6d99d98001e1094f7c3cb6d62889cc4e50d590",
     "node_kind": "marker_helper_call",
@@ -1552,22 +1192,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"трансфер\", \"добир\", \"как туда\", \"из москв\", \"место сбора\", \"сбор\")",
-    "args_sha256": "ff73562892d4091d0d1af28cf721561a8f384359f9e807f6e4b5763b646a81a4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_transport_or_logistics",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"трансфер\", \"дорог\", \"добир\", \"сбор\", \"из москв\")",
-    "args_sha256": "01d68eb2eb062719b92fea1afbb86a4bb7f39a0824740874922ccc73d3fd6499",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_relevant_fact",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"углуб\", \"сильн\", \"глубже\")",
     "args_sha256": "c1628aa26579f849d016c3795679283d8cc5fc7ebd27b558cb28e9a3b945ebfa",
     "node_kind": "marker_helper_call",
@@ -1589,22 +1213,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "qualname": "_refund_frame",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"унпк\", \"мфти\")",
-    "args_sha256": "c5884b91e2ae60b1eb9bc1db18827470bb1a6d1ec2b17030a32a9dbc790573e0",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_brand_safe_fact_texts",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"унпк\", \"мфти\", \"kmipt\")",
-    "args_sha256": "4247b38c459bf8720791c38c70e9e34a1e9456be96eadb54f10c560a80c84db1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_brand_safe_fact_texts",
     "symbol": "has_any_marker"
   },
   {
@@ -1632,14 +1240,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"фотон\", \"cdpofoton\")",
-    "args_sha256": "ca578571fc799a46af2eefcb5623a074f254c19b0ef6a4e9339a9fd9f1985c37",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_brand_safe_fact_texts",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"фотон\", \"долями\", \"т-банк\")",
     "args_sha256": "9dab5baa5aea04acd8f5c24c750b68b3328ab88aa01cac61dbe5e6d43f62adbe",
     "node_kind": "marker_helper_call",
@@ -1656,35 +1256,11 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"цен\", \"стоим\")",
-    "args_sha256": "9a58b9ab8e8fdbd53d2ba5cf02f4b311bcfe0706427f5f43b69413771f900a21",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"цен\", \"стоим\", \"сколько\")",
-    "args_sha256": "ea16567ac437c683e56567837a88df4a30b84d3b67253c8e9069524b63dd0457",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_relevant_fact",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"цен\", \"стоим\", \"сколько\", \"оплат\", \"рассроч\", \"долями\")",
     "args_sha256": "ce185bc7de2a3e5a0b94e068d6d4dd743190e46586143632eebb8aa9f1589ef1",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_next_step",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"цен\", \"стоим\", \"стоит\", \"₽\", \"руб\")",
-    "args_sha256": "52115cbd8779b78fbce4de47890b982a0e69ba43f1ba94f4681c1a6d7d5cb749",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_price_fact",
     "symbol": "has_any_marker"
   },
   {
@@ -1701,22 +1277,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_answer_closes_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"что входит\", \"прожив\", \"питан\", \"полная\", \"стоим\", \"цен\", \"сколько\")",
-    "args_sha256": "6c46ee99be1aca889faa29451a35116f04d5d0257e4234061ce2c431db77755f",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_camp_details",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"что нужно\", \"как\", \"пришл\", \"отправ\", \"данн\")",
-    "args_sha256": "1fcc711c6e63a69270259adac32d07c1c9a207e97741832c8ca2d8bb133e0668",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_trial_fragment_data_or_process",
     "symbol": "has_any_marker"
   },
   {
@@ -1784,14 +1344,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\n            \"в базе\",\n            \"по текущей базе\",\n            \"в текущем контексте\",\n            \"фигурирует\",\n            \"служебн\",\n            \"без неожиданной конкретики\",\n            \"оформление по текущим условиям проверит менедж",
-    "args_sha256": "a10bbfb94d6f12e148a7e76e6a9a7558eab676b53d4d48a7121d0dd1f42144b7",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_service_style_phrase",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\n            \"верните\",\n            \"требую\",\n            \"хочу вернуть\",\n            \"хочу возврат\",\n            \"хочу деньги назад\",\n            \"вернуть деньги\",\n            \"деньги назад\",\n            \"отдайте\",\n            \"забрать де",
     "args_sha256": "116b6db58ec7861ace59da2c493427486934f91e785d6a51dd40655ebb6c6eb9",
     "node_kind": "marker_helper_call",
@@ -1805,14 +1357,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_seats_default_open_exclusion_reason",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n            \"закреп\",\n            \"зафикс\",\n            \"оформ\",\n            \"налич\",\n            \"есть\",\n            \"провер\",\n            \"нужно\",\n            \"надо\",\n        )",
-    "args_sha256": "f74d2dd98eab7c8b9b0ad2c6983dad53dba30a8b82a4f3cf39dade30a7e1b2d6",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_live_seat_or_booking_question",
     "symbol": "has_any_marker"
   },
   {
@@ -1837,22 +1381,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/held_state.py",
     "qualname": "_is_direct_correction",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n            \"передам вопрос менеджеру\",\n            \"менеджер подскажет варианты под вашу ситуацию\",\n            \"уточнит менеджер\",\n            \"чтобы не назвать невер\",\n        )",
-    "args_sha256": "d9d0bd6c68eac1e8dfca9e8d763ef1277b06d2ddf176c82708ec0b8887bd0f0e",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_looks_like_template_handoff",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n            \"рассроч\",\n            \"долями\",\n            \"маткап\",\n            \"налоговый вычет\",\n            \"пробн\",\n            \"фрагмент\",\n            \"мтс линк\",\n            \"webinar\",\n            \"адрес\",\n        )",
-    "args_sha256": "891642a5eb087db361c80af393a6a23661a57839d4d488679b6f5ba1d622a852",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_handoff_replaces_verified_fact",
     "symbol": "has_any_marker"
   },
   {
@@ -1917,14 +1445,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "extract_format",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"долями\"",
-    "args_sha256": "ff14769c80e044243d61d4f3a7bad557503bf3f9f1d3e042e2697c3bace6660e",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_dolyami_parts",
     "symbol": "has_marker"
   },
   {
@@ -2024,14 +1544,6 @@
     "symbol": "has_marker"
   },
   {
-    "args_preview": "\"лвш\"",
-    "args_sha256": "1eb9a6d6b3f42a2ded403de1d3442de5e1d54ed26a033957e4c4d19db228cae2",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_best_camp_fact",
-    "symbol": "has_marker"
-  },
-  {
     "args_preview": "\"менделеево\"",
     "args_sha256": "125d84baa11bc04fc9d79c8e888cacfafd6aa209897ec5fc5d2accb504adf06a",
     "node_kind": "marker_helper_call",
@@ -2069,46 +1581,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "extract_goal",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_online_summer_not_residential",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
     "symbol": "has_marker"
   },
   {
@@ -2155,14 +1627,6 @@
     "args_preview": "\"очно\"",
     "args_sha256": "c13db22c51439bc0fdb65ad33f0c0a920de7da2ab8aa214b3643b7a5558712c1",
     "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"очно\"",
-    "args_sha256": "c13db22c51439bc0fdb65ad33f0c0a920de7da2ab8aa214b3643b7a5558712c1",
-    "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_prefer_format_facts",
     "symbol": "has_marker"
@@ -2182,22 +1646,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_is_lesson_recording_question",
     "symbol": "_has_word_marker"
-  },
-  {
-    "args_preview": "\"питан\"",
-    "args_sha256": "617f16a89612ecf5195abeeb789c3d07ac870c410a5842a484c22ccfaa2e1916",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"прожив\"",
-    "args_sha256": "d62a551430f4b786d31325594a7d039a4054e2fd8808b717450fd5298114f888",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "has_marker"
   },
   {
     "args_preview": "\"пропуст\", \"пропущен\", \"пересмотр\", \"урок\", \"заняти\"",
@@ -2224,35 +1672,11 @@
     "symbol": "has_marker"
   },
   {
-    "args_preview": "\"фотон\"",
-    "args_sha256": "b9a4b0e89855aaa81ab07b24b8b9083960bd4a65800ebc28263e054cd30aba5d",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_brand_safe_fact_texts",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"фрагмент\"",
-    "args_sha256": "51b82cb374149bf318b38f8b965aecb712a46695b117810ba4520950b25068c4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_asks_trial_fragment_data_or_process",
-    "symbol": "has_marker"
-  },
-  {
     "args_preview": "\"цен\"",
     "args_sha256": "9a5ae1d38452a53e3cbd3b98b93c1f3281867b483f558d3002b1d29c0b09de8b",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_is_current_terms_question",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"что входит\"",
-    "args_sha256": "b04f81a5e55b8b467bcb2122a9d2691288910a9ba6f85a26f169303c9a910238",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "has_marker"
   },
   {
@@ -2381,14 +1805,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "_direct_path_legacy_context_fact_allowed",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"availability\" in missing_text",
-    "expression_sha256": "4d9ef853e96b3a00e244b7bb09a687ff29913fc240676cc5ca763d6236057d02",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_llm_polish_allowed_for_deterministic_rewrite",
     "symbol": "In"
   },
   {
@@ -2864,14 +2280,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"банк\" in client",
-    "expression_sha256": "f44b0fbb146c24fa6c36a8ac91ce641807c97b3857f10c63eeb363b4019e09b1",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"без прожив\" in client_haystack",
     "expression_sha256": "b662877a9320842d4980984e8fb2938c810d8f9dad8df891b6ddb2fd41bab429",
     "node_kind": "string_contains",
@@ -2941,14 +2349,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_discount_percent_answer",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"выезд\" in client",
-    "expression_sha256": "fd620303f06dfc6718ad38e9129056c0cbe9330dff54987c097988ba2b7e4a50",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
     "symbol": "In"
   },
   {
@@ -3384,14 +2784,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"лагер\" in answer_text",
-    "expression_sha256": "65c62facbb975ee81ca20dcc990747031ba3620d02538cfa62bdf11bd5afab53",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"лагер\" in query_text",
     "expression_sha256": "c9e11c410a1d082f6254948991fcdea5c9380a990b1d172664bca01acd40fdb6",
     "node_kind": "string_contains",
@@ -3405,14 +2797,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_is_unrequested_special_product",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"лвш\" in answer_text",
-    "expression_sha256": "b7ec7da2838af71d27e71456bbbdeac71a1ef6cc9d61d2d84439faf11b62498c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "In"
   },
   {
@@ -3488,14 +2872,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"менделеево\" in client",
-    "expression_sha256": "a581dd63cfba051e4d5e04c94dfd256d2f055c1677a27b573d895633ae8904ca",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"менделеево\" in query_text",
     "expression_sha256": "e4eb4bc4cb4ffb9a842d04ca10beaf0aa6333831b7561f296e8a2d772d8ad0fe",
     "node_kind": "string_contains",
@@ -3509,14 +2885,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/rules_engine.py",
     "qualname": "_warm_enrollment_process_text",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"мест\" in answer_text",
-    "expression_sha256": "0284d10f93cb46fc190f8bfa6268dd4d34bf70628f5e4f4eb2779ddab3d4fafc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "In"
   },
   {
@@ -3584,14 +2952,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"налич\" in missing_text",
-    "expression_sha256": "1fdbe650b1585c44bb0b2633155a33f298ca280baafdc753eb02137209239669",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_llm_polish_allowed_for_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"напишите\" not in draft_lower",
     "expression_sha256": "f4bfe0e8380ae801979b189d61cfc37b7424c5881c4f09dee9dc36932fae4a66",
     "node_kind": "string_contains",
@@ -3648,59 +3008,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"одобр\" in client",
-    "expression_sha256": "2dd0581e44e40d9d4e83c91a483bd97ac23d40f1f09e79e90c6b6ab62d9c3065",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"одобрен\" in client",
-    "expression_sha256": "ac68c149e509bf64f22648a11d9d5b0f35048e786eda20547ca0984aeabbb6bb",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"онлайн с записью\" in draft_low",
     "expression_sha256": "922532516de349dfceaf69b14d78bc6997ecb95bfdaff42623a97795d7c2d46c",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in client",
-    "expression_sha256": "0894e85b40b34e693292d2a4d98cd59c397ded8dcf699b5777eeea3cc9d719c8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in client",
-    "expression_sha256": "0894e85b40b34e693292d2a4d98cd59c397ded8dcf699b5777eeea3cc9d719c8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in client",
-    "expression_sha256": "0894e85b40b34e693292d2a4d98cd59c397ded8dcf699b5777eeea3cc9d719c8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in normalized",
-    "expression_sha256": "8546e0e0472656c0c8b7effe40a229de084ee4b142de0127442462b97f864a27",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_fact_matches_known_selection",
     "symbol": "In"
   },
   {
@@ -3816,14 +3128,6 @@
     "symbol": "NotIn"
   },
   {
-    "expression_preview": "\"онлайн\" not in normalized.replace(\"онлайн-платформа\", \"\")",
-    "expression_sha256": "47efc464dc8c7ed8c8cb1d14407a89ce2c492d9112cb8d510963140ce5d93087",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_fact_matches_known_selection",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"оплат\" in client_haystack",
     "expression_sha256": "55b3b4cad8571de5e9ec7f42493fddcaa73e26c5d5aae2ca07f94c0f5694d074",
     "node_kind": "string_contains",
@@ -3901,14 +3205,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"очно\" in normalized",
-    "expression_sha256": "54a856aef5201e4f81a6aee473f0b3cf12ea0eff4fdf6dc9e00b60b4864bf3fe",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_fact_matches_known_selection",
     "symbol": "In"
   },
   {
@@ -4000,14 +3296,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"очно\" not in normalized",
-    "expression_sha256": "08fab213954d6255555343a423f7e9d87e33ae4cf16a098666d2e1bda4b5d238",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_fact_matches_known_selection",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"очный\" in query_text",
     "expression_sha256": "fe0f7ded18cfc680dae9711c05463aca5ba5387177aa2eea1b08362941352654",
     "node_kind": "string_contains",
@@ -4096,14 +3384,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"повтор\" in client",
-    "expression_sha256": "71ad714f11ff45e6100e71500ece7e29c12649c884a2eb5256a2beca4e0950cc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"подраст\" not in value",
     "expression_sha256": "e2f4e8fbba00b35a136cf07de2b61a012ee1143204fd9935b6ff58b753366411",
     "node_kind": "string_contains",
@@ -4118,22 +3398,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_missing_fact_helpful_template",
     "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"помесяч\" in client",
-    "expression_sha256": "614a7d971a67250ad4e2ad7be0484ccd6fc9eb909e8ebb1fba591e261122118b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"понял цену\" in client",
-    "expression_sha256": "037ab80146c22412103e967a709958ba92a082c9b3a239b8a856a0b341fa4c44",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
   },
   {
     "expression_preview": "\"почти распродан\" in text.casefold()",
@@ -4312,14 +3576,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"скид\" in client",
-    "expression_sha256": "2a0f42982dbe2ac23ba9406932a4d0e448fe080258c0465a99448988113cabf8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"скид\" not in text",
     "expression_sha256": "e0885c2c73c12450256f2080815161b30e8a6127f527c5d2a6bd01d417ea88b9",
     "node_kind": "string_contains",
@@ -4333,14 +3589,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_rewrite_no_memory_step_frame.replacement",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"смен\" in client",
-    "expression_sha256": "fd7837c6afe2a551858ff4b09814d20498931841e790eea883b0b7463ecedbf8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_wrong_scope_fact_selected_finding",
     "symbol": "In"
   },
   {
@@ -4552,14 +3800,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"фрагмент\" in client",
-    "expression_sha256": "dd57167c4aff37c6948804fd037eebdaddecc8ece4d584a3f53f7ab7b1c786bb",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"фрагмент\" in text",
     "expression_sha256": "3f5c65f32dd2771abe0cb9df1919bcdda76c1d0e5281763059f0041881488343",
     "node_kind": "string_contains",
@@ -4581,14 +3821,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"цифровой помощник\" in answer_text",
-    "expression_sha256": "e163d6a153018ed7614b1c1557085b4a1750a634c99678d255f29a9d0161acc7",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "_answers_direct_question",
     "symbol": "In"
   },
   {
@@ -4848,16 +4080,6 @@
   {
     "flags": "\" \"",
     "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "[^a-zа-я0-9ё\\s]",
-    "pattern_sha256": "90e410ab4b398d5a708a2afc59b867e2cffcf690cec621adde3ddf3069fbf148",
-    "qualname": "_normalize_for_overlap",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/rules_engine.py",
     "pattern_preview": "\\s+",
     "pattern_sha256": "4add64ab568a8b698353c562ac83993ed693822fe898d8450add1ea623df1ded",
@@ -4964,96 +4186,6 @@
     "qualname": "_soften_current_price_deadline_text",
     "symbol": "re.sub",
     "target": "value"
-  },
-  {
-    "flags": "\"[email скрыт]\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}",
-    "pattern_sha256": "795aadae4006c1a4fa1c1627da97512d0d5e15109b33169a3b9053976179552d",
-    "qualname": "_safe_recent_messages",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
-    "flags": "\"[email скрыт]\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}",
-    "pattern_sha256": "795aadae4006c1a4fa1c1627da97512d0d5e15109b33169a3b9053976179552d",
-    "qualname": "_safe_recent_messages",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
-    "flags": "\"[телефон скрыт]\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\+?\\d[\\d\\s().-]{7,}\\d",
-    "pattern_sha256": "cbf291b9e3759560c8f0bb8a61ce0c03478a14a7596505d65ee46b1821e0d931",
-    "qualname": "_safe_recent_messages",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
-    "flags": "\"[телефон скрыт]\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\+?\\d[\\d\\s().-]{7,}\\d",
-    "pattern_sha256": "cbf291b9e3759560c8f0bb8a61ce0c03478a14a7596505d65ee46b1821e0d931",
-    "qualname": "_safe_recent_messages",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\s+до\\s+1\\s+(?:июля|августа)(?:\\s+2026)?(?:\\s+года?)?",
-    "pattern_sha256": "f375465c82dc17c5e1d81deee0f4922d776963ba9b7f96019910bb1964a768a4",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "^(?:Фотон|УНПК(?:\\s+МФТИ)?)\\s*:\\s*",
-    "pattern_sha256": "b6a1a60d6e0f12cf454d74db7c952d892e787f94be5bf8b28ea011d8e1bd5a09",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "^(?:очно|онлайн|семестр|год)[^.!?]*[.!?]?\\s*",
-    "pattern_sha256": "eb520c728da8a82ac19d775dc279b7de066c307a5b4cd11abd914fd8d34b106a",
-    "qualname": "_deterministic_rewrite",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "^(?:при\\s+)?раннем\\s+бронировании\\s+до\\s+1\\s+(?:июля|августа)\\s+",
-    "pattern_sha256": "9a36dfc351e69ace524edfc335f2b76f2caf1f316680867d78a94b9fca477169",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "^цены\\s+на\\s+2026/27\\s+учебный\\s+год,\\s*(?:\\d+\\s*[-–]\\s*\\d+\\s*класс,\\s*)?",
-    "pattern_sha256": "a377d4f5a9dfbf8bc3b48381cafa35842a750104d0db724ebac42210f538029b",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
   },
   {
     "flags": "\"\" | re.I",
@@ -5446,16 +4578,6 @@
     "target": "value"
   },
   {
-    "flags": "\"год — \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:онлайн|очно)\\s*[—-]\\s*",
-    "pattern_sha256": "e101d87464385bc31046db74df3cebf059ad0781a2fb7b52ccd6cfd73e41a941",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
-  },
-  {
     "flags": "\"как оформить по текущим условиям.\" | re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -5484,16 +4606,6 @@
     "qualname": "_humanity_fact_answer",
     "symbol": "re.sub",
     "target": "fact"
-  },
-  {
-    "flags": "\"семестр — \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:онлайн|очно)\\s*[—-]\\s*",
-    "pattern_sha256": "e101d87464385bc31046db74df3cebf059ad0781a2fb7b52ccd6cfd73e41a941",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
   },
   {
     "flags": "_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL",
@@ -5536,16 +4648,6 @@
     "target": ""
   },
   {
-    "flags": "answer_text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "pattern",
-    "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
-    "qualname": "_known_data_reask_findings",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "candidate",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -5554,16 +4656,6 @@
     "qualname": "_memory_llm_slot_supported_by_latest_client",
     "symbol": "re.findall",
     "target": "digits"
-  },
-  {
-    "flags": "cleaned | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "((?:Фотон|УНПК(?:\\s+МФТИ)?):\\s*.+)$",
-    "pattern_sha256": "eb1db15f34975c273aa9e6311a81dea6665202d27f93fd5d9a5402cf463c3f07",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.search",
-    "target": "brand_match"
   },
   {
     "flags": "cleaned",
@@ -5784,16 +4876,6 @@
     "qualname": "_manager_high_risk_signal",
     "symbol": "re.search",
     "target": ""
-  },
-  {
-    "flags": "grade_text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\d+",
-    "pattern_sha256": "ff99df4aa643035d21a8632a6c37432f25f29607612257bbc3635fb93acea851",
-    "qualname": "_fact_matches_known_selection",
-    "symbol": "re.search",
-    "target": "grade_match"
   },
   {
     "flags": "haystack | re.I",
@@ -6428,46 +5510,6 @@
   {
     "flags": "normalized",
     "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:1|3)\\s*[-–]\\s*4\\b",
-    "pattern_sha256": "96372adc62cef22179412d96b558238276fbf64de5e4933df3fab5ed2ae4b24e",
-    "qualname": "_fact_matches_known_selection",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:места\\s+есть|место\\s+есть|заброниру\\w*|закреплю|закрепим|гарантир\\w*)\\b",
-    "pattern_sha256": "4cef123e5a5e30d840d44beefcbc489f9d2550a9c39d54227783bf41f75702a3",
-    "qualname": "_rewrite_validation_errors",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:сегодня|завтра|до\\s+вечера|к\\s+вечеру|не\\s+позднее\\s+завтра|в\\s+течение\\s+(?:\\d+\\s+)?(?:минут|час|часов|дн|дней|суток|сутки|дня))\\b",
-    "pattern_sha256": "3da3b20f2b1796cdd4c4f0a9609c956df070b380dc9df9ecb8250907fbf46cd3",
-    "qualname": "_rewrite_validation_errors",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b5\\s*[-–]\\s*11\\b",
-    "pattern_sha256": "88201775961169abfd50f8d72325e5814af3157442df69ff0819ab5a13087b76",
-    "qualname": "_fact_matches_known_selection",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "pattern_preview": "\\b(?:стоим\\w*|цена|цену|цены|ценой|стоимость|прайс|почем|почём|руб(?:\\.|лей|ля|ль)?)\\b",
     "pattern_sha256": "aceaf466b8fdccb2ebe2c3c3fdb8fd9bfa018d4ad7999659df66ed86ebf37289",
@@ -6706,16 +5748,6 @@
     "target": ""
   },
   {
-    "flags": "prefix_norm",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\byear\\b",
-    "pattern_sha256": "39e7d1d027d0844e911e79955db96fb40dc703f941e8d7bb9101afd68f4656ef",
-    "qualname": "_clean_fact_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "query.casefold().replace(\"ё\", \"е\")",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
@@ -6834,46 +5866,6 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "INTERNAL_SAFE_VARIANT_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\?|сколько|стоим|цен[ауеы]?|можно|есть\\s+ли|там\\s+есть|это\\s+через|приезжать|что\\s+входит|питани|проживан|места|пробн|фрагмент|вы\\s+бот|ты\\s+бот|кто\\s+вы|с\\s+ке",
-    "pattern_sha256": "2afd6b54b59ba4ab23a28894156375b4399f03d26de872e450591a16739433ac",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "QUESTION_MARKER_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб(?:\\.|лей|ля|ль)?)",
-    "pattern_sha256": "1e4b5237ec109ceb5677f28846838833cf853e6c99edc883ac8752eeb990de17",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "PRICE_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб(?:\\.|лей|ля|ль)?|%|процент[а-я]*|месяц[а-я]*|част[а-я]*|рабочих\\s+дн[яей]*)|\\b\\d{1,2}[./-]\\d{1,2}(?:[./-]\\d{2,4})?\\b|\\b\\d{1,2}:",
-    "pattern_sha256": "cbf220499f622b194cf910553f3483020b56e7866bc2aec113d4de97cd832c06",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "PRECISE_CLAIM_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "вам\\s+(?:подойд[её]т|нужн|важн)|ваш[аеуи]?\\s+(?:цель|задач|запрос)|вы\\s+(?:хотите|ищете|планируете)|реб[её]нк[ау]?\\s+(?:нужн|важн|подойд[её]т)|(?:лучше|стоит)\\s",
-    "pattern_sha256": "3ffd103fcbd4b4cd3bb102e7e259ec3fbbb935035776778289861ae819a778d4",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "NEED_ASSUMPTION_RE"
   },
   {
     "flags": "re.I",
@@ -8526,16 +7518,6 @@
     "target": "match"
   },
   {
-    "flags": "rewrite_text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:source:|freshness\\s*=|source\\s*=|fact:|kc_chunk:|\\{|\\})",
-    "pattern_sha256": "dee87191e0a7bbaf5463a47a5d5bd8b959a031d5fdd94f56ff603b56ca92e638",
-    "qualname": "_rewrite_validation_errors",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "selected",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -8816,16 +7798,6 @@
     "target": ""
   },
   {
-    "flags": "str(text or \"\").strip()",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "(?<=[.!?])\\s+",
-    "pattern_sha256": "a24b6a17324cdd2916f2e2494a7d84e6975c237199e0fb433de989a991750ed3",
-    "qualname": "_first_sentences",
-    "symbol": "re.split",
-    "target": "parts"
-  },
-  {
     "flags": "stripped",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
@@ -8872,76 +7844,6 @@
     "pattern_preview": "\\bсколько\\b[^.?!\\n]{0,80}\\b(?:месяц|выходит|платеж|платёж)",
     "pattern_sha256": "74639da88508bc62784f1cac6ea482e6ba358ac17c54b15ec6e070a1cc1695e0",
     "qualname": "_humanity_installment_amount_answer",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "(?:на сейчас|текущ|актуальн)[^.!?]{0,40}(?:цен|стоим|руб|прайс|услови)",
-    "pattern_sha256": "7397d679da0e5a25d9a053ae42641a8d4035435abfe52b9450f25335da1c56d2",
-    "qualname": "_asks_price_fixation_or_current",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "(?:цен|стоим|руб|прайс|услови)[^.!?]{0,40}(?:на сейчас|текущ|актуальн)",
-    "pattern_sha256": "73b540b26173e0b53d00603cb18e3d67d8bced07cced84c15952d80b6445f19b",
-    "qualname": "_asks_price_fixation_or_current",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:бот|ии|нейросет|кто\\s+вы|с\\s+кем\\s+я\\s+общаюсь|живой\\s+человек)\\b",
-    "pattern_sha256": "821b9c489050daad3f1feeee8c2a09a4c5e00dc087c29e285b6dbe8b3d0f4f3f",
-    "qualname": "_asks_identity",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:как|что|какие|какую|чего|сколько)\\b[^.!?\\n]{0,90}\\b(?:получить|посмотреть|прислать|отправить|нужн|данн|фрагмент)",
-    "pattern_sha256": "9e70fabff7639e985f761d63179d41f9e161c16807053864cf00c9f92045eb9e",
-    "qualname": "_asks_trial_fragment_data_or_process",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:повтор|напомни|ещ[её]\\s+раз|можно\\s+еще\\s+раз)\\b",
-    "pattern_sha256": "74d238fdf86937ca217321c5d5a07eecfd00af6500113ab61b2119cb051d4e63",
-    "qualname": "_client_asks_repeat",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "\\b(?:пришлите|отправьте|давайте)\\b[^.!?\\n]{0,90}\\b(?:фрагмент|пример|занят)",
-    "pattern_sha256": "02328d2e5df6960814116fdb6762a63dcbb8962d38c8d549fcccc7d0749b46ea",
-    "qualname": "_asks_trial_fragment_data_or_process",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "pattern_preview": "стоимост[ьи]?\\s+зависит\\s+от\\s+класс|зависит\\s+от\\s+класса,\\s*формата|менеджер\\s+проверит\\s+актуальн\\w+\\s+стоим",
-    "pattern_sha256": "baf362401c48e6a18ed61ff47e88eb43ee9fec9c2edd06ac7a00b79c23d46a6d",
-    "qualname": "_is_generic_price_template",
     "symbol": "re.search",
     "target": ""
   },
@@ -10308,38 +9210,6 @@
     "symbol": "MANAGER_HANDOFF_MARKERS",
     "value_preview": "(\n    \"менеджер\",\n    \"оператор\",\n    \"человек\",\n    \"позвоните\",\n    \"перезвоните\",\n    \"свяжитесь\",\n    \"связаться\",\n)",
     "value_sha256": "75225ab7ca3d33bce5c1a5230801794dafeae323460707f9f11b191d2fd2bcb8"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "<module>",
-    "symbol": "P0_FLAG_MARKERS",
-    "value_preview": "(\n    \"high_risk\",\n    \"combined_high_risk_manager_only\",\n    \"refund_zero_collect\",\n    \"zero_collect_refund\",\n    \"zero_collect_legal\",\n    \"legal_threat\",\n    \"complaint_apology\",\n    \"payment_confirmation_blocked\",\n    \"brand_separation",
-    "value_sha256": "ac6e45b41c15f63a103e5e71a86afbecc0f368660e6854da31680f1a558c39dd"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "<module>",
-    "symbol": "P0_TOPIC_IDS",
-    "value_preview": "{\"theme:009_refund\", \"theme:019b_negative_feedback\", \"theme:029_legal_question\"}",
-    "value_sha256": "637c41b71170b29d65550fd23e553d10cf4ed7361f65b6e34c7a4e6cf8a9c96f"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "<module>",
-    "symbol": "QUESTION_MARKER_RE",
-    "value_preview": "re.compile(\n    r\"\\?|сколько|стоим|цен[ауеы]?|можно|есть\\s+ли|там\\s+есть|это\\s+через|приезжать|что\\s+входит|\"\n    r\"питани|проживан|места|пробн|фрагмент|вы\\s+бот|ты\\s+бот|кто\\s+вы|с\\s+кем\\s+я\\s+общаюсь\",\n    re.I,\n)",
-    "value_sha256": "d903a2c6a97983b9438371670ab229c874ba2d274d13ddc5080d8cd01e674190"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/answer_quality_rewriter.py",
-    "qualname": "<module>",
-    "symbol": "SUBJECT_MARKERS",
-    "value_preview": "{\n    \"математика\": (\"математ\",),\n    \"физика\": (\"физик\",),\n    \"информатика\": (\"информат\", \"программирован\"),\n    \"русский язык\": (\"русск\",),\n    \"английский язык\": (\"английск\",),\n    \"химия\": (\"хими\",),\n    \"биология\": (\"биолог\",),\n}",
-    "value_sha256": "2e10d6414694b6e25807ed6f5c8a93f7ba07cfe03021422269e558f9814743ee"
   },
   {
     "node_kind": "text_table",

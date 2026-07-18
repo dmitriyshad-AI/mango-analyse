@@ -230,11 +230,6 @@ class FakeMemoryModel:
         }
 
 
-class FakeSemanticMatchModel:
-    def generate(self, prompt: str) -> Mapping[str, Any]:
-        return {"covers": True, "same_product": True, "reason": "fake semantic match"}
-
-
 class FakeSemanticOutputVerifierModel:
     def generate(self, prompt: str) -> Mapping[str, Any]:
         return {"findings": []}
@@ -306,34 +301,6 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
         if self._llm_call_counter is not None:
             self._llm_call_counter.increment(role)
 
-    def _dialogue_contract_understanding_runner(self, prompt: str) -> Mapping[str, Any]:
-        self._count_llm_call("bot_draft")
-        return super()._dialogue_contract_understanding_runner(prompt)
-
-    def _dialogue_contract_draft_runner(self, prompt: str) -> str:
-        self._count_llm_call("bot_draft")
-        return super()._dialogue_contract_draft_runner(prompt)
-
-    def _dialogue_contract_repair_runner(self, prompt: str) -> str:
-        self._count_llm_call("bot_draft")
-        return super()._dialogue_contract_repair_runner(prompt)
-
-    def _dialogue_contract_warmth_runner(self, prompt: str) -> str:
-        self._count_llm_call("bot_draft")
-        return super()._dialogue_contract_warmth_runner(prompt)
-
-    def _dialogue_contract_faithfulness_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        self._count_llm_call("bot_faithfulness")
-        return super()._dialogue_contract_faithfulness_runner(prompt)
-
-    def _dialogue_contract_semantic_match_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        self._count_llm_call("bot_critic")
-        return super()._dialogue_contract_semantic_match_runner(prompt)
-
-    def _semantic_diagnosis_guard_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        self._count_llm_call("bot_diagnosis_guard")
-        return super()._semantic_diagnosis_guard_runner(prompt)
-
     def _semantic_output_verifier_runner(self, prompt: str) -> Mapping[str, Any] | str:
         self._count_llm_call("bot_semantic_output_verifier")
         return super()._semantic_output_verifier_runner(prompt)
@@ -341,26 +308,6 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
     def _semantic_output_regen_runner(self, prompt: str) -> str:
         self._count_llm_call("bot_semantic_output_regen")
         return super()._semantic_output_regen_runner(prompt)
-
-    def _answer_quality_llm_rewrite_runner(
-        self,
-        *,
-        result: SubscriptionDraftResult,
-        client_message: str,
-        context: Mapping[str, Any] | None,
-        assessment: Any,
-    ) -> Mapping[str, Any]:
-        self._count_llm_call("bot_draft")
-        return super()._answer_quality_llm_rewrite_runner(
-            result=result,
-            client_message=client_message,
-            context=context,
-            assessment=assessment,
-        )
-
-    def _humanity_x2_rewrite_runner(self, prompt: str) -> str:
-        self._count_llm_call("bot_draft")
-        return super()._humanity_x2_rewrite_runner(prompt)
 
     def _run_once(self, prompt: str, *, force_manager_only: bool) -> SubscriptionDraftResult:
         self._count_llm_call("bot_draft")
@@ -761,9 +708,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--memory-mode", choices=("codex", "fake", "off"), default="codex")
     parser.add_argument("--memory-model", default="gpt-5.5")
     parser.add_argument("--memory-reasoning", default="low")
-    parser.add_argument("--semantic-mode", choices=("codex", "fake", "off"), default="codex")
-    parser.add_argument("--semantic-model", default="gpt-5.5")
-    parser.add_argument("--semantic-reasoning", default="medium")
     parser.add_argument("--semantic-verifier-mode", choices=("codex", "fake", "off"), default="codex")
     parser.add_argument("--semantic-verifier-model", default=os.getenv("TELEGRAM_SEMANTIC_VERIFIER_MODEL", "gpt-5.5"))
     parser.add_argument("--semantic-verifier-reasoning", default=os.getenv("TELEGRAM_SEMANTIC_VERIFIER_REASONING", "medium"))
@@ -776,11 +720,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--disable-bot-cache",
         action="store_true",
         help="Do not use cached bot LLM drafts; useful when validating fresh prompt/code changes.",
-    )
-    parser.add_argument(
-        "--enable-llm-rewriter",
-        action="store_true",
-        help="Enable optional answer-quality LLM rewrite layer for bot answers in this run only.",
     )
     parser.add_argument(
         "--progress-json",
@@ -798,8 +737,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     setattr(args, "llm_call_counter", llm_call_counter)
     if args.parallel < 1:
         raise ValueError("--parallel must be >= 1")
-    if args.enable_llm_rewriter:
-        os.environ["TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"] = "1"
     if args.memory_mode == "codex" and str(args.memory_reasoning or "").strip().lower() != "low":
         raise ValueError("--memory-reasoning must be low for codex memory mode")
     os.environ["TELEGRAM_A_SELLING_MODE"] = str(args.selling_mode or "gen")
@@ -1340,23 +1277,6 @@ def build_memory_model(args: argparse.Namespace) -> Any:
     )
 
 
-def build_semantic_match_model(args: argparse.Namespace) -> Any:
-    if args.semantic_mode == "off":
-        return None
-    if args.semantic_mode == "fake":
-        return FakeSemanticMatchModel()
-    return maybe_counting_model(
-        CodexJsonModel(
-            model=args.semantic_model,
-            reasoning_effort=args.semantic_reasoning,
-            timeout_sec=args.timeout_sec,
-            codex_bin=getattr(args, "codex_bin", "codex"),
-        ),
-        role="bot_critic",
-        counter=getattr(args, "llm_call_counter", None),
-    )
-
-
 def build_semantic_output_verifier_model(args: argparse.Namespace) -> Any:
     if args.semantic_verifier_mode == "off":
         return None
@@ -1410,7 +1330,6 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         cache_dir = Path(".codex_local/telegram_dynamic_client_sim/llm_cache")
         if dialog_id:
             cache_dir = cache_dir / safe_filename(dialog_id)
-    semantic_match_model = build_semantic_match_model(args)
     runner = None
     model = args.model
     if args.bot_mode == "claude":
@@ -1429,8 +1348,6 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         max_attempts=max(1, int(getattr(args, "bot_max_attempts", 2))),
         cache_dir=cache_dir,
         runner=runner,
-        dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
-        dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
         llm_call_counter=getattr(args, "llm_call_counter", None),
         codex_isolated=bool(getattr(args, "codex_isolated", True)) if args.bot_mode == "codex" else False,
     )
@@ -1909,8 +1826,6 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         sort_keys=True,
                     ),
                     "handoff_trace": json.dumps(turn.get("handoff_trace") or {}, ensure_ascii=False, sort_keys=True),
-                    "bot_answer_quality_findings": "|".join(str(flag) for flag in (turn.get("bot_answer_quality_findings") or [])),
-                    "bot_answer_quality_rewritten": turn.get("bot_answer_quality_rewritten"),
                     "judge_fact_audit_levels": "|".join(
                         str(item.get("level") or "")
                         for item in ((turn.get("judge_fact_audit") or {}).get("items") or [])
@@ -2336,13 +2251,6 @@ def run_one_dialog(
             "bot_humanity_x2": humanity_x2_metadata,
             "bot_humanity_x2_rewritten": bool(humanity_x2_metadata.get("rewritten"))
             or bool(dialogue_contract_metadata.get("warmed")),
-            "bot_answer_quality": dict(result.metadata.get("answer_quality") or {}) if isinstance(result.metadata, Mapping) else {},
-            "bot_answer_quality_findings": list((result.metadata.get("answer_quality") or {}).get("finding_codes") or [])
-            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answer_quality"), Mapping)
-            else [],
-            "bot_answer_quality_rewritten": bool((result.metadata.get("answer_quality") or {}).get("rewritten"))
-            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answer_quality"), Mapping)
-            else False,
             "bot_dialogue_memory": dict(context.get("dialogue_memory_view") or {})
             if isinstance(context.get("dialogue_memory_view"), Mapping)
             else {},
@@ -2470,10 +2378,6 @@ def build_bot_prompt_context(
     payload["client_segment"] = str(funnel_payload.get("client_segment") or "")
     payload["semantic_flags"] = list(funnel_payload.get("semantic_flags") or [])
     payload["context_parity_checked"] = True
-    payload["answer_quality_llm_rewrite_enabled"] = (
-        os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
-        or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
-    )
     payload["dynamic_client_sim"] = {
         "enabled": True,
         "dialog_id": persona.get("dialog_id"),
@@ -3831,10 +3735,6 @@ def build_summary(
             "replay_source_run": replay_source_run,
             "allow_non_pilot_profile": bool(allow_non_pilot_profile),
             "profile_gate_enabled": bool(profile_gate_enabled),
-            "answer_quality_llm_rewrite_enabled": (
-                os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
-                or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
-            ),
         },
         "totals": {
             "dialogs": len(judge_results),
@@ -3868,21 +3768,6 @@ def build_summary(
             )
             if transcripts
             else False,
-            "rewritten_turns": sum(
-                1
-                for dialog in transcripts
-                for turn in (dialog.get("turns") or [])
-                if turn.get("bot_answer_quality_rewritten")
-            ),
-            "finding_counts": dict(
-                Counter(
-                    str(code)
-                    for dialog in transcripts
-                    for turn in (dialog.get("turns") or [])
-                    for code in (turn.get("bot_answer_quality_findings") or [])
-                    if str(code).strip()
-                )
-            ),
             "humanity_x2_rewritten_turns": sum(
                 1
                 for dialog in transcripts
@@ -5031,8 +4916,7 @@ def _send_unedited_proxy(
             if str(turn.get("bot_route") or "") not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
                 continue
             candidate_turns += 1
-            if not turn.get("bot_answer_quality_rewritten") and not (turn.get("bot_answer_quality_findings") or []):
-                unedited_turns += 1
+            unedited_turns += 1
     return {
         "candidate_autonomous_turns": candidate_turns,
         "unedited_autonomous_turns": unedited_turns,
@@ -5857,8 +5741,6 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
                 f"- handoff_trace: `{turn.get('handoff_trace') or {}}`",
                 f"- manager_checklist: `{format_list(turn.get('bot_manager_checklist') or [])}`",
                 f"- missing_facts: `{format_list(turn.get('bot_missing_facts') or [])}`",
-                f"- answer_quality_findings: `{format_list(turn.get('bot_answer_quality_findings') or [])}`",
-                f"- answer_quality_rewritten: `{turn.get('bot_answer_quality_rewritten')}`",
                 f"- context_parity_checked: `{turn.get('context_parity_checked')}`",
                 f"- confirmed_facts_for_judge: `{format_list(turn.get('bot_confirmed_facts') or [])}`",
                 f"- knowledge_snippets_for_judge: `{format_list(turn.get('bot_knowledge_snippets') or [])}`",
@@ -5935,8 +5817,6 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_frame_decision_shadow",
         "bot_semantic_frame_self_answer_shadow",
         "bot_safety_flags",
-        "bot_answer_quality_findings",
-        "bot_answer_quality_rewritten",
         "context_parity_checked",
         "client_stop",
     ]

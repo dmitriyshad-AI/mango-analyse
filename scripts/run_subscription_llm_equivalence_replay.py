@@ -197,8 +197,6 @@ def base_context(**extra: Any) -> dict[str, Any]:
     context = {
         "active_brand": "foton",
         "now_msk_hour": 12,
-        "TELEGRAM_DIRECT_PATH": "0",
-        "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "0",
         "TELEGRAM_ROUTE_RUBRIC": "0",
         "TELEGRAM_LLM_RETRIEVE": "0",
         "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER": "0",
@@ -690,41 +688,6 @@ def case_night_note(case: Mapping[str, Any]) -> dict[str, Any]:
     return make_record(case, branch="final_gate", context=context, result=result, prompts=())
 
 
-def case_dialogue_contract_ok(case: Mapping[str, Any]) -> dict[str, Any]:
-    from mango_mvp.channels.subscription_llm import SubscriptionDraftResult, SubscriptionLlmDraftProvider
-
-    class Provider(SubscriptionLlmDraftProvider):
-        def __init__(self) -> None:
-            super().__init__(sleep=lambda _: None)
-            self.calls = 0
-
-        def _build_dialogue_contract_pipeline_draft(self, client_message: str, *, context: Mapping[str, Any] | None = None) -> SubscriptionDraftResult:
-            self.calls += 1
-            return SubscriptionDraftResult(
-                route="draft_for_manager",
-                draft_text="Фотон: годовой курс стоит 59 000 ₽. Менеджер проверит подходящую группу.",
-                topic_id="theme:001_pricing",
-                confidence_group=0.9,
-                topic_confidence=0.9,
-                context_used=("dialogue_contract",),
-                metadata={
-                    "dialogue_contract_pipeline": {
-                        "contract": {"question": "цена", "answerability": "answer_self"},
-                        "retrieved_fact_keys": ["fact.price"],
-                        "retrieved_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
-                        "missing_fact_keys": [],
-                        "findings": [],
-                        "fallback_reason": "",
-                    }
-                },
-            )
-
-    context = base_context(TELEGRAM_DIALOGUE_CONTRACT_PIPELINE="1", client_safe_fact_verified=True)
-    provider = Provider()
-    result = provider.build_draft(str(case["client_message"]), context=context)
-    return make_record(case, branch="dialogue_contract", context=context, result=result, prompts=(), captured={"pipeline_calls": provider.calls})
-
-
 def case_brand_separation(case: Mapping[str, Any]) -> dict[str, Any]:
     from mango_mvp.channels import subscription_llm as llm
 
@@ -845,7 +808,6 @@ CASE_HANDLERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "direct_default_gold_pack_path": case_direct_default_gold_pack_path,
     "direct_llm_retrieve_fake": case_direct_llm_retrieve_fake,
     "route_rubric_regen": case_route_rubric_regen,
-    "dialogue_contract_ok": case_dialogue_contract_ok,
     "brand_separation": case_brand_separation,
     "payment_confirmation": case_payment_confirmation,
     "known_context_no_reask": case_known_context_no_reask,

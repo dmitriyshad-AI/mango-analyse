@@ -2419,11 +2419,6 @@ def apply_high_risk_content_guards(
     route = result.route
     draft_text = result.draft_text
     semantic_non_p0 = _conversation_plan_semantic_non_p0(context, client_message=client_message)
-    skip_quality_template_overwrite = (
-        _answer_quality_was_rewritten(result)
-        and not markers
-        and topic not in HIGH_RISK_THEME_IDS
-    )
     contract = _answer_contract(context)
     contract_primary_intent = str(contract.get("primary_intent") or "").strip()
     answer_contract_controls_green_templates = bool(
@@ -2459,8 +2454,7 @@ def apply_high_risk_content_guards(
     if conversation_plan_controls_green_templates:
         metadata["conversation_plan_controls_green_templates"] = True
     skip_green_template_overwrite = (
-        skip_quality_template_overwrite
-        or answer_contract_controls_green_templates
+        answer_contract_controls_green_templates
         or conversation_plan_controls_green_templates
         or _conversation_plan_template_blocked_by_substantive_answer(result, context=context)
     )
@@ -2472,7 +2466,7 @@ def apply_high_risk_content_guards(
         checklist.append("Проверить, что вопрос относится к УНПК и к оплате частями/по периодам.")
         metadata["unpk_installment_approved_fallback_applied"] = True
 
-    if not skip_quality_template_overwrite and _is_unpk_zvsh_case(result, client_message=client_message, context=context):
+    if _is_unpk_zvsh_case(result, client_message=client_message, context=context):
         route = "manager_only" if route == "manager_only" else "draft_for_manager"
         draft_text = UNPK_ZVSH_WAITLIST_SAFE_TEXT
         flags.append("unpk_zvsh_waitlist_safe_template_applied")
@@ -2494,7 +2488,7 @@ def apply_high_risk_content_guards(
             or "brand_separation_guarded" in flags
         )
 
-    if not skip_quality_template_overwrite and not cross_brand_guarded() and _is_future_price_case(result, client_message=client_message, context=context):
+    if not cross_brand_guarded() and _is_future_price_case(result, client_message=client_message, context=context):
         route = "manager_only"
         draft_text = "Передам вопрос менеджеру: он проверит актуальную стоимость на нужный период и свяжется с вами."
         flags.extend(("future_price_handoff_applied", "manager_approval_required", "no_auto_send"))
@@ -5288,12 +5282,6 @@ def _strip_false_p0_flags(flags: Sequence[str]) -> list[str]:
         "autonomy_blocked_high_risk",
     )
     return [flag for flag in flags if not any(marker in str(flag or "") for marker in p0_markers)]
-
-def _answer_quality_was_rewritten(result: SubscriptionDraftResult) -> bool:
-    if "answer_quality_rewritten" in result.safety_flags:
-        return True
-    quality = result.metadata.get("answer_quality") if isinstance(result.metadata, Mapping) else {}
-    return bool(isinstance(quality, Mapping) and quality.get("rewritten"))
 
 def _is_refund_case(result: SubscriptionDraftResult, *, markers: set[str]) -> bool:
     return result.topic_id == "theme:009_refund" or "refund" in markers

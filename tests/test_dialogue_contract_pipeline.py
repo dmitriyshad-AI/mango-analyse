@@ -34,7 +34,6 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     run_pipeline,
     verify_output,
 )
-from mango_mvp.channels.subscription_llm import SubscriptionLlmDraftProvider
 
 
 def _conv(text: str):
@@ -6763,42 +6762,6 @@ def test_build_conversation_keeps_recent_messages_and_last_client() -> None:
     conversation = build_conversation("а записи будут?", context={"recent_messages": ["9 класс", "Да, вижу 9 класс"]})
     assert conversation[-1] == {"role": "client", "text": "а записи будут?"}
     assert conversation[0]["text"] == "9 класс"
-
-
-class _ContractProvider(SubscriptionLlmDraftProvider):
-    def _dialogue_contract_understanding_runner(self, prompt: str) -> Mapping[str, Any]:
-        assert "Каталог ключей фактов" in prompt
-        return {
-            "current_question": "цена онлайн",
-            "needed_fact_keys": ["price.online"],
-            "answerability": "answer_self",
-            "confidence": 0.95,
-        }
-
-    def _dialogue_contract_draft_runner(self, prompt: str) -> str:
-        assert "price.online" in prompt
-        return "По онлайну: семестр — 29 750 ₽. Подобрать группу?"
-
-    def _dialogue_contract_faithfulness_runner(self, prompt: str) -> Mapping[str, Any]:
-        return {"unsupported": []}
-
-
-def test_subscription_provider_parallel_path_is_opt_in() -> None:
-    provider = _ContractProvider(max_attempts=1)
-    result = provider.build_draft(
-        "сколько онлайн?",
-        context={
-            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
-            "active_brand": "foton",
-            "confirmed_facts": {"price.online": "Онлайн: семестр — 29 750 ₽."},
-            "facts_context": {"client_safe_fact_verified": True, "required_fact_keys": ["price.online"]},
-            "conversation_intent_plan": {"topic_id": "theme:001_pricing"},
-        },
-    )
-    assert "dialogue_contract_pipeline" in result.safety_flags
-    assert "manager_approval_required" in result.safety_flags
-    assert "no_auto_send" in result.safety_flags
-    assert "29 750" in result.draft_text
 
 
 def test_contract_subquestions_slots_and_client_state() -> None:

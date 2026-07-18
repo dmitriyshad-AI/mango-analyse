@@ -16,7 +16,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Что уже доказано:
 
-- Живой `direct-path` возвращает результат раньше старого монолитного конвейера. Поэтому `answer_quality_rewriter`, `humanity_guards` и `known_context_redundant_question_guard` в текущей постановке не являются живыми точками для Telegram direct-path.
+- Живой `direct-path` раньше возвращал результат до старого монолитного конвейера. В Пакете 2 владелец окончательно отказался от fallback, legacy-хвост и `answer_quality_rewriter` удалены; `humanity_guards` и `known_context_redundant_question_guard` остаются legacy-кандидатами следующих пакетов.
 - Срезы `rewrite_quality`, `post_semantics` и `route_templates/redundant_guard` в локальной trace-диагностике дали 0 записей на 173 ходах. Для live direct-path их нельзя считать проверенными и нельзя строить для них apply-режим.
 - Живая точка `route_templates/autonomy_matrix` исполняется: в trace-диагностике 153 сравнимых записи, 1 расхождение. Расхождение безопасное: legacy выбрал более осторожный `manager_only` на оплатном/P0-соседнем ходе.
 
@@ -45,7 +45,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Старый монолитный хвост начинается после direct-path return. В частности:
 
-- `apply_answer_quality_rewriter(...)`: `provider.py:1041-1049`.
+- `apply_answer_quality_rewriter(...)` удалён вместе с legacy-хвостом в Пакете 2.
 - `apply_known_context_redundant_question_guard(...)`: `provider.py:1039` и `provider.py:1057` в старом хвосте.
 - `apply_autonomy_matrix_guard(...)` в монолитном хвосте: `provider.py:1059`.
 - `apply_humanity_guards(...)`: `provider.py:1060`.
@@ -215,7 +215,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 | Точка | Код | Доказательство | Статус |
 |---|---|---|---|
-| `rewrite_quality/rewriter` | `answer_quality_rewriter.py`, вызов `provider.py:1041-1049` | trace report: 0 records; direct-path return at `provider.py:989` | `dead_on_direct_path/frozen_monolith_only` |
+| `rewrite_quality/rewriter` | удалённый `answer_quality_rewriter.py` | trace report: 0 records; владелец отказался от legacy fallback | `removed_in_refactoring_package_2` |
 | `post_semantics/humanity` | `post_layers.py:4533+`, вызов `provider.py:1060` | trace report: 0 records; direct-path return at `provider.py:989` | `dead_on_direct_path/frozen_monolith_only` |
 | `route_templates/redundant_guard` | `policy_routing.py:4005-4065`, вызовы старого хвоста `provider.py:1039` и `provider.py:1057` | trace report: 0 records; direct-path return at `provider.py:989` | `dead_on_direct_path/frozen_monolith_only` |
 | `rules_engine.py` dispatcher path | `rules_engine.py:175-222`, `policy_routing.py:1123-1225`, `policy_routing.py:1519-1623` | not called in `provider.py:962-989` direct-path branch; appears in monolith/dispatcher imports and old branch | `not_direct_path_live / dispatcher_or_monolith` |

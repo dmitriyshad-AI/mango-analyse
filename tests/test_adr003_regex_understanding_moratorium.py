@@ -13,7 +13,6 @@ DIRECT_PATH_PATTERN_SNAPSHOT_PATH = (
 DIRECT_PATH_PATTERN_FILES = (
     "src/mango_mvp/channels/answer_safety_classifier.py",
     "src/mango_mvp/channels/actions.py",
-    "src/mango_mvp/channels/answer_quality_rewriter.py",
     "src/mango_mvp/channels/conversation_intent_plan.py",
     "src/mango_mvp/channels/dialogue_memory.py",
     "src/mango_mvp/channels/fact_scope_spec.py",
@@ -64,7 +63,6 @@ TEXT_LIKE_EXPR_PARTS = (
 )
 
 CHANNEL_REGEX_BUDGET = {
-    "src/mango_mvp/channels/answer_quality_rewriter.py": 4,
     "src/mango_mvp/channels/contracts.py": 1,
     "src/mango_mvp/channels/dialogue_contract_pipeline.py": 8,
     "src/mango_mvp/channels/dialogue_memory.py": 27,
@@ -88,7 +86,6 @@ CHANNEL_REGEX_BUDGET = {
 
 CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {
     "src/mango_mvp/channels/actions.py": 4,
-    "src/mango_mvp/channels/answer_quality_rewriter.py": 79,
     "src/mango_mvp/channels/conversation_intent_plan.py": 37,
     "src/mango_mvp/channels/dialogue_memory.py": 23,
     "src/mango_mvp/channels/fact_scope_spec.py": 8,
@@ -188,22 +185,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "TELEGRAM_DIALOG_SUMMARY_ROLLING",
     ),
     ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "STEP4_KEEP_ANSWER_ENV", "TELEGRAM_STEP4_KEEP_ANSWER"),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "ANSWER_QUALITY_LLM_REWRITER_ENV",
-        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITER",
-    ),
-    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "ANSWER_QUALITY_LLM_REWRITE_ENV", "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "ANSWER_QUALITY_LLM_REWRITE_MODE_ENV",
-        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_MODE",
-    ),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV",
-        "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_REASONING",
-    ),
     (
         "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
         "DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV",

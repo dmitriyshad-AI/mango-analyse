@@ -47,7 +47,6 @@ def _turn(
     frame: dict | None = None,
     proof_reconciliation: dict | None = None,
     is_manager_deferral: bool = False,
-    answer_quality_findings: list[str] | None = None,
     semantic_output_verifier: dict | None = None,
     authoritative_output_gate: dict | None = None,
     safety_flags: list[str] | None = None,
@@ -97,7 +96,6 @@ def _turn(
                     },
                 },
                 "bot_is_manager_deferral": is_manager_deferral,
-                "bot_answer_quality_findings": answer_quality_findings or [],
                 "bot_authoritative_output_gate": authoritative_output_gate
                 if authoritative_output_gate is not None
                 else {"action": "pass", "checked": True, "findings": []},
@@ -792,7 +790,7 @@ def test_proof_text_source_readiness_blocks_wrong_brand_template_and_pii(tmp_pat
     assert result["acceptance"]["active_readiness"] == "no_go"
 
 
-def test_proof_reconciliation_text_readiness_blocks_deferral_and_quality_findings(tmp_path: Path) -> None:
+def test_proof_reconciliation_text_readiness_blocks_deferral(tmp_path: Path) -> None:
     result = _build(
         tmp_path,
         [
@@ -816,7 +814,6 @@ def test_proof_reconciliation_text_readiness_blocks_deferral_and_quality_finding
                     "result_missing_facts": [],
                 },
                 is_manager_deferral=True,
-                answer_quality_findings=["rewrite_locked_high_risk_or_manager_only"],
                 semantic_output_verifier={"action": "pass", "findings": []},
             )
         ],
@@ -826,7 +823,6 @@ def test_proof_reconciliation_text_readiness_blocks_deferral_and_quality_finding
     readiness = result["proof_reconciliation_text_readiness"]
     assert readiness["send_as_is_review_candidates"] == 0
     assert readiness["by_blocker"]["deferral_or_manager_text_signal"] == 1
-    assert readiness["by_blocker"]["answer_quality_findings_present"] == 1
     row = readiness["examples"][0]
     assert row["active_behavior_allowed"] is False
     assert result["real_lever_analysis"]["totals"]["proof_reconciliation_text_blocked"] == 1

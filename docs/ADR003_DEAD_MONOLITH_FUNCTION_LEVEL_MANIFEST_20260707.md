@@ -12,8 +12,8 @@ The live direct path enters `SubscriptionLlmDraftProvider.build_draft()`, calls 
 
 | Area | Files / functions | Direct-path status | Deletion status | Reason |
 | --- | --- | --- | --- | --- |
-| Provider legacy tail | `subscription_llm_parts/provider.py` legacy branch after the direct-path return | Dead for current direct path | Not removed | Contains rollback/compatibility branches and nearby direct helper definitions; deleting by line range is unsafe. |
-| Answer-quality rewrite | `answer_quality_rewriter.py`, `apply_answer_quality_rewriter()`, `_answer_quality_llm_rewrite_runner()` | Dead for current direct path | Not removed | Still imported by provider/post-layers/monolith/tests. Needs separate compatibility deletion and test rewrite. |
+| Provider legacy tail | `subscription_llm_parts/provider.py` legacy branch after the direct-path return | Dead for current direct path | Removed in refactoring Package 2 | Owner retired `TELEGRAM_DIRECT_PATH=0` and the DCP fallback; the direct-path branch is now unconditional. |
+| Answer-quality rewrite | Former `answer_quality_rewriter.py`, `apply_answer_quality_rewriter()`, `_answer_quality_llm_rewrite_runner()` | Dead for current direct path | Removed in refactoring Package 2 | Its imports, flags, simulator hooks and dead-path tests were removed with the module. |
 | Humanity guards layer | `post_layers.apply_humanity_guards()` | Dead for current direct path | Not removed | Wrapper is legacy-only, but `humanity_guards.py` also contains helpers used elsewhere. |
 | Humanity X2 rewrite | `apply_humanity_x2_rewriter()`, `_humanity_x2_rewrite_runner()`, `DRAFT_X2_*` flags | Dead for current direct path | Not removed | Reached by dialogue-contract/legacy branches; remove only with explicit rollback decision. |
 | Phase-2 tone | `apply_phase2_tone_layer()`, `TELEGRAM_PH2_TONE` | Dead for current direct path | Not removed | Legacy-only, but shares post-layer module with live helpers. |

@@ -152,6 +152,24 @@ def test_live_truth_snapshot_redacts_env_and_reports_head_drift(tmp_path: Path) 
     assert row.db_paths == [str(repo / "customer_timeline.sqlite")]
 
 
+def test_live_truth_accepts_full_expected_sha_for_short_runtime_head(
+    tmp_path: Path, monkeypatch
+) -> None:
+    process = ProcessInfo(pid=45, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+    monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "3fbe8d90")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        expected_heads={"run_amo_wappi_draft_loop.py": "3fbe8d90b0973e9aecfb3d4db61eee0f562a4404"},
+    )
+
+    assert snapshot.status == "PASS"
+
+
 def test_live_truth_ignores_test_process_that_only_mentions_live_script(tmp_path: Path) -> None:
     process = ProcessInfo(
         pid=43,

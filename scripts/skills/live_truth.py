@@ -130,7 +130,7 @@ def build_snapshot(
         expected = expected_heads.get(marker) or expected_heads.get(str(worktree))
         if expected and not head:
             warnings.append(f"head_unavailable expected={expected}")
-        elif expected and not head.startswith(expected):
+        elif expected and not (head.startswith(expected) or expected.startswith(head)):
             warnings.append(f"head_drift expected={expected} actual={head}")
         process_rows.append(
             LiveProcessRow(

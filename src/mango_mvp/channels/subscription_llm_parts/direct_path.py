@@ -47,7 +47,6 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
-    DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     LLM_RETRIEVE_ENV,
     MEMORY_PROVENANCE_ENV,
@@ -528,15 +527,7 @@ def _payment_refund_dispute_split_enabled(context: Optional[Mapping[str, Any]] =
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _pilot_profile_default_on_flag_enabled(
-        context,
-        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
-        aliases=(
-            "direct_path_known_slots_next_step_prompt",
-            "known_slots_next_step_prompt",
-            "known_slots_no_reask_prompt",
-        ),
-    )
+    return _pilot_gold_profile_enabled(context)
 
 def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _answerability_shadow_enabled(context)
@@ -1781,7 +1772,7 @@ def _direct_path_render_fact_line(key: str, text: str, meta: Mapping[str, str]) 
     )
     relation = str(meta.get("venue_scope_relation") or "").strip()
     scope_marker = f" [площадка: {venue_label}]" if venue_label and relation.startswith("foreign") else ""
-    return f"- {key}" + (f" ({suffix})" if suffix else "") + f": {text}{scope_marker}"
+    return "- Подтверждённый факт" + (f" ({suffix})" if suffix else "") + f": {text}{scope_marker}"
 
 def _direct_path_render_fact_block(
     facts: Mapping[str, str],
@@ -1797,7 +1788,14 @@ def _direct_path_render_fact_block(
     return "\n".join(lines) or "(нет подтверждённых фактов в этом блоке)"
 
 def _direct_path_fact_pack_char_count(facts: Mapping[str, str], meta: Mapping[str, Mapping[str, str]], keys: Sequence[str]) -> int:
-    return sum(len(_direct_path_render_fact_line(key, facts.get(key, ""), meta.get(key, {}))) + 1 for key in keys)
+    # Keep the historical selection budget while technical keys stay out of the model prompt.
+    return sum(
+        len(_direct_path_render_fact_line(key, facts.get(key, ""), meta.get(key, {})))
+        + len(key)
+        - len("Подтверждённый факт")
+        + 1
+        for key in keys
+    )
 
 def _direct_path_core_fact(fact: Mapping[str, Any]) -> bool:
     key = _direct_path_snapshot_fact_key(fact).casefold()

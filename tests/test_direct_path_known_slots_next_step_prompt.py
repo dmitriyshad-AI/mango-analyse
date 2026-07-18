@@ -13,27 +13,26 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
-    DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
 )
 
 
-def test_known_slots_next_step_prompt_flag_default_off_pilot_gold_on() -> None:
+def test_known_slots_next_step_prompt_is_part_of_pilot_profile() -> None:
     assert _direct_path_known_slots_next_step_prompt_enabled({}) is False
+    assert _direct_path_known_slots_next_step_prompt_enabled(
+        {"TELEGRAM_DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT": "1"}
+    ) is False
     assert _direct_path_known_slots_next_step_prompt_enabled({DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}) is True
-    assert (
-        _direct_path_known_slots_next_step_prompt_enabled(
-            {
-                DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
-                DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "0",
-            }
-        )
-        is False
-    )
+    assert _direct_path_known_slots_next_step_prompt_enabled(
+        {
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+            "TELEGRAM_DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT": "0",
+        }
+    ) is True
 
 
-def test_known_slots_prompt_off_does_not_change_direct_prompt() -> None:
+def test_known_slots_prompt_is_absent_without_pilot_profile() -> None:
     context = {
         "active_brand": "foton",
         "conversation_intent_plan": {
@@ -42,21 +41,16 @@ def test_known_slots_prompt_off_does_not_change_direct_prompt() -> None:
         },
     }
 
-    implicit_off = _build_direct_path_prompt("Интересует курс.", context=context)
-    explicit_off = _build_direct_path_prompt(
-        "Интересует курс.",
-        context={**context, DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "0"},
-    )
+    prompt = _build_direct_path_prompt("Интересует курс.", context=context)
 
-    assert implicit_off == explicit_off
-    assert "Приоритет уже известного контекста" not in implicit_off
-    assert "эти параметры клиент уже назвал" not in implicit_off
+    assert "Приоритет уже известного контекста" not in prompt
+    assert "эти параметры клиент уже назвал" not in prompt
 
 
 def test_known_slots_prompt_passes_planner_known_and_do_not_reask_without_pii() -> None:
     context = {
         "active_brand": "unpk",
-        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         BOT_GOLD_REAL_ENV: "1",
         "known_slots": {"client_name": "Ирина", "phone": "+7 999 123-45-67"},
         "client_confirmed_slots": {"grade": "6", "subject": "программирование"},
@@ -82,7 +76,10 @@ def test_known_slots_prompt_passes_planner_known_and_do_not_reask_without_pii() 
 def test_unknown_class_still_allows_one_qualification_question() -> None:
     prompt = _build_direct_path_prompt(
         "Хочу подобрать курс.",
-        context={"active_brand": "foton", DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1"},
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        },
     )
 
     assert "эти параметры клиент уже назвал" not in prompt
@@ -210,7 +207,7 @@ def test_questionnaire_gold_is_suppressed_when_qualification_slots_known() -> No
         context={
             "active_brand": "unpk",
             BOT_GOLD_REAL_ENV: "1",
-            DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             "client_confirmed_slots": {"grade": "6", "subject": "программирование", "format": "очно"},
             "conversation_intent_plan": {
                 "known_slots": {"grade": "6", "subject": "программирование", "format": "очно"},
@@ -253,7 +250,7 @@ def test_bot_safe_context_prompt_is_default_off_even_when_context_present() -> N
 def test_unconfirmed_do_not_reask_slots_do_not_block_qualification_question() -> None:
     context = {
         "active_brand": "foton",
-        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         "conversation_intent_plan": {
             "known_slots": {"format": "очно"},
             "do_not_reask_slots": ["format"],
@@ -269,7 +266,7 @@ def test_unconfirmed_do_not_reask_slots_do_not_block_qualification_question() ->
 def test_confirmed_do_not_reask_slots_still_block_repeat_question() -> None:
     context = {
         "active_brand": "foton",
-        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         "client_confirmed_slots": {"grade": "8", "subject": "математика", "format": "очно"},
         "conversation_intent_plan": {
             "known_slots": {"grade": "8", "subject": "математика", "format": "очно"},
@@ -340,7 +337,7 @@ def _bot_safe_context(
         "recent_messages": [],
     }
     if flag_value is not None:
-        context[DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV] = flag_value
+        context[DIRECT_PATH_PILOT_CONFIG_ENV] = DIRECT_PATH_PILOT_CONFIG_VERSION
     if bot_safe_value is not None:
         context[BOT_SAFE_CRM_CONTEXT_ENV] = bot_safe_value
     return context

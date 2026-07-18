@@ -13626,8 +13626,7 @@ def test_p0_model_led_keeps_refund_legal_payment_preblock(message: str, expected
     assert "no_auto_send" in result.safety_flags
 
 
-def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(subscription_llm.ANSWERABILITY_SHADOW_ENV, raising=False)
+def test_answerability_shadow_prompt_is_absent_without_pilot_profile() -> None:
     context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
 
     prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
@@ -13639,22 +13638,24 @@ def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pyte
     assert '"why_manager"' not in prompt
 
 
-def test_answerability_shadow_prompt_on_keeps_direct_prompt_byte_identical() -> None:
-    off_context = {
-        "active_brand": "foton",
-        DIRECT_PATH_ENV: "1",
-        subscription_llm.ANSWERABILITY_SHADOW_ENV: "0",
-    }
+def test_answerability_shadow_profile_keeps_direct_prompt_byte_identical() -> None:
     context = {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
-        subscription_llm.ANSWERABILITY_SHADOW_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
     }
 
-    off_prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=off_context)
     prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
+    legacy_override_prompt = subscription_llm._build_direct_path_prompt(
+        "Можно записаться на пробное?",
+        context={**context, "TELEGRAM_ANSWERABILITY_SHADOW": "0"},
+    )
 
-    assert prompt == off_prompt
+    assert subscription_llm._answerability_shadow_enabled({"TELEGRAM_ANSWERABILITY_SHADOW": "1"}) is False
+    assert subscription_llm._answerability_shadow_enabled(
+        {**context, "TELEGRAM_ANSWERABILITY_SHADOW": "0"}
+    ) is True
+    assert prompt == legacy_override_prompt
     assert "Теневая самооценка ответуемости" not in prompt
     assert '"can_answer_self"' not in prompt
     assert '"self_missing_facts"' not in prompt
@@ -13706,7 +13707,10 @@ def test_answerability_trace_on_summarizes_existing_downgrade_causes() -> None:
         ),
         before_gate_route="bot_answer_self_for_pilot",
         client_message="Можно записаться?",
-        context={"active_brand": "foton", subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"},
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        },
     )
 
     trace = result.metadata["answerability_trace"]
@@ -13744,7 +13748,7 @@ def test_pilot_gold_answerability_shadow_changes_only_trace_metadata() -> None:
         source_result(),
         before_gate_route="draft_for_manager",
         client_message="Есть места в группе?",
-        context={**profile_context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"},
+        context={"active_brand": "foton"},
     )
     on = subscription_llm._direct_path_finalize_metadata(
         source_result(),
@@ -14104,6 +14108,24 @@ def test_route_rubric_enabled_by_pilot_gold_profile(monkeypatch) -> None:
     assert subscription_llm._route_rubric_enabled({"route_rubric_enabled": "1"}) is True
 
 
+def test_direct_path_prompt_hides_technical_fact_key_deadline() -> None:
+    fact_key = "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year"
+    fact_text = "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽."
+    context = {
+        "active_brand": "foton",
+        "confirmed_facts": {fact_key: fact_text},
+    }
+
+    prompt = subscription_llm._build_direct_path_prompt("Сколько стоит год?", context=context)
+    pack = subscription_llm._direct_path_context_fact_pack(context, client_message="Сколько стоит год?")
+
+    assert fact_key not in prompt
+    assert "1 августа" not in prompt.casefold()
+    assert fact_text in prompt
+    assert fact_key in pack["facts"]
+    assert context["confirmed_facts"] == {fact_key: fact_text}
+
+
 def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
     for key in (subscription_llm.ROUTE_RUBRIC_ENV,):
         monkeypatch.delenv(key, raising=False)
@@ -14134,7 +14156,7 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 Сколько стоит?
 
 Факты по вашему вопросу:
-- fact.price: Фотон: годовой курс стоит 59 000 ₽.
+- Подтверждённый факт: Фотон: годовой курс стоит 59 000 ₽.
 
 Смежные факты — используй только если вопрос реально про это:
 (нет подтверждённых фактов в этом блоке)
@@ -14191,7 +14213,7 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 Сколько стоит?
 
 Факты по вашему вопросу:
-- fact.price: Фотон: годовой курс стоит 59 000 ₽.
+- Подтверждённый факт: Фотон: годовой курс стоит 59 000 ₽.
 
 Смежные факты — используй только если вопрос реально про это:
 (нет подтверждённых фактов в этом блоке)
@@ -15150,7 +15172,6 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         ASSUMED_SCOPE_GUARD_ENV,
         RETRIEVER_MODEL_DRIVEN_ENV,
         RETRIEVER_NEED_SHADOW_ENV,
-        subscription_llm.ANSWERABILITY_SHADOW_ENV,
         AUTONOMY_SCOPE_PRECISION_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
@@ -15191,7 +15212,6 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert ASSUMED_SCOPE_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
@@ -15206,8 +15226,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._retriever_model_driven_enabled(
         {**context, ASSUMED_SCOPE_GUARD_ENV: "1", RETRIEVER_MODEL_DRIVEN_ENV: "1"}
     ) is True
-    assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
-    assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"}) is False
+    assert subscription_llm._answerability_shadow_enabled(legacy_context) is False
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "0"}) is False
     assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"}) is True

@@ -588,14 +588,13 @@ def test_slots_gsf_known_merge_prompt_marks_llm_slots_as_inferred(monkeypatch) -
         context={
             "active_brand": "foton",
             "dialogue_memory_view": view,
-            "TELEGRAM_DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT": "1",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         },
         facts={},
     )
 
     assert "модель вывела из реплики" in prompt
     assert "НЕ подтверждение клиента" in prompt
-    assert '"client_confirmed_slots": {}' in prompt
     assert "клиент уже назвал — НЕ переспрашивай: класс: 9" not in prompt
     assert _direct_path_prompt_known_slots({"dialogue_memory_view": view})["grade"] == "9"
 

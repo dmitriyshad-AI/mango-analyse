@@ -257,7 +257,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "SEMANTIC_READING_CLASSES_ENV",
         "TELEGRAM_SEMANTIC_READING_CLASSES",
     ),
-    ("src/mango_mvp/channels/subscription_llm_parts/support.py", "ANSWERABILITY_SHADOW_ENV", "TELEGRAM_ANSWERABILITY_SHADOW"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DEAL_ACTION_DECISION_ENV", "TELEGRAM_DEAL_ACTION_DECISION"),
     ("src/mango_mvp/channels/subscription_llm_parts/support.py", "DIRECT_PATH_MODEL_P0_ENV", "TELEGRAM_DIRECT_PATH_MODEL_P0"),

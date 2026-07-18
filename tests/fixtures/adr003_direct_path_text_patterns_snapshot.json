@@ -16,14 +16,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"адрес\", \"подтверд\", \"да?\", \"верно\", \"правильно\")",
-    "args_sha256": "5ad83315354b0c052622afc5c4f505c8ecbfddb118ca4ed5749f6aaac18a9162",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_address_confirmation_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"адрес\", \"сретенк\", \"скорняжн\", \"москва\", \"метро\", \"где находит\")",
     "args_sha256": "fbf690c7a526a2dcf75c0a45cd1bac1e4dd7fb424f5724556cf314ca08b12a42",
     "node_kind": "marker_helper_call",
@@ -112,22 +104,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"возврат\", \"вернут\", \"вернете\", \"вернёте\", \"передума\", \"отказ\")",
-    "args_sha256": "c1b8f839b119a9daedc7ed57b5ca7e10d4243f69c252b606312b56810d318648",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_presale_refund_rules_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"возврат\", \"вернут\", \"вернете\", \"вернёте\", \"передума\", \"отказ\")",
-    "args_sha256": "c1b8f839b119a9daedc7ed57b5ca7e10d4243f69c252b606312b56810d318648",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_presale_refund_rules_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"второй предмет\", \"second_subject\")",
     "args_sha256": "847bd1ff68d6291fc91fee9ca89209b08973b86cd4061a42c1f8aab8898a6423",
     "node_kind": "marker_helper_call",
@@ -144,27 +120,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"выходн\", \"суббот\", \"воскрес\", \" сб\", \" вс\", \"дням\", \"по каким дням\")",
-    "args_sha256": "698148e913c420ffe908231602b25c6fb1dab6b37aeff49f7d0f298747a729a4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"где\", \"куда\", \"как\")",
     "args_sha256": "417192fc7da2e82c7a75c88f42b6c567a4ccd0fdb181d4016a58568194789c81",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "qualname": "_recording_followup_from_context",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"где\", \"почитать\", \"посмотреть\", \"договор\", \"оферт\", \"правил\", \"до оплаты\", \"заранее\")",
-    "args_sha256": "a56a2068dbde22f42e63f46e177433201c7de3874b562515741a7a254b3100d2",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_presale_refund_rules_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -189,14 +149,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "detect_product_scope",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"да/нет\", \"да или нет\", \"просто да\", \"просто понять\", \"заранее\")",
-    "args_sha256": "71ab0eda8e9f0038aeffc04534507167130a39e0546367566ca6624cef4387cf",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -261,14 +213,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_is_current_terms_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"или только\", \"просто бывают\", \"просто по выходным\", \"вообще там\", \"да или нет\", \"просто сказать\")",
-    "args_sha256": "4c41137d16089acf57aec882708312d14f576138027300b8ff8a08a14bf322cf",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -448,14 +392,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"маткап\", \"материнск\")",
-    "args_sha256": "657277a5ca1d3925d6438db60833936e0acb369bd460d3ca0a53160dd931d756",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_generic_fact_answer_blocked",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"маткап\", \"материнск\", \"сфр\", \"сертификат\")",
     "args_sha256": "856ad988942568deaa63742dbeb31d176f2799bf0c5f161fef144e6c3a836abd",
     "node_kind": "marker_helper_call",
@@ -488,14 +424,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"менеджер\", \"напишу\", \"попрошу\")",
-    "args_sha256": "7d5039b83f64b57492d242944c36cce862118799c8951ce54799250521f29189",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_tax_certificate_followup_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"мест\", \"брон\", \"заброни\")",
     "args_sha256": "b18b9ae9dd22c97035f6266b30bc88ba500c31382370567bb723ff704bdac4d1",
     "node_kind": "marker_helper_call",
@@ -520,14 +448,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"мест\", \"налич\", \"брон\", \"запис\")",
-    "args_sha256": "05a673f1d33fa57b60af79d14b7dd7091d6987746c36c407052f1bffa1369b31",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_next_step",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"многодет\", \"multichild\")",
     "args_sha256": "bd637af5b9eeb1615af2a4eefa01356dd593fbc5a2dc5db2e561c46b4ec17df1",
     "node_kind": "marker_helper_call",
@@ -541,14 +461,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_fact_scope_guard_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"налог\", \"вычет\", \"кнд 1151158\")",
-    "args_sha256": "814e27bbc4cc31250ab9e70e739da74042ab38decb084a7ecca590ca3e8d75cf",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_tax_certificate_followup_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -606,14 +518,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_asks_live_availability",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"не рассроч\", \"не долями\", \"не частями\", \"не через банк\", \"не про рассроч\")",
-    "args_sha256": "8fa76d9a63e53d2e97261e8ae9c5d515c1207c082be55624aed60ffe79177e61",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_asks_invoice_monthly_payment",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"оба\", \"оба формата\", \"оба варианта\", \"и то и другое\")",
@@ -680,14 +584,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"онлайн\", \"дистанц\")",
-    "args_sha256": "8c8e0b380b851662e5a23a2d5dd35220d4424c11b63cbc3511a1b34d50c0a2c0",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"онлайн\", \"очно\", \"дистанц\", \"формат\", \"платформ\")",
     "args_sha256": "cb2f9df4d61ca16f93c17dceb52449b1fc8ecde28dd596a3d32284da0e14fe56",
     "node_kind": "marker_helper_call",
@@ -712,14 +608,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"оплат\", \"платить\", \"помесяч\")",
-    "args_sha256": "0455e534e8f675b7940f20c22713682f8718a3e2ec09ba78521971fb0e0cc00a",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_generic_fact_answer_blocked",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"оплат\", \"рассроч\", \"долями\", \"частями\", \"помесяч\", \"семестр\")",
     "args_sha256": "9f2ad6ea14fb10268fbccc11e28a1af70a6a188bbc9ea37b6c83b15400e284b9",
     "node_kind": "marker_helper_call",
@@ -734,14 +622,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_is_payment_terms_question",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"очн\", \"офлайн\")",
-    "args_sha256": "f2bddfab7e560ff13aced6a48e1634ec409429f858b8c26c96d125d7a05cbdd5",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"очно\", \"offline\", \"офлайн\")",
@@ -800,22 +680,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"перевод\", \"счет\", \"счёт\", \"безнал\")",
-    "args_sha256": "18e2e6c43c0a2c870aeb23c51e8ee0f479a7afd3e18582ca475c28cbebe8e674",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_foton_bank_transfer_monthly_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"перевод\", \"счет\", \"счёт\", \"безнал\")",
-    "args_sha256": "18e2e6c43c0a2c870aeb23c51e8ee0f479a7afd3e18582ca475c28cbebe8e674",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_generic_fact_answer_blocked",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"передам вопрос менеджеру\", \"менеджер подскажет\", \"менеджер проверит\")",
     "args_sha256": "718c3f3356c0f3e59a951be61db5eee43062dfeeeb4e67132ccf3144ef0d20bb",
     "node_kind": "marker_helper_call",
@@ -830,14 +694,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_required_fact_keys",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"по счету\", \"по счёту\", \"счет\", \"счёт\", \"банковск\", \"перевод\", \"реквизит\")",
-    "args_sha256": "544f9995dcb010efcc7be0f3e84e6f9de93749f102aa785247c34c262f6df68f",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_asks_invoice_monthly_payment",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"по текущей цене\", \"по текущим условиям\")",
@@ -861,30 +717,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/new_lead_funnel.py",
     "qualname": "extract_goal",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"помесяч\", \"каждый месяц\", \"ежемесяч\", \"по месяцам\")",
-    "args_sha256": "76b9378e5dee019e7916ee9d69dbf1ed76a9d455fd123fbf5a39492f833356f5",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_asks_invoice_monthly_payment",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"помесяч\", \"каждый месяц\", \"по месяц\", \"не все сразу\", \"не всё сразу\")",
-    "args_sha256": "a730fdf1f2341b42a283bb54c41cc98a19f5fe411fe710f6329530d9f118dc41",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_foton_bank_transfer_monthly_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"помесяч\", \"каждый месяц\", \"по месяц\", \"сумм\")",
-    "args_sha256": "f6cf41d21bc34a3c0da6ceebaa44eb5467ce0476503004a0cf0aab2d154261a7",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_installment_amount_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -976,14 +808,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"процент\", \"сколько\", \"такая же\", \"так же\")",
-    "args_sha256": "21d03640f1ba798ceeceda49a93c31515cf4fb087f29e22d8e5f9199bf43d621",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"пусть менеджер\", \"менеджер пусть\", \"менеджер подтверд\", \"менеджер тогда\", \"менеджер напиш\")",
     "args_sha256": "56a7854d3777c79e60100a105bb8a2e0084f9d23eb6a9c7cea1acb8e47216e4c",
     "node_kind": "marker_helper_call",
@@ -1008,14 +832,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"рассроч\", \"долями\", \"совмещ\", \"вместе\")",
-    "args_sha256": "699001176c4e97ae086204d3c52f63ff356354c5cfeced410dee39f029e2d7ae",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_generic_fact_answer_blocked",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\")",
     "args_sha256": "a1132692cadaaf88664ff12bdc32cb4c14c9c70c5c01f87c1ea9d8d921dd139e",
     "node_kind": "marker_helper_call",
@@ -1037,14 +853,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"частями\", \"долями\")",
-    "args_sha256": "1aa36fda88204f392e5923ae4d927b2ef86d04e1da635ec85ce891d26a9e1cc7",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_installment_amount_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -1088,35 +896,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"справк\", \"вычет\", \"налог\", \"кнд\")",
-    "args_sha256": "17a5f1d2a1b90511c9b5bdd94fef337dff627bee7394098d87eae273867cd304",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_tax_certificate_followup_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"стоим\", \"цена\", \"цену\", \"прайс\", \"руб\", \"почем\", \"почём\")",
     "args_sha256": "aaf05c2082d6238e85a6996f00e2d3fb22fbfa88b3b4005a1a536b4c55e7a5ea",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_asks_money_price_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"суббот\", \"воскрес\", \"выходн\", \"по каким дням\", \"дням\", \"сб\", \"вс\")",
-    "args_sha256": "095e1b2f0041f53b4c183e99516a9966810f6656fd1e077d58d306d392e62bf6",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"суббот\", \"воскрес\", \"сб\", \"вс\")",
-    "args_sha256": "955b07ca92bac9ac8fc544ab0338cdcf862f9c5d6a263c989b016ebee8449712",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
     "symbol": "has_any_marker"
   },
   {
@@ -1232,14 +1016,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"формат не принцип\", \"не принципиален\", \"главное выходн\", \"почему онлайн\", \"не про формат\")",
-    "args_sha256": "a1ead4dd51e95b1eb36250180d444ec8510471c73a3ce3771cc9c66fcf89d7dc",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"фотон\", \"долями\", \"т-банк\")",
     "args_sha256": "9dab5baa5aea04acd8f5c24c750b68b3328ab88aa01cac61dbe5e6d43f62adbe",
     "node_kind": "marker_helper_call",
@@ -1254,14 +1030,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_required_fact_keys",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"цен\", \"стоим\", \"сколько\", \"оплат\", \"рассроч\", \"долями\")",
-    "args_sha256": "ce185bc7de2a3e5a0b94e068d6d4dd743190e46586143632eebb8aa9f1589ef1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_next_step",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"цен\", \"услов\", \"текущ\", \"сейчас\", \"стоим\")",
@@ -1381,14 +1149,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/held_state.py",
     "qualname": "_is_direct_correction",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n            \"рассроч\",\n            \"долями\",\n            \"частями\",\n            \"по частям\",\n            \"помесяч\",\n            \"банк\",\n            \"одобр\",\n            \"без процент\",\n            \"без переплат\",\n        )",
-    "args_sha256": "729cbd46982a67b40b5575688c6f26e6b4a063a7bc8e8e52d335a43b0715a58b",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_asks_installment",
     "symbol": "has_any_marker"
   },
   {
@@ -1696,14 +1456,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"%\" in text",
-    "expression_sha256": "2d6543e7d656ebc46b2bc026b8a7ec666dfaf1ae0c7b1e169224ee1d82460b1c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\",\" in value",
     "expression_sha256": "2d86fe3e5e97469cba555904446d92d507804464a6dfacd8992e271730bcd98d",
     "node_kind": "string_contains",
@@ -1725,14 +1477,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_stable_fact_key",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"20\" in text",
-    "expression_sha256": "7a7a322a6f81863d6ee44b1d72f792d08fd9385a198ca775854a8028c6b5b2c7",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_address_confirmation_answer",
     "symbol": "In"
   },
   {
@@ -2344,14 +2088,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"втор\" in text",
-    "expression_sha256": "316daf237f212cb1fdacf66303174f803dedd76148f5fe195f299480cccc846a",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"выездн\" in query_text",
     "expression_sha256": "3dae09933e3ca415cf7f92f06ab966cd342237f959df178b3ed88198fe69ecc3",
     "node_kind": "string_contains",
@@ -2373,14 +2109,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_fact_match_score",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"главное\" in text",
-    "expression_sha256": "b8066f8b1613aef6cdd314dbdfd4b95e1b13faa398aa406b5d926701a1152bb8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
     "symbol": "In"
   },
   {
@@ -2573,14 +2301,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_matches_requested_class",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"если скажете, какой формат\" in draft_low",
-    "expression_sha256": "86e0521163e88935d38ff32d081a6b0d387c222907e27f5725b87263e611e9bd",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
     "symbol": "In"
   },
   {
@@ -2920,14 +2640,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"москв\" in text",
-    "expression_sha256": "44120b6bfb67b676a5022584fd1dbee583dd89508db1fcf8a968e802f7a0439b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"москва\" in text",
     "expression_sha256": "cfcc09663d00346f3a2cf90d56852a193c8cc56687a75939b4ff70f3bc4ae9d0",
     "node_kind": "string_contains",
@@ -3005,14 +2717,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн с записью\" in draft_low",
-    "expression_sha256": "922532516de349dfceaf69b14d78bc6997ecb95bfdaff42623a97795d7c2d46c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
     "symbol": "In"
   },
   {
@@ -3336,14 +3040,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"питан\" in client_low",
-    "expression_sha256": "1734aabf460c9a3fa74c482eeee9ee89aadacaac3ae7474423f80f4a54d32a19",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_fact_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"платформ\" in client_haystack",
     "expression_sha256": "86458e274c50c822d4e5e66bebe0ba5ea9f3a65be9e019a1d01dc2ad872c1f9f",
     "node_kind": "string_contains",
@@ -3480,14 +3176,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"разные слоты по выходным\" not in draft_low",
-    "expression_sha256": "5303c38def7bdce2b48d9b013c6039096e944fc47d47e25e96ffbd073f5a2bcc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"ранн\" in text",
     "expression_sha256": "cc091521b972b0fef0eaf664a9601f9af13bbc9315e6fd067b3ed7fd4ed59e30",
     "node_kind": "string_contains",
@@ -3576,14 +3264,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"скид\" not in text",
-    "expression_sha256": "e0885c2c73c12450256f2080815161b30e8a6127f527c5d2a6bd01d417ea88b9",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"следующ\" in sentence_normalized",
     "expression_sha256": "3604f9a2b2c172879b19589037cf70d1e827aff4c28d5a6e131d2f37533d70e0",
     "node_kind": "string_contains",
@@ -3624,22 +3304,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"сретен\" in text",
-    "expression_sha256": "2ef31f25129e09bf4f3ff5a30361a1ec0889e0c3d845fb798e340a01ab2bd2cb",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_address_confirmation_answer",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"сретен\" in text",
-    "expression_sha256": "2ef31f25129e09bf4f3ff5a30361a1ec0889e0c3d845fb798e340a01ab2bd2cb",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"ссыл\" not in normalized",
     "expression_sha256": "5417759b50ce7af8c943bcd1a3edd4f91d015ac0812260df6552b319f8d9ca3c",
     "node_kind": "string_contains",
@@ -3669,14 +3333,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"там\" in text",
-    "expression_sha256": "e170c0266e99a2150967f80300ed5e2ddef6ec53e90d7baf4aa56690c1d95860",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_unpk_weekend_address_answer",
     "symbol": "In"
   },
   {
@@ -3768,14 +3424,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"формат уже вижу как онлайн\" in draft_low",
-    "expression_sha256": "c2643e6f157ca1615371b1dca682eaaba87c0e6eb37e7880250966993f4e3476",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"формат\" in normalized",
     "expression_sha256": "d2fb6db3ebce2e0b7feb4615c723d3f52290914d03f544946fd6201bfac391a4",
     "node_kind": "string_contains",
@@ -3789,14 +3437,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_safe_next_step_detail_labels",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"формат\" in text",
-    "expression_sha256": "5f2ccbd2f379d5feb7070e09d86776462beeef3720feda56a63a230aa2491436",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "qualname": "_humanity_weekend_schedule_no_format_lock_answer",
     "symbol": "In"
   },
   {
@@ -4138,26 +3778,6 @@
     "target": ""
   },
   {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\s+",
-    "pattern_sha256": "4add64ab568a8b698353c562ac83993ed693822fe898d8450add1ea623df1ded",
-    "qualname": "_phase2_tone_rewrite",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\s{2,}",
-    "pattern_sha256": "58bd9b945a05045214d8b932491aff633f1cb79878ca46d9f060e3422b800f71",
-    "qualname": "_sanitize_humanity_meta_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
     "flags": "\" Сейчас действует текущая цена,\" | re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -4296,16 +3916,6 @@
     "qualname": "_core_handoff_detail",
     "symbol": "re.sub",
     "target": ""
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "^```(?:json|text)?\\s*",
-    "pattern_sha256": "f49b9aa84c2488fe16a8aaa084364e77b01f815b5a2a243cd7c703a99d35d679",
-    "qualname": "_extract_humanity_x2_text",
-    "symbol": "re.sub",
-    "target": "text"
   },
   {
     "flags": "\"\"",
@@ -4448,16 +4058,6 @@
     "target": "digits"
   },
   {
-    "flags": "\"\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\s*```$",
-    "pattern_sha256": "c36e4eb686017e1e1dbd92f47974b6aa3a40fb736597b5b7d40383c281bdb99a",
-    "qualname": "_extract_humanity_x2_text",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
     "flags": "\"\\n\" + text",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/rules_engine.py",
@@ -4596,16 +4196,6 @@
     "qualname": "_soften_current_price_deadline_text",
     "symbol": "re.sub",
     "target": "value"
-  },
-  {
-    "flags": "\"с проживанием; 5-разовое питание включено\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "с\\s+проживанием\\s+и\\s+5-разовым\\s+питанием",
-    "pattern_sha256": "52bcd25e7b10ece75f54c1f63d9bbd7f6be4145c383d159c64cde232f0e5ed69",
-    "qualname": "_humanity_fact_answer",
-    "symbol": "re.sub",
-    "target": "fact"
   },
   {
     "flags": "_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL",
@@ -5814,26 +5404,6 @@
     "pattern_preview": "\\s+([.,!?])",
     "pattern_sha256": "739bbdac7d806ada7a359ecc751dc3ae4af0c6ffe15d688f47417d8697c9cde2",
     "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "r\"\\1\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\s+([,.!?;:])",
-    "pattern_sha256": "71763b6d7b99ec01e4d328e4f347f4005062f93429ac1bf79b65d3de5a4db20f",
-    "qualname": "_phase2_tone_rewrite",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "r\"\\1\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\s+([,.;:!?])",
-    "pattern_sha256": "ab0c8b55b6b94b1f0481c30a8b15be44b8f87d7aab9a953e5f74349c3c5b985a",
-    "qualname": "_sanitize_humanity_meta_text",
     "symbol": "re.sub",
     "target": "value"
   },
@@ -7301,16 +6871,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "только\\s+сегодня|последн(?:ий|яя)\\s+шанс|успейт|решайт[е]?\\s+сейчас|срочно\\s+(?:оформ|запис|реш)|иначе\\s+(?:мест|скид|цен)|мест\\s+почти\\s+нет|надо\\s+успеть|не\\s",
-    "pattern_sha256": "3aecde9d4aca89583de1d510b14a140a29ba52b36e6702e88ccc9cb322753f80",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_HUMANITY_X2_PRESSURE_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "я\\s+(?:вас\\s+)?записал|вы\\s+записаны|запись\\s+оформлена|оформил\\s+запись|записал\\s+на\\s+курс",
     "pattern_sha256": "09ae9c1df0529989a28c98cf36816dbc81d6add858bba022d90d4b1b955bad55",
     "qualname": "<module>",
@@ -7448,16 +7008,6 @@
     "target": "_CLIENT_EMAIL_RE"
   },
   {
-    "flags": "repl",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "pattern",
-    "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
-    "qualname": "_phase2_tone_rewrite",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
     "flags": "replace_sentence | re.M",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -7514,16 +7064,6 @@
     "pattern_preview": "rf\"^\\s{{4}}{field_name}:\\s*(.+?)\\s*$\"",
     "pattern_sha256": "184b8d4b30028eda70503ab8bc30d47b47d0796f76b03c68b26448139ddd0afb",
     "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
-    "flags": "selected",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b\\d{1,2}\\s*%",
-    "pattern_sha256": "d35846cfb607466229a99ab04fdbf44ce3f19c076d1f0a1ebd247d26232c96ff",
-    "qualname": "_humanity_discount_percent_answer",
     "symbol": "re.search",
     "target": "match"
   },
@@ -7608,16 +7148,6 @@
     "target": ""
   },
   {
-    "flags": "str(current_draft or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b\\d{1,2}\\s*%",
-    "pattern_sha256": "d35846cfb607466229a99ab04fdbf44ce3f19c076d1f0a1ebd247d26232c96ff",
-    "qualname": "_humanity_discount_percent_answer",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "str(draft_text or \"\")",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -7626,16 +7156,6 @@
     "qualname": "apply_high_risk_content_guards",
     "symbol": "re.search",
     "target": ""
-  },
-  {
-    "flags": "str(fact or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b\\d{1,3}(?:[ \\u00a0]\\d{3})+(?:\\s*(?:₽|руб(?:\\.|лей|ля|ль)?))?",
-    "pattern_sha256": "800bf2ed87d2fe38052a398b7e2aa6dacdc6d274e3f878e5cfb19ed8fa8bf4f1",
-    "qualname": "_price_amount_from_facts",
-    "symbol": "re.search",
-    "target": "match"
   },
   {
     "flags": "str(facts_blob or \"\").casefold().replace(\"ё\", \"е\")",
@@ -7834,16 +7354,6 @@
     "pattern_preview": "\\bдоговор\\w*\\s*(?:номер|№)?\\s*\\d+",
     "pattern_sha256": "a3c3f7883b29c260f4d2e21ba45ccd2e7e698ec98b10fb36446a37205f0ac580",
     "qualname": "_client_message_contains_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\bсколько\\b[^.?!\\n]{0,80}\\b(?:месяц|выходит|платеж|платёж)",
-    "pattern_sha256": "74639da88508bc62784f1cac6ea482e6ba358ac17c54b15ec6e070a1cc1695e0",
-    "qualname": "_humanity_installment_amount_answer",
     "symbol": "re.search",
     "target": ""
   },

@@ -497,22 +497,6 @@
   },
   {
     "flags": "re.I",
-    "path": "src/mango_mvp/channels/humanity_linter.py",
-    "pattern_preview": "\\b(?:fact_id|source_id|trace_id)\\s*[:=]|fact:v3:",
-    "pattern_sha256": "98d8d5e25288500a1b5fbea5dfe3c90e8c8f30f19d0e8506386cb8fe3d683a28",
-    "qualname": "<module>",
-    "target": "_INTERNAL_ID_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/humanity_linter.py",
-    "pattern_preview": "переда[мя]\\s+(?:вопрос\\s+|запрос\\s+|это\\s+|его\\s+|контекст\\s+)?(?:менеджер|ответственн)|уточн\\w+\\s+у\\s+менеджер|менеджер\\w*\\s+уточн|проверит\\s+менеджер|менеджер",
-    "pattern_sha256": "5297a84baaf63b14cccdb006866cd43eb81dae05e5809e2e6c7d6cf3d25b2627",
-    "qualname": "<module>",
-    "target": "_HANDOFF_RE"
-  },
-  {
-    "flags": "re.I",
     "path": "src/mango_mvp/channels/manager_handoff_summary.py",
     "pattern_preview": "\\b(?:AMO|Tallanto|CRM|source_id|source:|lead_id|contact_id|token|api[_-]?key|debug_impersonation)\\b",
     "pattern_sha256": "6029607026d7855a032950057cade6717eff9dd9c4d5f8fdc87d2817863a819e",
@@ -1590,14 +1574,6 @@
     "pattern_sha256": "58bf0c00fc65fcdd017aba7495d9b07a0e0283db57168cc7346da5079b9e3e26",
     "qualname": "<module>",
     "target": "PRESALE_SOURCE_ID_PHRASE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "только\\s+сегодня|последн(?:ий|яя)\\s+шанс|успейт|решайт[е]?\\s+сейчас|срочно\\s+(?:оформ|запис|реш)|иначе\\s+(?:мест|скид|цен)|мест\\s+почти\\s+нет|надо\\s+успеть|не\\s",
-    "pattern_sha256": "3aecde9d4aca89583de1d510b14a140a29ba52b36e6702e88ccc9cb322753f80",
-    "qualname": "<module>",
-    "target": "_HUMANITY_X2_PRESSURE_RE"
   },
   {
     "flags": "re.I",

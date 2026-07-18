@@ -73,9 +73,6 @@ from mango_mvp.channels.subscription_llm import (
     apply_authoritative_output_gate,
     apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
-    apply_humanity_guards,
-    apply_humanity_x2_rewriter,
-    apply_phase2_tone_layer,
     apply_tone_close_detect_layer,
     apply_tone_sell_prompt_observer,
     apply_warm_frame,
@@ -827,23 +824,6 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
     assert "internal_metadata_removed_from_draft" in result.safety_flags
 
 
-def test_humanity_trims_repeated_cosmetic_opening_when_safe_fact_exists() -> None:
-    result = SubscriptionDraftResult(
-        route="draft_for_manager",
-        topic_id="theme:015_address",
-        message_type="question",
-        draft_text="Здравствуйте! В Москве Фотон находится на Верхней Красносельской, 30.",
-    )
-    context = {
-        "active_brand": "foton",
-        "confirmed_facts": {"address": "В Москве Фотон находится на Верхней Красносельской, 30."},
-        "dialogue_memory_view": {"recent_turns": [{"role": "bot", "text": "Здравствуйте! Подскажу по адресу Фотона."}]},
-    }
-
-    fixed = apply_humanity_guards(result, client_message="Где вы в Москве?", context=context)
-
-    assert fixed.draft_text.startswith("В Москве Фотон")
-    assert "humanity_cosmetic_opening_trimmed" in fixed.safety_flags
 
 
 def test_final_p0_override_replaces_non_p0_draft_text() -> None:
@@ -1906,302 +1886,28 @@ def test_unstated_subject_guard_blocks_subject_from_other_brand_retrieved_fact()
     assert "unstated_subject_guarded" in guarded.safety_flags
 
 
-def test_humanity_x2_rewriter_disabled_by_default() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Сориентирую по проверенным данным: семестр 29 750 ₽.",
-        safety_flags=("autonomy_matrix_passed",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Сколько стоит семестр?",
-        context={"active_brand": "foton", "confirmed_facts": {"price": "семестр 29 750 ₽"}},
-        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽. Помогу выбрать группу.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "humanity_x2" not in result.metadata
 
 
-def test_humanity_x2_rewriter_applies_safe_form_only_candidate() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Сориентирую по проверенным данным: семестр 29 750 ₽. Передам менеджеру.",
-        safety_flags=("autonomy_matrix_passed",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Сколько стоит семестр?",
-        context={
-            "active_brand": "foton",
-            "humanity_x2_rewrite_enabled": True,
-            "confirmed_facts": {"price": "семестр 29 750 ₽"},
-        },
-        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽. Подскажите класс, и я помогу выбрать ближайший формат.",
-    )
-
-    assert result.draft_text.startswith("Семестр — 29 750 ₽")
-    assert "humanity_x2_rewritten" in result.safety_flags
-    assert result.metadata["humanity_x2"]["rewritten"] is True
 
 
-def test_humanity_x2_rewriter_rejects_new_number_before_gate() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Семестр — 29 750 ₽.",
-        safety_flags=("autonomy_matrix_passed",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Сколько стоит семестр?",
-        context={
-            "active_brand": "foton",
-            "humanity_x2_rewrite_enabled": True,
-            "confirmed_facts": {"price": "семестр — 29 750 ₽"},
-        },
-        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽, год — 100 000 ₽.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert result.metadata["humanity_x2"]["rewritten"] is False
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "fact_drift:100000"
 
 
-def test_humanity_x2_rewriter_never_touches_manager_only() -> None:
-    base = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text="Приняли обращение. Передам ответственному сотруднику.",
-        safety_flags=("high_risk_manager_only",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Верните деньги",
-        context={"active_brand": "foton", "humanity_x2_rewrite_enabled": True},
-        rewrite_runner=lambda prompt: "Давайте решим мягче.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_p0_or_manager_only"
 
 
-def test_humanity_x2_rewriter_never_touches_identity_policy_c() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text=IDENTITY_FOTON_SAFE_TEXT,
-        safety_flags=("terminal_safe_template_applied",),
-        metadata={
-            "dialogue_contract_pipeline": {
-                "rules_engine_intent_shadow": {
-                    "selected_source": "identity_policy",
-                    "selected_intent": "identity",
-                }
-            }
-        },
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="это бот?",
-        context={"active_brand": "foton", "humanity_x2_rewrite_enabled": True},
-        rewrite_runner=lambda prompt: "Я помощник, отвечу теплее.",
-    )
-
-    assert result.route == "bot_answer_self_for_pilot"
-    assert result.draft_text == IDENTITY_FOTON_SAFE_TEXT
-    assert "humanity_x2_rewritten" not in result.safety_flags
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_identity_policy"
 
 
-def test_phase2_tone_reduces_bureaucratic_text_behind_flag() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн. Менеджер уточнит ближайший шаг.",
-        safety_flags=("rules_engine_format_choice_present_both",),
-        metadata={
-            "dialogue_contract_pipeline": {
-                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
-                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
-                "retrieved_fact_keys": ["format.online"],
-            }
-        },
-    )
-
-    result = apply_phase2_tone_layer(
-        base,
-        client_message="Как проходит обучение?",
-        context={"active_brand": "foton", "phase2_tone_enabled": True},
-    )
-
-    assert result.draft_text != base.draft_text
-    assert "в рамках текущего учебного центра" not in result.draft_text.casefold()
-    assert "осуществляется" not in result.draft_text.casefold()
-    assert "phase2_tone_rewritten" in result.safety_flags
-    assert result.metadata["phase2_tone"]["tone_after"]["tone_canc"] < result.metadata["phase2_tone"]["tone_before"]["tone_canc"]
 
 
-def test_phase2_tone_rolls_back_candidate_with_new_product_number() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн.",
-        safety_flags=("rules_engine_format_choice_present_both",),
-        metadata={
-            "dialogue_contract_pipeline": {
-                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
-                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
-                "retrieved_fact_keys": ["format.online"],
-            }
-        },
-    )
-
-    result = apply_phase2_tone_layer(
-        base,
-        client_message="Как проходит обучение?",
-        context={
-            "active_brand": "foton",
-            "phase2_tone_enabled": True,
-            "phase2_tone_rewrite_fn": lambda _text: "Обучение проходит онлайн. Год стоит 100 000 ₽.",
-        },
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "phase2_tone_rewritten" not in result.safety_flags
-    assert "verify_output" in result.metadata["phase2_tone"]["fallback_reason"]
 
 
-def test_phase2_tone_does_not_touch_p0_or_manager_only() -> None:
-    base = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text="В рамках текущего учебного центра вопрос передам менеджеру.",
-        safety_flags=("high_risk_manager_only",),
-    )
-
-    result = apply_phase2_tone_layer(
-        base,
-        client_message="Верните деньги",
-        context={"active_brand": "foton", "phase2_tone_enabled": True},
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "phase2_tone_rewritten" not in result.safety_flags
-    assert result.metadata["phase2_tone"]["fallback_reason"] == "locked_p0_or_manager_only"
 
 
-def test_humanity_x2_rewriter_allows_migrated_rule_answers_with_stripped_internal_marker() -> None:
-    cases = (
-        (
-            "rules_engine_teacher_applied",
-            "Преподаватели — эксперты ЕГЭ.",
-            "[source_id=fact:v3:teacher] Преподаватели — эксперты ЕГЭ. Помогу подобрать группу.",
-            {"teacher": "Преподаватели — эксперты ЕГЭ."},
-        ),
-        (
-            "rules_engine_price_format_matched",
-            "Семестр — 49 000 ₽.",
-            "[source_id=fact:v3:price] Семестр — 49 000 ₽. Если удобно, подскажу годовой формат.",
-            {"price": "Семестр — 49 000 ₽."},
-        ),
-        (
-            "rules_engine_installment_foton",
-            "Доступна рассрочка на 6, 10 или 12 месяцев.",
-            "[source_id=fact:v3:installment] Доступна рассрочка на 6, 10 или 12 месяцев. Менеджер поможет оформить вариант.",
-            {"installment": "Доступна рассрочка на 6, 10 или 12 месяцев."},
-        ),
-    )
-
-    for flag, original, candidate, facts in cases:
-        base = SubscriptionDraftResult(
-            route="bot_answer_self_for_pilot",
-            draft_text=original,
-            safety_flags=(flag,),
-            metadata={"rules_engine": {"applied": flag.removeprefix("rules_engine_")}},
-        )
-
-        result = apply_humanity_x2_rewriter(
-            base,
-            client_message="Подскажите, пожалуйста",
-            context={"active_brand": "foton", "humanity_x2_rewrite_enabled": True, "confirmed_facts": facts},
-            rewrite_runner=lambda prompt, candidate=candidate: candidate,
-        )
-
-        assert result.metadata["humanity_x2"]["rewritten"] is True
-        assert result.metadata["humanity_x2"]["fallback_reason"] is None
-        assert "humanity_x2_rewritten" in result.safety_flags
-        assert "source_id" not in result.draft_text
-        assert result.draft_text != original
 
 
-def test_humanity_x2_rewriter_rejects_cross_brand_candidate() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Семестр — 29 750 ₽.",
-        safety_flags=("autonomy_matrix_passed",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Сколько стоит семестр?",
-        context={
-            "active_brand": "foton",
-            "humanity_x2_rewrite_enabled": True,
-            "confirmed_facts": {"price": "семестр — 29 750 ₽"},
-        },
-        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽. В УНПК условия похожие.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert result.metadata["humanity_x2"]["rewritten"] is False
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "brand_leak"
 
 
-def test_humanity_x2_rewriter_rejects_pressure_candidate() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Пробное занятие есть, менеджер поможет подобрать удобный вариант.",
-        safety_flags=("rules_engine_trial_available",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Можно пробное?",
-        context={
-            "active_brand": "foton",
-            "humanity_x2_rewrite_enabled": True,
-            "confirmed_facts": {"trial": "Пробное занятие есть."},
-        },
-        rewrite_runner=lambda prompt: "Пробное занятие есть, срочно записывайтесь сейчас, иначе мест не останется.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "humanity_x2_rewritten" not in result.safety_flags
-    assert result.metadata["humanity_x2"]["rewritten"] is False
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "pressure"
 
 
-def test_humanity_x2_rewriter_falls_back_on_repo_gate_meta_leak() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Семестр 29 750 ₽.",
-        safety_flags=("autonomy_matrix_passed",),
-    )
-
-    result = apply_humanity_x2_rewriter(
-        base,
-        client_message="Сколько стоит семестр?",
-        context={
-            "active_brand": "foton",
-            "humanity_x2_rewrite_enabled": True,
-            "confirmed_facts": {"price": "семестр 29 750 ₽"},
-        },
-        rewrite_runner=lambda prompt: "Семестр 29 750 ₽, отвечаю без служебных пометок.",
-    )
-
-    assert result.draft_text == base.draft_text
-    assert result.metadata["humanity_x2"]["rewritten"] is False
-    assert result.metadata["humanity_x2"]["fallback_reason"] == "meta_leak"
 
 
 def test_v2_unsupported_promise_guard_uses_retrieved_fact_metadata_for_discount_percent() -> None:
@@ -3972,61 +3678,8 @@ def test_fake_provider_records_prompt() -> None:
     assert provider.prompts == ["prompt"]
 
 
-def test_antirepeat_strict_replaces_repeat_against_any_prior_bot_turn() -> None:
-    repeated = (
-        "По этому вопросу менеджер проверит детали и вернётся с ответом. "
-        "Сейчас точный порядок лучше уточнить отдельно."
-    )
-    base = parse_llm_json(
-        '{"route":"draft_for_manager","draft_text":"'
-        + repeated
-        + '","message_type":"question","topic_id":"theme:013_schedule","confidence_theme":0.86,'
-        '"missing_facts":["schedule.current"]}'
-    )
-
-    result = apply_humanity_guards(
-        base,
-        client_message="А конкретно по каким дням занятия?",
-        context={
-            "active_brand": "unpk",
-            "antirepeat_strict_enabled": True,
-            "recent_messages": [
-                f"Ответ: {repeated}",
-                "Клиент: понятно",
-                "Ответ: Другой промежуточный ответ без повторения.",
-            ],
-            "conversation_intent_plan": {
-                "primary_intent": "schedule",
-                "topic_id": "theme:013_schedule",
-                "fact_scope": "class_schedule",
-                "blocked_neighbor_scopes": ["office_hours"],
-                "required_fact_keys": ["schedule.current"],
-            },
-            "facts_context": {"facts_missing": True, "required_fact_keys": ["schedule.current"]},
-        },
-    )
-
-    assert result.draft_text != repeated
-    assert "дни и время занятий" in result.draft_text
-    assert "humanity_strict_antirepeat_fallback_applied" in result.safety_flags
 
 
-def test_safe_fallback_draft_text_antirepeat_covers_battle_fallback() -> None:
-    base = parse_llm_json(
-        '{"route":"draft_for_manager","draft_text":"'
-        + SAFE_FALLBACK_DRAFT_TEXT
-        + '","message_type":"question","topic_id":"service:S2_unclear","confidence_theme":0.8}'
-    )
-
-    result = apply_humanity_guards(
-        base,
-        client_message="уточните дату старта",
-        context={"recent_messages": [f"Ответ: {SAFE_FALLBACK_DRAFT_TEXT}"]},
-    )
-
-    assert result.draft_text != SAFE_FALLBACK_DRAFT_TEXT
-    assert "спасибо за сообщение" not in result.draft_text.casefold()
-    assert "humanity_strict_antirepeat_fallback_applied" in result.safety_flags
 
 
 def test_p0_final_override_rotates_repeat_without_partial_value() -> None:
@@ -4049,25 +3702,6 @@ def test_p0_final_override_rotates_repeat_without_partial_value() -> None:
     assert "договор" not in result.draft_text.casefold()
 
 
-def test_antirepeat_strict_keeps_dry_p0_repeat() -> None:
-    base = parse_llm_json(
-        '{"route":"manager_only","draft_text":"'
-        + REFUND_ZERO_COLLECT_SAFE_TEXT
-        + '","message_type":"question","topic_id":"theme:009_refund","confidence_theme":0.96,'
-        '"safety_flags":["high_risk_manager_only","zero_collect_refund_guarded"]}'
-    )
-
-    result = apply_humanity_guards(
-        base,
-        client_message="Верните деньги.",
-        context={
-            "antirepeat_strict_enabled": True,
-            "recent_messages": [f"Ответ: {REFUND_ZERO_COLLECT_SAFE_TEXT}"],
-        },
-    )
-
-    assert result.draft_text == REFUND_ZERO_COLLECT_SAFE_TEXT
-    assert "humanity_strict_antirepeat_fallback_applied" not in result.safety_flags
 
 
 def _step2b1_pipeline_metadata(question: str, facts: dict[str, str]) -> dict:

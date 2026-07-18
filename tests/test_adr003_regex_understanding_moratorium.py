@@ -69,7 +69,6 @@ CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/fact_claim_audit.py": 1,
     "src/mango_mvp/channels/few_shot_reference.py": 1,
     "src/mango_mvp/channels/output_verification_floor.py": 20,
-    "src/mango_mvp/channels/humanity_linter.py": 2,
     "src/mango_mvp/channels/manager_handoff_summary.py": 1,
     "src/mango_mvp/channels/p0_recall_spec.py": 11,
     "src/mango_mvp/channels/rules_engine.py": 7,
@@ -195,9 +194,7 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV",
         "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING",
     ),
-    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "HUMANITY_X2_REWRITE_MODEL_ENV", "TELEGRAM_DRAFT_X2_REWRITE_MODEL"),
     ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "LLM_RETRIEVE_MODEL_ENV", "TELEGRAM_LLM_RETRIEVE_MODEL"),
-    ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "PH2_TONE_ENV", "TELEGRAM_PH2_TONE"),
     (
         "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
         "SEMANTIC_DIAGNOSIS_GUARD_ENV",

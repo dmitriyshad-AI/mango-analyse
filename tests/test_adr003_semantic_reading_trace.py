@@ -14,7 +14,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     apply_known_context_redundant_question_guard,
     apply_live_status_read_plan_trace,
 )
-from mango_mvp.channels.subscription_llm_parts.post_layers import apply_humanity_guards
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_frame_manager_action_gate
 from mango_mvp.channels.subscription_llm_parts.provider import apply_semantic_reading_trace_finalize
 from mango_mvp.channels.subscription_llm_parts.provider import SubscriptionLlmDraftProvider
@@ -1177,30 +1176,6 @@ def test_semantic_frame_manager_action_gate_blocks_forged_seats_default_open_met
     assert result.metadata["semantic_frame_manager_action_gate"]["status"] == "promoted_to_draft_for_manager"
 
 
-def test_post_semantics_class_records_humanity_text_replacement() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="В фактах нет точной информации, передам.",
-        metadata={
-            "semantic_frame": {
-                "source": "inline",
-                "requested_action": "answer_question",
-                "confidence": 0.9,
-            }
-        },
-    )
-
-    guarded = apply_humanity_guards(
-        result,
-        client_message="Есть информация?",
-        context={SEMANTIC_READING_CLASSES_ENV: "post_semantics"},
-    )
-
-    assert guarded.draft_text != result.draft_text
-    trace = guarded.metadata["semantic_reading_trace"][0]
-    assert trace["class"] == "post_semantics"
-    assert trace["metadata"]["stage"] == "humanity"
-    assert trace["metadata"]["text_replacement"] is True
 
 
 def test_intent_actions_check_availability_adds_live_flag_even_when_legacy_already_manager_draft() -> None:

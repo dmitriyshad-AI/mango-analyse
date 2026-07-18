@@ -2285,19 +2285,6 @@ _TONE_CLOSE_P0_FLAGS = {
     "p0_deferral",
 }
 
-# ponytail: temporary OFF rollout; owner Dmitry. After the gate-vs-close
-# micro-measure, make this safety floor unconditional or delete it.
-TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV = "TELEGRAM_TONE_CLOSE_GATE_FINDINGS_FLOOR"
-
-
-def _tone_close_gate_findings_floor_enabled(context: Optional[Mapping[str, Any]]) -> bool:
-    if isinstance(context, Mapping) and TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV in context:
-        return _truthy_value(context.get(TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV))
-    if TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV in os.environ:
-        return _truthy_value(os.getenv(TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV))
-    return False
-
-
 def _tone_close_authoritative_gate_has_findings(result: SubscriptionDraftResult) -> bool:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
@@ -2321,7 +2308,7 @@ def apply_tone_close_detect_layer(
 ) -> SubscriptionDraftResult:
     if not close_detect_enabled(context) or not _tone_close_detect_is_close_message(client_message, context=context):
         return result
-    if _tone_close_gate_findings_floor_enabled(context) and _tone_close_authoritative_gate_has_findings(result):
+    if _tone_close_authoritative_gate_has_findings(result):
         return _tone_close_metadata(result, status="suppressed_authoritative_gate", step="", context=context)
     if _tone_close_detect_is_p0(result, context=context):
         return _tone_close_metadata(result, status="suppressed_p0", step="", context=context)

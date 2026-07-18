@@ -133,7 +133,6 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
-from mango_mvp.channels.subscription_llm_parts.post_layers import TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -5319,7 +5318,6 @@ def test_tone_close_gate_findings_floor_preserves_authoritative_demotion(finding
         context={
             "active_brand": "foton",
             TONE_CLOSE_DETECT_ENV: "1",
-            TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1",
         },
     )
 
@@ -5351,7 +5349,7 @@ def test_tone_close_gate_findings_floor_accepts_each_gate_signal(
     result = apply_tone_close_detect_layer(
         source,
         client_message="Спасибо, всё понятно",
-        context={TONE_CLOSE_DETECT_ENV: "1", TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1"},
+        context={TONE_CLOSE_DETECT_ENV: "1"},
     )
 
     assert result.route == source.route
@@ -5359,7 +5357,7 @@ def test_tone_close_gate_findings_floor_accepts_each_gate_signal(
     assert result.metadata["close_detect"]["status"] == "suppressed_authoritative_gate"
 
 
-def test_tone_close_gate_findings_floor_stays_default_off() -> None:
+def test_tone_close_gate_findings_floor_is_unconditional() -> None:
     source = SubscriptionDraftResult(
         route="draft_for_manager",
         draft_text="Передам вопрос менеджеру.",
@@ -5373,8 +5371,9 @@ def test_tone_close_gate_findings_floor_stays_default_off() -> None:
         context={"active_brand": "foton", TONE_CLOSE_DETECT_ENV: "1"},
     )
 
-    assert result.route == "bot_answer_self_for_pilot"
-    assert result.draft_text != source.draft_text
+    assert result.route == source.route
+    assert result.draft_text == source.draft_text
+    assert result.metadata["close_detect"]["status"] == "suppressed_authoritative_gate"
 
 
 def test_tone_close_gate_findings_floor_keeps_clean_thanks_warm() -> None:
@@ -5391,7 +5390,6 @@ def test_tone_close_gate_findings_floor_keeps_clean_thanks_warm() -> None:
         context={
             "active_brand": "foton",
             TONE_CLOSE_DETECT_ENV: "1",
-            TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV: "1",
         },
     )
 

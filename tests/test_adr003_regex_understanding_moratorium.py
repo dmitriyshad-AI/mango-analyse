@@ -248,11 +248,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC",
     ),
     (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "TONE_CLOSE_GATE_FINDINGS_FLOOR_ENV",
-        "TELEGRAM_TONE_CLOSE_GATE_FINDINGS_FLOOR",
-    ),
-    (
         "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py",
         "RELIABLE_ANSWERER_STEP1_ENV",
         "TELEGRAM_RELIABLE_ANSWERER_STEP1",

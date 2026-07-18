@@ -1284,8 +1284,9 @@ def _extract_provenance_slots_from_client_text(
         if match:
             result["subject"] = _provenance_slot("subject", value, match.group(0), turn_index, message_id, child_key)
             break
+    confirmed_format = {"online": "онлайн", "ochno": "очно"}.get(tag_message_roles(text).training_format, "")
     for pattern, value in _FORMAT_PATTERNS:
-        match = pattern.search(text)
+        match = pattern.search(text) if value == confirmed_format else None
         if match:
             result["format"] = _provenance_slot("format", value, match.group(0), turn_index, message_id, child_key)
             break

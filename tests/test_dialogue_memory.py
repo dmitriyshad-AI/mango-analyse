@@ -451,6 +451,22 @@ def test_memory_provenance_extracts_only_client_slots_with_quote(monkeypatch) ->
     assert view["slot_provenance"]["grade"]["turn_index"] == 1
 
 
+@pytest.mark.parametrize(
+    ("message", "expected_format"),
+    (
+        ("Можно онлайн или очно?", ""),
+        ("Хочу онлайн", "онлайн"),
+        ("Очно не подходит, нужен онлайн", "онлайн"),
+    ),
+)
+def test_memory_provenance_confirms_only_chosen_format(monkeypatch, message: str, expected_format: str) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    view = build_dialogue_memory(current_message=message, active_brand="foton").to_prompt_view()
+
+    assert view["client_confirmed_slots"].get("format", "") == expected_format
+
+
 def test_memory_provenance_does_not_treat_zapisi_as_child_name(monkeypatch) -> None:
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
 

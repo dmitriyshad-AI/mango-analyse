@@ -13196,7 +13196,9 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
     assert "contract_dispute" in on_prompt
     assert "paid_operation_context" in on_prompt
     assert "оценивай не только текущую реплику" in on_prompt
-    assert "Если есть сомнение" in on_prompt
+    assert "Сам факт оплаты не делает обращение P0" in on_prompt
+    assert "Оплата вчера при будущих занятиях" in on_prompt
+    assert "без жалобы, возврата и уже наступившего отсутствия доступа" in on_prompt
     assert "оплаченная смена/курс/запись" in on_prompt
 
 

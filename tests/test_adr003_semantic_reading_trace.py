@@ -10,7 +10,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _conversation_intent_plan_with_model_led,
     _route_templates_transition_trace,
     apply_conversation_intent_plan_guard,
-    apply_dialogue_contract_v2_template_dispatcher,
     apply_known_context_redundant_question_guard,
     apply_live_status_read_plan_trace,
 )
@@ -146,34 +145,6 @@ def test_sense_seats_not_seats_does_not_disable_availability_promise_floor() -> 
     assert "reliable_answerer_availability_promise_blocked" in result.safety_flags
 
 
-def test_off_topic_reading_adds_terminal_template_and_trace() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Расскажу про Фотон.",
-        metadata={
-            "direct_path_model_intent": {
-                "primary_intent": "off_topic",
-                "sense": "other",
-                "scope": "crypto",
-                "confidence": 0.93,
-            },
-            "semantic_frame": {
-                "source": "inline",
-                "requested_action": "answer_question",
-                "confidence": 0.91,
-            },
-        },
-    )
-
-    guarded = apply_dialogue_contract_v2_template_dispatcher(
-        result,
-        client_message="А что думаете про крипту?",
-        context={"active_brand": "foton", SEMANTIC_READING_CLASSES_ENV: "off_topic"},
-    )
-
-    assert guarded.draft_text == OFF_TOPIC_FOTON_SAFE_TEXT
-    assert guarded.metadata["semantic_reading_trace"][0]["class"] == "off_topic"
-    assert guarded.metadata["semantic_reading_trace"][0]["status"] == "applied"
 
 
 def test_off_topic_model_intent_remains_metadata_only_for_conversation_plan() -> None:

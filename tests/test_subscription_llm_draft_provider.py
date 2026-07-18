@@ -40,7 +40,6 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
     DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH,
-    DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY,
     DraftGenerationResult,
     FakeDraftProvider,
     IDENTITY_FOTON_SAFE_TEXT,
@@ -71,7 +70,6 @@ from mango_mvp.channels.subscription_llm import (
     VERIFIER_HANDOFF_CLAIMS_ENV,
     apply_a2_proactive_layer,
     apply_authoritative_output_gate,
-    apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
     apply_tone_close_detect_layer,
     apply_tone_sell_prompt_observer,
@@ -95,14 +93,11 @@ from mango_mvp.channels.subscription_llm import (
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
     _claim_supported_by_facts,
-    _context_with_selling_thread_slots,
     _fresh_fact_texts,
     _keep_answer_supported,
     _p0_text_with_antirepeat,
-    _validated_guardchain_recovery_candidate,
     _verified_informational_answer,
     contains_bot_identity_disclosure,
-    decide_route,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
     find_unsupported_numeric_promises,
@@ -115,7 +110,6 @@ from mango_mvp.channels.subscription_llm import (
     strip_internal_service_markers,
     known_context_fields,
 )
-from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -521,23 +515,6 @@ def test_draft_text_blocks_vendor_prompt_or_identity_lies() -> None:
         assert contains_bot_identity_disclosure(f"Тест: {phrase}")
 
 
-def test_direct_identity_question_gets_brand_safe_policy_c_answer() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        topic_id="service:S5_general_consultation",
-        topic_confidence=0.95,
-        draft_text="Здравствуйте! Чем помочь?",
-    )
-
-    foton = apply_high_risk_content_guards(base, client_message="Вы бот или человек?", context={"active_brand": "foton"})
-    assert foton.route == "draft_for_manager"
-    assert "цифровой помощник Фотона" in foton.draft_text
-    assert "GPT" not in foton.draft_text
-
-    unpk = apply_high_risk_content_guards(base, client_message="Ты GPT?", context={"active_brand": "unpk"})
-    assert unpk.route == "draft_for_manager"
-    assert "цифровой помощник" in unpk.draft_text
-    assert "GPT" not in unpk.draft_text
 
 
 def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> None:
@@ -665,95 +642,12 @@ def test_conversation_intent_plan_repairs_false_legal_from_model_when_current_me
     assert "high_risk_manager_only" not in guarded.safety_flags
 
 
-def test_high_risk_guards_do_not_recreate_false_legal_when_plan_is_semantic_non_p0() -> None:
-    result = apply_high_risk_content_guards(
-        SubscriptionDraftResult(
-            route="draft_for_manager",
-            topic_id="theme:029_legal_question",
-            topic_confidence=0.84,
-            draft_text="Можно оформить дистанционно: приезжать не нужно. Передам менеджеру запрос на запись.",
-        ),
-        client_message="А чтобы записаться или с менеджером обсудить, надо приезжать или можно дистанционно?",
-        context={
-            "active_brand": "unpk",
-            "conversation_intent_plan": {
-                "primary_intent": "format",
-                "topic_id": "theme:014_format",
-                "answer_policy": "answer_directly_if_fact_verified",
-                "route_bias": "bot_answer_self_for_pilot",
-                "risk_signals": [],
-            },
-        },
-    )
-
-    assert result.route == "draft_for_manager"
-    assert "zero_collect_legal_guarded" not in result.safety_flags
-    assert "Приняли обращение" not in result.draft_text
 
 
-def test_soft_negative_feedback_is_not_treated_as_complaint_p0() -> None:
-    result = apply_high_risk_content_guards(
-        SubscriptionDraftResult(
-            route="draft_for_manager",
-            topic_id="theme:023_trial_class",
-            topic_confidence=0.9,
-            draft_text="Передам менеджеру контекст.",
-        ),
-        client_message="Я же про очный курс спрашиваю. Похоже, вы не можете ответить, подумаю тогда.",
-        context={
-            "active_brand": "unpk",
-            "conversation_intent_plan": {
-                "primary_intent": "format",
-                "topic_id": "theme:014_format",
-                "answer_policy": "answer_directly_if_fact_verified",
-                "route_bias": "bot_answer_self_for_pilot",
-                "risk_signals": [],
-            },
-        },
-    )
-
-    assert result.route == "draft_for_manager"
-    assert "complaint_apology_guarded" not in result.safety_flags
-    assert "high_risk_manager_only" not in result.safety_flags
-    assert result.draft_text.startswith("Поняла, давайте не буду повторять общий ответ")
 
 
-def test_tax_followup_with_manager_word_does_not_turn_into_presale_refund() -> None:
-    base = SubscriptionDraftResult(
-        route="draft_for_manager",
-        topic_id="service:S5_general_consultation",
-        topic_confidence=0.8,
-        draft_text="Да, менеджер пришлёт шаблон заявления.",
-        message_type="context_update",
-    )
-
-    guarded = apply_high_risk_content_guards(
-        base,
-        client_message="Поняла, тогда заявление у менеджера попрошу",
-        context={"active_brand": "unpk", "recent_messages": ["За обучение ребёнка можно вернуть до 14 300 ₽ в год."]},
-    )
-
-    assert "presale_refund_policy_manager_check" not in guarded.safety_flags
-    assert "условия возврата" not in guarded.draft_text.casefold()
 
 
-def test_unpk_bank_installment_phrase_is_not_cross_brand_leak() -> None:
-    base = SubscriptionDraftResult(
-        route="draft_for_manager",
-        topic_id="theme:006_installment",
-        topic_confidence=0.9,
-        draft_text="В УНПК нет рассрочки через банк, можно платить помесячно.",
-        message_type="question",
-    )
-
-    guarded = apply_brand_separation_guard(
-        base,
-        client_message="У вас есть рассрочка через банк?",
-        context={"active_brand": "unpk", "conversation_intent_plan": {"primary_intent": "installment"}},
-    )
-
-    assert "cross_brand_client_text_blocked" not in guarded.safety_flags
-    assert "рассрочки через банк" in guarded.draft_text
 
 
 def test_internal_manager_note_is_removed_from_client_text() -> None:
@@ -826,151 +720,16 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
 
 
 
-def test_final_p0_override_replaces_non_p0_draft_text() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Стоимость зависит от класса, подскажите детали.",'
-        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Если не вернете деньги, пойду в суд.",
-        context={"active_brand": "unpk"},
-    )
-
-    assert result.route == "manager_only"
-    assert result.topic_id == "theme:029_legal_question"
-    assert result.draft_text == LEGAL_THREAT_SAFE_TEXT
-    assert "final_p0_text_override" in result.safety_flags
-    assert "high_risk_manager_only" in result.safety_flags
 
 
-def test_payment_dispute_client_message_gets_final_p0_manager_only() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Оплату можно проверить по личному кабинету.",'
-        '"message_type":"question","topic_id":"theme:003_payment_status","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Оплатила вчера, но оплату не видно.",
-        context={"active_brand": "foton"},
-    )
-
-    assert result.route == "manager_only"
-    assert result.topic_id == "theme:003_payment_status"
-    assert result.draft_text == PAYMENT_DISPUTE_SAFE_TEXT
-    assert "final_p0_text_override" in result.safety_flags
-    assert "payment_dispute_manager_only" in result.safety_flags
 
 
-def test_double_charge_refund_mid_dialog_gets_final_p0_manager_only() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Сейчас помогу подобрать курс и стоимость.",'
-        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="С меня дважды списали деньги за оплату, верните одну.",
-        context={
-            "active_brand": "foton",
-            "conversation_intent_plan": {
-                "primary_intent": "payment_dispute",
-                "topic_id": "theme:003_payment_status",
-                "route_bias": "manager_only",
-                "risk_signals": ["payment_dispute"],
-            },
-        },
-    )
-
-    assert result.route == "manager_only"
-    assert result.topic_id in {"theme:003_payment_status", "theme:009_refund"}
-    assert "подобрать курс" not in result.draft_text
-    assert "final_p0_text_override" in result.safety_flags
-    assert "high_risk_manager_only" in result.safety_flags
 
 
-def test_p0_latch_keeps_safe_followup_manager_only_after_dispute() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Годовая цена зависит от класса.",'
-        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="А теперь скажите цену.",
-        context={
-            "active_brand": "foton",
-            "conversation_intent_plan": {
-                "primary_intent": "pricing",
-                "risk_signals": [],
-                "route_bias": "bot_answer_self_for_pilot",
-            },
-            "dialogue_memory_view": {
-                "p0_latch": {
-                    "active": True,
-                    "codes": ["payment_dispute"],
-                    "primary_risk": "payment_dispute",
-                }
-            },
-        },
-    )
-
-    assert result.route == "manager_only"
-    assert result.topic_id == "theme:003_payment_status"
-    assert result.draft_text == PAYMENT_DISPUTE_SAFE_TEXT
-    assert "final_p0_text_override" in result.safety_flags
 
 
-def test_answer_contract_prevents_green_installment_fallback_lock_in() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"В УНПК можно платить помесячно, за семестр или за год.",'
-        '"message_type":"question","topic_id":"theme:006_installment","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="А банк не участвует? Можно помесячно?",
-        context={
-            "active_brand": "unpk",
-            "answer_contract": {
-                "primary_intent": "installment",
-                "direct_question": "А банк не участвует? Можно помесячно?",
-                "must_answer_first": True,
-                "p0_required": False,
-            },
-        },
-    )
-
-    assert result.draft_text != UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT
-    assert "unpk_installment_approved_fallback_applied" not in result.safety_flags
-    assert result.metadata["answer_contract_controls_green_templates"] is True
 
 
-def test_answer_contract_can_skip_terminal_green_contact_template() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Позвонить нам можно по телефону центра, менеджер подскажет детали.",'
-        '"message_type":"question","topic_id":"service:S5_general_consultation","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Дайте телефон, пожалуйста.",
-        context={
-            "active_brand": "foton",
-            "answer_contract": {
-                "primary_intent": "general_consultation",
-                "direct_question": "Дайте телефон, пожалуйста.",
-                "must_answer_first": True,
-                "p0_required": False,
-            },
-        },
-    )
-
-    assert result.draft_text != CONTACT_FOTON_SAFE_TEXT
-    assert "terminal_safe_template_applied" not in result.safety_flags
-    assert result.metadata["terminal_green_template_skipped_by_answer_contract"] is True
 
 
 def test_known_context_does_not_infer_programming_from_program_word() -> None:
@@ -985,220 +744,20 @@ def test_known_context_does_not_infer_programming_from_program_word() -> None:
     assert "программирование" not in known["subject"]
 
 
-def test_answer_contract_can_skip_missing_fact_template_for_safe_schedule() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Расписание зависит от группы.",'
-        '"message_type":"question","topic_id":"theme:013_schedule","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Во сколько проходят занятия по физике?",
-        context={
-            "active_brand": "foton",
-            "facts_context": {"client_safe": True, "fresh": False, "facts_missing": True},
-            "answer_contract": {
-                "primary_intent": "schedule",
-                "direct_question": "Во сколько проходят занятия по физике?",
-                "must_answer_first": True,
-                "p0_required": False,
-            },
-        },
-    )
-
-    assert "missing_fact_helpful_template_applied" not in result.safety_flags
-    assert "Напишите, пожалуйста, класс ребёнка" not in result.draft_text
 
 
-def test_fact_scope_guard_blocks_office_hours_as_class_schedule_answer() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"График: Пн-Вс с 10:00 до 18:00.",'
-        '"message_type":"question","topic_id":"theme:013_schedule","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="По каким дням проходят занятия по физике?",
-        context={
-            "active_brand": "foton",
-            "conversation_intent_plan": {
-                "primary_intent": "schedule",
-                "topic_id": "theme:013_schedule",
-                "fact_scope": "class_schedule",
-                "blocked_neighbor_scopes": ["office_hours"],
-            },
-        },
-    )
-
-    assert "расписание занятий" in result.draft_text
-    assert "10:00" not in result.draft_text
-    assert "fact_scope_guard_applied" in result.safety_flags
 
 
-def test_fact_scope_guard_blocks_tax_answer_for_matkap_question() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Налоговый вычет оформляется через ФНС, справка готовится до 10 дней.",'
-        '"message_type":"question","topic_id":"theme:007_matkap_payment","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Маткапиталом можно оплатить? Какие документы и сколько СФР смотрит?",
-        context={
-            "active_brand": "unpk",
-            "conversation_intent_plan": {
-                "primary_intent": "matkap",
-                "topic_id": "theme:007_matkap_payment",
-                "fact_scope": "matkap_process",
-                "blocked_neighbor_scopes": ["tax_deduction"],
-            },
-        },
-    )
-
-    assert "налоговый" not in result.draft_text.casefold()
-    assert "ФНС" not in result.draft_text
-    assert any(marker in result.draft_text.casefold() for marker in ("маткапитал", "материнским капитал"))
-    assert any(flag in result.safety_flags for flag in ("fact_scope_guard_applied", "matkap_safe_template_applied"))
 
 
-def test_scope_fact_guard_blocks_neighbor_discount_when_schedule_fact_missing() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"При оплате за семестр скидка 10%, за год — 14%.",'
-        '"message_type":"question","topic_id":"theme:014_format","confidence_theme":0.91,'
-        '"missing_facts":["schedule.current"]}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="По каким дням проходят занятия на Сретенке?",
-        context={
-            "active_brand": "unpk",
-            "scope_fact_guard_enabled": True,
-            "conversation_intent_plan": {
-                "primary_intent": "schedule",
-                "topic_id": "theme:013_schedule",
-                "fact_scope": "class_schedule",
-                "blocked_neighbor_scopes": ["discount_second_subject", "discount_multichild", "discount_stacking"],
-                "required_fact_keys": ["schedule.current"],
-            },
-            "facts_context": {"facts_missing": True, "required_fact_keys": ["schedule.current"]},
-        },
-    )
-
-    assert "10%" not in result.draft_text
-    assert "14%" not in result.draft_text
-    assert "дни и время занятий" in result.draft_text
-    assert "scope_fact_guard_applied" in result.safety_flags
 
 
-def test_scope_fact_guard_blocks_matkap_age_when_documents_fact_missing() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Возрастной лимит — до 25 лет.",'
-        '"message_type":"question","topic_id":"service:S5_general_consultation","confidence_theme":0.91,'
-        '"missing_facts":["matkap_documents.current"]}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Какие документы нужны?",
-        context={
-            "active_brand": "foton",
-            "scope_fact_guard_enabled": True,
-            "conversation_intent_plan": {
-                "primary_intent": "matkap",
-                "topic_id": "theme:007_matkap_payment",
-                "fact_scope": "matkap_process",
-                "blocked_neighbor_scopes": ["matkap_age_limit", "tax_deduction"],
-                "required_fact_keys": ["matkap_documents.current"],
-            },
-            "facts_context": {"facts_missing": True, "required_fact_keys": ["matkap_documents.current"]},
-        },
-    )
-
-    assert "25 лет" not in result.draft_text
-    assert "документы и порядок оформления маткапитала" in result.draft_text
-    assert "scope_fact_guard_applied" in result.safety_flags
 
 
-def test_scope_fact_guard_blocks_office_hours_when_refund_policy_fact_missing() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Контакты менеджера и расписание офиса: Пн-Вс 10:00-18:00.",'
-        '"message_type":"question","topic_id":"theme:013_schedule","confidence_theme":0.86,'
-        '"missing_facts":["refund_policy.current"]}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="А это оформляется по заявлению?",
-        context={
-            "active_brand": "foton",
-            "scope_fact_guard_enabled": True,
-            "conversation_intent_plan": {
-                "primary_intent": "refund_policy",
-                "topic_id": "theme:009_refund",
-                "fact_scope": "refund_policy",
-                "blocked_neighbor_scopes": ["office_hours", "class_schedule"],
-                "required_fact_keys": ["refund_policy.current"],
-            },
-            "facts_context": {
-                "facts_missing": True,
-                "required_fact_keys": ["refund_policy.current"],
-                "missing_facts": ["refund_policy.current"],
-                "fact_scope": "refund_policy",
-                "blocked_neighbor_scopes": ["office_hours", "class_schedule"],
-            },
-        },
-    )
-
-    text = result.draft_text.casefold()
-    assert result.route == "draft_for_manager"
-    assert "scope_fact_guard_applied" in result.safety_flags
-    assert "пн-вс" not in text
-    assert "10:00" not in text
-    assert "порядок возврата" in text
 
 
-def test_forbidden_pair_guard_blocks_matkap_installment_mix() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Маткапиталом можно оплатить, а ещё можно оформить рассрочку или Долями.",'
-        '"message_type":"question","topic_id":"theme:007_matkap_payment","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Можно маткапиталом и сразу в рассрочку?",
-        context={
-            "active_brand": "foton",
-            "conversation_intent_plan": {
-                "primary_intent": "matkap",
-                "topic_id": "theme:007_matkap_payment",
-                "answer_topics": ["matkap", "installment"],
-                "forbidden_pairs": ["matkap+installment"],
-                "template_allowed": False,
-            },
-        },
-    )
-
-    assert "рассроч" not in result.draft_text.casefold()
-    assert "долями" not in result.draft_text.casefold()
-    assert "маткапитал" in result.draft_text.casefold()
-    assert "forbidden_pair_guard_applied" in result.safety_flags
 
 
-def test_group_vs_individual_question_does_not_force_individual_handoff() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Есть групповые форматы, менеджер поможет выбрать по уровню.",'
-        '"message_type":"question","topic_id":"theme:014_format","confidence_theme":0.91}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Есть группы по физике или только индивидуально?",
-        context={"active_brand": "foton"},
-    )
-
-    assert result.draft_text != "Менеджер свяжется и подскажет варианты индивидуальных занятий."
-    assert "terminal_safe_template_applied" not in result.safety_flags
 
 
 def test_draft_text_blocks_manager_placeholder() -> None:
@@ -1395,75 +954,10 @@ def _route_shield_pipeline_result(
     )
 
 
-def test_pravka4_decide_route_does_not_flip_default_before_veto_shield_is_green() -> None:
-    decision = decide_route(
-        SubscriptionDraftResult(
-            route="draft_for_manager",
-            draft_text="Курс стоит 49 000 ₽.",
-            message_type="question",
-            topic_id="theme:001_pricing",
-        ),
-        client_message="Сколько стоит?",
-        context={
-            "active_brand": "unpk",
-            "autonomy_policy": {"allow_autonomous": True},
-            "client_safe_fact_verified": True,
-        },
-    )
-
-    assert decision.route == "draft_for_manager"
-    assert decision.autonomous_candidate is True
 
 
-def test_memory_followup_route_promotes_answered_topic_with_covering_fact() -> None:
-    decision = decide_route(
-        SubscriptionDraftResult(
-            route="draft_for_manager",
-            draft_text="По подтверждённому факту отвечу по онлайн-формату.",
-            message_type="question",
-            topic_id="theme:001_pricing",
-        ),
-        client_message="а онлайн для 10 класса?",
-        context={
-            "active_brand": "foton",
-            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
-            "client_safe_fact_verified": True,
-            "dialogue_memory_view": {
-                "route_history": ["bot_answer_self_for_pilot"],
-                "answered_questions": ["сколько стоит информатика для 10 класса"],
-                "topic_focus": {"subject": "информатика", "grade": "10", "format": "очно", "product_family": "regular_course"},
-            },
-        },
-    )
-
-    assert decision.route == "bot_answer_self_for_pilot"
-    assert "dialogue_memory_followup_autonomy" in decision.safety_flags
 
 
-def test_memory_followup_route_does_not_override_p0() -> None:
-    decision = decide_route(
-        SubscriptionDraftResult(
-            route="draft_for_manager",
-            draft_text="По подтверждённому факту отвечу по онлайн-формату.",
-            message_type="question",
-            topic_id="theme:001_pricing",
-        ),
-        client_message="я оплатил, занятий нет, верните деньги",
-        context={
-            "active_brand": "foton",
-            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
-            "client_safe_fact_verified": True,
-            "dialogue_memory_view": {
-                "route_history": ["bot_answer_self_for_pilot"],
-                "answered_questions": ["сколько стоит информатика для 10 класса"],
-                "topic_focus": {"subject": "информатика", "grade": "10", "format": "очно", "product_family": "regular_course"},
-            },
-        },
-    )
-
-    assert decision.route == "manager_only"
-    assert decision.veto_category == "high_risk"
-    assert "high_risk_manager_only" in decision.safety_flags
 
 
 def test_pravka5_semantic_critic_blocks_wrong_scope_and_contradicted_claims() -> None:
@@ -1742,59 +1236,8 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
     assert "Какая цена для 6 класса" not in detail
 
 
-def test_brand_separation_guard_uses_canonical_cross_brand_text_on_first_block() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="У Фотона и УНПК одинаковые условия по рассрочке.",
-        message_type="question",
-        topic_id="service:S5_general_consultation",
-    )
-
-    guarded = apply_brand_separation_guard(
-        result,
-        client_message="У Фотона такие же условия, как у УНПК?",
-        context={"active_brand": "unpk"},
-    )
-
-    assert guarded.route == "manager_only"
-    assert "отдельные организации" in guarded.draft_text.casefold()
-    assert "фотон" not in guarded.draft_text.casefold()
-    assert "унпк" not in guarded.draft_text.casefold()
-    assert "cross_brand_safe_template_applied" in guarded.safety_flags
 
 
-def test_block2_part_a_recovery_candidate_does_not_yield_on_high_risk_or_protective_flags() -> None:
-    facts = {"tax.knd_certificate": "Фотон: для налогового вычета можно запросить справку КНД."}
-    candidate = "Фотон: для налогового вычета можно запросить справку КНД."
-    metadata = _a2_pipeline_metadata(
-        question="Можно получить налоговый вычет?",
-        facts=facts,
-        recovery_candidate=candidate,
-    )
-
-    high_risk = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
-        safety_flags=("tax_safe_template_applied", "high_risk_manager_only"),
-        metadata=metadata,
-    )
-    assert _validated_guardchain_recovery_candidate(
-        high_risk,
-        client_message="Оплатил, занятий нет, верните деньги. Можно налоговый вычет?",
-        context={"active_brand": "foton"},
-    ) == ""
-
-    protective = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text=RESULT_GUARANTEE_SAFE_TEXT,
-        safety_flags=("tax_safe_template_applied", "result_guarantee_safe_template_applied"),
-        metadata=metadata,
-    )
-    assert _validated_guardchain_recovery_candidate(
-        protective,
-        client_message="Гарантируете результат и налоговый вычет?",
-        context={"active_brand": "foton"},
-    ) == ""
 
 
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:
@@ -3682,24 +3125,6 @@ def test_fake_provider_records_prompt() -> None:
 
 
 
-def test_p0_final_override_rotates_repeat_without_partial_value() -> None:
-    base = parse_llm_json(
-        '{"route":"bot_answer_self_for_pilot","draft_text":"Верните деньги, напишите номер договора.",'
-        '"message_type":"question","topic_id":"theme:009_refund","confidence_theme":0.96}'
-    )
-
-    result = apply_high_risk_content_guards(
-        base,
-        client_message="Верните деньги, я недовольна.",
-        context={"recent_messages": [f"Ответ: {REFUND_ZERO_COLLECT_SAFE_TEXT}"]},
-    )
-
-    assert result.route == "manager_only"
-    assert result.draft_text != REFUND_ZERO_COLLECT_SAFE_TEXT
-    assert "возврат" in result.draft_text.casefold()
-    assert "ничего дополнительно" in result.draft_text.casefold()
-    assert "скидк" not in result.draft_text.casefold()
-    assert "договор" not in result.draft_text.casefold()
 
 
 
@@ -4807,42 +4232,6 @@ def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
     assert "Верни СТРОГО JSON" in prompt
 
 
-def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:
-    contract = {
-        "current_question": "А очно тогда сколько?",
-        "planner_slots": {},
-        "known_slots": {},
-    }
-    context = {
-        "active_brand": "foton",
-        "TELEGRAM_A_THREAD": True,
-        "dialogue_memory_view": {
-            "known_slots": {"grade": {"value": "10"}, "format": {"value": "онлайн"}},
-            "topic_focus": {"subject": "информатика", "format": "онлайн", "active_brand": "unpk"},
-        },
-    }
-
-    threaded = _context_with_selling_thread_slots(context, contract=contract, client_message="А очно тогда сколько?")
-    off = _context_with_selling_thread_slots({**context, "TELEGRAM_A_THREAD": False}, contract=contract, client_message="А очно тогда сколько?")
-
-    assert threaded is not None
-    assert threaded["selling_thread_slots"]["grade"] == "10"
-    assert threaded["selling_thread_slots"]["subject"] == "информатика"
-    assert threaded["selling_thread_slots"]["format"] == "очно"
-    assert threaded["selling_thread_slots"]["active_brand"] == "foton"
-    assert off == {**context, "TELEGRAM_A_THREAD": False}
-
-
-def test_step4_phase2_demolition_registry_keeps_only_safety_specs() -> None:
-    names = {spec.name for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY}
-
-    assert names == {"cross_brand", "terminal", "result_guarantee", "admission_guarantee"}
-    assert not {
-        "matkap",
-        "tax",
-        "olympiad_online",
-        "trial",
-    }.intersection(names)
 
 
 class _DirectPathProvider(SubscriptionLlmDraftProvider):
@@ -5448,110 +4837,10 @@ def _wide_pack_text(pack: Mapping[str, object], keys: Sequence[str] | None = Non
     return _direct_path_render_fact_block(facts, fact_metadata=meta, keys=tuple(str(key) for key in selected))
 
 
-def test_template_from_kb_off_keeps_literal_terminal_template() -> None:
-    context = {
-        "active_brand": "foton",
-        "snapshot_path": str(V67_SNAPSHOT_PATH),
-        subscription_llm.TEMPLATE_FROM_KB_ENV: "0",
-    }
-
-    text = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Где вы в Москве?",
-        context=context,
-    )
-
-    assert text == ADDRESS_FOTON_MOSCOW_SAFE_TEXT
 
 
-def test_template_from_kb_renders_address_and_contacts_from_v67_snapshot() -> None:
-    foton_context = {
-        "active_brand": "foton",
-        "snapshot_path": str(V67_SNAPSHOT_PATH),
-        subscription_llm.TEMPLATE_FROM_KB_ENV: "1",
-    }
-    unpk_context = {
-        "active_brand": "unpk",
-        "snapshot_path": str(V67_SNAPSHOT_PATH),
-        subscription_llm.TEMPLATE_FROM_KB_ENV: "1",
-    }
-
-    foton_address = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Где вы в Москве?",
-        context=foton_context,
-    )
-    assert "Верхняя Красносельская ул., 30" in foton_address
-    assert "Красносельская" in foton_address
-    assert foton_address != ADDRESS_FOTON_MOSCOW_SAFE_TEXT
-
-    foton_contacts = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Дайте телефон и почту, пожалуйста",
-        context=foton_context,
-    )
-    assert "8 (495) 500-25-88" in foton_contacts
-    assert "8 (800) 550-25-88" in foton_contacts
-    assert "edu@cdpofoton.ru" in foton_contacts
-    assert foton_context["template_from_kb_trace"][-1]["fact_key"] == "contacts_foton.phone+toll_free+email"
-
-    unpk_contacts = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Дайте телефон, пожалуйста",
-        context=unpk_context,
-    )
-    assert "+7 (495) 150-81-51" in unpk_contacts
-    assert "8 (800) 500-81-51" in unpk_contacts
-    assert "edu@kmipt.ru" in unpk_contacts
-    rendered_phone = subscription_llm._direct_path_template_from_fact(
-        active_brand="unpk",
-        fact_key="contacts_unpk.phone",
-        literal_text="literal",
-        neutral_fallback="fallback",
-        context=unpk_context,
-        render=subscription_llm._direct_path_fact_value,
-    )
-    assert rendered_phone == "+7 (495) 150-81-51"
 
 
-def test_template_from_kb_pilot_gold_renders_wave1_templates_from_default_snapshot(monkeypatch) -> None:
-    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
-        monkeypatch.delenv(key, raising=False)
-    context = {
-        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
-        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
-    }
-
-    cases = (
-        (
-            "foton",
-            "Где вы в Москве?",
-            "Верхняя Красносельская ул., 30",
-            ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
-        ),
-        (
-            "unpk",
-            "Где в Москве обычные занятия?",
-            "Сретенка, 20",
-            ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
-        ),
-        (
-            "unpk",
-            "Какие площадки?",
-            "Площадки УНПК:",
-            ADDRESS_UNPK_SAFE_TEXT,
-        ),
-    )
-
-    for brand, message, expected, literal in cases:
-        rendered = subscription_llm._terminal_safe_template(
-            SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-            client_message=message,
-            context={**context, "active_brand": brand},
-        )
-        assert expected in rendered
-        assert rendered != literal
-        assert "лучше уточнить" not in rendered.casefold()
 
 
 def test_template_from_kb_contact_trace_is_visible_in_direct_metadata(monkeypatch) -> None:
@@ -5575,23 +4864,6 @@ def test_template_from_kb_contact_trace_is_visible_in_direct_metadata(monkeypatc
     assert result.metadata["template_from_kb_trace"] == trace
 
 
-def test_template_from_kb_pilot_gold_explicit_off_returns_literal(monkeypatch) -> None:
-    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
-        monkeypatch.delenv(key, raising=False)
-    context = {
-        "active_brand": "foton",
-        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
-        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
-        TEMPLATE_FROM_KB_ENV: "0",
-    }
-
-    rendered = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Где вы в Москве?",
-        context=context,
-    )
-
-    assert rendered == ADDRESS_FOTON_MOSCOW_SAFE_TEXT
 
 
 def test_template_from_kb_uses_neutral_fallback_for_missing_or_foreign_fact() -> None:
@@ -5630,18 +4902,6 @@ def test_direct_path_contact_question_selects_contact_facts_from_snapshot() -> N
     assert "contacts_foton.email" in pack["facts"]
 
 
-def test_terminal_contact_request_ignores_client_own_contact() -> None:
-    text = subscription_llm._terminal_safe_template(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
-        client_message="Мой телефон +7 999 000-00-00, моя почта test@example.com",
-        context={
-            "active_brand": "foton",
-            "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
-            TEMPLATE_FROM_KB_ENV: "1",
-        },
-    )
-
-    assert text == ""
 
 
 def test_direct_path_contact_facts_do_not_answer_class_schedule() -> None:
@@ -9118,30 +8378,8 @@ def test_direct_path_gate_keeps_safe_manager_check_before_booking() -> None:
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
-def test_brand_guard_blocks_any_brand_token_when_active_brand_unknown() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Фотон поможет подобрать группу по математике.",
-    )
-
-    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "unknown"})
-
-    assert guarded.route == "manager_only"
-    assert "brand_unknown_client_text_blocked" in guarded.safety_flags
-    assert guarded.metadata["forbidden_brand_terms"] == ["foton"]
 
 
-def test_brand_guard_blocks_two_brands_even_when_active_brand_known() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="В Фотоне и УНПК МФТИ условия похожи, можно выбрать любой вариант.",
-    )
-
-    guarded = apply_brand_separation_guard(result, client_message="Что выбрать?", context={"active_brand": "foton"})
-
-    assert guarded.route == "manager_only"
-    assert "cross_brand_client_text_blocked" in guarded.safety_flags
-    assert set(guarded.metadata["forbidden_brand_terms"]) == {"foton", "unpk"}
 
 
 def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:

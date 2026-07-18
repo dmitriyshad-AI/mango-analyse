@@ -25,14 +25,6 @@
   },
   {
     "flags": "",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\d[\\d\\s\\u00a0]*(?:[.,]\\d+)?\\s*(?:₽|%|руб(?:\\.|лей|ля|ль)?|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?)?",
-    "pattern_sha256": "325fcab4614b7467d159768e90fb7f13ee6efdd87e8f682216c43045ffe40577",
-    "qualname": "<module>",
-    "target": "_SELLING_NUMBER_RE"
-  },
-  {
-    "flags": "",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "(?P<prefix>(?i:\\b(?:(?:зовут|фио|имя)\\s*[:—-]?\\s*|(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|е",
     "pattern_sha256": "36e69f4e0ac95e55e409623f8115152ab8350d9869f4d1b463c072ef74e99611",
@@ -734,54 +726,6 @@
     "pattern_sha256": "68e8b1fa4cfe78ac70337a47dce73f32eb46cab59cff77244d2ad1830d1dbfc8",
     "qualname": "<module>",
     "target": "REPUTATION_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:подобрать|подсказать\\s+удобн\\w*\\s+вариант|оставьте\\s+(?:телефон|номер|контакт)|позвоним|свяжемся|как\\s+записаться|записаться|менеджер\\s+подбер[её]т|спокойн",
-    "pattern_sha256": "51c542c8bd3737e21ef90dd4cd175946c6ab4930f45bfe5da12dedcc3e49208b",
-    "qualname": "<module>",
-    "target": "_SELLING_VISIBLE_STEP_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "адрес|место\\s+занятий|площадк|сретен|красносельск|скорняж|пацаев|институтск|контакт|телефон|на\\s+связи|ежедневно\\s+с\\s+\\d",
-    "pattern_sha256": "75ad6bc7282b2f886fd02f8124dd2b9560ef8f9f4e37333ae4dabeeda56b1cc9",
-    "qualname": "<module>",
-    "target": "_BAD_SELLING_SUPPORT_FACT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "гарантир|100\\s*%|обязательно\\s+(?:поступ|сдад|получ)|точно\\s+(?:поступ|сдад|получ)",
-    "pattern_sha256": "d91c5d8aa59855704e6e2a28223a2cbf464e74cdc7dffa8f5338aed37619518b",
-    "qualname": "<module>",
-    "target": "_SELLING_GUARANTEE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "диагноз|продиагностир|исправим\\s+на\\s+(?:5|пят)|подтянем\\s+на\\s+(?:5|пят)|сделаем\\s+(?:отличник|хорошист)|реб[её]нок\\s+точно\\s+станет",
-    "pattern_sha256": "2baf203d304c1eac74fd0f0a5e90a15045694cd9fc0032179a01f7414ec95913",
-    "qualname": "<module>",
-    "target": "_SELLING_DIAGNOSIS_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "как\\s+(?:записать|записаться|оплат|внести)|хочу\\s+запис|готов[аы]?\\s+(?:запис|оформ)|запишите|свяжите|позвоните|оставлю\\s+(?:телефон|номер)|можно\\s+оплатить|где",
-    "pattern_sha256": "c059c8ebf52bf316baa60548f5aa90e944d4559a8e814f81cb178c162ecd31be",
-    "qualname": "<module>",
-    "target": "_A2_PROCEED_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "только\\s+сегодня|успейт|последн(?:ий|яя)\\s+шанс|решайт[е]?\\s+сейчас|срочно\\s+(?:оформ|запис|реш)|иначе\\s+(?:мест|скид|цен)",
-    "pattern_sha256": "b068abf4c66e82a0e79ef19ceb61bbc646e8c49cbd92a27ad67354877b31a75b",
-    "qualname": "<module>",
-    "target": "_SELLING_PRESSURE_RE"
   },
   {
     "flags": "re.I",

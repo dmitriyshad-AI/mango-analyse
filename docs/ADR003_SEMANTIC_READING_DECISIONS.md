@@ -144,6 +144,8 @@
 - Решение: `scripts/report_adr003_semantic_frame_eval.py` считает `reader_agreement` между legacy-детекторами и pure readers (`sense_seats_reading_decision`, `off_topic_reading_decision`, `slots_reading_candidates`) на inline-транскриптах.
 - Обоснование: Ш2 должен доказать готовность к переключению читателей без новых M1-прогонов и без включения масок. Отчёт показывает расхождения, но не меняет route/text.
 - Сырьё: `test_report_includes_reader_agreement_for_pure_semantic_readers`.
+
+Обновление 2026-07-19: после удаления legacy `policy_routing`-слот-парсера `reader_agreement` больше не сравнивает grade/subject/format с мёртвым keyword baseline. Сохраняются сравнения живых `sense_seats` и `off_topic`; новые правила понимания текста не добавлены.
 - Аудит: PASS; аудитор указал, что текущий report умел inline-vs-posthoc, но не умел offline-agreement чистых читателей.
 
 ### D21. `draft_loop` запись `last_semantic_reading` не считать безусловной

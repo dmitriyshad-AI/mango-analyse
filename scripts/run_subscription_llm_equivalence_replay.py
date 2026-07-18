@@ -688,20 +688,6 @@ def case_night_note(case: Mapping[str, Any]) -> dict[str, Any]:
     return make_record(case, branch="final_gate", context=context, result=result, prompts=())
 
 
-def case_brand_separation(case: Mapping[str, Any]) -> dict[str, Any]:
-    from mango_mvp.channels import subscription_llm as llm
-
-    context = base_context(active_brand="unpk")
-    source = llm.SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="У Фотона и УНПК одинаковые условия по рассрочке.",
-        message_type="question",
-        topic_id="service:S5_general_consultation",
-    )
-    result = llm.apply_brand_separation_guard(source, client_message=str(case["client_message"]), context=context)
-    return make_record(case, branch="guard", context=context, result=result, prompts=())
-
-
 def case_payment_confirmation(case: Mapping[str, Any]) -> dict[str, Any]:
     from mango_mvp.channels import subscription_llm as llm
 
@@ -808,7 +794,6 @@ CASE_HANDLERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "direct_default_gold_pack_path": case_direct_default_gold_pack_path,
     "direct_llm_retrieve_fake": case_direct_llm_retrieve_fake,
     "route_rubric_regen": case_route_rubric_regen,
-    "brand_separation": case_brand_separation,
     "payment_confirmation": case_payment_confirmation,
     "known_context_no_reask": case_known_context_no_reask,
     "night_note": case_night_note,

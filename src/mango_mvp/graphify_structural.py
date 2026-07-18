@@ -88,9 +88,7 @@ KB_V65_STRUCTURAL_PATHS = (
     "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/gold_answers_v3.yaml",
 )
 
-STRUCTURAL_SOURCE_DATA_PATHS = (
-    "src/mango_mvp/channels/rules_registry.yaml",
-)
+STRUCTURAL_SOURCE_DATA_PATHS: tuple[str, ...] = ()
 
 PERFORMANCE_EXCLUDES = (
     ".git/**",
@@ -149,17 +147,17 @@ CURATED_QUERY_HINTS: tuple[Mapping[str, Any], ...] = (
     {
         "terms": ("p0", "возврат", "жалоб", "суд", "спор", "оплат", "payment", "refund", "complaint"),
         "paths": (
-            "src/mango_mvp/channels/rules_engine.py",
+            "src/mango_mvp/channels/output_verification_floor.py",
             "src/mango_mvp/channels/p0_recall_spec.py",
             "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
             "src/mango_mvp/channels/answer_safety.py",
         ),
-        "guidance": "P0/спорные темы не выводить из карты: подтвердить правило в rules_engine.py и p0_recall_spec.py.",
+        "guidance": "P0/спорные темы не выводить из карты: подтвердить правило в output_verification_floor.py и p0_recall_spec.py.",
     },
     {
         "terms": ("бренд", "фотон", "унпк", "foton", "unpk", "сравн", "цен", "price", "brand"),
         "paths": (
-            "src/mango_mvp/channels/rules_engine.py",
+            "src/mango_mvp/channels/output_verification_floor.py",
             "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/brand_rules.yaml",
             "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_FOTON.csv",
             "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_employee_pack/CLIENT_SAFE_FACTS_UNPK.csv",
@@ -170,8 +168,7 @@ CURATED_QUERY_HINTS: tuple[Mapping[str, Any], ...] = (
     {
         "terms": ("распис", "групп", "час", "связ", "schedule", "hours"),
         "paths": (
-            "src/mango_mvp/channels/rules_engine.py",
-            "src/mango_mvp/channels/rules_registry.yaml",
+            "src/mango_mvp/channels/fact_retrieval.py",
             "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_FOTON.yaml",
             "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup_sources/facts/facts_for_bot_UNPK.yaml",
         ),
@@ -619,7 +616,7 @@ def write_deterministic_graph_report(
         f"- Commit check: {graphify_pin.get('commit_ok')}",
         "",
         "## Key Source Hints",
-        "- `src/mango_mvp/channels/rules_engine.py` — P0, brand separation and deterministic rule routing.",
+        "- `src/mango_mvp/channels/output_verification_floor.py` — P0, brand and deterministic output verification floors.",
         "- `src/mango_mvp/channels/subscription_llm_parts/post_layers.py` — post-draft guards and output verifiers.",
         "- `src/mango_mvp/graphify_structural_index.py` in the generated source tree — structured v6.5 source labels and scopes.",
         "",

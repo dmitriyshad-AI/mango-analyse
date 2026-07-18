@@ -40,14 +40,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"адрес\", \"сретенка\", \"красносельск\", \"пацаева\", \"мфти\")",
-    "args_sha256": "b30e1e32ef52447c2113fa8fd326195c7ac4d6ff83c04f0e42a14ba19ac77aec",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"без прожив\", \"без проживания\", \"без ночев\")",
     "args_sha256": "b8fa69968f9c17c689630257edf0b7a5f45d6807959772c53250c3454e9ef9a1",
     "node_kind": "marker_helper_call",
@@ -232,14 +224,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"как\", \"зайти\", \"войти\", \"доступ\", \"логин\", \"парол\")",
-    "args_sha256": "2175beda3ea1351cde2eab323954df74ebaa27dddd88865accb2893858437856",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"как\", \"получ\", \"ссыл\", \"запис\", \"регист\", \"отправ\")",
     "args_sha256": "a52b5efb95858683749dfa3627a832e19a41c5820db365aba07503d3054b48fd",
     "node_kind": "marker_helper_call",
@@ -277,14 +261,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_prose_live_status_rephrase",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"лагер\", \"лвш\", \"смен\", \"менделеево\", \"городск\", \"прожив\", \"мест\", \"налич\")",
-    "args_sha256": "c1ba2aea5764161a45ec7c99436940d9b87bd9fdb458c0f48ddf4289c58f331c",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
     "symbol": "has_any_marker"
   },
   {
@@ -360,59 +336,11 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"личный кабинет\", \"кабинет\", \"платформ\")",
-    "args_sha256": "f63b7449254cfc16e089b6d56cd9566b47e674b6657250fd118ade65431b22a3",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"личный кабинет\", \"кабинет\", \"платформ\", \"зайти\", \"войти\", \"доступ\")",
-    "args_sha256": "45d3ca3bb9608bd4081729843e2eaf27db3a6b296906873f6cb53823d51b91a7",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_manager_only_recovery_yield_allowed",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"личный кабинет\", \"учебн\", \"платформ\")",
-    "args_sha256": "ed343c7facbe1a7b6695dc363b7a1c31526e278bb13989cc03b2874891d065e9",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"лобня\", \"жуковск\")",
     "args_sha256": "ab4910dd698dad3ad6ce9824168a1ca314c91762765f9625f30eef5d7c8c5b0f",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_seats_default_open_exclusion_reason",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"маткап\", \"материнск\", \"сфр\", \"сертификат\")",
-    "args_sha256": "856ad988942568deaa63742dbeb31d176f2799bf0c5f161fef144e6c3a836abd",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"маткап\", \"материнск\", \"сфр\", \"сертификат\")",
-    "args_sha256": "856ad988942568deaa63742dbeb31d176f2799bf0c5f161fef144e6c3a836abd",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"маткап\", \"сфр\", \"документ\")",
-    "args_sha256": "a3e581081baeb1d26ffc74a6f7f036de462567d022b2a7bfe1a56bb90e7968ad",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
     "symbol": "has_any_marker"
   },
   {
@@ -456,46 +384,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"многодет\", \"суммир\")",
-    "args_sha256": "1a0cf7dd20b246658354d68f32fa9da3b62e3ae64be5530adc945d5196f8730c",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_fact_scope_guard_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"налог\", \"вычет\", \"фнс\", \"13%\")",
-    "args_sha256": "c5a5ee93a21b1c68a3dfe253391a5baadfdd092c8dde8ed853cb10e3099c6bad",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"налог\", \"вычет\", \"фнс\", \"кнд\")",
-    "args_sha256": "989368dbfcda94f6737f38d14c2f2f024a30102d620012f6da51483c35861e55",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"налог\", \"вычет\", \"фнс\", \"кнд\")",
-    "args_sha256": "989368dbfcda94f6737f38d14c2f2f024a30102d620012f6da51483c35861e55",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"налог\", \"вычет\", \"фнс\", \"кнд\", \"3-ндфл\")",
-    "args_sha256": "08bee676a163b6bbd772645cce9e091710375c4c6a1c118ec8996a119e04e510",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_has_presale_refund_policy_context",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"не лагер\", \"не лвш\", \"не летн\", \"вместо лагер\")",
     "args_sha256": "c5df7e40fe6380c0980ea96ace77d498e5acc2bb5f53a53ac0e387421132eab5",
     "node_kind": "marker_helper_call",
@@ -536,22 +424,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"одобр\", \"точно\", \"гарант\", \"региональ\")",
-    "args_sha256": "8f17d033be605a0b61a7a9234d20bb56ebfba38e9bac78570bd9989f71d52e38",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"олимпиад\", \"физтех\")",
-    "args_sha256": "faefc279c4e92e83f9ae1bd1878efb18b76d690977afc52e6bf730fa8fd7faef",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"онлайн-платформа\", \"мтс линк\", \"webinar\", \"запис\", \"очно\", \"онлайн\")",
     "args_sha256": "4fe3bd95c9fe0051c936c9bbef21f89b88e56bb7c31af95a29b65c2333ce6f3a",
     "node_kind": "marker_helper_call",
@@ -581,14 +453,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_prefer_format_facts",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"онлайн\", \"очно\", \"дистанц\", \"формат\", \"платформ\")",
-    "args_sha256": "cb2f9df4d61ca16f93c17dceb52449b1fc8ecde28dd596a3d32284da0e14fe56",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
     "symbol": "has_any_marker"
   },
   {
@@ -656,14 +520,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"очно\", \"очный\", \"офлайн\", \"прийти\", \"приехать\", \"приезж\")",
-    "args_sha256": "73f6e01d75795b9c35c28f7ae90f50e96d565d997ce2bb8b55a5b148327764dd",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_foton_offline_free_trial_guard_template",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"очно\", \"сретенка\", \"красносельск\", \"мфти\", \"пацаева\", \"долгопруд\")",
     "args_sha256": "f7c016a92854f22ed00f7e77f5bdfa8516011e1d6a8c912e7c587e83ff3c2114",
     "node_kind": "marker_helper_call",
@@ -677,14 +533,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "qualname": "_transfer_sense",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"передам вопрос менеджеру\", \"менеджер подскажет\", \"менеджер проверит\")",
-    "args_sha256": "718c3f3356c0f3e59a951be61db5eee43062dfeeeb4e67132ccf3144ef0d20bb",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_looks_like_low_value_handoff_only",
     "symbol": "has_any_marker"
   },
   {
@@ -768,27 +616,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"пробн\", \"фрагмент занятия\", \"фрагмент урок\")",
-    "args_sha256": "76d0cbb9a661731e48ee888ad3529afbf12e3a0b83896b1a3b702c6a57552496",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"пробн\", \"фрагмент\")",
     "args_sha256": "0723aaba6641c6c9b2f5bfc3de5d351633c16ed212d0b2c828d3e8d71f6bf2d8",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_answer_closes_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"пробн\", \"фрагмент\", \"дистанц\", \"приезж\", \"оформление\")",
-    "args_sha256": "9a462e39a9775d09e1498d1bb26ab2851143627f65e5edfd650cda2cc3e162fc",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
     "symbol": "has_any_marker"
   },
   {
@@ -808,14 +640,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"пусть менеджер\", \"менеджер пусть\", \"менеджер подтверд\", \"менеджер тогда\", \"менеджер напиш\")",
-    "args_sha256": "56a7854d3777c79e60100a105bb8a2e0084f9d23eb6a9c7cea1acb8e47216e4c",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_presale_refund_policy_template",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"размер группы\", \"наполняемость\", \"сколько учеников\", \"сколько детей\")",
     "args_sha256": "90e20f59abf91bb5eb0995d0c32a59ef709e75cebf40ba8da4255070a7044ba2",
     "node_kind": "marker_helper_call",
@@ -824,43 +648,11 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"распис\", \"дни\", \"время\", \"занятия\", \"группа\")",
-    "args_sha256": "6c01a5f04a5ab7a458874473a269db79fc2a6284dbef7941824e259090c9663f",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\")",
     "args_sha256": "a1132692cadaaf88664ff12bdc32cb4c14c9c70c5c01f87c1ea9d8d921dd139e",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_answer_closes_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"банк\", \"т-банк\", \"месяц\")",
-    "args_sha256": "8fe1c5ef5a82bc4076ca746ffb7d6b562f41e17eb6dd592ac40d2499c89330ff",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_forbidden_pair_guard_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"долями\", \"частями\", \"помесяч\", \"семестр\", \"год\", \"банк\")",
-    "args_sha256": "64618e76afd639ff7d70a2a40381212a6f89c746f03def05e5ad7f7eec046863",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"рассроч\", \"частями\", \"помесяч\", \"банк\")",
-    "args_sha256": "06b5a41671f21e487cd7884d929ca2a4bb982f1961b359c9f90b379bc693ccd8",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_unpk_bank_installment_question",
     "symbol": "has_any_marker"
   },
   {
@@ -880,14 +672,6 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\"скид\", \"процент\", \"%\", \"суммир\", \"многодет\", \"второй предмет\")",
-    "args_sha256": "b814f93b86a21bcd61a22999d30d0c864aee60e77aa827c3e507d8cc615d13b2",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"смотреть\", \"посмотреть\", \"личн кабинет\", \"личном кабинете\", \"кабинет\", \"ссылк\", \"пришл\", \"доступ\")",
     "args_sha256": "945cbf2e9f1d5e1453c314e1307a830264182d028de8a3bb772cbacfe0eca7b1",
     "node_kind": "marker_helper_call",
@@ -901,22 +685,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_asks_money_price_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"суд\", \"прокуратур\", \"роспотреб\", \"жалоб\", \"юрист\", \"адвокат\")",
-    "args_sha256": "e03d9bb50280a791af0e5827cdf45e9b8f14879a0944ff5f2a4788e6b427507a",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_presale_refund_policy_template",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"сумм\", \"сколько\", \"13%\", \"110 000\", \"14 300\", \"верн\", \"возврат\", \"точно\", \"гарант\", \"одобр\")",
-    "args_sha256": "9a5dc2e6dc88a3dd2187ba2666614bd14f9a5286f02b71af59d03a5ae6027c17",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
     "symbol": "has_any_marker"
   },
   {
@@ -941,30 +709,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_is_current_terms_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"текущая цена\", \"стоимость\", \"цена\")",
-    "args_sha256": "890a03aca32818e431f4ba48f5fbeba39e100c571cf3faed6ae08544c2f96c5e",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"телефон\", \"номер\", \"позвон\")",
-    "args_sha256": "1911de34cfca122728d931053fecf5f4435a9185dbb5eee6d0341ee2c32ad7b4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"телефон\", \"номер\", \"позвон\")",
-    "args_sha256": "1911de34cfca122728d931053fecf5f4435a9185dbb5eee6d0341ee2c32ad7b4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_draft_addresses_question",
     "symbol": "has_any_marker"
   },
   {
@@ -1016,14 +760,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"фотон\", \"долями\", \"т-банк\")",
-    "args_sha256": "9dab5baa5aea04acd8f5c24c750b68b3328ab88aa01cac61dbe5e6d43f62adbe",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_unpk_bank_installment_question",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"фрагмент\", \"онлайн\", \"дистанц\")",
     "args_sha256": "77564207e518db770ef9bf7f34210f5ec7e622807f5ab158288438542824d5ca",
     "node_kind": "marker_helper_call",
@@ -1072,35 +808,11 @@
     "symbol": "_has_any_marker"
   },
   {
-    "args_preview": "(\n                    \"куда писать\",\n                    \"куда написать\",\n                    \"куда обращаться\",\n                    \"к кому обращаться\",\n                    \"какой порядок\",\n                    \"порядок какой\",\n            ",
-    "args_sha256": "758b28dec69938644928bd259324e481cb2fa1a78d070c8b7ba1eed576e88afe",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_presale_refund_policy_template",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\n                \"не лвш\",\n                \"не выезд\",\n                \"не подставляю\",\n                \"не смешиваю\",\n                \"не про лвш\",\n                \"не про выезд\",\n            )",
     "args_sha256": "34841a7a4e57552b8c2790edffd8ffc61cd36c1b49203f6b27cdc789e281b55a",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/fact_scope_spec.py",
     "qualname": "detect_fact_scopes",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n                \"ты бот\",\n                \"вы бот\",\n                \"нейросеть\",\n                \"живой человек\",\n                \"живой оператор\",\n                \"с кем я общаюсь\",\n                \"ignore all previous\",\n                ",
-    "args_sha256": "246e65fef558a69be9ef9eb51f800b4a28c21dfd86e24f117254cb5ac84a4150",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_manager_only_recovery_yield_allowed",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n                \"ясно\",\n                \"понял\",\n                \"поняла\",\n                \"просто заранее\",\n                \"заранее уточ\",\n                \"просто уточ\",\n                \"спасибо\",\n                \"хорошо\",\n            )",
-    "args_sha256": "dd3470d5ddb0bb3f877d3c464718d4c19c66461b746d6ca48139e8cc58c2529c",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_presale_refund_policy_template",
     "symbol": "has_any_marker"
   },
   {
@@ -1356,14 +1068,6 @@
     "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_fact_scope_guard_template",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_prefer_format_facts",
     "symbol": "has_marker"
   },
@@ -1398,22 +1102,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_prefer_format_facts",
     "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"пересмотр\", \"пропущен\", \"пропуст\"",
-    "args_sha256": "539052c03829bd4f99464fa4c09d23ae2fc3deec79e0488c56c7c6789d0ace5e",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_lesson_recording_question",
-    "symbol": "_has_word_marker"
-  },
-  {
-    "args_preview": "\"пропуст\", \"пропущен\", \"пересмотр\", \"урок\", \"заняти\"",
-    "args_sha256": "fb101b4123e633753ccb4c8b78a5677b671e82e5fa08575ba517389619b33cd4",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_lesson_recording_question",
-    "symbol": "_has_word_marker"
   },
   {
     "args_preview": "\"процент\"",
@@ -1499,14 +1187,6 @@
     "expression_preview": "\"?\" in value",
     "expression_sha256": "1f38d6faab66e56e71d9ed3ab0a126f1d0892090ef4315c8309f45ad4063e2d4",
     "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"?\" in value",
-    "expression_sha256": "1f38d6faab66e56e71d9ed3ab0a126f1d0892090ef4315c8309f45ad4063e2d4",
-    "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_format_choice_is_disjunctive_question",
     "symbol": "In"
@@ -1533,14 +1213,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "_direct_path_has_active_next_step",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"admission_guarantee\" in text.casefold()",
-    "expression_sha256": "69a9d878c70811adfd7edf3077cfae54ebe3ac58af99b6aafc410779ccafdc25",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_admission_guarantee_case",
     "symbol": "In"
   },
   {
@@ -1573,14 +1245,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
     "qualname": "_claim_supported_by_facts",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"cabinet\" in key_text",
-    "expression_sha256": "65b33e5cdd9a817ae66dbd6fb7a351757749de9b499f2426fa3687ab9fea6889",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
     "symbol": "In"
   },
   {
@@ -1680,27 +1344,11 @@
     "symbol": "NotIn"
   },
   {
-    "expression_preview": "\"instagram\" in client_haystack",
-    "expression_sha256": "1ccbcfdfb81387fa3c3e8a2ac0ccce8baf1190d82c5242ddf18f453decb42dd7",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"legal\" in text",
     "expression_sha256": "9f006b5240bbdd89cd10695c7c9c56b1598d5c1847cb619dea0ef3b830c5d02a",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_risk_flags_from_safety",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"matkap\" in key_text",
-    "expression_sha256": "acff1486d47118fac554dce9fa1bb8e864e837eda105e2dce1dc8d90d5e0313d",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
     "symbol": "In"
   },
   {
@@ -1741,14 +1389,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_fact_match_score",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"olympiad\" in key_text",
-    "expression_sha256": "3ec76d9399ceab53eb8bada9f2bacf8858284a450b0f40f21673142516776368",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
     "symbol": "In"
   },
   {
@@ -1840,35 +1480,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"phystech\" in key_text",
-    "expression_sha256": "8d1d32b2bfb267ed3d3c95048b30d88bd6d3f61168466edc2cebe4b045b9b831",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"platform\" in key_text",
-    "expression_sha256": "6354d3b3bd0509bb66f96d7b4ddc1dea5bf10599b964b942205347ad94ee7bd8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"presale_refund_policy\" in text",
     "expression_sha256": "20a8b5b2085befa49b19dc7bdf130c4f331f4b5c78a4dad59ab6288414fdf08f",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_risk_flags_from_safety",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"promo\" in client_haystack",
-    "expression_sha256": "3de84d669b17708f40a8a0600d677d961c726a4c2a203acbfa19d59bfbd29861",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -1904,43 +1520,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"result_guarantee\" in text.casefold()",
-    "expression_sha256": "7c01e79abd8771a3dc4c5f5212b6c1f0e11e38e26cef796934f21d217b797cb9",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_result_guarantee_case",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"score_guarantee\" in text.casefold()",
-    "expression_sha256": "3125fbaef8571883be8887751ba2a92e13d79fdad14f89c5ae35f551b1d1f2c8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_is_result_guarantee_case",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"tax\" in key_text",
-    "expression_sha256": "324397fc32f20c50b8934df1aa45a7d905b927b451d83c0f54402aa8fea86fdc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"theme:009_refund\" in topic_text",
     "expression_sha256": "2c100a8bf45b34f1a482ba5fe663a627d87207c8d1179107498ba7c1151b887f",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "required_fact_keys_for_message",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"trial\" in key_text",
-    "expression_sha256": "bc69a2fd9a6d74a61f88fd62cc0ca247733e4a568c1ed69ee440815bcb0c113a",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_informational_fact_matches_question",
     "symbol": "In"
   },
   {
@@ -1957,14 +1541,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "_direct_path_safe_slot_value_for_instruction",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"webinar\" in client_haystack",
-    "expression_sha256": "2eadb4db72df2f3a0362fedbaccad5817440e48fa5770d0a23d99e25f2768489",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
     "symbol": "In"
   },
   {
@@ -1992,43 +1568,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"а не индивидуаль\" in client_haystack",
-    "expression_sha256": "f6052f57ccbb25ef58d185969160f382f1fac2b94239961db1912350ea75faf3",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"адрес\" in client_haystack",
-    "expression_sha256": "b66b305f0a662ba90b66a317e65dd3e85ecb1a045a105694ec61f34a8920f729",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"адрес\" in client_haystack",
-    "expression_sha256": "b66b305f0a662ba90b66a317e65dd3e85ecb1a045a105694ec61f34a8920f729",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"адрес\" in query_text",
     "expression_sha256": "c6a608b2de5569df0284feecbeb66bec2f9879ecb887d4d65d48ffa41ec0af0a",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_fact_match_score",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"без прожив\" in client_haystack",
-    "expression_sha256": "b662877a9320842d4980984e8fb2938c810d8f9dad8df891b6ddb2fd41bab429",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2072,35 +1616,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"всош\" in client_haystack",
-    "expression_sha256": "c24f40a0ada9f63308d5899cc6e009bb478055afabec861bcc362c654391b721",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"всош\" in str(client_message or \"\").casefold()",
-    "expression_sha256": "ec8591bfa481dd72029872c7e06ec9ad2bd70f67c6790233a83af814df246690",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "apply_high_risk_content_guards",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"выездн\" in query_text",
     "expression_sha256": "3dae09933e3ca415cf7f92f06ab966cd342237f959df178b3ed88198fe69ecc3",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_matches_product_markers",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"где\" in client_haystack",
-    "expression_sha256": "81ff579c1eb8e86704161b1001d049176077c68c66ef0e5b9e1d4c3a90834238",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2125,14 +1645,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_matches_product_markers",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"групп\" in client_haystack",
-    "expression_sha256": "c430167a91f98c2a36d95cd9ab6937121e98ee8ac7b4c1dcff2c2c9f18384526",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2224,27 +1736,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"дистанц\" not in text.casefold()",
-    "expression_sha256": "5d4dff004e608c7ebf87c5888862cfe293aaf49661d6878e65062530561ecb5d",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_apply_trial_rule",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"для других класс\" in text",
     "expression_sha256": "be1fdf194db56630e51a4a69d323940c795799d74979f08291fc427195341af3",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_matches_requested_class",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"для другого класса менеджер\" in fact_text.casefold().replace(\"ё\", \"е\")",
-    "expression_sha256": "5d9796bba61f435d83a51b10e61437ad3c6c537784d8d6ace490782cf6c70a5c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_apply_olympiad_rule",
     "symbol": "In"
   },
   {
@@ -2269,14 +1765,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "_direct_path_format_scope",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"долями\" in client_haystack",
-    "expression_sha256": "224b3324841124e8f7236beaf6f4e7ecade86820799494ecce319d7c4b4f533c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
     "symbol": "In"
   },
   {
@@ -2328,38 +1816,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"живой оператор\" in client_haystack",
-    "expression_sha256": "080fc2900f3a4b147aa3b0b38d2dcc8ca2eea5f7553d97d42e65bed9be924132",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"живой человек\" in client_haystack",
-    "expression_sha256": "4e617a1d62dd8ac64d4c2acd5f8930d1ca4ff9278a90a515d8150d14b15844ea",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"заняти\" in client_haystack",
-    "expression_sha256": "5acd549d634822a577499bc6d1eb7400106c2aaffda8ade56570dcd42cd810ef",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"запис\" in lower",
-    "expression_sha256": "9920b2dd7846b59a6c39b298cde9d7ebf2cff4e8227684a12b4aa7599a54d59a",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_warm_enrollment_process_text",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"записи занятий\" in text",
     "expression_sha256": "46b12bec55b9ec04ef32c7dd6e7fc95839040f9cee10b7161e2bf50b6259d99e",
     "node_kind": "string_contains",
@@ -2373,62 +1829,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_answers_date_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"или\" in value",
-    "expression_sha256": "ba5ccbcde49eb6a8764ecbe83e822c249bcb06ed9808cd21cdbd0898339e40d3",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"индивидуаль\" in client_haystack",
-    "expression_sha256": "9c79f8b3d7688ebc71285ecb18fda1295dd88b5a91efd54f7f2625214c4ee600",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"инстаграм\" in client_haystack",
-    "expression_sha256": "18f97a7226362e9fb4d1f7cc27ffc4160aab195fd0bf8f400bedc97a90dd63dc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"интенсив\" in client_haystack",
-    "expression_sha256": "3013ec2ba0d6e84fa494797f4258a5a48f6d40a9bf656754c8097cb4b2d39c2e",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"интенсив\" in client_haystack",
-    "expression_sha256": "3013ec2ba0d6e84fa494797f4258a5a48f6d40a9bf656754c8097cb4b2d39c2e",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"интенсив\" in str(client_message or \"\").casefold()",
-    "expression_sha256": "681ce692eae098af036bffddfaab0c43e54e684bcef7c73681763a6eb4c4ccc0",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_missing_fact_helpful_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"квитанц\" in client_haystack",
-    "expression_sha256": "e0d10938a1dcf5e5ff8fa78d9de1681e758dc0b14eeb0e3f8bd6f39c294f7a63",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2496,14 +1896,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"коллег\" in client_haystack",
-    "expression_sha256": "4e19e90834bd062266016853a750e4bc6c1e9d4bd6120c4b6bb4ab32a6920c00",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"лагер\" in query_text",
     "expression_sha256": "c9e11c410a1d082f6254948991fcdea5c9380a990b1d172664bca01acd40fdb6",
     "node_kind": "string_contains",
@@ -2528,14 +1920,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"летн\" in client_haystack",
-    "expression_sha256": "cacbb81f09c6d985154bf61e2e84b5f79eecc3244311623f082deb1fe583f867",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"летн\" in query_text",
     "expression_sha256": "beb01a1317ab38ba10a03bc4ba98336c5da0d48535ac9cb90a03b25165a270e2",
     "node_kind": "string_contains",
@@ -2549,14 +1933,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_answers_date_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"лиценз\" in client_haystack",
-    "expression_sha256": "72f380bb53c8c4394fdc053769ac2d00042bb9b3e70b3d423793ec40af048895",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
     "symbol": "In"
   },
   {
@@ -2584,35 +1960,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"м11\" in client_haystack",
-    "expression_sha256": "ed1f5db8f8ab65ae04fd6d03e693a8d0bb19d0ed07c3f4443d9ab6ebefa86767",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"менделеево\" in query_text",
     "expression_sha256": "e4eb4bc4cb4ffb9a842d04ca10beaf0aa6333831b7561f296e8a2d772d8ad0fe",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_expand_required_fact_types",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"менеджер\" in lower",
-    "expression_sha256": "1c333b3bf1b329fe0e34df0fed4a603595ab69dfa6254d381878a818488950f9",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_warm_enrollment_process_text",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"мини-групп\" in client_haystack",
-    "expression_sha256": "f01a38c3bfcdc865387391fb9536908ee69015ea635e346c0f36248fdb8c41b6",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2624,59 +1976,11 @@
     "symbol": "NotIn"
   },
   {
-    "expression_preview": "\"моск\" in client_haystack",
-    "expression_sha256": "6392bba9079b033c5a8eb9fb6644f1232a8ffeb1b4f62c159508316738f860b4",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"моск\" in client_haystack",
-    "expression_sha256": "6392bba9079b033c5a8eb9fb6644f1232a8ffeb1b4f62c159508316738f860b4",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"москва\" in text",
     "expression_sha256": "cfcc09663d00346f3a2cf90d56852a193c8cc56687a75939b4ff70f3bc4ae9d0",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "_direct_path_format_scope",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"мтс линк\" in client_haystack",
-    "expression_sha256": "df876d156877b298b3758b9420994138d9b84076fae9b4e4b838c6b1e953ed43",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"назовите\" in client_haystack",
-    "expression_sha256": "770278e04a945d1d9fa56729e78e2d0ce1d84aca43644af1afc8f5099d288aa0",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"напишите\" not in draft_lower",
-    "expression_sha256": "f4bfe0e8380ae801979b189d61cfc37b7424c5881c4f09dee9dc36932fae4a66",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_missing_fact_helpful_template",
-    "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"не индивидуаль\" in client_haystack",
-    "expression_sha256": "36f06df9ad45e70c1a3b1e18da83cbf729327a169521c7450d53c26c7bc05b07",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2688,35 +1992,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"обещал\" in client_haystack",
-    "expression_sha256": "0768d55d8e10718ab7ae94d1d878d270a6143d7575149e345e393e3f0aee52a7",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"обратно\" in text",
     "expression_sha256": "5d3e7de359c6ee02f6ef6b8eab4ac3f9f68a6e0c1cf45ec1e56f3ae72a0b686b",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
     "qualname": "_client_message_has_refund_meaning",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"обуч\" in client_haystack",
-    "expression_sha256": "06babdf805cfc9d763b224fe513538cacd4ed5c08df0077c2876ab1c75941476",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"обычн\" in client_haystack",
-    "expression_sha256": "1d9219517ef848753eee964967bf4a291ed25580d30e7ff5eca04a3d7e614e1d",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2795,22 +2075,6 @@
     "expression_preview": "\"онлайн\" in value",
     "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
     "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in value",
-    "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" in value",
-    "expression_sha256": "dd6c359384160e627af089443f808ac0176b8560141cc258c7fb1497ad6e7435",
-    "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_format_choice_is_disjunctive_question",
     "symbol": "In"
@@ -2821,22 +2085,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"онлайн\" not in client_haystack",
-    "expression_sha256": "0be9b131bfef67cf65da7dcaaf5e701f8addbea88e9d2f57bc09b7abbb1927e5",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"оплат\" in client_haystack",
-    "expression_sha256": "55b3b4cad8571de5e9ec7f42493fddcaa73e26c5d5aae2ca07f94c0f5694d074",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2846,14 +2094,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_bot_safe_memory_safe_payment_link_step_claim",
     "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"отвечает\" in client_haystack",
-    "expression_sha256": "1057fa8b452530bf6479e22404f500d8ea4fa22d9c67f1ffff9638424b469a0b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
   },
   {
     "expression_preview": "\"отда\" in text",
@@ -2893,22 +2133,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_matches_requested_format",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"оформ\" in lower",
-    "expression_sha256": "d07a4dad730e096aaddd4275361ff708ed5ead1e6b3f4832cd268985dd98db8c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_warm_enrollment_process_text",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"оценк\" in client_haystack",
-    "expression_sha256": "51854a63a1967e193b8cffc813ac47d85635339ff447d015ba0e2b9f95acb958",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -2987,14 +2211,6 @@
     "expression_preview": "\"очно\" in value",
     "expression_sha256": "e0f0998b69a356c9e94731d56c9d6f2992f87fe1c9e6992cd430612115ad09bd",
     "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_format_choice_is_disjunctive_question",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"очно\" in value",
-    "expression_sha256": "e0f0998b69a356c9e94731d56c9d6f2992f87fe1c9e6992cd430612115ad09bd",
-    "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_format_choice_is_disjunctive_question",
     "symbol": "In"
@@ -3040,35 +2256,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"платформ\" in client_haystack",
-    "expression_sha256": "86458e274c50c822d4e5e66bebe0ba5ea9f3a65be9e019a1d01dc2ad872c1f9f",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"площадк\" in client_haystack",
-    "expression_sha256": "408f2ee1307aa259a1a2c4963b99d3732b741aafb10ea42be4073fe4c0de49af",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"площадк\" in query_text",
     "expression_sha256": "e44a57353a1a376c7f67f4f58ee67bc1c8f2e4fd94c63417a5e124e238d96285",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_fact_match_score",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"площадки\" in client_haystack",
-    "expression_sha256": "21abbc92a22ffa5979f2d619d29289afd99e6d44f07142f7b90d8659cb4518d8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3086,22 +2278,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_soften_current_price_deadline_text",
     "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"подскажите\" not in draft_lower",
-    "expression_sha256": "a978d07eb32343d745d19172b3a705ddc772af8ddb1fc9e05a79e161ad7e2c9a",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_missing_fact_helpful_template",
-    "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"почти распродан\" in text.casefold()",
-    "expression_sha256": "deaafef16ded399c1f678a514dca0d5b4736431a1d0f1fcf33acb14719a281c4",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_apply_camp_lvsh_rule",
-    "symbol": "In"
   },
   {
     "expression_preview": "\"предмет\" in normalized",
@@ -3128,43 +2304,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"приезж\" not in text.casefold()",
-    "expression_sha256": "4e4505ad42f1be985346c26fb7275e332a6ccae5540aac499ecf363f79465611",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_apply_trial_rule",
-    "symbol": "NotIn"
-  },
-  {
-    "expression_preview": "\"прогресс\" in client_haystack",
-    "expression_sha256": "9fbaf609d02630571897eb597f8bc4103703fc871f055b8bc2726a650b23be7d",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"промокод\" in client_haystack",
-    "expression_sha256": "ae0789dcbedbef2c98103ad6deeb7a0f521d46d2031b5b32a7ee6fa422f602e9",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"процент\" in normalized",
     "expression_sha256": "f1af19b01a1a02129f13be3e02d8db0f92650ccf79120c06582339b7d29b0c27",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_summary_has_unsupported_number",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"прошлом году\" in client_haystack",
-    "expression_sha256": "a9161f3563ec5acb65454d0182cb8c2c0ab18d8ec5c37b96a681b6060b18e89b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3189,14 +2333,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
     "qualname": "_claim_supported_by_facts",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"раньше было\" in client_haystack",
-    "expression_sha256": "aa4dda2110b8858d131a77f1c5da4174b5ff2f3d4127f8611353e4e99729f43c",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3232,59 +2368,11 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"рассроч\" in client_haystack",
-    "expression_sha256": "7ca0fe01192cafd709ed68db0da48f7b97ed9415a4e7451c498d5b83769865fc",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"региональ\" in question",
-    "expression_sha256": "eb0910d1bf4aa70b86b6d9653e6d21fa310cc6f18e862899ff6d527ff6e43c59",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "qualname": "_apply_matkap_rule",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"регулярн\" in client_haystack",
-    "expression_sha256": "cabd6adf33556a4e7136de0cfd383dc4d9cfc2ff122c277f369ea79c618e3bd8",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"с кем я общаюсь\" in client_haystack",
-    "expression_sha256": "2381a0e3085ed9b784173d3aec7a2a439eeff7974202b3220d12eb3c55cd8584",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"следующ\" in sentence_normalized",
     "expression_sha256": "3604f9a2b2c172879b19589037cf70d1e827aff4c28d5a6e131d2f37533d70e0",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "_rewrite_no_memory_step_frame.replacement",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"смен\" in client_lower",
-    "expression_sha256": "a567e82279e08cbfaf77e27fc94ae62d442f4182399e8d13b574e98290ddd941",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_missing_fact_helpful_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"сотрудник\" in client_haystack",
-    "expression_sha256": "cfe1c23b3feb7e6c8ffb7aa4c016fb1d02116a4234c344e764f17e13b031cc5e",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3312,59 +2400,11 @@
     "symbol": "NotIn"
   },
   {
-    "expression_preview": "\"ссылк\" in client_haystack",
-    "expression_sha256": "84fd4206cc778caf7f1151dec72a5f76f0bc6fa44e12b7534ba9d0dae3dd4a27",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"суд\" in text",
     "expression_sha256": "e02b60e855f0c5df9b0b77e872c9cfe7282def8193159ca363d0689d5e453f06",
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_risk_flags_from_safety",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"т-банк\" in client_haystack",
-    "expression_sha256": "a2ab82d14654d522c4ff731cfe20e61404194f93c8909dc9807ba9d27338f9c6",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"только в унпк\" in client_haystack",
-    "expression_sha256": "6f0d8d99b88cf52f10cb9bc05cc41a2f1538e549e80e8e0f85798a1045748e68",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"только в фотон\" in client_haystack",
-    "expression_sha256": "0bfc6ac66a6fc98e484cc96d559e62e84db77a586f2771410f95f5550a3ccad3",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"только у унпк\" in client_haystack",
-    "expression_sha256": "4c760f53895f379e5cc63edca734d4991ef90ff1440bb9b327b47016c7c1c0ec",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"только у фотон\" in client_haystack",
-    "expression_sha256": "bd7215966da69a8c23461e035cc2b8c692fa40570d9c22a5bbd6a4c01fb75f7e",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3408,22 +2448,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"учится\" in client_haystack",
-    "expression_sha256": "ee8333b987018b075565d79143c10c5dfcc64c70c7f9f12ac09cb0647fa8e971",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"фио\" in client_haystack",
-    "expression_sha256": "5b54469db413a7e758a50be7ec3f2b2607800f1f452b641e2c65efdd319247b5",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"формат\" in normalized",
     "expression_sha256": "d2fb6db3ebce2e0b7feb4615c723d3f52290914d03f544946fd6201bfac391a4",
     "node_kind": "string_contains",
@@ -3448,22 +2472,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"хочу только\" in client_haystack",
-    "expression_sha256": "93fdb88a7f926c35ad51331dbf43e2e359cdd670365891d5ab52956cccb89514",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_cross_brand_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"цена\" in client_haystack",
-    "expression_sha256": "a99a34d7bfa62829b4f7ec1ad9aced06ec5770316206a59d74fd9e781cdc4823",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"черновик для ситуации\" in text",
     "expression_sha256": "20cb9b63dcc46552846bc2acaebcca95afaddf6abf3c8f8323cfdc651ca694d1",
     "node_kind": "string_contains",
@@ -3472,14 +2480,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"школ\" in client_haystack",
-    "expression_sha256": "dc7553a6932f621b2321562c904b8c50265f3fe0fb6decae29590cb1a882a62f",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"школ\" in query_text",
     "expression_sha256": "13cc20623fcecc38129cb0bf45079e498edff950999ddfe3dfd04a6e5988d945",
     "node_kind": "string_contains",
@@ -3493,30 +2493,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_record_is_unrequested_special_product",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"юр.лица\" in client_haystack",
-    "expression_sha256": "7fa788ad0156220eca152f8834d4a47cde844032a91901b921fc4d397db86d08",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"юридическ\" in client_haystack",
-    "expression_sha256": "ad3d9398d3d86346a16b81caf091e816305f9bfa28e759d1beafbeb5d644286f",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"юрлица\" in client_haystack",
-    "expression_sha256": "8de8baf14e9cc0f28fcd8532a1fa2dab892f81abd2fabd7e5f00dce2092211a7",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_terminal_safe_template",
     "symbol": "In"
   },
   {
@@ -3526,16 +2502,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
     "qualname": "_direct_path_fact_value",
     "symbol": "In"
-  },
-  {
-    "flags": "",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\d[\\d\\s\\u00a0]*(?:[.,]\\d+)?\\s*(?:₽|%|руб(?:\\.|лей|ля|ль)?|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?)?",
-    "pattern_sha256": "325fcab4614b7467d159768e90fb7f13ee6efdd87e8f682216c43045ffe40577",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_SELLING_NUMBER_RE"
   },
   {
     "flags": "",
@@ -3720,26 +2686,6 @@
   {
     "flags": "\" \"",
     "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\s+",
-    "pattern_sha256": "4add64ab568a8b698353c562ac83993ed693822fe898d8450add1ea623df1ded",
-    "qualname": "_norm_for_repeat",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\s{2,}",
-    "pattern_sha256": "58bd9b945a05045214d8b932491aff633f1cb79878ca46d9f060e3422b800f71",
-    "qualname": "_brand_safe_teacher_fact_text",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
     "pattern_preview": "[ \\t\\f\\v]+",
     "pattern_sha256": "5e36ade60ccdeda1bb109d4808c5a1ff6de92f89e31be41ecb94e1442565101b",
@@ -3754,16 +2700,6 @@
     "pattern_preview": "\\s+",
     "pattern_sha256": "4add64ab568a8b698353c562ac83993ed693822fe898d8450add1ea623df1ded",
     "qualname": "_direct_path_retriever_candidate_summary",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\s+",
-    "pattern_sha256": "4add64ab568a8b698353c562ac83993ed693822fe898d8450add1ea623df1ded",
-    "qualname": "_memory_norm",
     "symbol": "re.sub",
     "target": ""
   },
@@ -3816,26 +2752,6 @@
     "qualname": "_extract_json_object",
     "symbol": "re.sub",
     "target": "raw"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^Фотон:\\s*",
-    "pattern_sha256": "9a95d338915946a9bcae9f2aa162362a66fabffeab4235a601632ae146151ba4",
-    "qualname": "_foton_address_from_facts",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^адрес(?:\\s+и\\s+место\\s+занятий|\\s+очных\\s+занятий)?\\s*[:—-]\\s*",
-    "pattern_sha256": "716b3257be9c2b7f39f498cb275c8c3fb87bf06410dd74b84083fbaca3f887e6",
-    "qualname": "_foton_address_from_facts",
-    "symbol": "re.sub",
-    "target": ""
   },
   {
     "flags": "\"\" | re.I",
@@ -3926,26 +2842,6 @@
     "qualname": "_extract_json_object",
     "symbol": "re.sub",
     "target": "raw"
-  },
-  {
-    "flags": "\"\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\bМФТИ,\\s*",
-    "pattern_sha256": "04958172a947ce4f2283efaed039b61b80d6dd78872d87b5b13491b5a8f07244",
-    "qualname": "_brand_safe_teacher_fact_text",
-    "symbol": "re.sub",
-    "target": "cleaned"
-  },
-  {
-    "flags": "\"\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^(?:Фотон|УНПК):\\s*",
-    "pattern_sha256": "0d51ead02d90e7c1981d920d28533d843f38dbc43cadafde1389b63613ed4872",
-    "qualname": "_camp_clean_fact_text",
-    "symbol": "re.sub",
-    "target": ""
   },
   {
     "flags": "\"\"",
@@ -4056,16 +2952,6 @@
     "qualname": "_deal_action_amounts",
     "symbol": "re.sub",
     "target": "digits"
-  },
-  {
-    "flags": "\"\\n\" + text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\n\\s{2}- rule_id:\\s*",
-    "pattern_sha256": "290fd785a3f5c23dec92a5c9d7bfe15e961965f042a32225a91d3ea99acc8da5",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.split",
-    "target": "chunks"
   },
   {
     "flags": "\"\\n\\n\"",
@@ -4248,76 +3134,6 @@
     "target": "digits"
   },
   {
-    "flags": "cleaned",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "(?<=[.!?])\\s+",
-    "pattern_sha256": "a24b6a17324cdd2916f2e2494a7d84e6975c237199e0fb433de989a991750ed3",
-    "qualname": "_short_sentence",
-    "symbol": "re.split",
-    "target": ""
-  },
-  {
-    "flags": "cleaned",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\s+[—-]\\s+",
-    "pattern_sha256": "e791f9b1fe6e4919c22339804cd42e5f17ac251d9e8ce5f9dbb1b5822510d4a2",
-    "qualname": "_foton_address_from_facts",
-    "symbol": "re.split",
-    "target": ""
-  },
-  {
-    "flags": "client_haystack | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(ты|вы)\\s+(бот|ии|нейросеть|человек)\\b",
-    "pattern_sha256": "71a55981d2d50096f8cc7d96a5e671c60946b4e14de716c25403104a7dfd8414",
-    "qualname": "_terminal_safe_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "client_haystack | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bбот\\b",
-    "pattern_sha256": "c74443baf7813d3c2ff62ffb886f654508d2669ecc294b4215ce4a00454ab921",
-    "qualname": "_terminal_safe_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "combined",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "(?:^|[._\\s])year(?:$|[._\\s])|\\bгод\\s*[—-]",
-    "pattern_sha256": "df08186384e5cfa5827f7d671d107c6e4598104e56e4f656870970aba67dc210",
-    "qualname": "_price_text_from_scoped_facts",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "combined",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "10[:.]?00|18[:.]?00|пн\\s*[–-]\\s*вс|ежедневн",
-    "pattern_sha256": "86b9fe323351e52481121279a271bc2edee59c17e97773b16302ae5b6db5eb7b",
-    "qualname": "_is_contact_hours_fact",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "combined",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "семестр|semester",
-    "pattern_sha256": "754f2ffac2996199953faf5aea519bb9882ca42a5de3eb4c65e2410cf260c623",
-    "qualname": "_price_text_from_scoped_facts",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "combined",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
@@ -4398,26 +3214,6 @@
     "target": ""
   },
   {
-    "flags": "draft_text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:да|точно|можно|доступн\\w*)[^.?!\\n]{0,80}\\b(?:бесплат\\w*)[^.?!\\n]{0,80}\\b(?:пробн|занят)",
-    "pattern_sha256": "6ae23a9047cc1a56e62048c89fed35c98f776d52c0df93f2bb95956d6f8a9061",
-    "qualname": "_foton_offline_free_trial_guard_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "draft_text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:пробн|занят)[^.?!\\n]{0,80}\\b(?:можно|доступн\\w*)?[^.?!\\n]{0,80}\\bбесплат\\w*",
-    "pattern_sha256": "50376c2bbeb108219cb8520296804fd5019ee0604f97ae27b85dda3b3ec9f7ea",
-    "qualname": "_foton_offline_free_trial_guard_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
     "flags": "fact_text",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
@@ -4464,16 +3260,6 @@
     "pattern_preview": "high_risk|zero_collect|refund|payment_dispute|legal|complaint|p0",
     "pattern_sha256": "1fc397dc31f1b3be70d35c99ffbd916f0d2ccf8cd8962bfae2f3b5247a365bbd",
     "qualname": "_manager_high_risk_signal",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:бот|робот|ии|нейросет\\w*|человек)\\b",
-    "pattern_sha256": "81bd218ef971679be9b8063cf248d73c0528ca3929fe37a6184e5d8937971b78",
-    "qualname": "_is_policy_c_identity_question",
     "symbol": "re.search",
     "target": ""
   },
@@ -4571,76 +3357,6 @@
     "flags": "haystack",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:мой|моя|мои|свой|своя|свои|наш|наша)\\s+(?:телефон|номер|почт|email|e-mail)\\b",
-    "pattern_sha256": "93441221c1dc8471a4ff9e0b150fe0ee4b6c72103771c4313968173cc7468418",
-    "qualname": "_asks_center_contact",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:фио|паспорт|снилс|инн|email|e-mail)\\b",
-    "pattern_sha256": "ba94bb0bd01f8229e2f1bf93a1432dae275818f687da6a853a1eb71072a2438f",
-    "qualname": "_manager_route_migrated_rules_override_allowed",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(address|location|metro|locations?)\\b|адрес|площадк|где\\s+.*находит|где\\s+.*занят",
-    "pattern_sha256": "d75a72f17bc522aa05faf508f0d51345be4f5a0c7551e1e0749afa472f3bc2ba",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(price|pricing|prices?)\\b|цен|стоим|сколько\\s+стоит|прайс|₽|руб",
-    "pattern_sha256": "5d0e8952118d10f51ac6e34b145e76b71ad095999719cfeef97af2c22b96c3e4",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(schedule|schedule_weekend)\\b|распис|по\\s+каким\\s+дням|когда\\s+занят|раз\\s+в\\s+недел|выходн|суббот|воскрес",
-    "pattern_sha256": "d272023e9130a7d46d9245888fca58c14e693db37632afffea5da630b35cd3ae",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b[А-ЯЁ][а-яё]+\\s+[А-ЯЁ][а-яё]+(?:\\s+[А-ЯЁ][а-яё]+)?\\b",
-    "pattern_sha256": "1a97c3d1e49014933b8a530f0e472361dcc67ef72b5a86e325a8f9e2795bf8a1",
-    "qualname": "_manager_route_migrated_rules_override_allowed",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bformat\\b|формат|онлайн\\s+или\\s+очно|очно\\s+или\\s+онлайн",
-    "pattern_sha256": "0f9c87822dbbf38d1cfe16a0eba731eaa09e99e1f4d767ba6d36f0a53da032aa",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "\\bзапиш(?:ите|и|ем|ать)\\s+(?:нас|меня|ребенка|ребенка|сына|дочь|его|ее|в\\s+группу)\\b",
     "pattern_sha256": "fadd0dc1c3f210182ccddef48e409d6b6d6aaf98f2804b9397a6914272106484",
     "qualname": "_seats_default_open_exclusion_reason",
@@ -4654,126 +3370,6 @@
     "pattern_preview": "\\bсколько\\s+(?:мест|человек)\\b",
     "pattern_sha256": "d9a97fb0c18cea5db59ab03fd83c707c9e6673af49ddb7d8b5b4fd7183afeeb2",
     "qualname": "_seats_default_open_exclusion_reason",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "record|recording|запис[ьи]|пересмотр",
-    "pattern_sha256": "36848c48620447eedb272ff4b58c69ceaa0bac101f03b91998a63c02757a808b",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\b{contact_marker}\\b[\\s\\S]{{0,40}}\\b{request_marker}\\b\"",
-    "pattern_sha256": "e227ac729cdfa912ff82d75f5b2491ef8ab50316bfb0754d15253d05df243b92",
-    "qualname": "_asks_center_contact",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\b{request_marker}\\b[\\s\\S]{{0,40}}\\b{contact_marker}\\b\"",
-    "pattern_sha256": "50fe07dd1b77bdd94dc2c61f23e7e477aae64f0fd1d7c8548cde098c80d5d2e3",
-    "qualname": "_asks_center_contact",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "договор|справк|сертификат|документ|квитанц|чек|лиценз|юрлиц",
-    "pattern_sha256": "2c493793b8236326a49b543b1e7e8f715711355857646c39650afc0e02c734b7",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "записаться|оформиться|оформить(?:ся)?|как\\s+запис",
-    "pattern_sha256": "8b70a27829e1540eb4eff0424dcbd7ab6b9ea709b28237e7a808938c0540be01",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "лагер|лвш|лш|менделеев|выездн|смен",
-    "pattern_sha256": "a0a6877252c6abcc958c933cf9ccb9666acbe59e41b5129142fab8fbf3284bb4",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "личный кабинет|кабинет|платформ|логин|парол|электрон|документооборот|скан-коп",
-    "pattern_sha256": "fc62d233a3eacd2b719af821ba4fbe2f13d70e1361badcf94a3843d9df90656c",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "маткап|материн|сфр",
-    "pattern_sha256": "24571370b00bbb41c6bf8f987d331b94a6a21915286b1488984aaf1bae0df20a",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "налог|вычет|фнс|ндфл",
-    "pattern_sha256": "957f433a5914ca770e8f4beaf7a75d338e50f9f0a17e6724fc898c0b2568abdb",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "олимпиад|физтех",
-    "pattern_sha256": "d3fe86613b9af2fe07401a64602108bc7a802ccb3d73d9f437ca66d2f6fdcb82",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "преподав|педагог|учитель|кто\\s+вед",
-    "pattern_sha256": "ad6a55e9165456ebd439f81f87de57a3c5e9a51786aae2246afa0d11ee656648",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "haystack",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "пробн|фрагмент\\s+занят|фрагмент\\s+урок",
-    "pattern_sha256": "ebf042ff669a3d3dd8e077b9b08a109e08470d4db2847ff6680d84df2fa86a9c",
-    "qualname": "_migrated_rule_intent_from_dialogue_contract",
     "symbol": "re.search",
     "target": ""
   },
@@ -4796,16 +3392,6 @@
     "qualname": "_client_clean_fact_text",
     "symbol": "re.sub",
     "target": "cleaned"
-  },
-  {
-    "flags": "line",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^\\s{6}-\\s+(.+?)\\s*$",
-    "pattern_sha256": "75f84f52100d0f7d68fe574ffdc55e1e0a3588bebc44db9aba06e9a81d9ef66e",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.match",
-    "target": "match"
   },
   {
     "flags": "low",
@@ -5068,16 +3654,6 @@
     "target": ""
   },
   {
-    "flags": "match.group(1)",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\d{1,2}",
-    "pattern_sha256": "e91be4b3c217b63163fc4b564b943afc89bd8a055414225c4745de6b52e3962a",
-    "qualname": "_month_options_from_fact",
-    "symbol": "re.findall",
-    "target": "numbers"
-  },
-  {
     "flags": "needle",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/text_signals.py",
@@ -5211,29 +3787,9 @@
     "flags": "normalized",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "(сколько|какая|почем|почём|стоим)[^.?!]{0,80}после\\s+1\\s+июля|после\\s+1\\s+июля[^.?!]{0,80}(сколько|какая|почем|почём|стоим)",
-    "pattern_sha256": "a2920b2d3509baf244e88b43c7c792364e0807295e3830baa3ee4111b2c0f8b5",
-    "qualname": "_is_future_price_case",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "pattern",
     "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
     "qualname": "_asks_explicit_live_availability_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "normalized",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "после\\s+1\\s+июля[^.?!]{0,80}(поменя|измен|выраст|подраст|будет\\s+друг)",
-    "pattern_sha256": "71cef457c0b3b6a8c3781623ac6186c4c741a85946cd76d3bcc500739ebc3164",
-    "qualname": "_is_future_price_case",
     "symbol": "re.search",
     "target": ""
   },
@@ -5378,16 +3934,6 @@
     "target": ""
   },
   {
-    "flags": "r\"\\1 \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^(ЛВШ\\s+Менделеево)\\s+[—-]\\s+\\1\\s+",
-    "pattern_sha256": "79ab6d49eb39c3924b3b4111b799f255b06cde0ffa46fd0d3bbb186a0bdfcda2",
-    "qualname": "_camp_clean_fact_text",
-    "symbol": "re.sub",
-    "target": "text"
-  },
-  {
     "flags": "r\"\\1\"",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
@@ -5415,16 +3961,6 @@
     "pattern_sha256": "1c4509ee1e537360259a4ade32dfd8d0630f2e9451347424b8741a568353f5ff",
     "qualname": "_sanitize_output_client_text",
     "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "raw",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "[\\s,;/]+",
-    "pattern_sha256": "63cee6acd75fdd8ec5089452ae521ce8e39de293703ccf40f232cc99c8211a5e",
-    "qualname": "_memory_topic_aliases",
-    "symbol": "re.split",
     "target": ""
   },
   {
@@ -5816,66 +4352,6 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "REPUTATION_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:подобрать|подсказать\\s+удобн\\w*\\s+вариант|оставьте\\s+(?:телефон|номер|контакт)|позвоним|свяжемся|как\\s+записаться|записаться|менеджер\\s+подбер[её]т|спокойн",
-    "pattern_sha256": "51c542c8bd3737e21ef90dd4cd175946c6ab4930f45bfe5da12dedcc3e49208b",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_SELLING_VISIBLE_STEP_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "адрес|место\\s+занятий|площадк|сретен|красносельск|скорняж|пацаев|институтск|контакт|телефон|на\\s+связи|ежедневно\\s+с\\s+\\d",
-    "pattern_sha256": "75ad6bc7282b2f886fd02f8124dd2b9560ef8f9f4e37333ae4dabeeda56b1cc9",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_BAD_SELLING_SUPPORT_FACT_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "гарантир|100\\s*%|обязательно\\s+(?:поступ|сдад|получ)|точно\\s+(?:поступ|сдад|получ)",
-    "pattern_sha256": "d91c5d8aa59855704e6e2a28223a2cbf464e74cdc7dffa8f5338aed37619518b",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_SELLING_GUARANTEE_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "диагноз|продиагностир|исправим\\s+на\\s+(?:5|пят)|подтянем\\s+на\\s+(?:5|пят)|сделаем\\s+(?:отличник|хорошист)|реб[её]нок\\s+точно\\s+станет",
-    "pattern_sha256": "2baf203d304c1eac74fd0f0a5e90a15045694cd9fc0032179a01f7414ec95913",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_SELLING_DIAGNOSIS_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "как\\s+(?:записать|записаться|оплат|внести)|хочу\\s+запис|готов[аы]?\\s+(?:запис|оформ)|запишите|свяжите|позвоните|оставлю\\s+(?:телефон|номер)|можно\\s+оплатить|где",
-    "pattern_sha256": "c059c8ebf52bf316baa60548f5aa90e944d4559a8e814f81cb178c162ecd31be",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_A2_PROCEED_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "только\\s+сегодня|успейт|последн(?:ий|яя)\\s+шанс|решайт[е]?\\s+сейчас|срочно\\s+(?:оформ|запис|реш)|иначе\\s+(?:мест|скид|цен)",
-    "pattern_sha256": "b068abf4c66e82a0e79ef19ceb61bbc646e8c49cbd92a27ad67354877b31a75b",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_SELLING_PRESSURE_RE"
   },
   {
     "flags": "re.I",
@@ -7028,46 +5504,6 @@
     "target": "value"
   },
   {
-    "flags": "rest",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^\\s{4}brand_split:\\s*true\\s*$",
-    "pattern_sha256": "dd893d271394c0e70e5c629359dceb6c045eb9de39b6b11da4e95ee247b3a0d6",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "rest",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^\\s{4}required_fact_keys:\\s*$",
-    "pattern_sha256": "a3379bc527af0aa161359b37fa378a1a146bf5eec1d25e40e4df4037d6d80d84",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "rest",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "^\\s{4}required_fact_keys:\\s*\\[(.*?)\\]",
-    "pattern_sha256": "41824399f60bb491ded155cdb9ac2618306a429e4ff8c11bddee4fd21c4c6e00",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.search",
-    "target": "required"
-  },
-  {
-    "flags": "rest",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "rf\"^\\s{{4}}{field_name}:\\s*(.+?)\\s*$\"",
-    "pattern_sha256": "184b8d4b30028eda70503ab8bc30d47b47d0796f76b03c68b26448139ddd0afb",
-    "qualname": "_parse_rules_registry_fallback",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
     "flags": "slot.child_key or \"\"",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -7126,36 +5562,6 @@
     "qualname": "_derived_product_number_claims",
     "symbol": "re.findall",
     "target": "numbers"
-  },
-  {
-    "flags": "str(client_message or \"\") | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:возврат\\w*|вернут|вернете|вернёте|деньги\\s+верн|услов\\w*\\s+возврат|до\\s+оплат|перед\\s+оплат|до\\s+старт|передума\\w*|не\\s+ходить|отказ\\w*)",
-    "pattern_sha256": "da30e977d5f6a3dbcf6df9e9513cc63d3f42c167715fb423d4b0f58f10f333da",
-    "qualname": "_presale_refund_policy_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "str(client_message or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b[A-ZА-ЯЁ]{2,}[A-ZА-ЯЁ0-9-]{3,}\\b",
-    "pattern_sha256": "fe36f9918b33f4ba6bf06bfe4e0ebd3752b0b647a4395a3e22d4272b53fb2584",
-    "qualname": "_terminal_safe_template",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "str(draft_text or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b\\d{1,3}(?:[ \\u00a0]\\d{3})+\\s*₽",
-    "pattern_sha256": "34bea254d47603402dc20bdb322e56fd8469168f075b3a10cf3a8711b8c77c77",
-    "qualname": "apply_high_risk_content_guards",
-    "symbol": "re.search",
-    "target": ""
   },
   {
     "flags": "str(facts_blob or \"\").casefold().replace(\"ё\", \"е\")",
@@ -7260,36 +5666,6 @@
   {
     "flags": "str(text or \"\")",
     "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "(?:\\+7|8|7)?[\\s\\-()]?\\d{3}[\\s\\-()]?\\d{3}[\\s\\-]?\\d{2}[\\s\\-]?\\d{2}",
-    "pattern_sha256": "0ca4bf2a1e6d1b8fce5c68c92b7b0db0830ce2528bd8a5d768ac5b8753aed767",
-    "qualname": "_current_message_has_phone",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "str(text or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b([1-9]|10|11)\\s*(?:класс|классе|кл\\.?)",
-    "pattern_sha256": "0d45d45eaf9628daf4dbb36b15e8e5eec3479128953e9e4108283133be1426c4",
-    "qualname": "_grade_from_text",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
-    "flags": "str(text or \"\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(\\d{1,2})\\s*%",
-    "pattern_sha256": "15631a782504c3ab6ba22d7b52b6af149d56ebeb45229d050284c91aa147436b",
-    "qualname": "_first_percent",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
-    "flags": "str(text or \"\")",
-    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "(?<=[.?!])\\s+|\\n+",
     "pattern_sha256": "5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61",
@@ -7305,16 +5681,6 @@
     "pattern_sha256": "5791e78c2701f2d37fc80386d23119994646041a8202df885cc6c0accaaded61",
     "qualname": "_manager_deadline_promise_detail",
     "symbol": "re.split",
-    "target": ""
-  },
-  {
-    "flags": "str(text or \"\").casefold().replace(\"ё\", \"е\")",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:не|только\\s+не)\\s+онлайн\\w*\\b",
-    "pattern_sha256": "54895cbf70a28b3bfabf4b38305f8189be94da52cb0980e34e474ec82f90dee6",
-    "qualname": "_client_negates_online",
-    "symbol": "re.search",
     "target": ""
   },
   {
@@ -7335,26 +5701,6 @@
     "pattern_sha256": "19b6339d21b18526fba431ebc909495d2c4bc6896ccfbea7ed9fbead8f60feed",
     "qualname": "_append_client_dialogue_texts",
     "symbol": "re.match",
-    "target": ""
-  },
-  {
-    "flags": "text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:фио|паспорт|снилс|инн|email|e-mail)\\b",
-    "pattern_sha256": "ba94bb0bd01f8229e2f1bf93a1432dae275818f687da6a853a1eb71072a2438f",
-    "qualname": "_client_message_contains_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bдоговор\\w*\\s*(?:номер|№)?\\s*\\d+",
-    "pattern_sha256": "a3c3f7883b29c260f4d2e21ba45ccd2e7e698ec98b10fb36446a37205f0ac580",
-    "qualname": "_client_message_contains_pii",
-    "symbol": "re.search",
     "target": ""
   },
   {
@@ -7436,76 +5782,6 @@
     "qualname": "extract_shift",
     "symbol": "re.search",
     "target": "match"
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "((?:\\d{1,2}\\D{0,16}){1,6})месяц",
-    "pattern_sha256": "ab81cea04fc0d7f023f0d21fc08df9c043bbe80c2d70ab175eaba83d600e4596",
-    "qualname": "_month_options_from_fact",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "(физик\\w*[^.!?\\n]{0,80}математ\\w*|математ\\w*[^.!?\\n]{0,80}физик\\w*)",
-    "pattern_sha256": "e2d5d8e93e06d3f87dec92b35cc46ad988df5235777faf79fb322988598bb66c",
-    "qualname": "_asks_second_subject_discount",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b([1-9]|10|11)\\s*(?:класс|классе|кл\\.?)",
-    "pattern_sha256": "0d45d45eaf9628daf4dbb36b15e8e5eec3479128953e9e4108283133be1426c4",
-    "qualname": "_fact_matches_grade",
-    "symbol": "re.findall",
-    "target": "exact"
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b([1-9]|10|11)\\s*[-–]\\s*([1-9]|10|11)\\s*(?:класс|классы|кл)",
-    "pattern_sha256": "75646364b2b0495e2dc6155b6e476bbfed411080c56695286ea2ba95c3075254",
-    "qualname": "_fact_matches_grade",
-    "symbol": "re.findall",
-    "target": "ranges"
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "верните\\s+деньг|возврат|жалоб|суд|юрист|двойн(?:ое|ая)\\s+списан|оплатил[аи]?,?\\s+занят",
-    "pattern_sha256": "c954b68f89684746313cca1f0717b5005c54d0a6dbceea552a70b37a658b9318",
-    "qualname": "_a2_p0_signal",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "как\\s+зовут|фио|имя|кто\\s+в\\s+лобн|кто\\s+ведет|кто\\s+ведёт|конкретн",
-    "pattern_sha256": "feda12647012e394f4056db92589950dc1b45825d7d91cf409defd09100ec42e",
-    "qualname": "_asks_specific_teacher_name",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "онлайн\\s+или\\s+очно|очно\\s+или\\s+онлайн|онлайн.+очно|очно.+онлайн|формат|как\\s+проход",
-    "pattern_sha256": "99330cfc4aa9abb26917f2a3f644fa68cff38c21fae3005f14c94585783140ed",
-    "qualname": "_looks_like_format_choice_question",
-    "symbol": "re.search",
-    "target": ""
   },
   {
     "flags": "text",
@@ -7621,36 +5897,6 @@
     "flags": "text",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\+?\\d[\\d\\s().-]{7,}\\d",
-    "pattern_sha256": "cbf291b9e3759560c8f0bb8a61ce0c03478a14a7596505d65ee46b1821e0d931",
-    "qualname": "_client_message_contains_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "^(?:а\\s+)?(?:сколько|цена|стоимость|онлайн|очно|для\\s+\\d{1,2}|\\d{1,2}\\s*класс|есть|можно|подойдет|подходит|а\\s+если|тогда|и\\s+ещ[её])\\b",
-    "pattern_sha256": "0cd63521c9eda2004d0e78cf212b9ca7273c374b61f3988ea23fb9a64eb0a126",
-    "qualname": "_memory_short_followup",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"(?<![a-zа-я0-9]){re.escape(alias)}\"",
-    "pattern_sha256": "b574e65679c7474fc4135e8442e2a3348b22a819a6ed499caf359823d49a110e",
-    "qualname": "_memory_mentions_different_topic",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "договор|оферт|оригинал|документ|акт|заявлен|подпис",
     "pattern_sha256": "969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140",
     "qualname": "_asks_non_matkap_document_or_contract",
@@ -7664,16 +5910,6 @@
     "pattern_preview": "договор|оферт|оригинал|документ|акт|заявлен|подпис",
     "pattern_sha256": "969565042ac4cb932f1170e5f74e4956fddc3d81cbfb3cf76be63443b136e140",
     "qualname": "_asks_non_tax_document_or_contract",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "text",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "лвш|лагер|смен|выездн|camp|lvsh",
-    "pattern_sha256": "f59a6b94e15f25ab92827f31cf7059d8080ae75319ac78e427013d880c14bc0a",
-    "qualname": "_memory_mentions_different_topic",
     "symbol": "re.search",
     "target": ""
   },
@@ -8121,26 +6357,6 @@
     "flags": "value | re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:урок|заняти|лекци|вебинар)[^.?!\\n]{0,80}\\bзапис(?:ь|и|ью|ям|ями)\\b",
-    "pattern_sha256": "c2cd9fc94e29491651429af8f506de8ee3c43955fa61c6a4f7ac752ae0fc876b",
-    "qualname": "_is_lesson_recording_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bзапис(?:ь|и|ью|ям|ями)\\b[^.!?\\n]{0,80}\\b(?:урок|заняти|лекци|вебинар)",
-    "pattern_sha256": "caa21711253f7117ce560d92fdf48f38f189ae0194f02da9822def1f4716737c",
-    "qualname": "_is_lesson_recording_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "\\bзафиксировать\\s+(?:текущ(?:ую|ие)|цену|условия)\\b",
     "pattern_sha256": "4eb9da09b2fdafb8f105fdf61c3c6effc4aaff5e1e41c49253b746c33bd8d32f",
     "qualname": "_soften_current_price_deadline_text",
@@ -8310,96 +6526,6 @@
   {
     "flags": "value",
     "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\+?\\d[\\d\\s().-]{8,}\\d",
-    "pattern_sha256": "703788023a30f77d482ccbb648b82bf54152c3d2692b1f3464ffa83e5e74dbd5",
-    "qualname": "_has_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:два|три|несколько)\\s+предмет",
-    "pattern_sha256": "c936adabca3261d6156b6cbc1dba220075e64c6041bf17673a8036e162538740",
-    "qualname": "_asks_multi_subject_price",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\\b",
-    "pattern_sha256": "6d52c1eb0ba3e5798abe0c7913bd7829d626272fb193d7d879a5353fb02b8114",
-    "qualname": "_looks_like_enrollment_process_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b(?:как|надо|нужно|можно\\s+ли|оформ\\w*|куда)\\b[^.!?\\n]{0,80}\\b(?:запис|оформ|курс|обучен|занят)",
-    "pattern_sha256": "b74623ad62e9324ebe58d06f95451ca1229c963249c725fed188d520c1af0190",
-    "qualname": "_looks_like_enrollment_process_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b[А-ЯЁ][а-яё]+\\s+[А-ЯЁ][а-яё]+(?:\\s+[А-ЯЁ][а-яё]+)?\\b",
-    "pattern_sha256": "1a97c3d1e49014933b8a530f0e472361dcc67ef72b5a86e325a8f9e2795bf8a1",
-    "qualname": "_has_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\b\\d{2}\\.\\d{2}\\.\\d{4}\\b",
-    "pattern_sha256": "afeba638ae4c7616747c1ab1b260a7a86bfbc10f64b0ebe03de3488578accc2d",
-    "qualname": "_has_pii",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\bгод\\b|за\\s+год|годов",
-    "pattern_sha256": "67bcccd3cdd81fd517584464b0f0560c2b4e67b19410c360aceb427cf507a1a8",
-    "qualname": "_requested_price_period",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "\\bне\\s+(?:лагер|лвш|лш|менделеев)\\w*",
-    "pattern_sha256": "a20a6e3a9d2b31e09af3c96cb31338ebc78f0b1fcaf8e06da855d80b2bdeb76b",
-    "qualname": "_negates_camp",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/rules_engine.py",
-    "pattern_preview": "семестр|полугод",
-    "pattern_sha256": "495b2567b672211727ee30e6c1b3ac8710d4171cf98cbb7c17dff08908589719",
-    "qualname": "_requested_price_period",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "pattern_preview": "(?:\\bне\\s+(?:про|о)\\s+|\\bэто\\s+не\\s+(?:про\\s+)?|\\bне\\s+)возврат\\w*",
     "pattern_sha256": "e86ccb1876eab0fa56cd4ff1aea32c96fb0171b10606589ec3d4dd28b0758c67",
@@ -8441,71 +6567,11 @@
     "flags": "value",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:для|по|ради)\\s+запис[ьи]\\b",
-    "pattern_sha256": "83ff95a351859d40f1420bbbfd329d3725e0139b8e58d4b49e700b0b8dc159ed",
-    "qualname": "_is_enrollment_signup_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\\b",
-    "pattern_sha256": "6d52c1eb0ba3e5798abe0c7913bd7829d626272fb193d7d879a5353fb02b8114",
-    "qualname": "_is_enrollment_signup_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "pattern_preview": "\\b(?P<grade>[1-9]|1[01])\\s*(?:класс|кл\\.?)\\b",
     "pattern_sha256": "9881a01c48b565e78a2e3a339bdb219e80da9faf43fd0593a2d8cf3298006407",
     "qualname": "_known_fields_from_text",
     "symbol": "re.search",
     "target": "grade"
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b([1-9]|10|11)\\s*(?:класс|классе|кл\\.?)",
-    "pattern_sha256": "0d45d45eaf9628daf4dbb36b15e8e5eec3479128953e9e4108283133be1426c4",
-    "qualname": "_selling_slots_from_text",
-    "symbol": "re.search",
-    "target": "match"
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bзапис[ьи]\\b[^.!?\\n]{0,80}\\b(?:на\\s+)?(?:курс|программ|обучен|занятия)\\b",
-    "pattern_sha256": "d2a26af64cbbe39be50a70b4e3b01394fe78ecb43c35e074e15ff220383c8a67",
-    "qualname": "_is_enrollment_signup_question",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bонлайн\\b|дистанц",
-    "pattern_sha256": "298d84a9c61a48ebce5c6d1e90efd95fc9d6010ab56ff488df9f6100f3439431",
-    "qualname": "_selling_slots_from_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bочн|офлайн|сретен|красносельск",
-    "pattern_sha256": "6aa5d9bdd2459c583dd65abf6af372f6a634f3c6513848f17d466b8eb5ed6bc3",
-    "qualname": "_selling_slots_from_text",
-    "symbol": "re.search",
-    "target": ""
   },
   {
     "flags": "value",

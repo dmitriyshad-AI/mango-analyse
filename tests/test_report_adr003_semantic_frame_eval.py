@@ -952,9 +952,6 @@ def test_report_includes_reader_agreement_for_pure_semantic_readers(tmp_path: Pa
     assert agreement["status"] == "compared"
     assert agreement["compared_turns"] == 1
     assert agreement["per_reader"]["sense_seats"]["match"] == 1
-    assert agreement["per_reader"]["slot_grade"]["match"] == 1
-    assert agreement["per_reader"]["slot_subject"]["match"] == 1
-    assert agreement["per_reader"]["slot_format"]["match"] == 1
     assert agreement["per_reader"]["off_topic"]["match"] == 1
     assert agreement["mismatch_count"] == 0
 

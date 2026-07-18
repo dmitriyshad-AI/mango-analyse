@@ -27,8 +27,7 @@ def test_prepare_structural_source_is_code_only_and_marks_kb_scopes(tmp_path: Pa
         source_dir=tmp_path / "source",
     )
 
-    assert "src/mango_mvp/channels/rules_engine.py" in prepared.copied_code_files
-    assert "src/mango_mvp/channels/rules_registry.yaml" not in prepared.copied_code_files
+    assert "src/mango_mvp/channels/output_verification_floor.py" in prepared.copied_code_files
     non_code = [path for path in prepared.source_dir.rglob("*") if path.is_file() and path.suffix != ".py"]
     assert non_code == []
     assert any(item["scope"] == "client_safe_candidate" for item in prepared.indexed_structured_files)
@@ -75,11 +74,11 @@ def test_pinned_graphify_commit_constant() -> None:
 
 def test_curated_hints_return_raw_sources_for_p0_brand_and_script_questions() -> None:
     p0_hints = curated_source_hints("Где блокируется P0 по возврату и спорной оплате?")
-    assert "src/mango_mvp/channels/rules_engine.py" in p0_hints
+    assert "src/mango_mvp/channels/output_verification_floor.py" in p0_hints
     assert "src/mango_mvp/channels/p0_recall_spec.py" in p0_hints
 
     brand_hints = curated_source_hints("Где разделяются бренды Фотон/УНПК и цены?")
-    assert "src/mango_mvp/channels/rules_engine.py" in brand_hints
+    assert "src/mango_mvp/channels/output_verification_floor.py" in brand_hints
     assert any(path.endswith("brand_rules.yaml") for path in brand_hints)
     assert any(path.endswith("MANAGER_ONLY_FACTS.csv") for path in brand_hints)
 
@@ -104,8 +103,8 @@ def test_graph_source_hints_normalize_archive_paths_and_append_curated_hints(tmp
                 "nodes": [
                     {
                         "id": "1",
-                        "label": "rules_engine.py",
-                        "source_file": str(source_dir / "src/mango_mvp/channels/rules_engine.py"),
+                        "label": "output_verification_floor.py",
+                        "source_file": str(source_dir / "src/mango_mvp/channels/output_verification_floor.py"),
                     }
                 ],
                 "edges": [],
@@ -118,6 +117,6 @@ def test_graph_source_hints_normalize_archive_paths_and_append_curated_hints(tmp
         encoding="utf-8",
     )
 
-    hints = graph_source_hints(graph_path, "rules_engine P0 возврат", limit=8)
-    assert "src/mango_mvp/channels/rules_engine.py" in hints
+    hints = graph_source_hints(graph_path, "output verification P0 возврат", limit=8)
+    assert "src/mango_mvp/channels/output_verification_floor.py" in hints
     assert all("source_code_only" not in hint for hint in hints)

@@ -15,13 +15,11 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     OFF_TOPIC_GENERIC_SAFE_TEXT,
     OFF_TOPIC_UNPK_SAFE_TEXT,
     _asks_explicit_live_availability_question,
-    _selling_slots_from_text,
 )
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     SemanticReading,
     off_topic_reading_decision,
     sense_seats_reading_decision,
-    slots_reading_candidates,
 )
 
 
@@ -522,18 +520,12 @@ def _reader_agreement_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str,
     per_reader = {
         "sense_seats": {"match": 0, "mismatch": 0, "missing_reading": 0},
         "off_topic": {"match": 0, "mismatch": 0, "missing_reading": 0},
-        "slot_grade": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
-        "slot_subject": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
-        "slot_format": {"match": 0, "mismatch": 0, "missing_reading": 0, "legacy_only": 0, "reading_only": 0},
     }
     examples: list[dict[str, Any]] = []
     for dialog in dialogs:
         dialog_id = str(dialog.get("dialog_id") or "")
-        client_history: list[str] = []
         for index, turn in enumerate(_turns(dialog), 1):
             client_message = str(turn.get("client_message") or "")
-            if client_message:
-                client_history.append(f"Клиент: {client_message}")
             reading = _semantic_reading_from_turn(turn)
             if reading is None:
                 continue
@@ -560,28 +552,6 @@ def _reader_agreement_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str,
                 per_reader["off_topic"]["mismatch"] += 1
                 changed["off_topic"] = {"legacy": legacy_off_topic, "reading": reading_off_topic}
 
-            legacy_slots = dict(_selling_slots_from_text(client_message))
-            reading_slots = {
-                key: str(value.get("value") or "")
-                for key, value in slots_reading_candidates(reading, tuple(client_history)).items()
-                if isinstance(value, Mapping)
-            }
-            for slot_name in ("grade", "subject", "format"):
-                key = f"slot_{slot_name}"
-                legacy_value = str(legacy_slots.get(slot_name) or "")
-                reading_value = str(reading_slots.get(slot_name) or "")
-                if legacy_value and reading_value and legacy_value == reading_value:
-                    per_reader[key]["match"] += 1
-                elif legacy_value and reading_value and legacy_value != reading_value:
-                    per_reader[key]["mismatch"] += 1
-                    changed[key] = {"legacy": legacy_value, "reading": reading_value}
-                elif legacy_value and not reading_value:
-                    per_reader[key]["legacy_only"] += 1
-                elif reading_value and not legacy_value:
-                    per_reader[key]["reading_only"] += 1
-                else:
-                    per_reader[key]["match"] += 1
-
             if changed:
                 mismatch_count += 1
                 if len(examples) < 50:
@@ -594,7 +564,7 @@ def _reader_agreement_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str,
                         }
                     )
     return {
-        "schema_version": "semantic_reading_reader_agreement_v1_2026_07_03",
+        "schema_version": "semantic_reading_reader_agreement_v2_2026_07_19",
         "status": "compared" if compared else "no_frames",
         "compared_turns": compared,
         "per_reader": per_reader,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
-from mango_mvp.channels.rules_engine import apply_rule, load_rules_registry
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult, apply_input_policy_guards, apply_payment_confirmation_guard
 
 
@@ -15,33 +14,6 @@ def _draft(text: str, *, topic_id: str = "theme:003_payment_status") -> Subscrip
         confidence_group=0.95,
         risk_level="low",
     )
-
-
-def test_place_singular_address_is_not_live_seats_and_places_require_manager_check() -> None:
-    registry = load_rules_registry()
-
-    address = apply_rule(
-        registry["contact_address"],
-        plan={"primary_intent": "address", "direct_question": "Где место занятий Фотона?", "active_brand": "foton"},
-        facts={},
-        context={"active_brand": "foton"},
-    )
-    seats = apply_rule(
-        registry["camp_lvsh"],
-        plan={"primary_intent": "live_availability", "direct_question": "Есть места на ЛВШ?", "active_brand": "foton"},
-        facts={},
-        context={"active_brand": "foton"},
-    )
-
-    assert address is not None
-    assert address.route == "bot_answer_self_for_pilot"
-    assert "Верхняя Красносельская" in address.text
-    assert "места есть" not in address.text.casefold()
-    assert seats is not None
-    assert seats.route == "draft_for_manager"
-    assert "rules_engine_camp_live_availability_handoff" in seats.flags
-    assert "места есть" not in seats.text.casefold()
-    assert "провер" in seats.text.casefold()
 
 
 def test_payment_status_is_not_autoconfirmed_without_two_sources() -> None:

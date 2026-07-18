@@ -38,12 +38,13 @@ def test_wappi_launchd_renderer_targets_current_clean_code_root() -> None:
     ).strip()
 
 
-def test_wappi_launchers_do_not_depend_on_apple_python_shim() -> None:
+def test_wappi_launchers_prefer_dedicated_runtime_python() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("start_wappi_draft_loop_launchd.sh", "start_wappi_draft_loop_phase1b_live.sh"):
         text = (root / "scripts" / name).read_text(encoding="utf-8")
-        assert "Python.app/Contents/MacOS/Python" in text
+        assert ".mango_local/draft_loop/venv/bin/python" in text
+        assert "DRAFT_LOOP_PYTHON_BIN" in text
         assert '"$PYTHON_BIN"' in text
 
 
@@ -57,18 +58,22 @@ def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tm
     fake_bin.mkdir()
     launch_log = tmp_path / "launchctl.log"
     bootstrap_count = tmp_path / "bootstrap.count"
+    loaded_state = tmp_path / "loaded.state"
+    loaded_state.write_text("1", encoding="utf-8")
     launchctl = fake_bin / "launchctl"
     launchctl.write_text(
         """#!/bin/bash
 echo "$*" >> "$FAKE_LAUNCH_LOG"
 case "$1" in
-  print|bootout) exit 0 ;;
+  print) [[ "$(cat "$FAKE_LOADED_STATE")" == "1" ]]; exit $? ;;
+  bootout) echo 0 > "$FAKE_LOADED_STATE"; exit 0 ;;
   bootstrap)
     count=0
     [[ -f "$FAKE_BOOTSTRAP_COUNT" ]] && count=$(cat "$FAKE_BOOTSTRAP_COUNT")
     count=$((count + 1))
     echo "$count" > "$FAKE_BOOTSTRAP_COUNT"
     [[ "$count" == "1" ]] && exit 1
+    echo 1 > "$FAKE_LOADED_STATE"
     exit 0 ;;
 esac
 exit 0
@@ -85,6 +90,7 @@ exit 0
         "DRAFT_LOOP_LAUNCHD_ROLLBACK": str(rollback),
         "FAKE_LAUNCH_LOG": str(launch_log),
         "FAKE_BOOTSTRAP_COUNT": str(bootstrap_count),
+        "FAKE_LOADED_STATE": str(loaded_state),
     }
 
     completed = subprocess.run(

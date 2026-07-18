@@ -7,7 +7,7 @@ PLIST_SOURCE="${DRAFT_LOOP_LAUNCHD_SOURCE:-${ROOT}/deploy/wappi_draft_loop/${LAB
 PLIST_TARGET="${DRAFT_LOOP_LAUNCHD_PLIST:-${HOME}/Library/LaunchAgents/${LABEL}.plist}"
 ROLLBACK_PLIST="${DRAFT_LOOP_LAUNCHD_ROLLBACK:-${HOME}/.mango_local/draft_loop/${LABEL}.rollback.plist}"
 MODE="${1:-}"
-PYTHON_BIN="/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+PYTHON_BIN="${DRAFT_LOOP_PYTHON_BIN:-${HOME}/.mango_local/draft_loop/venv/bin/python}"
 [[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3)"
 
 if [[ -n "$MODE" && "$MODE" != "--render-only" ]]; then
@@ -47,6 +47,15 @@ fi
 DOMAIN="gui/$(id -u)"
 WAS_LOADED=0
 HAD_PLIST=0
+
+wait_until_unloaded() {
+  for _ in {1..50}; do
+    launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 install -d -m 0755 "$(dirname "${PLIST_TARGET}")" "$(dirname "${ROLLBACK_PLIST}")"
 if [[ -f "$PLIST_TARGET" ]]; then
   plutil -lint "$PLIST_TARGET" >/dev/null
@@ -56,11 +65,16 @@ fi
 if launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
   WAS_LOADED=1
   launchctl bootout "${DOMAIN}/${LABEL}"
+  if ! wait_until_unloaded; then
+    echo "Wappi launchd job did not unload" >&2
+    exit 3
+  fi
 fi
 install -m 0644 "${RENDERED_PLIST}" "${PLIST_TARGET}"
 
 rollback() {
   launchctl bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1 || true
+  wait_until_unloaded || true
   if [[ "$HAD_PLIST" == "1" ]]; then
     install -m 0644 "$ROLLBACK_PLIST" "$PLIST_TARGET"
     if [[ "$WAS_LOADED" == "1" ]]; then

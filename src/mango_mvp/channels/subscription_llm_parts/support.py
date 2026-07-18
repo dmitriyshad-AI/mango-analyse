@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.dialogue_debug_trace import trace_event
-from mango_mvp.channels.dialogue_contract_pipeline import concrete_anchors as dialogue_contract_concrete_anchors
 from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV
+from mango_mvp.channels.output_verification_floor import concrete_anchors as dialogue_contract_concrete_anchors
 
 
 OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"

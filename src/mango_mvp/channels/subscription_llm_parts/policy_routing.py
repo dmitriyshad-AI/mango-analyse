@@ -9,7 +9,6 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.dialogue_contract_pipeline import (
-    AUTONOMY_SCOPE_PRECISION_ENV,
     _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
     _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
     _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
@@ -20,12 +19,15 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
     faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
     new_concrete_anchors as dialogue_contract_new_concrete_anchors,
-    parse_contract as parse_dialogue_contract,
-    verify_output as verify_dialogue_contract_output,
 )
 from mango_mvp.channels.draft_prompt_builder import IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES, safe_schedule_template, should_force_manager_only
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
-from mango_mvp.channels.humanity_guards import is_near_repeat
+from mango_mvp.channels.output_verification_floor import (
+    AUTONOMY_SCOPE_PRECISION_ENV,
+    is_near_repeat,
+    parse_contract as parse_dialogue_contract,
+    verify_output as verify_dialogue_contract_output,
+)
 from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
 from mango_mvp.channels.rules_engine import (
     RuleOutcome,

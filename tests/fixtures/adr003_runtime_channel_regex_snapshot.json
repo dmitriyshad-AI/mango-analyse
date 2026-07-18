@@ -9,7 +9,7 @@
   },
   {
     "flags": "",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
     "pattern_preview": "\\b(?:преподаватель|учитель|куратор|менеджер|администратор)\\s+([А-ЯЁ][а-яё]+(?:\\s+[А-ЯЁ][а-яё]+){1,2})",
     "pattern_sha256": "870c27fd7039688fa3b4530836ec244b4ae22c7c76087eb5275a2b525188adcd",
     "qualname": "<module>",
@@ -17,7 +17,7 @@
   },
   {
     "flags": "",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
     "pattern_preview": "\\d+",
     "pattern_sha256": "ff99df4aa643035d21a8632a6c37432f25f29607612257bbc3635fb93acea851",
     "qualname": "<module>",
@@ -234,42 +234,10 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "(?:₽|руб(?:\\.|лей|ля|ль)?|%)|\\b\\d[\\d\\s\\u00a0]{2,}\\s*(?:р\\.|руб|₽)\\b",
-    "pattern_sha256": "b50755fefdabd04e79d69990f0dfbc526bac6f395d4f5f135d84405dbddc0c5a",
-    "qualname": "<module>",
-    "target": "_MONEY_OR_VALUE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "(?:₽|руб(?:\\.|лей|ля|ль)?|%|\\b\\d{1,3}\\s*балл\\w*|\\b\\d{1,2}\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\\s+\\d{4})?\\b",
-    "pattern_sha256": "baf823492a1c8c54e17c1c5eabe4cfbace14b26ea00b13de5e1c2e01069ffb37",
-    "qualname": "<module>",
-    "target": "_FACTUAL_CLAIM_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
     "pattern_preview": "(?:₽|руб|%|\\b\\d|\\b(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\\w*)",
     "pattern_sha256": "ab36bb0b877e2fc68a0ba621c83d4e91dbe45a176882e49099c1e1a36d65c0e1",
     "qualname": "<module>",
     "target": "_NEXT_STEP_CONCRETE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "(?<!\\d)((?:\\d{1,2}\\s*(?:,|/|и|или|[-–])\\s*)*\\d{1,2})\\s*(?:мес\\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?)",
-    "pattern_sha256": "8365a436df26cb60cf95fc38586d13d4ec66e4a83f8da89439233ce0c0017497",
-    "qualname": "<module>",
-    "target": "_PAYMENT_PLAN_COUNT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "(?<!\\d)(\\d{1,2})[. ](0?\\d{1,2}|январ\\w*|феврал\\w*|март\\w*|апрел\\w*|ма[йя]|июн\\w*|июл\\w*|август\\w*|сентябр\\w*|октябр\\w*|ноябр\\w*|декабр\\w*)(?:[. ](20\\d{2}))?",
-    "pattern_sha256": "ecc4e70aa303b21696356edfd329213edfbd5fbc5c4eeba31c6e8d5d43c84f20",
-    "qualname": "<module>",
-    "target": "_DATE_ANCHOR_RE"
   },
   {
     "flags": "re.I",
@@ -282,74 +250,10 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "\\b(?:обычно|как\\s+правило|в\\s+основном|чаще\\s+всего)\\b|(?:\\bвход(?:ит|ят)\\b(?!\\s+ли\\b)|\\bвключа(?:ет|ют|ется|ются)\\b)|\\bдела(?:ем|ют)\\s+упор\\b|\\bупор\\s+(?:ид[её",
-    "pattern_sha256": "7abc8d1e3824ed02281cfff29e93b86f801f10bdae77a315dcfd52c3176a6f79",
-    "qualname": "<module>",
-    "target": "_HANDOFF_FACTUAL_CLAIM_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
     "pattern_preview": "\\b(?:телефон|номер|почт|email|e-mail|фио|фамили|паспорт|снилс)\\b",
     "pattern_sha256": "8d58f2d51148de1d0f578d1407b027f8b5092651b1b720d5d8522cb2264ce95d",
     "qualname": "<module>",
     "target": "_NEXT_STEP_PII_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "\\b(?:ул\\.|улиц[аеуы]|д\\.|дом|каб\\.|кабинет|метро)\\s+[а-яa-z0-9-]+",
-    "pattern_sha256": "96ab673a2e7166e4c002b05634007c0e1bd80d087414209a8f1b96306580172a",
-    "qualname": "<module>",
-    "target": "_ADDRESS_GENERIC_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "\\b20\\d{2}/\\d{2}\\b|\\b\\d{1,2}:\\d{2}\\b|\\b\\d+(?:[.,]\\d+)?\\s*[-–]\\s*\\d+(?:[.,]\\d+)?(?:\\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|мес(?:\\.|яц",
-    "pattern_sha256": "8ae9b5306736abd94a09a3d0a0b987060411c544c1af6e7caa6c79a67c4dd5bf",
-    "qualname": "<module>",
-    "target": "_FREE_NUMBER_TOKEN_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "\\bя\\s+(?:бот|gpt|нейросеть|искусственн\\w+\\s+интеллект)\\b",
-    "pattern_sha256": "3054160a004817fa5bf87e504e90c1eff9710ae73d0268b6bc4799a0989a18ec",
-    "qualname": "<module>",
-    "target": "_AI_SELF_DISCLOSURE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "\\d[\\d\\s\\u00a0]*(?:[.,]\\d+)?\\s*(?:₽|%|руб(?:\\.|лей|ля|ль)?|р\\.|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?",
-    "pattern_sha256": "6de1369d00aa0a7f17a9b96841c9bd589da19e678746c3b3e7444afb3570e4a6",
-    "qualname": "<module>",
-    "target": "_ESTIMATE_NUMBER_TOKEN_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "^\\s*да\\b|точно\\s+(?:справится|потянет|подойд[её]т)|\\b(?:справится|потянет|подойд[её]т)\\b",
-    "pattern_sha256": "94ab5c478b92959e53599c92ed291b4085a287e2e6db279e8022a974d94952c6",
-    "qualname": "<module>",
-    "target": "_INDIVIDUAL_CHILD_CONFIDENT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "верн[её]м\\s+деньг|оформим\\s+возврат|гаранти\\w+\\s+(?:результат|поступлен)|обязательно\\s+(?:поступит|сдаст)|точно\\s+верн[её]м",
-    "pattern_sha256": "4f0426374b2691aabe7c1b341441295e162ed30cb570e7b42558079e2fdd2a19",
-    "qualname": "<module>",
-    "target": "_P0_PROMISE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "гарантир|100\\s*%|обязательно\\s+(?:поступ|сдад|сдаст|получ)|точно\\s+(?:поступ|сдад|сдаст|получ)|исправим\\s+на\\s+(?:5|пят)|подтянем\\s+на\\s+(?:5|пят)|точно\\s+стане",
-    "pattern_sha256": "0730db920b84098c4d2087913e701ae922fb2b97090f2fa8292ccc23fa09d91d",
-    "qualname": "<module>",
-    "target": "_ESTIMATE_GUARANTEE_RE"
   },
   {
     "flags": "re.I",
@@ -370,34 +274,10 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "мес\\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?|рассрочк|долями",
-    "pattern_sha256": "32e654577b41e8e11151ca47ba3c18a2a9d10de28c201fd478d87740532a9c56",
-    "qualname": "<module>",
-    "target": "_PAYMENT_PLAN_CONTEXT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "мой\\s+(?:реб[её]нок|сын|дочь|дочк\\w*)|моя\\s+(?:дочь|дочк\\w*)|у\\s+моего|у\\s+моей|потянет\\s+ли|справится\\s+ли|отста[её]т|не\\s+тянет|что\\s+с\\s+ним|что\\s+с\\s+ней|по",
-    "pattern_sha256": "e30f62daab76b7c30b0cf31aa616479a64b52c2a3e39fc86f21e9fe844619ff7",
-    "qualname": "<module>",
-    "target": "_INDIVIDUAL_CHILD_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
     "pattern_preview": "сроч|мест\\s+(?:почти\\s+)?нет|надо\\s+успеть|иначе|не\\s+тяните|лучше\\s+не\\s+тянуть|гарантир|точно\\s+получ",
     "pattern_sha256": "85db6b0688251ad1bcf05db54bd441e2a7db52f3215df4fd68fb2e683e45050f",
     "qualname": "<module>",
     "target": "_NEXT_STEP_PRESSURE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "срочно\\s+записыва\\w+|мест\\s+почти\\s+нет|надо\\s+успеть|иначе\\s+не\\s+попад[её]те|лучше\\s+не\\s+тянуть",
-    "pattern_sha256": "74a4d0237446afc93652f4a267fd9053d6bd5ab3e76ad00905d6e57c34e5a606",
-    "qualname": "<module>",
-    "target": "_ESTIMATE_PRESSURE_RE"
   },
   {
     "flags": "re.I",
@@ -414,22 +294,6 @@
     "pattern_sha256": "3f808d589a79f0f576de69b615d5acc2b921645de8807d4ff7124be96021fae1",
     "qualname": "<module>",
     "target": "_PRODUCT_QUESTION_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "₽|руб|р\\.|%|процент|скидк|рассрочк|долями|цена|стоит|стоимост|тариф|семестр|за\\s+год|оплат|мес|месяц|плат[её]ж|на\\s+\\d+\\s+част|в\\s+рассрочку\\s+на|\\b\\d{1,2}:\\d{2",
-    "pattern_sha256": "a4d9bdc29307dcd98d6fced5c489156ebd76179065d180ef25104041d91ee51a",
-    "qualname": "<module>",
-    "target": "_FREE_NUMBER_PRODUCT_CTX_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/dialogue_contract_pipeline.py",
-    "pattern_preview": "₽|руб|р\\.|%|скидк|рассрочк|долями|\\b\\d{1,2}:\\d{2}\\b|семестр|за\\s+год|мес|месяц|плат[её]ж|на\\s+\\d+\\s+част|в\\s+рассрочку\\s+на|стоит|цена|тариф|сколько\\s+длится|дл",
-    "pattern_sha256": "14c4751d1cb7af665f16531293e372a8d905dc0a3bf1d326baf13d41b7a50262",
-    "qualname": "<module>",
-    "target": "_PRODUCT_NUMBER_CTX_RE"
   },
   {
     "flags": "re.I",
@@ -665,14 +529,6 @@
   },
   {
     "flags": "re.I",
-    "path": "src/mango_mvp/channels/humanity_guards.py",
-    "pattern_preview": "(?:в\\s+(?:факт\\w+|баз\\w+|данн\\w+)\\s+нет|нет\\s+в\\s+(?:факт\\w+|баз\\w+|данн\\w+)|(?:не\\s+указан\\w*|не\\s+уточнен\\w*|отсутствует)[^.\\n]{0,20}\\b(?:факт\\w+|баз\\w+|данн\\",
-    "pattern_sha256": "8b9a90a1a981e64cf7eb10281bec783c9abbd621eefccf4ecfa7029e60dc102f",
-    "qualname": "<module>",
-    "target": "_META_FACT_PHRASE_RE"
-  },
-  {
-    "flags": "re.I",
     "path": "src/mango_mvp/channels/humanity_linter.py",
     "pattern_preview": "\\b(?:fact_id|source_id|trace_id)\\s*[:=]|fact:v3:",
     "pattern_sha256": "98d8d5e25288500a1b5fbea5dfe3c90e8c8f30f19d0e8506386cb8fe3d683a28",
@@ -694,6 +550,150 @@
     "pattern_sha256": "6029607026d7855a032950057cade6717eff9dd9c4d5f8fdc87d2817863a819e",
     "qualname": "<module>",
     "target": "INTERNAL_TOKEN_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "(?:в\\s+(?:факт\\w+|баз\\w+|данн\\w+)\\s+нет|нет\\s+в\\s+(?:факт\\w+|баз\\w+|данн\\w+)|(?:не\\s+указан\\w*|не\\s+уточнен\\w*|отсутствует)[^.\\n]{0,20}\\b(?:факт\\w+|баз\\w+|данн\\",
+    "pattern_sha256": "8b9a90a1a981e64cf7eb10281bec783c9abbd621eefccf4ecfa7029e60dc102f",
+    "qualname": "<module>",
+    "target": "_META_FACT_PHRASE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "(?:₽|руб(?:\\.|лей|ля|ль)?|%)|\\b\\d[\\d\\s\\u00a0]{2,}\\s*(?:р\\.|руб|₽)\\b",
+    "pattern_sha256": "b50755fefdabd04e79d69990f0dfbc526bac6f395d4f5f135d84405dbddc0c5a",
+    "qualname": "<module>",
+    "target": "_MONEY_OR_VALUE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "(?:₽|руб(?:\\.|лей|ля|ль)?|%|\\b\\d{1,3}\\s*балл\\w*|\\b\\d{1,2}\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\\s+\\d{4})?\\b",
+    "pattern_sha256": "baf823492a1c8c54e17c1c5eabe4cfbace14b26ea00b13de5e1c2e01069ffb37",
+    "qualname": "<module>",
+    "target": "_FACTUAL_CLAIM_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "(?<!\\d)((?:\\d{1,2}\\s*(?:,|/|и|или|[-–])\\s*)*\\d{1,2})\\s*(?:мес\\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?)",
+    "pattern_sha256": "8365a436df26cb60cf95fc38586d13d4ec66e4a83f8da89439233ce0c0017497",
+    "qualname": "<module>",
+    "target": "_PAYMENT_PLAN_COUNT_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "(?<!\\d)(\\d{1,2})[. ](0?\\d{1,2}|январ\\w*|феврал\\w*|март\\w*|апрел\\w*|ма[йя]|июн\\w*|июл\\w*|август\\w*|сентябр\\w*|октябр\\w*|ноябр\\w*|декабр\\w*)(?:[. ](20\\d{2}))?",
+    "pattern_sha256": "ecc4e70aa303b21696356edfd329213edfbd5fbc5c4eeba31c6e8d5d43c84f20",
+    "qualname": "<module>",
+    "target": "_DATE_ANCHOR_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "\\b(?:обычно|как\\s+правило|в\\s+основном|чаще\\s+всего)\\b|(?:\\bвход(?:ит|ят)\\b(?!\\s+ли\\b)|\\bвключа(?:ет|ют|ется|ются)\\b)|\\bдела(?:ем|ют)\\s+упор\\b|\\bупор\\s+(?:ид[её",
+    "pattern_sha256": "7abc8d1e3824ed02281cfff29e93b86f801f10bdae77a315dcfd52c3176a6f79",
+    "qualname": "<module>",
+    "target": "_HANDOFF_FACTUAL_CLAIM_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "\\b(?:ул\\.|улиц[аеуы]|д\\.|дом|каб\\.|кабинет|метро)\\s+[а-яa-z0-9-]+",
+    "pattern_sha256": "96ab673a2e7166e4c002b05634007c0e1bd80d087414209a8f1b96306580172a",
+    "qualname": "<module>",
+    "target": "_ADDRESS_GENERIC_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "\\b20\\d{2}/\\d{2}\\b|\\b\\d{1,2}:\\d{2}\\b|\\b\\d+(?:[.,]\\d+)?\\s*[-–]\\s*\\d+(?:[.,]\\d+)?(?:\\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|мес(?:\\.|яц",
+    "pattern_sha256": "8ae9b5306736abd94a09a3d0a0b987060411c544c1af6e7caa6c79a67c4dd5bf",
+    "qualname": "<module>",
+    "target": "_FREE_NUMBER_TOKEN_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "\\bя\\s+(?:бот|gpt|нейросеть|искусственн\\w+\\s+интеллект)\\b",
+    "pattern_sha256": "3054160a004817fa5bf87e504e90c1eff9710ae73d0268b6bc4799a0989a18ec",
+    "qualname": "<module>",
+    "target": "_AI_SELF_DISCLOSURE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "\\d[\\d\\s\\u00a0]*(?:[.,]\\d+)?\\s*(?:₽|%|руб(?:\\.|лей|ля|ль)?|р\\.|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?",
+    "pattern_sha256": "6de1369d00aa0a7f17a9b96841c9bd589da19e678746c3b3e7444afb3570e4a6",
+    "qualname": "<module>",
+    "target": "_ESTIMATE_NUMBER_TOKEN_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "^\\s*да\\b|точно\\s+(?:справится|потянет|подойд[её]т)|\\b(?:справится|потянет|подойд[её]т)\\b",
+    "pattern_sha256": "94ab5c478b92959e53599c92ed291b4085a287e2e6db279e8022a974d94952c6",
+    "qualname": "<module>",
+    "target": "_INDIVIDUAL_CHILD_CONFIDENT_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "верн[её]м\\s+деньг|оформим\\s+возврат|гаранти\\w+\\s+(?:результат|поступлен)|обязательно\\s+(?:поступит|сдаст)|точно\\s+верн[её]м",
+    "pattern_sha256": "4f0426374b2691aabe7c1b341441295e162ed30cb570e7b42558079e2fdd2a19",
+    "qualname": "<module>",
+    "target": "_P0_PROMISE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "гарантир|100\\s*%|обязательно\\s+(?:поступ|сдад|сдаст|получ)|точно\\s+(?:поступ|сдад|сдаст|получ)|исправим\\s+на\\s+(?:5|пят)|подтянем\\s+на\\s+(?:5|пят)|точно\\s+стане",
+    "pattern_sha256": "0730db920b84098c4d2087913e701ae922fb2b97090f2fa8292ccc23fa09d91d",
+    "qualname": "<module>",
+    "target": "_ESTIMATE_GUARANTEE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "мес\\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?|рассрочк|долями",
+    "pattern_sha256": "32e654577b41e8e11151ca47ba3c18a2a9d10de28c201fd478d87740532a9c56",
+    "qualname": "<module>",
+    "target": "_PAYMENT_PLAN_CONTEXT_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "мой\\s+(?:реб[её]нок|сын|дочь|дочк\\w*)|моя\\s+(?:дочь|дочк\\w*)|у\\s+моего|у\\s+моей|потянет\\s+ли|справится\\s+ли|отста[её]т|не\\s+тянет|что\\s+с\\s+ним|что\\s+с\\s+ней|по",
+    "pattern_sha256": "e30f62daab76b7c30b0cf31aa616479a64b52c2a3e39fc86f21e9fe844619ff7",
+    "qualname": "<module>",
+    "target": "_INDIVIDUAL_CHILD_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "срочно\\s+записыва\\w+|мест\\s+почти\\s+нет|надо\\s+успеть|иначе\\s+не\\s+попад[её]те|лучше\\s+не\\s+тянуть",
+    "pattern_sha256": "74a4d0237446afc93652f4a267fd9053d6bd5ab3e76ad00905d6e57c34e5a606",
+    "qualname": "<module>",
+    "target": "_ESTIMATE_PRESSURE_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "₽|руб|р\\.|%|процент|скидк|рассрочк|долями|цена|стоит|стоимост|тариф|семестр|за\\s+год|оплат|мес|месяц|плат[её]ж|на\\s+\\d+\\s+част|в\\s+рассрочку\\s+на|\\b\\d{1,2}:\\d{2",
+    "pattern_sha256": "a4d9bdc29307dcd98d6fced5c489156ebd76179065d180ef25104041d91ee51a",
+    "qualname": "<module>",
+    "target": "_FREE_NUMBER_PRODUCT_CTX_RE"
+  },
+  {
+    "flags": "re.I",
+    "path": "src/mango_mvp/channels/output_verification_floor.py",
+    "pattern_preview": "₽|руб|р\\.|%|скидк|рассрочк|долями|\\b\\d{1,2}:\\d{2}\\b|семестр|за\\s+год|мес|месяц|плат[её]ж|на\\s+\\d+\\s+част|в\\s+рассрочку\\s+на|стоит|цена|тариф|сколько\\s+длится|дл",
+    "pattern_sha256": "14c4751d1cb7af665f16531293e372a8d905dc0a3bf1d326baf13d41b7a50262",
+    "qualname": "<module>",
+    "target": "_PRODUCT_NUMBER_CTX_RE"
   },
   {
     "flags": "re.I",

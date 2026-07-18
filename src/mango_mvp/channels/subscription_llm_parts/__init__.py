@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mango_mvp.channels import output_verification_floor as _output_verification_floor
 from mango_mvp.channels.subscription_llm_parts import codex_exec as _codex_exec
 from mango_mvp.channels.subscription_llm_parts import contracts as _contracts
 from mango_mvp.channels.subscription_llm_parts import support as _support
@@ -114,7 +115,9 @@ __all__.extend(
 )
 
 for _name in __all__:
-    if hasattr(_codex_exec, _name):
+    if hasattr(_output_verification_floor, _name):
+        globals()[_name] = getattr(_output_verification_floor, _name)
+    elif hasattr(_codex_exec, _name):
         globals()[_name] = getattr(_codex_exec, _name)
     elif hasattr(_contracts, _name):
         globals()[_name] = getattr(_contracts, _name)

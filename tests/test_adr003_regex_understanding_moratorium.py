@@ -66,11 +66,11 @@ TEXT_LIKE_EXPR_PARTS = (
 CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/answer_quality_rewriter.py": 4,
     "src/mango_mvp/channels/contracts.py": 1,
-    "src/mango_mvp/channels/dialogue_contract_pipeline.py": 27,
+    "src/mango_mvp/channels/dialogue_contract_pipeline.py": 8,
     "src/mango_mvp/channels/dialogue_memory.py": 27,
     "src/mango_mvp/channels/fact_claim_audit.py": 1,
     "src/mango_mvp/channels/few_shot_reference.py": 1,
-    "src/mango_mvp/channels/humanity_guards.py": 1,
+    "src/mango_mvp/channels/output_verification_floor.py": 20,
     "src/mango_mvp/channels/humanity_linter.py": 2,
     "src/mango_mvp/channels/manager_handoff_summary.py": 1,
     "src/mango_mvp/channels/p0_recall_spec.py": 11,
@@ -105,14 +105,14 @@ ACTIVE_BEHAVIOR_ALLOWED_FALSE_BUDGET = {
 }
 
 UNDERSTANDING_ENV_DECLARATIONS = (
-    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
+    ("src/mango_mvp/channels/output_verification_floor.py", "AUTONOMY_SCOPE_PRECISION_ENV", "TELEGRAM_AUTONOMY_SCOPE_PRECISION"),
     (
-        "src/mango_mvp/channels/dialogue_contract_pipeline.py",
+        "src/mango_mvp/channels/output_verification_floor.py",
         "AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV",
         "TELEGRAM_AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX",
     ),
     ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "FAITHFULNESS_SHADOW_ENV", "TELEGRAM_FAITHFULNESS_SHADOW"),
-    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
+    ("src/mango_mvp/channels/output_verification_floor.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
     ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "QUALITY_CLARIFY_SCOPE_ENV", "TELEGRAM_Q_CLARIFY_SCOPE"),
     ("src/mango_mvp/channels/dialogue_memory.py", "MEMORY_CHILD_IDENTITY_MODEL_ENV", "TELEGRAM_CHILD_IDENTITY_MODEL"),
     ("src/mango_mvp/channels/dialogue_memory.py", "P0_LATCH_AUTORELEASE_V2_ENV", "TELEGRAM_P0_LATCH_AUTORELEASE_V2"),

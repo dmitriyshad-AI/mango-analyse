@@ -5,8 +5,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, MutableMapping
 
-from mango_mvp.channels.dialogue_contract_pipeline import NUMBER_GATE_SCOPE_AWARE_ENV, autonomy_scope_precision_enabled
 from mango_mvp.channels.fact_venue_scope import venue_scope_enabled
+from mango_mvp.channels.output_verification_floor import NUMBER_GATE_SCOPE_AWARE_ENV, autonomy_scope_precision_enabled
 from mango_mvp.channels.subscription_llm_parts.direct_path import _presale_safety_enabled
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _output_sanitizer_enabled,

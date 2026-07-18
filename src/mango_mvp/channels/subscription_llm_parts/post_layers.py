@@ -32,28 +32,30 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
     faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
     faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
-    _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
-    _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
-    _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
-    _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
     new_concrete_anchors as dialogue_contract_new_concrete_anchors,
     parse_contract as parse_dialogue_contract,
     pipeline_enabled as dialogue_contract_pipeline_enabled,
-    p0_pre_gate as dialogue_contract_p0_pre_gate,
     run_pipeline as run_dialogue_contract_pipeline,
-    verify_output as verify_dialogue_contract_output,
 )
 from mango_mvp.channels.humanity_guards import (
-    has_meta_leak,
     humanity_route_action,
-    is_near_repeat,
     meta_markers_present,
     unanswered_direct_question,
 )
 from mango_mvp.channels.humanity_linter import lint_turn
 from mango_mvp.channels.humanity_rewriter import apply_rewrite as apply_humanity_form_rewrite
+from mango_mvp.channels.output_verification_floor import (
+    _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
+    _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
+    _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
+    _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
+    has_meta_leak,
+    is_near_repeat,
+    p0_pre_gate as dialogue_contract_p0_pre_gate,
+    verify_output as verify_dialogue_contract_output,
+)
 from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
 from mango_mvp.channels.rules_engine import (
     RuleOutcome,

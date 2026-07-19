@@ -33,6 +33,28 @@ def test_project_now_writes_passport_from_tmp_project(tmp_path, monkeypatch):
         return ""
 
     monkeypatch.setattr(project_now, "_run_git", fake_git)
+    monkeypatch.setattr(
+        project_now,
+        "_live_snapshot",
+        lambda _root: {
+            "status": "WARN",
+            "processes": [
+                {
+                    "kind": "run_amo_wappi_draft_loop.py",
+                    "pid": 42,
+                    "head": "loaded123",
+                    "head_source": "startup_manifest",
+                    "worktree": str(root),
+                    "worktree_head": "abc1234",
+                    "env": {
+                        "DRAFT_LOOP_AUTO_RESOLVER": "0",
+                        "TELEGRAM_PILOT_MANAGER_CHAT_IDS": "123,456",
+                    },
+                    "warnings": ["head_drift"],
+                }
+            ],
+        },
+    )
     out = project_now.write_project_now(root)
 
     text = out.read_text(encoding="utf-8")
@@ -41,6 +63,11 @@ def test_project_now_writes_passport_from_tmp_project(tmp_path, monkeypatch):
     assert "`TZ_running.md`" in text
     assert "`TZ_inbox.md`" in text
     assert "wait for owner" in text
+    assert "## Live" in text
+    assert "loaded123" in text
+    assert "head_drift" in text
+    assert "TELEGRAM_PILOT_MANAGER_CHAT_IDS=[set]" in text
+    assert "123,456" not in text
 
 
 def test_project_now_does_not_touch_home_codex_or_stable_runtime(tmp_path, monkeypatch):

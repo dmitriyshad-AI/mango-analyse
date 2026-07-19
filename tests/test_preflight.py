@@ -91,6 +91,68 @@ def test_preflight_passes_dirty_files_inside_tz_zones_and_collect_only_is_safe(t
     assert "--collect-only" in calls["cmd"]
 
 
+def test_preflight_rejects_non_pytest_command_without_running_it(tmp_path, monkeypatch):
+    called = False
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("unsafe command must not run")
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+
+    code, output = preflight._run_collect_only(tmp_path, "bash -c 'touch owned'")
+
+    assert code == 2
+    assert "unsafe test command" in output
+    assert called is False
+
+    external_code, external_output = preflight._run_collect_only(tmp_path, "/tmp/python3 -m pytest tests/")
+    assert external_code == 2
+    assert "внешний путь" in external_output
+    assert called is False
+
+
+def test_preflight_rejects_pythonpath_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unsafe command must not run")),
+    )
+
+    code, output = preflight._run_collect_only(tmp_path, "PYTHONPATH=/tmp python3 -m pytest -q")
+
+    assert code == 2
+    assert "unsafe PYTHONPATH" in output
+
+
+def test_preflight_rejects_external_pytest_target_and_plugin(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unsafe command must not run")),
+    )
+
+    external_code, external_output = preflight._run_collect_only(tmp_path, "python3 -m pytest /tmp/evil.py")
+    plugin_code, plugin_output = preflight._run_collect_only(tmp_path, "python3 -m pytest -p evil tests/")
+
+    assert external_code == 2
+    assert "inside tests" in external_output
+    assert plugin_code == 2
+    assert "unsafe pytest option" in plugin_output
+
+    equals_code, equals_output = preflight._run_collect_only(tmp_path, "python3 -m pytest /tmp/evil=1.py")
+    assert equals_code == 2
+    assert "inside tests" in equals_output
+
+    write_code, write_output = preflight._run_collect_only(
+        tmp_path,
+        "python3 -m pytest --basetemp=/tmp/replace-me tests/",
+    )
+    assert write_code == 2
+    assert "unsafe pytest option" in write_output
+
+
 def test_preflight_blocks_dirty_file_outside_tz_zones(tmp_path, monkeypatch):
     root = _prepare_root(tmp_path)
     tz = _tz(root)

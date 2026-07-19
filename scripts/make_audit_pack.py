@@ -7,11 +7,18 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = DEFAULT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from mango_mvp.replay_exam.pseudonymizer import EMAIL_RE, LABELED_BARE_PHONE_RE, PHONE_RE
+
 DEFAULT_CLIENT_PATHS = (
     "product_data/knowledge_base/",
     "src/mango_mvp/channels/",
@@ -20,8 +27,6 @@ DEFAULT_CLIENT_PATHS = (
     "scripts/run_telegram_public_pilot_bots.py",
     "product_data/telegram_dynamic_test_sets/",
 )
-PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\d)")
-EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 TEMPLATES = {
     "implementation_notes.md": "# Что сделано\n\n# Как проверялось\n\n# Что осталось\n",
     "risk_review.md": "# Риски\n\n- Клиентский риск:\n- Данные/записи:\n- Откат:\n",
@@ -48,6 +53,10 @@ def _run_git(root: Path, *args: str) -> str:
 
 def mask_pii(text: str) -> str:
     text = PHONE_RE.sub("[redacted_phone]", text)
+    text = LABELED_BARE_PHONE_RE.sub(
+        lambda match: f"{match.group('label')}{match.group('separator')}[redacted_phone]",
+        text,
+    )
     return EMAIL_RE.sub("[redacted_email]", text)
 
 

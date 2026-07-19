@@ -1,5 +1,11 @@
 # ADR003 E3 env matrix
 
+> УСТАРЕВШИЙ СНИМОК от 2026-07-03. Не использовать как описание текущего
+> live. Фактические явно заданные runtime-флаги смотреть через
+> `python3 scripts/skills/live_truth.py --no-write`; профильные defaults — через
+> `pilot_profile_selfcheck()` и его тесты. Значения секретов `live_truth`
+> маскирует.
+
 Generated at: `2026-07-03T19:13:00+03:00`
 
 ## A. Profile default-on flags

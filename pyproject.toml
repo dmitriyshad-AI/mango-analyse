@@ -21,6 +21,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+crm = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "pydantic>=2.8.0",
+]
+analytics = [
+  "pandas>=2.2.0",
+]
 dev = [
   "pytest>=8.3.0",
   "pytest-xdist>=3.6.1",

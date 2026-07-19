@@ -25,6 +25,11 @@ FORBIDDEN_ZONE_PREFIXES = (
     "transcripts/",
     "audits/_results/",
 )
+SAFE_TEST_ENV_KEYS = {"PYTHONDONTWRITEBYTECODE", "PYTHONPATH", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+SAFE_PYTEST_FLAGS = frozenset(
+    "-q --quiet --collect-only -v -vv -s -x --exitfirst --disable-warnings --strict-markers --strict-config".split()
+)
+SAFE_PYTEST_OPTION_PREFIXES = ("--tb=", "--color=", "--maxfail=")
 
 
 @dataclass
@@ -154,8 +159,19 @@ def collect_only_command(test_cmd: str) -> list[str]:
     env_prefix: list[str] = []
     while tokens and "=" in tokens[0] and not tokens[0].startswith("-"):
         env_prefix.append(tokens.pop(0))
-    if "pytest" not in " ".join(tokens):
-        return env_prefix + tokens
+    if not tokens:
+        raise ValueError("empty test command")
+    if "/" in tokens[0] or "\\" in tokens[0]:
+        raise ValueError("Тест-команда preflight не принимает внешний путь к исполняемому файлу")
+    executable = tokens[0]
+    direct_pytest = executable in {"pytest", "py.test"}
+    module_pytest = bool(
+        re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable)
+        and len(tokens) >= 3
+        and tokens[1:3] == ["-m", "pytest"]
+    )
+    if not (direct_pytest or module_pytest):
+        raise ValueError("Тест-команда preflight должна запускать только pytest")
     filtered: list[str] = []
     skip_next = False
     for token in tokens:
@@ -180,18 +196,64 @@ def collect_only_command(test_cmd: str) -> list[str]:
     ]
 
 
+def _validate_pytest_targets(root: Path, command: list[str]) -> str | None:
+    plain = list(command)
+    while plain and "=" in plain[0] and not plain[0].startswith("-"):
+        plain.pop(0)
+    executable = Path(plain[0]).name
+    args = plain[3:] if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) else plain[1:]
+    skip_value = False
+    for token in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if token in {"-k", "-m"}:
+            skip_value = True
+            continue
+        if token.startswith("-") and not (
+            token in SAFE_PYTEST_FLAGS or token.startswith(SAFE_PYTEST_OPTION_PREFIXES)
+        ):
+            return f"unsafe pytest option: {token}"
+        if token.startswith("-"):
+            continue
+        target_text = token.split("::", 1)[0]
+        target = (root / target_text).resolve()
+        tests_root = (root / "tests").resolve()
+        try:
+            target.relative_to(tests_root)
+        except ValueError:
+            return f"pytest target must be inside tests/: {token}"
+    return None
+
+
 def _run_collect_only(root: Path, test_cmd: str) -> tuple[int, str]:
-    command = collect_only_command(test_cmd)
+    try:
+        command = collect_only_command(test_cmd)
+    except ValueError as exc:
+        return 2, f"unsafe test command: {exc}"
     env = os.environ.copy()
     plain_command: list[str] = []
     for token in command:
         if "=" in token and not token.startswith("-") and not plain_command:
             key, value = token.split("=", 1)
+            if key not in SAFE_TEST_ENV_KEYS:
+                return 2, f"unsafe test environment key: {key}"
+            if key == "PYTHONPATH":
+                for part in value.split(os.pathsep):
+                    if not part:
+                        continue
+                    try:
+                        (root / part).resolve().relative_to(root.resolve())
+                    except ValueError:
+                        return 2, f"unsafe PYTHONPATH entry: {part}"
             env[key] = value
         else:
             plain_command.append(token)
     if not plain_command:
         return 0, ""
+    unsafe_target = _validate_pytest_targets(root, command)
+    if unsafe_target:
+        return 2, unsafe_target
     result = subprocess.run(plain_command, cwd=root, env=env, capture_output=True, text=True, timeout=120)
     return result.returncode, result.stdout + result.stderr
 

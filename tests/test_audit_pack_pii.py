@@ -9,14 +9,21 @@ from scripts import make_audit_pack
 
 
 def test_mask_pii_redacts_phone_email():
-    text = "Телефон +7 999 123-45-67, второй 8 (916) 000-11-22, email client@example.com"
+    text = (
+        "Телефон +7 999 123-45-67, второй 8 (916) 000-11-22, "
+        "международный +44 (20) 7946-0958, WhatsApp: 020 7946 0958, "
+        "phone: 971500000000, email client@example.com"
+    )
 
     masked = make_audit_pack.mask_pii(text)
 
     assert "+7 999 123-45-67" not in masked
     assert "8 (916) 000-11-22" not in masked
     assert "client@example.com" not in masked
-    assert masked.count("[redacted_phone]") == 2
+    assert "+44 (20) 7946-0958" not in masked
+    assert "020 7946 0958" not in masked
+    assert "971500000000" not in masked
+    assert masked.count("[redacted_phone]") == 5
     assert "[redacted_email]" in masked
 
 

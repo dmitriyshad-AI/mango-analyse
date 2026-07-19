@@ -1,6 +1,6 @@
 # Runbook Mango
 
-Обновлено: 2026-07-19.
+Обновлено: 2026-07-20.
 
 Этот файл содержит текущие безопасные команды. Исторические команды и решения
 остаются в Git и `docs/DECISIONS_LOG.md`, но не считаются рабочей инструкцией.
@@ -11,7 +11,7 @@
 git status --short --branch
 python3 scripts/project_now.py
 sed -n '1,220p' docs/PROJECT_NOW.md
-sed -n '1,220p' docs/DECISIONS_LOG.md
+tail -150 docs/DECISIONS_LOG.md
 ```
 
 Для крупного ТЗ после штатного переноса в `tasks/_running`:

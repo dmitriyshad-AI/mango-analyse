@@ -6,11 +6,15 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+import sys
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+if str(DEFAULT_ROOT) not in sys.path:
+    sys.path.insert(0, str(DEFAULT_ROOT))
 QUEUE_DIRS = ("_running", "_inbox_codex", "_done", "_failed")
 
 
@@ -98,6 +102,47 @@ def _active_kb_mentions(root: Path) -> list[str]:
     return sorted(mentions)
 
 
+def _live_snapshot(root: Path) -> dict[str, object]:
+    try:
+        from scripts.skills.live_truth import build_snapshot
+
+        return asdict(build_snapshot(repo_root=root))
+    except Exception as exc:  # fail-soft: passport generation must remain usable.
+        return {"status": "UNAVAILABLE", "processes": [], "error": type(exc).__name__}
+
+
+def _live_lines(root: Path) -> list[str]:
+    snapshot = _live_snapshot(root)
+    lines = ["## Live", f"- Статус проверки: `{snapshot.get('status') or 'UNKNOWN'}`"]
+    processes = snapshot.get("processes")
+    if not isinstance(processes, list) or not processes:
+        lines.append("- Процессы: не найдены")
+    else:
+        for raw in processes:
+            if not isinstance(raw, dict):
+                continue
+            lines.append(
+                "- "
+                f"`{raw.get('kind') or 'unknown'}` PID `{raw.get('pid')}`: "
+                f"loaded `{raw.get('head') or 'unverified'}` ({raw.get('head_source') or 'unknown'}), "
+                f"worktree `{raw.get('worktree') or 'unknown'}` @ `{raw.get('worktree_head') or 'unknown'}`"
+            )
+            env = raw.get("env")
+            if isinstance(env, dict) and env:
+                safe_values = {"DRAFT_LOOP_EXPECTED_HEAD", "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"}
+                rendered = ", ".join(
+                    f"{key}={value if key in safe_values or str(value).casefold() in {'0', '1', 'true', 'false'} else '[set]'}"
+                    for key, value in sorted(env.items())
+                )
+                lines.append(f"  - Эффективные runtime-настройки: `{rendered}`")
+            warnings = raw.get("warnings")
+            if isinstance(warnings, list) and warnings:
+                lines.append("  - Предупреждения: " + "; ".join(str(item) for item in warnings))
+    if snapshot.get("error"):
+        lines.append(f"- Ошибка чтения: `{snapshot['error']}`")
+    return lines
+
+
 def build_project_now(root: Path) -> str:
     now = datetime.now().isoformat(timespec="seconds")
     branch = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -112,8 +157,9 @@ def build_project_now(root: Path) -> str:
         f"HEAD: `{head}`",
         f"Грязных файлов: {dirty_count}",
         "",
-        "## Очередь",
     ]
+    lines.extend(_live_lines(root))
+    lines.extend(["", "## Очередь"])
     for subdir in QUEUE_DIRS:
         items = _queue_files(root, subdir)
         lines.append(f"### tasks/{subdir}: {len(items)} показано")

@@ -44,6 +44,14 @@ def move_task(root: Path, task: str, action: str, reason: str | None = None) -> 
         raise FileNotFoundError(f"СТОП: нет файла {src}")
     if src.suffix != ".md":
         raise ValueError(f"СТОП: ожидается .md ТЗ, получен {src.name}")
+    tasks_root = (root / "tasks").resolve()
+    try:
+        src.relative_to(tasks_root)
+        source_is_internal = True
+    except ValueError:
+        source_is_internal = False
+    if action != "take" and not source_is_internal:
+        raise ValueError("СТОП: --done/--fail разрешены только для ТЗ внутри tasks/")
     dst_dir = root / "tasks" / ACTION_DIRS[action]
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
@@ -57,7 +65,8 @@ def move_task(root: Path, task: str, action: str, reason: str | None = None) -> 
         stamp += f" | причина: {clean_reason}"
     body = src.read_text(encoding="utf-8")
     dst.write_text(stamp + "\n\n" + body, encoding="utf-8")
-    src.unlink()
+    if source_is_internal:
+        src.unlink()
     return dst
 
 

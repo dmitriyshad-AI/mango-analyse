@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol
 from urllib.parse import quote
 
-from mango_mvp.productization.product_db import guard_product_db_path
-from mango_mvp.productization.test_ingest import clean, path_is_relative_to
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -53,7 +51,7 @@ def export_tallanto_snapshot(
     product_db_path = product_db_path.resolve(strict=False)
     output_path = output_path.resolve(strict=False)
     env_path = env_path.resolve(strict=False) if env_path else None
-    guard_product_db_path(product_db_path, product_root, must_exist=True)
+    guard_local_index_path(product_db_path, product_root)
     guard_under_root(output_path, product_root, "Tallanto snapshot output")
     if env_path and not env_path.exists():
         raise FileNotFoundError(f"env file not found: {env_path}")
@@ -192,8 +190,22 @@ def readonly_uri(path: Path) -> str:
 def guard_under_root(path: Path, product_root: Path, label: str) -> None:
     if "stable_runtime" in path.parts:
         raise ValueError(f"{label} must not be under stable_runtime")
-    if not path_is_relative_to(path, product_root):
+    try:
+        path.relative_to(product_root)
+    except ValueError:
         raise ValueError(f"{label} must stay under product root: {product_root}")
+
+
+def guard_local_index_path(path: Path, allowed_root: Path) -> None:
+    if path.name in {"mango_mvp.db", "ai_office.db"} or "stable_runtime" in path.parts:
+        raise ValueError("refusing runtime database as Tallanto input")
+    guard_under_root(path, allowed_root, "Tallanto source database")
+    if not path.is_file():
+        raise FileNotFoundError(f"Tallanto source database not found: {path}")
+
+
+def clean(value: Any) -> str:
+    return "" if value is None else str(value).strip()
 
 
 def safety_contract() -> Mapping[str, bool]:

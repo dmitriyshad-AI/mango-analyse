@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from mango_mvp.productization.product_db import initialize_product_db
 from mango_mvp.productization.tallanto_snapshot_exporter import collect_candidate_phones, export_tallanto_snapshot
+
 
 class FakeTallantoClient:
     def __init__(self) -> None:
@@ -57,20 +57,12 @@ def test_collect_candidate_phones_returns_normalized_unique_values(tmp_path: Pat
 def _product_db_with_phone(tmp_path: Path) -> tuple[Path, Path]:
     product_root = tmp_path / "product_appliance"
     product_db = product_root / "mango_product_appliance.sqlite"
-    initialize_product_db(product_db, product_root)
-    now = "2026-05-09T10:00:00+00:00"
+    product_root.mkdir(parents=True)
     with sqlite3.connect(str(product_db)) as con:
+        con.execute("CREATE TABLE capture_inbox_items (client_phone TEXT)")
         con.execute(
-            """
-            INSERT INTO capture_inbox_items (
-              tenant_id, provider, event_key, provider_call_id, status,
-              started_at, client_phone, first_seen_at, last_seen_at
-            ) VALUES (
-              'foton', 'mango', 'foton:mango:CALL-1', 'CALL-1', 'ready_for_capture',
-              ?, '8 999 000 00 00', ?, ?
-            )
-            """,
-            (now, now, now),
+            "INSERT INTO capture_inbox_items (client_phone) VALUES (?)",
+            ("8 999 000 00 00",),
         )
         con.commit()
     return product_root, product_db

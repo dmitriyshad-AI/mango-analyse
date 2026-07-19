@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-import pytest
-
 from mango_mvp.productization.mail_imap_snapshot import (
     HEADER_FETCH_QUERY,
     MailImapCredentials,
@@ -15,7 +13,6 @@ from mango_mvp.productization.mail_imap_snapshot import (
     parse_mailbox_list_line,
     quote_imap_mailbox_name,
 )
-from scripts import mango_office_mail_imap_snapshot
 
 
 class FakeImapClient:
@@ -146,14 +143,3 @@ def test_build_mail_imap_snapshot_is_read_only_and_header_only(tmp_path: Path) -
     assert "Тестовое письмо" in headers_text
     assert '"mailbox": "ЛВШ"' in headers_text
     assert json.loads(report_text)["paths"]["headers_sample"].endswith("imap_headers_sample.jsonl")
-
-
-def test_mail_imap_snapshot_cli_requires_password_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("MAIL_IMAP_PASSWORD", raising=False)
-    monkeypatch.setenv("MAIL_IMAP_EMAIL", "edu@kmipt.ru")
-
-    rc = mango_office_mail_imap_snapshot.main(["--out-dir", str(tmp_path / "out")])
-
-    assert rc == 2

@@ -1,18 +1,15 @@
 # Data Model
 
-Дата: 2026-05-09
+Дата: 2026-07-19
 
-Назначение: зафиксировать текущие модели данных Mango Analyse перед развитием
-новых SaaS/productization фич. Документ описывает уже существующие контракты и
-границы владения, а не проектирует новую схему с нуля.
+Назначение: зафиксировать модели данных, которые реально используются сейчас.
 
 ## Data domains
 
 | Domain | Storage | Owner | Write policy |
 |---|---|---|---|
-| Historical processing runtime | SQLite + files under `stable_runtime` and processing folders | processing dialog | Do not mutate from SaaS/productization dialog |
-| Product appliance DB | isolated SQLite product DB | SaaS/productization dialog | Allowed only through product modules and path guards |
-| Mango raw/capture artifacts | JSON/JSONL/report files under product roots | SaaS/productization dialog | Report/staging writes only |
+| Historical processing runtime | SQLite + files under `stable_runtime` and processing folders | calls pipeline | Single-writer; do not mutate from bot tasks |
+| Mango raw/capture artifacts | JSON/JSONL/report files under the calls pipeline root | calls pipeline | Report/staging writes only |
 | amoCRM runtime | SQLAlchemy DB plus amoCRM API | CRM/runtime layer | Live writes require explicit confirmation |
 | Tallanto context | external API/read exports | CRM/runtime layer | Read-only in current scope |
 | Insight artifacts | CSV/JSON/Markdown reports | insights layer | Report writes only |
@@ -84,351 +81,25 @@ CRM references:
 Boundary:
 
 - this table remains owned by the current processing pipeline;
-- Product API must not update it;
-- future UI can show derived state only through product/read-only contracts.
+- bot and reporting tasks must not update it.
 
-## Productization contracts
+## Runtime adapter models
 
-Primary file:
+The historical SaaS/appliance layer was retired in July 2026. The remaining
+mango_mvp.productization package is a legacy namespace for three live
+integration boundaries:
 
-- `src/mango_mvp/productization/contracts.py`
+- contracts.py: normalized Mango call events and recording references;
+- mail_archive.py / mail_imap_snapshot.py: canonical read-only mail archive;
+- product_db.py / tallanto_snapshot_exporter.py: guarded local index used by
+  the optional read-only Tallanto snapshot.
 
-### `TenantRef`
+TelephonyCallEvent.event_key remains the idempotency key:
 
-Tenant identity for product mode.
+    tenant_id:provider:provider_call_id
 
-Fields:
-
-- `tenant_id`
-- `display_name`
-
-Current internal tenant examples can be company/project labels. Future client
-appliance installs should use separate tenant ids and config roots.
-
-### `TelephonyCallEvent`
-
-Normalized provider call event.
-
-Fields:
-
-- `tenant`
-- `provider`
-- `provider_call_id`
-- `started_at`
-- `ended_at`
-- `direction`
-- `client_phone`
-- `manager_ref`
-- `recording_ref`
-- `recording_url`
-- `raw_payload`
-
-Stable key:
-
-```text
-event_key = tenant_id:provider:provider_call_id
-```
-
-This is the primary idempotency key for Mango capture.
-
-### `RecordingAsset`
-
-Reference to a recording asset.
-
-Fields:
-
-- `event_key`
-- `uri`
-- `content_type`
-- `checksum_sha256`
-- `size_bytes`
-
-### `CaptureIngestCandidate`
-
-Candidate for controlled capture/processing handoff.
-
-Fields:
-
-- `event_key`
-- `tenant_id`
-- `provider`
-- `provider_call_id`
-- `started_at`
-- `direction`
-- `audio_ref`
-- `client_phone`
-- `manager_ref`
-- `raw_payload`
-
-Important: candidate creation does not run ASR/R+A.
-
-### CRM snapshots
-
-`CrmContactSnapshot` and `CrmOutcomeSnapshot` are provider-neutral read models
-for future CRM adapters.
-
-## Product appliance DB
-
-Primary file:
-
-- `src/mango_mvp/productization/product_db.py`
-
-Current schema version:
-
-```text
-product_appliance_sqlite_v1
-```
-
-Required migrations:
-
-| Migration | Meaning |
-|---|---|
-| `20260507_001_product_appliance_base` | base product appliance schema |
-| `20260507_002_config_history_retention` | config history and retention policies |
-| `20260507_003_scheduler_runtime` | scheduler runtime columns/indexes |
-| `20260507_004_capture_inbox` | capture inbox table |
-
-### `tenants`
-
-Purpose: product tenant registry.
-
-Key fields:
-
-- `tenant_id`
-- `display_name`
-- `status`
-- `created_at`
-- `updated_at`
-
-### `provider_accounts`
-
-Purpose: telephony provider account metadata.
-
-Key fields:
-
-- `tenant_id`
-- `provider`
-- `mode`
-- `config_ref`
-
-Secrets should not be stored directly here. Use config references.
-
-### `crm_accounts`
-
-Purpose: CRM provider account metadata.
-
-Key fields:
-
-- `tenant_id`
-- `provider`
-- `mode`
-- `config_ref`
-
-### `tenant_manager_owner_map`
-
-Purpose: map telephony manager references to CRM owners.
-
-Primary key:
-
-```text
-tenant_id + telephony_provider + manager_extension
-```
-
-Key fields:
-
-- `mango_name`
-- `mango_email`
-- `crm_provider`
-- `crm_owner_id`
-- `crm_owner_name`
-- `crm_owner_email`
-- `decision_status`
-- `match_status`
-- `source_ref`
-- `config_ref`
-
-This table drives manual owner review and prevents blind CRM ownership mapping.
-
-### `product_calls`
-
-Purpose: product-level call index derived from safe imports, not live runtime
-mutation.
-
-Primary key:
-
-```text
-tenant_id + telephony_provider + provider_call_id
-```
-
-Unique id:
-
-```text
-event_key
-```
-
-Key fields:
-
-- `recording_id`
-- `source_filename`
-- `started_at`
-- `duration_sec`
-- `manager_extension`
-- `manager_display_name`
-- `crm_owner_id`
-- `crm_owner_name`
-- `crm_match_status`
-- `raw_payload_ref`
-- `source_repository_ref`
-
-### `capture_inbox_items`
-
-Purpose: product capture queue after shadow poll decisions.
-
-Unique key:
-
-```text
-tenant_id + provider + event_key
-```
-
-Key fields:
-
-- `status`
-- `source_job_run_id`
-- `source_report_ref`
-- `raw_payload_ref`
-- `started_at`
-- `ended_at`
-- `direction`
-- `client_phone`
-- `manager_ref`
-- `recording_ref`
-- `recording_url`
-- `audio_ref`
-- `decision_reason`
-- `candidate_json`
-- `event_json`
-- `first_seen_at`
-- `last_seen_at`
-- `enqueue_count`
-- `reserved_by`
-- `reserved_at`
-- `error`
-
-Current important status:
-
-- `ready_for_capture`
-
-### `job_types` and `job_runs`
-
-Purpose: scheduler/supervisor state.
-
-Important statuses:
-
-- `planned`
-- `running`
-- `succeeded`
-- `retry_wait`
-- `failed`
-- `blocked`
-- `skipped`
-
-These tables are the future base for appliance supervision UI.
-
-### `tenant_config_history`
-
-Purpose: immutable snapshots of tenant config decisions.
-
-Used for:
-
-- owner mapping history;
-- auditability;
-- safe rollback of config changes.
-
-### `retention_policies`
-
-Purpose: local retention policy registry.
-
-Default policy examples:
-
-- product DB backups: review delete after 30 days;
-- audit JSON: review archive after 180 days;
-- tenant config history: keep for at least 3 years;
-- product calls: manual review only.
-
-## Product API data contracts
-
-Primary file:
-
-- `src/mango_mvp/productization/product_api.py`
-
-Contract version:
-
-```text
-product_api_readonly_v1
-```
-
-Facade methods:
-
-| Method | Product route concept | Data source |
-|---|---|---|
-| `dashboard_summary()` | `GET /dashboard/summary` | product DB snapshot |
-| `capture_recent()` | `GET /capture/recent` | `capture_inbox_items` |
-| `scheduler_runs()` | `GET /scheduler/runs` | `job_runs` |
-| `asr_gate_status()` | `GET /asr/gates` | product ASR approval artifacts |
-| `writeback_previews()` | `GET /writeback/previews` | product DB and policy |
-| `processing_queue()` | `GET /queues/processing` | `capture_inbox_items` |
-| `knowledge_playbook()` | `GET /knowledge/playbook` | schema-only placeholder |
-| `settings_adapters()` | `GET /settings/adapters` | product config policy |
-| `saas_stage_gates()` | `GET /saas/stage-gates` | stage gate report |
-
-Actions policy:
-
-- read-only methods are allowed;
-- `download_audio`, `run_asr`, `run_ra`, `write_crm`, `write_runtime_db` are
-  blocked in UI v1.
-
-## UI data contract
-
-Primary file:
-
-- `src/mango_mvp/productization/ui_contracts.py`
-
-Contract version:
-
-```text
-saas_ui_contracts_v1
-```
-
-Top-level shape:
-
-```json
-{
-  "schema_version": "saas_ui_contracts_v1",
-  "summary": {},
-  "filters": {},
-  "views": {},
-  "actions": {},
-  "provenance": {}
-}
-```
-
-Important DTOs:
-
-- `CallListItemDTO`
-- `ManagerFilterDTO`
-- `ManualReviewDTO`
-
-Stable UI key:
-
-```text
-event_key
-```
-
-Provenance field:
-
-```text
-raw_payload_ref
-```
+These adapters do not define a reusable SaaS product, tenant UI, scheduler, or
+product API. Those retired contracts were removed from the current tree.
 
 ## amoCRM runtime model
 
@@ -531,26 +202,24 @@ Current conceptual entities:
 - playbook item;
 - ROP validation item.
 
-Current outputs are report artifacts, not transactional product DB tables.
-This is acceptable until the first dashboard/knowledge feature needs live
-querying from product DB.
+Current outputs are report artifacts, not transactional application tables.
 
 ## Future migration notes
 
-SQLite remains acceptable for the current client-hosted appliance phase because:
+SQLite remains acceptable for the current local runtime because:
 
 - deployment is simple;
 - backup is simple;
-- only one local product writer is expected;
+- only one local writer is expected;
 - historical processing already works this way.
 
-Move active product queues to PostgreSQL only when at least one is true:
+Move active queues to PostgreSQL only when at least one is true:
 
 - multiple concurrent writers;
-- multiple users operating the same appliance;
-- centralized hosting for several clients;
+- multiple users operate the same runtime;
+- centralized hosting is required;
 - need for stronger locks, monitoring and online backup;
-- product DB grows beyond comfortable local operational use.
+- the active DB grows beyond comfortable local operation.
 
-Do not migrate historical runtime data just to say "SaaS". Migrate active
-operational tables first.
+There is no active SaaS product DB or migration project. Do not migrate
+historical data without a concrete business need.

@@ -40,13 +40,6 @@
 
 | Script / generated command | Owner | Safety class | Side effects / risk | Recommended use |
 |---|---|---|---|---|
-| `scripts/run_amo_waiting_autonomous_work.py` | crm/productization | `SAFE_REPORT_WRITES` | Строит waiting-work pack, generated commands, no AMO write. | Запускать пока сотрудники объединяют дубли. |
-| `scripts/build_amo_duplicate_staff_tasks.py` | crm/productization | `SAFE_REPORT_WRITES` | Строит задачи сотрудникам по дублям, no AMO write. | Передать сотрудникам для ручной склейки. |
-| `scripts/check_amo_duplicate_post_merge_recheck.py` | crm/productization | `SAFE_REPORT_WRITES` | Проверяет уже созданный dry-run report, no network/write. | После сообщения сотрудников `готово`. |
-| `scripts/run_amo_duplicate_after_staff_done.py` | crm/productization | `SAFE_REPORT_WRITES` | Строит bounded candidates после recheck, no AMO write. | После post-merge recheck. |
-| `generated next_*_quality_gate_command.sh` | crm/productization | `SAFE_REPORT_WRITES` | Local CRM quality gates, пишет только отчеты. | Перед dry-run/live stage. |
-| `generated next_*real_tunnel_dry_run_command.sh` | crm/productization | `NETWORK_READ_ONLY` | AMO lookup dry-run, no `--execute-live-write`. | Только при поднятом tunnel; не live-write. |
-| `generated next_readback_missing_commands.sh` | crm/productization | `NETWORK_READ_ONLY` | AMO readback only, no write. | Перед refresh already-written строк. |
 
 ## Full script inventory
 
@@ -78,64 +71,7 @@
 | `export_tallanto_schema.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto schema. | Можно для field mapping. |
 | `finalize_manual_non_conversation_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует хвосты обработки. | Только processing-диалог. |
 | `finalize_messages30_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует batch/tail. | Только processing-диалог. |
-| `mango_office_appliance_loop_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run appliance loop. | Безопасный SaaS smoke. |
-| `mango_office_asr_approval_record.py` | productization | `SAFE_REPORT_WRITES` | Записывает approval record, не запускает ASR. | Безопасно. |
-| `mango_office_asr_execution_approval_gate.py` | productization | `SAFE_REPORT_WRITES` | Проверяет approval gate. | Безопасно. |
-| `mango_office_asr_execution_plan.py` | productization | `SAFE_REPORT_WRITES` | Строит plan, не исполняет ASR. | Безопасно. |
-| `mango_office_asr_scheduler_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run scheduler. | Безопасно. |
-| `mango_office_asr_worker_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run worker. | Безопасно. |
-| `mango_office_asr_worker_pack.py` | productization | `SAFE_REPORT_WRITES` | Собирает worker pack. | Не запускать ASR из этого шага. |
-| `mango_office_asr_worker_pack_verify.py` | productization | `SAFE_READ_ONLY` | Проверяет worker pack. | Безопасно. |
-| `mango_office_asr_worker_sandbox_approval_packet.py` | productization | `SAFE_REPORT_WRITES` | Approval packet. | Безопасно. |
-| `mango_office_asr_worker_sandbox_contract.py` | productization | `SAFE_REPORT_WRITES` | Contract docs/artifacts. | Безопасно. |
-| `mango_office_asr_worker_sandbox_execution_request.py` | productization | `SAFE_REPORT_WRITES` | Execution request, не ASR execution. | Требует human approval дальше. |
-| `mango_office_asr_worker_sandbox_human_approval.py` | productization | `SAFE_REPORT_WRITES` | Human approval record. | Безопасно. |
-| `mango_office_asr_worker_sandbox_preflight.py` | productization | `SAFE_REPORT_WRITES` | Preflight report. | Безопасно. |
-| `mango_office_asr_worker_sandbox_readiness.py` | productization | `SAFE_REPORT_WRITES` | Readiness report. | Безопасно. |
-| `mango_office_amo_snapshot_export.py` | productization | `NETWORK_READ_ONLY` | Читает amoCRM contacts/leads и пишет локальный snapshot under product root. | Использовать для CRM candidates без live write. |
-| `mango_office_appliance.py` | productization | `SAFE_REPORT_WRITES` | Пишет command-surface/runbook report для client-hosted appliance. | Не исполняет команды из отчета. |
-| `mango_office_appliance_config_wizard.py` | productization | `SAFE_REPORT_WRITES` | Проверяет product root, DB, Mango env, CRM snapshot, retention, backups. | Безопасно для client-hosted setup. |
-| `mango_office_appliance_service_pack.py` | productization | `SAFE_REPORT_WRITES` | Генерирует launchd/systemd templates под product root. | Не устанавливает и не запускает services. |
-| `mango_office_capture_audit.py` | productization | `SAFE_REPORT_WRITES` | Capture audit report. | Безопасно. |
-| `mango_office_capture_inbox.py` | productization | `SAFE_REPORT_WRITES` | Пишет capture inbox metadata. | Безопасно для productization staging. |
-| `mango_office_capture_stage.py` | productization | `SAFE_REPORT_WRITES` | Stage report/metadata. | Не пишет runtime DB. |
-| `mango_office_controlled_capture_ingest.py` | productization | `SAFE_REPORT_WRITES` | Shadow poll -> controlled ingest plan/apply. | Apply пишет только product DB capture inbox. |
-| `mango_office_crm_entity_resolver.py` | productization | `SAFE_READ_ONLY` | Матчит product calls с локальным CRM snapshot. | Не делает live CRM calls. |
-| `mango_office_crm_tallanto_mapping_preview.py` | productization | `SAFE_REPORT_WRITES` | Сверяет product capture rows с локальными AMO/Tallanto snapshots. | Без live CRM calls и без writeback. |
-| `mango_office_crm_writeback_preview.py` | productization | `SAFE_REPORT_WRITES` | CRM preview diff, gates, rollback plan. | Live CRM write выключен. |
-| `mango_office_demo_tenant.py` | productization | `SAFE_REPORT_WRITES` | Создает обезличенный demo product root. | Безопасно для демо и UI smoke. |
-| `mango_office_demo_pilot_playbook.py` | productization | `SAFE_REPORT_WRITES` | Пишет demo/pilot playbook из product-safe данных. | Не читает runtime DB и не пишет CRM. |
-| `mango_office_download_recordings.py` | productization | `DANGEROUS_LEGACY` | Старый путь скачивания записей. | Предпочитать guarded downloader ниже. |
 | `mango_office_mail_archive.py` | productization | `NETWORK_READ_ONLY` | Read-only IMAP ingest через `BODY.PEEK[]`; пишет локальный mail archive/matching artifacts, не отправляет, не удаляет, не двигает письма, не пишет CRM/Tallanto. | Запускать малыми pilot batch; output держать в ignored `_external_handoffs/`. |
-| `mango_office_manager_identity_map.py` | productization | `SAFE_REPORT_WRITES` | Пишет manager identity map. | Безопасно. |
-| `mango_office_payload_archive.py` | productization | `SAFE_REPORT_WRITES` | Архивирует raw payload локально. | Не включать secrets в bundle. |
-| `mango_office_pipeline_bridge_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run bridge. | Безопасно. |
-| `mango_office_processing_handoff.py` | productization | `SAFE_REPORT_WRITES` | Готовит handoff, не запускает processing. | Безопасно. |
-| `mango_office_processing_lifecycle.py` | productization | `SAFE_REPORT_WRITES` | Capture-to-handoff lifecycle report. | No ASR/R+A auto-trigger. |
-| `mango_office_processing_acceptance_gates.py` | productization | `SAFE_REPORT_WRITES` | Проверяет read-only gates перед подключением processing. | Processing quality остается внешним blocker до явного evidence. |
-| `mango_office_product_api_http.py` | productization | `SAFE_READ_ONLY` | Поднимает/проверяет HTTP API. | Проверять порт и env. |
-| `mango_office_product_api_readiness.py` | productization | `SAFE_REPORT_WRITES` | Readiness report. | Безопасно. |
-| `mango_office_product_db_admin.py` | productization | `REVIEW_REQUIRED` | Admin операции с product DB. | Только после чтения `--help`. |
-| `mango_office_product_db_bootstrap.py` | productization | `SAFE_REPORT_WRITES` | Создает/инициализирует product DB, не runtime DB. | Использовать только отдельный product DB path. |
-| `mango_office_product_ops.py` | productization | `SAFE_REPORT_WRITES` | Healthcheck, backup, verify backup, restore dry-run. | Безопасно для product DB under product root. |
-| `mango_office_product_owner_config.py` | productization | `SAFE_REPORT_WRITES` | Создает owner config. | Проверять secrets. |
-| `mango_office_provider_metadata_sidecar.py` | productization | `SAFE_REPORT_WRITES` | Пишет sidecar metadata. | Безопасно. |
-| `mango_office_quarantine_import_plan.py` | productization | `SAFE_REPORT_WRITES` | План импорта quarantine. | Безопасно. |
-| `mango_office_quarantine_materialize.py` | productization | `CONTROLLED_DOWNLOAD` | Материализует quarantine assets. | Только в отдельный quarantine path. |
-| `mango_office_quarantine_test_ingest.py` | productization | `SAFE_REPORT_WRITES` | Test ingest artifacts. | Безопасно. |
-| `mango_office_recording_asset_ingest.py` | productization | `SAFE_REPORT_WRITES` | Индексирует assets в staging/product context. | Не runtime DB. |
-| `mango_office_recording_bridge_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run bridge. | Безопасно. |
-| `mango_office_recording_capture_download.py` | productization | `CONTROLLED_DOWNLOAD` | Guarded recording download. | Использовать вместо legacy downloader. |
-| `mango_office_recording_capture_plan.py` | productization | `SAFE_REPORT_WRITES` | План скачивания. | Безопасно. |
-| `mango_office_recording_quarantine_package.py` | productization | `SAFE_REPORT_WRITES` | Quarantine package. | Безопасно. |
-| `mango_office_saas_productization_audit.py` | productization | `SAFE_REPORT_WRITES` | SaaS audit report. | Безопасно. |
-| `mango_office_saas_stage_gates.py` | productization | `SAFE_REPORT_WRITES` | Stage gates report. | Безопасно. |
-| `mango_office_sanitized_real_demo.py` | productization | `SAFE_REPORT_WRITES` | Создает обезличенный demo root из реального product DB. | Не читает runtime DB, не копирует audio, не пишет CRM. |
-| `mango_office_scheduler_control_plane.py` | productization | `SAFE_READ_ONLY` | Показывает recommended scheduler/supervisor actions. | Не исполняет jobs. |
-| `mango_office_scheduler_health.py` | productization | `SAFE_READ_ONLY` | Показывает due/failed/locked/stale scheduler jobs. | Безопасно для readiness панели. |
-| `mango_office_scheduler_runtime.py` | productization | `SAFE_REPORT_WRITES` | Scheduler dry/controlled runtime. | Запускать сначала dry-run. |
-| `mango_office_shadow_poll.py` | productization | `NETWORK_READ_ONLY` | Читает Mango API, не скачивает аудио. | Безопасный shadow poll. |
-| `mango_office_tenant_isolation.py` | productization | `SAFE_REPORT_WRITES` | Проверяет tenant-scoped rows и опционально создает пустой tenant scaffold. | Не меняет product DB, только product-root reports/scaffold. |
 | `mango_office_tallanto_snapshot_export.py` | productization | `NETWORK_READ_ONLY` | Читает Tallanto contacts по телефонам из product DB и пишет локальный snapshot. | Не пишет Tallanto/CRM, не меняет product DB. |
 | `match_priority_contacts_with_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает/матчит Tallanto. | Проверять output. |
 | `merge_pilot_sales_moment_llm_reviews.py` | insights | `SAFE_REPORT_WRITES` | Merge local LLM reviews. | Безопасно. |
@@ -173,25 +109,16 @@
 
 ## Canonical recommendations
 
-### Mango capture
+### Calls, mail, and Tallanto
 
-- Для read-only проверки новых звонков: `mango_office_shadow_poll.py`.
-- Для controlled shadow-to-inbox плана: `mango_office_controlled_capture_ingest.py plan`.
-- Для плана скачивания: `mango_office_recording_capture_plan.py`.
-- Для guarded download: `mango_office_recording_capture_download.py`.
-- Для bridge readiness без ASR: `mango_office_processing_lifecycle.py`.
-- Для CRM entity candidates из локального snapshot: `mango_office_crm_entity_resolver.py`.
-- Для read-only amoCRM snapshot: `mango_office_amo_snapshot_export.py`.
-- Для единого appliance command surface: `mango_office_appliance.py`.
-- Для demo product root: `mango_office_demo_tenant.py`.
-- Для продающего demo на реальной структуре данных: `mango_office_sanitized_real_demo.py`.
-- Для проверки client-hosted установки: `mango_office_appliance_config_wizard.py`.
-- Для AMO/Tallanto mapping preview: `mango_office_crm_tallanto_mapping_preview.py`.
-- Для backup/restore readiness: `mango_office_product_ops.py`.
-- Для scheduler/supervisor next actions: `mango_office_scheduler_control_plane.py`.
-- Для scheduler readiness: `mango_office_scheduler_health.py`.
-- Старый `mango_office_download_recordings.py` оставить как legacy-reference, не как
-  основной путь.
+- Звонки обслуживают только `run_mango_calls_process.sh` и
+  `mango_mvp.customer_timeline.calls_two_processes`; старые отдельные
+  `mango_office_*` capture-команды удалены.
+- Почтовый архив обслуживает `mango_office_mail_archive.py` через штатную
+  цепочку `run_customer_timeline_codex_task.py`.
+- Read-only снимок Tallanto запускается только через
+  `mango_office_tallanto_snapshot_export.py`.
+- Контракт текущего runtime строится через `mango_office_current_runtime.py`.
 
 ### AMO writeback
 
@@ -199,7 +126,6 @@
   отчет.
 - Для сделок: `write_recent_actionable_deals.py` теперь по умолчанию делает
   dry-run отчет.
-- Для productization preview без live write: `mango_office_crm_writeback_preview.py`.
 - Live-запись в amoCRM требует оба параметра:
 
 ```zsh
@@ -210,12 +136,5 @@
 
 Все `prepare_*`, `finalize_*`, `prefill_asr_from_dbs.py`,
 `run_analyze_ab_test.py`, `repair_and_move_message_archives.py` и похожие
-скрипты считаются владением processing-диалога. В SaaS/productization ветке их
-не запускать и не менять без отдельного согласования.
-
-### Productization
-
-Скрипты `mango_office_*_dry_run.py`, `mango_office_*_audit.py`,
-`mango_office_*_readiness.py`, `mango_office_*_plan.py` являются основным
-безопасным путем для SaaS-разработки: сначала plan/dry-run/readiness, затем
-отдельное решение на controlled download или live write.
+скрипты считаются отдельным контуром обработки. Их не запускать и не менять без
+отдельного согласования.

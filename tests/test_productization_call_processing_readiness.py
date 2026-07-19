@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from mango_mvp.productization.call_processing_readiness import build_call_processing_readiness_report
-from scripts import mango_office_call_processing_readiness
 
 
 def test_call_processing_readiness_passes_green_current_chain(tmp_path: Path) -> None:
@@ -45,17 +44,6 @@ def test_call_processing_readiness_blocks_quality_gate_input_drift(tmp_path: Pat
 
     assert report["summary"]["validation_ok"] is False
     assert any(gate["gate"] == "CRM_GATE_INPUT_MATCHES_EXPORT" and not gate["passed"] for gate in report["gates"])
-
-
-def test_call_processing_readiness_cli_writes_report(tmp_path: Path) -> None:
-    project = build_project_fixture(tmp_path)
-    out = project / "stable_runtime" / "call_processing_readiness" / "report.json"
-
-    rc = mango_office_call_processing_readiness.main(["--project-root", str(project), "--out", str(out)])
-
-    assert rc == 0
-    saved = json.loads(out.read_text(encoding="utf-8"))
-    assert saved["summary"]["processing_pipeline_ready"] is True
 
 
 def build_project_fixture(tmp_path: Path) -> Path:

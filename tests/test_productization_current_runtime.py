@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 from mango_mvp.productization.current_runtime import build_current_runtime_contract
-from mango_mvp.productization.operator_status import build_operator_status
 
 
 def test_current_runtime_contract_binds_post_backfill_artifacts(tmp_path: Path) -> None:
@@ -33,59 +32,6 @@ def test_current_runtime_contract_blocks_legacy_april_pointer(tmp_path: Path) ->
     gates = {gate["gate"]: gate["passed"] for gate in contract["gates"]}
     assert contract["summary"]["validation_ok"] is False
     assert gates["ACTIVE_EXPORT_NOT_LEGACY_APRIL"] is False
-
-
-def test_operator_status_writes_dashboard_and_russian_queue(tmp_path: Path) -> None:
-    project = _fixture_project(tmp_path, ready_rows=0)
-    runtime_path = project / "stable_runtime" / "CURRENT_RUNTIME.json"
-    build_current_runtime_contract(project_root=project, out_path=runtime_path)
-    out_root = project / "stable_runtime" / "operator_status"
-
-    status = build_operator_status(project_root=project, runtime_contract_path=runtime_path, out_root=out_root)
-
-    assert status["summary"]["runtime_validation_ok"] is True
-    assert status["summary"]["crm_writeback_live_allowed_now"] is False
-    assert status["summary"]["blocked_semantics"] == "runtime_blocked_plus_production_blocking_reasons"
-    assert status["summary"]["contact_id_mismatch_blocked_rows"] == 1
-    assert status["summary"]["queue_already_written_rows"] == 2
-    assert status["summary"]["queue_manual_resolution_rows"] == 3
-    assert status["summary"]["duplicate_merge_required_rows"] == 1
-    assert status["summary"]["duplicate_contact_mismatch_rows"] == 1
-    assert status["summary"]["duplicate_after_staff_done_status"] == "waiting_for_staff_done_and_recheck"
-    assert status["summary"]["duplicate_after_staff_done_blocked_rows"] == 1
-    assert status["summary"]["waiting_work_status"] == "prepared_safe_next_batches"
-    assert status["summary"]["waiting_work_non_duplicate_candidate_rows"] == 1
-    assert status["summary"]["waiting_work_refresh_candidate_rows"] == 4
-    assert status["summary"]["waiting_work_readback_missing_rows"] == 2
-    assert status["summary"]["waiting_work_live_write_allowed_now"] is False
-    assert status["amo_production_loop"]["waiting_work_dry_run_allowed_now"] is True
-    assert "no_ready_single_contact_rows_for_next_live_stage" in status["amo_production_loop"]["blocking_reasons"]
-    assert "run_waiting_work_refresh_real_tunnel_dry_run" in {
-        action["action"] for action in status["amo_production_loop"]["next_operator_actions"]
-    }
-    assert (out_root / "operator_status.json").exists()
-    assert "Mango Analyse Operator Status" in (out_root / "operator_dashboard.html").read_text(encoding="utf-8")
-    rows = list(csv.DictReader((out_root / "crm_queue_operator.csv").open("r", encoding="utf-8-sig")))
-    assert {row["status_ru"] for row in rows} >= {
-        "Уже записано и подтверждено предыдущими этапами",
-        "Нужен ручной выбор AMO-контакта",
-        "Заблокировано: AMO dry-run нашел другой contact_id",
-        "Нужна проверка текста перед записью",
-    }
-
-
-def test_operator_status_allows_next_stage_only_when_ready_rows_exist(tmp_path: Path) -> None:
-    project = _fixture_project(tmp_path, ready_rows=1)
-    runtime_path = project / "stable_runtime" / "CURRENT_RUNTIME.json"
-    build_current_runtime_contract(project_root=project, out_path=runtime_path)
-
-    status = build_operator_status(project_root=project, runtime_contract_path=runtime_path, out_root=project / "stable_runtime" / "operator_status")
-
-    assert status["summary"]["crm_writeback_live_allowed_now"] is False
-    assert status["summary"]["queue_ready_rows"] == 1
-    assert status["amo_production_loop"]["dry_run_allowed_now"] is True
-    assert status["amo_production_loop"]["live_write_approval_required"] is True
-    assert status["amo_production_loop"]["next_operator_actions"][0]["action"] == "prepare_next_live_stage"
 
 
 def _fixture_project(tmp_path: Path, *, ready_rows: int, export_name: str = "sales_master_export_20260510_after_quality_backfill_v5_crm_text_quality_strict") -> Path:

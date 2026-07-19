@@ -80,6 +80,10 @@ def test_assert_real_replay_cases_safe_rejects_non_chat_and_pii() -> None:
         assert_real_replay_cases_safe([_case(client_message="Позвоните 8 999 123-45-67")])
     with pytest.raises(ValueError, match="PII signals"):
         assert_real_replay_cases_safe([_case(manager_reference="Позвоните 8 999 123-45-67")])
+    with pytest.raises(ValueError, match="PII signals"):
+        assert_real_replay_cases_safe([_case(client_message="Напишите +44 20 0000 0000")])
+    with pytest.raises(ValueError, match="PII signals"):
+        assert_real_replay_cases_safe([_case(client_message="Моб: 971500000000")])
 
 
 def test_assert_real_replay_output_path_rejects_runtime_and_raw_roots() -> None:

@@ -9,9 +9,20 @@ from typing import Any, Iterable, Mapping
 
 
 PHONE_RE = re.compile(
-    r"(?<!\d)(?:(?:\+7|8)[\s\-()]*(?:\d[\s\-()]*){10}|7\d{10})(?:@c\.us)?(?!\d)",
+    r"(?<!\d)(?:(?:\+7|8)[\s\-()]*(?:\d[\s\-()]*){10}|7\d{10})(?:@c\.us)?(?!\d)|"
+    r"(?<![\w])(?:\+|00)[ \t\u00a0]*[1-9](?:[ \t\u00a0()\-–—]*\d){6,13}(?:@c\.us)?(?![\w])",
     re.I,
 )
+LABELED_BARE_PHONE_RE = re.compile(
+    r"(?P<label>\b(?:тел(?:ефон)?|моб(?:ильный)?|whats?app|ватсап)\b|\bномер\s+(?:телефона|мобильного)\b|\((?:тел|моб)\))"
+    r"(?P<separator>[^\d\n]{0,24})"
+    r"(?P<number>(?!\d{4}[./-]\d{1,2}[./-]\d{1,2}(?!\d))(?!\d{1,2}[./-]\d{1,2}[./-]\d{4}(?!\d))"
+    r"[1-9](?:[ \t\u00a0()\-–—]*\d){6,14})(?![\w])",
+    re.I,
+)
+BIRTH_DATE_RE = re.compile(r"(?<!\d)(?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])[./-](?:19|20)\d{2}(?!\d)")
+BIRTH_DATE_CONTEXT_RE = re.compile(r"\b(?:дата|день)\s+рождения\b|\bрожд\w*\b|(?<!\w)д\.?\s*р\.?(?!\w)", re.I)
+CLASS_CONTEXT_RE = re.compile(r"\b(?:\d{1,2}(?:-?й)?\s+)?класс\b", re.I)
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 USERNAME_RE = re.compile(r"(?<![\w/])@[A-Za-z][A-Za-z0-9_]{3,32}\b")
 LONG_ID_RE = re.compile(r"(?<![\w\[])(?:[a-f0-9]{16,}|[0-9]{16,})(?![\w\]])", re.I)
@@ -56,6 +67,16 @@ PROGRAM_NAME_STOP_PHRASES = (
 )
 
 
+def _has_birth_date_context(text: str) -> bool:
+    return bool(
+        BIRTH_DATE_CONTEXT_RE.search(text)
+        or (
+            CLASS_CONTEXT_RE.search(text)
+            and (PHONE_RE.search(text) or LABELED_BARE_PHONE_RE.search(text) or "[phone]" in text)
+        )
+    )
+
+
 class ReplayPseudonymizer:
     def __init__(self, *, dialog_salt: str) -> None:
         self.dialog_salt = dialog_salt
@@ -70,7 +91,14 @@ class ReplayPseudonymizer:
 
     def text(self, value: str) -> str:
         text = str(value or "")
+        mask_birth_dates = _has_birth_date_context(text)
         text = PHONE_RE.sub("[phone]", text)
+        text = LABELED_BARE_PHONE_RE.sub(
+            lambda match: f"{match.group('label')}{match.group('separator')}[phone]",
+            text,
+        )
+        if mask_birth_dates:
+            text = BIRTH_DATE_RE.sub("[date_of_birth]", text)
         text = EMAIL_RE.sub("[email]", text)
         text = USERNAME_RE.sub("[username]", text)
         text = URL_RE.sub("[url]", text)
@@ -165,6 +193,11 @@ def pii_findings(value: Any, *, allowlist: Iterable[str] = ()) -> list[dict[str,
     def scan_text(text: str, path: str, *, timestamp_context: bool = False) -> None:
         for match in PHONE_RE.finditer(text):
             add("phone", path, match.group(0))
+        for match in LABELED_BARE_PHONE_RE.finditer(text):
+            add("phone", path, match.group("number"))
+        if not timestamp_context and _has_birth_date_context(text):
+            for match in BIRTH_DATE_RE.finditer(text):
+                add("date_of_birth", path, match.group(0))
         for match in EMAIL_RE.finditer(text):
             add("email", path, match.group(0))
         for match in USERNAME_RE.finditer(text):
@@ -232,6 +265,7 @@ def kb_contact_allowlist(snapshot_path: Path) -> tuple[str, ...]:
         if not any(marker in lowered for marker in ("телефон", "почта", "email", "telegram", "контакт", "писать можно")):
             continue
         contacts.update(match.group(0) for match in PHONE_RE.finditer(text_blob))
+        contacts.update(match.group("number") for match in LABELED_BARE_PHONE_RE.finditer(text_blob))
         contacts.update(match.group(0) for match in EMAIL_RE.finditer(text_blob))
         contacts.update(match.group(0) for match in USERNAME_RE.finditer(text_blob))
     return tuple(sorted(contacts))

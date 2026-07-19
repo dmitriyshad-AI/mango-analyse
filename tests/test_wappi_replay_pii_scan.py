@@ -22,6 +22,14 @@ def test_pii_scanner_catches_bare_phone_cus_username_and_long_ids() -> None:
     assert not any(finding["path"].endswith("ts_masked") for finding in findings)
 
 
+def test_pii_scanner_catches_international_phone_and_contextual_birth_date() -> None:
+    findings = pii_findings(
+        {"text": "6 класс, +1 202 555 0100, дата рождения 01.02.2014; телефон ученика (ОАЭ): 971500000000"}
+    )
+
+    assert {finding["kind"] for finding in findings} == {"phone", "date_of_birth"}
+
+
 def test_pii_scanner_allows_kb_public_contacts(tmp_path: Path) -> None:
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(

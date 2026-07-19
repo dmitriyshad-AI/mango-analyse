@@ -24,6 +24,34 @@ def test_pseudonymizer_masks_contacts_and_names_recursively() -> None:
     assert pii_signals(scrubbed) == []
 
 
+def test_pseudonymizer_masks_international_phones_and_birth_dates() -> None:
+    raw = (
+        "Анна Иванова, 6 класс, +971 50 000-00-00, дата 01.02.2014; "
+        "резерв 00 44 20 0000 0000; телефон ученика (ОАЭ): 971500000000."
+    )
+
+    assert pii_signals(raw) == ["date_of_birth", "phone"]
+    scrubbed = ReplayPseudonymizer(dialog_salt="international").text(raw)
+
+    assert scrubbed.count("[phone]") == 3
+    assert "[date_of_birth]" in scrubbed
+    assert pii_signals(scrubbed) == []
+
+
+def test_phone_mask_preserves_non_phone_numbers_and_schedule() -> None:
+    raw = "М9, М11, ЕГЭ 2026, цены 47 250 и 94 500, 2025/26, 12:15-14:15, занятие 01.09.2026 для 6 класса."
+
+    assert ReplayPseudonymizer(dialog_salt="numbers").text(raw) == raw
+    assert pii_signals(raw) == []
+
+
+def test_labeled_phone_mask_preserves_date_like_number() -> None:
+    raw = "Телефон будет известен 2026-07-19."
+
+    assert ReplayPseudonymizer(dialog_salt="date").text(raw) == raw
+    assert pii_signals(raw) == []
+
+
 def test_pseudonymizer_masks_mixed_case_child_name_from_pilot() -> None:
     pseudonymizer = ReplayPseudonymizer(dialog_salt="pilot")
 

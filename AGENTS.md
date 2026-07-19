@@ -35,13 +35,16 @@
 Не восстанавливай актуальное состояние проекта из чата. Сначала читай:
 
 1. `AGENTS.md`
-2. `docs/PROJECT_NOW.md` (локальный generated-снимок текущей очереди, ветки, блокеров и свежих audit packs; если отсутствует или старше 24 часов — сначала запусти `python3 scripts/project_now.py`)
-3. `docs/DECISIONS_LOG.md`
-4. `docs/RUNBOOK.md`
-5. актуальное ТЗ текущего блока
-6. последние audit packs в `audits/_inbox/`
-7. `docs/CURRENT_STATE.md` и `docs/ROADMAP.md` только как исторический контекст, если они явно свежее текущего ТЗ или нужны для проверки старого решения
-8. `stable_runtime/CURRENT_RUNTIME.json` только для чтения, если это нужно для проверки runtime-указателей
+2. `README.md`
+3. `ARCHITECTURE.md`
+4. `docs/PROJECT_NOW.md` (локальный generated-снимок текущей очереди, ветки, блокеров и свежих audit packs; если отсутствует или старше 24 часов — сначала запусти `python3 scripts/project_now.py`)
+5. `docs/RUNBOOK.md`
+6. `docs/DECISIONS_LOG.md`
+
+Актуальное ТЗ и последние audit packs в `audits/_inbox/` дополняют эти шесть
+источников в границах конкретной задачи. Документы в `docs/_archive/` не являются
+источником текущей правды. `stable_runtime/CURRENT_RUNTIME.json` читать только
+для проверки runtime-указателей.
 
 Чат можно использовать только как дополнительный контекст, но не как источник правды.
 

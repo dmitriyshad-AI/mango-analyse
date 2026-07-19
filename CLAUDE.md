@@ -1,6 +1,6 @@
 # CLAUDE.md — контекст проекта Mango Analyse
 
-Последнее обновление: 2026-07-07. Правило: каждое решение уровня политики вносится сюда строкой В ТОТ ЖЕ ДЕНЬ.
+Последнее обновление: 2026-07-19. Правило: каждое решение уровня политики вносится сюда строкой В ТОТ ЖЕ ДЕНЬ.
 
 ## Live-свап 2026-07-07
 
@@ -14,7 +14,7 @@
 
 Автономный ИИ-сотрудник, по качеству соизмеримый с живым менеджером отдела продаж. Ведёт продажу сам: клиент из Яндекс.Директа → сайт (Фотон или УНПК МФТИ) → диалог (предпочтительно Telegram через AMO CRM; вариант — WhatsApp через Wappi) → продвижение от интереса до завершения ОПЛАТЫ, по дороге консультирует, ведёт сделку, отправляет документы. Подцели могут меняться (при смене — первой строкой «что это обесценивает»), глобальная цель — нет.
 
-**Текущая эпоха (с 12.06.2026): черновиковый пилот.** Приёмка качества пройдена, техника закрыта (профиль pilot_gold_v1, база r4.1, монолит разнесён на модули). Целевой контур: Wappi (шлюз к Telegram/Max аккаунтам организаций, НЕ WhatsApp) → бот → примечание «ЧЕРНОВИК БОТА, не отправлено» в сделку AMO → менеджер копирует и шлёт сам. Клиентам бот сам НЕ пишет. **Решение Дмитрия 13.06: бот пишет черновик на ВСЕ входящие, где однозначно опознана сделка — TG Фотон/УНПК + Max (авто-резолвер в проде, ТЗ-20); прежнее «только утверждённый список пар» отменено. Per-pair сверка архитектором — не блокер (предохранители: точный ключ + один контакт + одна открытая сделка + бренд-чек; иначе пропуск). Риск минимален: черновик видят только сотрудники.** Публичные TG-боты — только внутренний тест, ссылки клиентам не раздавать. Режим архитектора: ежедневный разбор черновиков по сырью (первые 5-7 дней — 100%); северная звезда — доля отправленных без правки; жёсткие нули в отправленном: выдумка / смешение брендов / P0 / ПДн. Дальше: автономия по матрице.
+**Текущая эпоха: черновиковый пилот.** Целевой контур: Wappi (шлюз к Telegram/Max аккаунтам организаций, НЕ WhatsApp) → бот → примечание «ЧЕРНОВИК БОТА, не отправлено» в сделку AMO → менеджер копирует и шлёт сам. Клиентам бот сам НЕ пишет. На 2026-07-19 `DRAFT_LOOP_AUTO_RESOLVER=0`, переданный auto-pairs-файл пуст и ручной allowlist тоже пуст: автоподбор не включён до M1-приёмки и отдельного решения Дмитрия. Публичные TG-боты — только внутренний тест, ссылки клиентам не раздавать. Северная звезда — доля отправленных без правки; жёсткие нули в отправленном: выдумка / смешение брендов / P0 / ПДн.
 
 ## Главное правило: бренды не смешиваются
 
@@ -89,8 +89,8 @@
 
 ## Операционный контур пилота (с 12.06.2026)
 
-- **Wappi/AMO draft-loop live с 10.07.2026 14:35 МСК:** launchd `com.mango.wappi-draft-loop` работает из detached worktree `/Users/dmitrijfabarisov/Projects/Mango_live_next_step_phase1b` на `2cc82b1355efd911bd16357fa954584a89ff5763`. Включены bot-safe CRM/timeline memory, `TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD=1` и `TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE=1`; Part A `TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD=0` до M1-приёмки. Startup-manifest: `~/.mango_local/draft_loop/phase1b_startup_manifest.json`. Откат: старый EPR plist/wrapper в `~/.mango_local/draft_loop/rollback_20260710T113252Z/` и неизменённая `Mango_email_pipeline_restore`.
-- Черновиковый контур: пары «профиль+чат → сделка» в `~/.mango_secrets/draft_loop_pairs.json` (разрешена одна тестовая: чат 290027369 → сделка 47854947, Фотон). Стоп-файл `~/.mango_secrets/STOP_DRAFT_LOOP`; журнал `~/.mango_local/draft_loop/journal.jsonl`; сердцебиение `~/.mango_local/draft_loop/heartbeat.json`. Запись примечаний — через AI Office `POST /api/integrations/amocrm/leads/{id}/notes`, только по allowlist.
+- **Wappi/AMO draft-loop live, снимок 2026-07-19:** PID `35089` запущен из `/Users/dmitrijfabarisov/Projects/Mango analyse`; реально загруженный SHA по startup-manifest — `ca1779bc022e8f8c5f97a9f0544bf7d6280eece4`. Он отличается от текущего `main`; это честный runtime drift до отдельного разрешения на редеплой. Включены bot-safe CRM/timeline memory, `TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD=1` и `TELEGRAM_DIRECT_PATH_FORMAT_GUIDANCE=1`; `TELEGRAM_DIRECT_PATH_SCOPE_OVERCLAIM_GUARD=0`. Проверка: `python3 scripts/skills/live_truth.py --no-write`.
+- Черновиковый контур: `DRAFT_LOOP_AUTO_RESOLVER=0`; ручной allowlist `~/.mango_secrets/draft_loop_pairs.json` содержит 0 пар, процессу передан пустой `~/.mango_local/draft_loop/empty_auto_pairs.json`. Стоп-файл `~/.mango_secrets/STOP_DRAFT_LOOP`; журнал `~/.mango_local/draft_loop/journal.jsonl`; сердцебиение `~/.mango_local/draft_loop/heartbeat.json`. Запись примечаний — через AI Office только для явно разрешённых пар; клиентам бот не пишет.
 - Wappi-профили (карта 12.06): Фотон TG `ec2eed50-b55f`, УНПК TG `18b255b8-7a67`, Фотон Max `2952990f-9e4c`, УНПК Max `152b441d-81a2`. Чаты без пары в allowlist намеренно пропускаются (`pair_missing` в журнале — норма до выдачи пар Дмитрием).
 - Публичные TG-боты (внутренний тест): самопроверка `scripts/check_public_bot_live.py` после каждого рестарта; журнал `.codex_local/telegram_pilot/telegram_pilot.sqlite`.
 - Read-only доступ к AMO/Tallanto — MCP-контур `https://api.fotonai.online/api/mcp/foton-crm-readonly` (токен только в `~/.mango_secrets/`, в git не писать).
@@ -115,4 +115,4 @@
 
 ## Где что лежит
 
-История — `PROJECT_HISTORY.md` (не источник текущей правды). Отчёты Claude — `audits/_inbox/...`. Ключевые документы эпохи — `D1_audit_backlog/`: ADR_001 (архитектура), SPEC_acceptance_smoke (приёмка), REGISTER_keyword_vs_understanding (следующая лазанья — вход), REGRADE_* (регрейды), kb_v6_6_staging.
+История — `docs/_archive/PROJECT_HISTORY.md` (не источник текущей правды). Отчёты Claude — `audits/_inbox/...`. Ключевые документы эпохи — `D1_audit_backlog/`: ADR_001 (архитектура), SPEC_acceptance_smoke (приёмка), REGISTER_keyword_vs_understanding (следующая лазанья — вход), REGRADE_* (регрейды), kb_v6_6_staging.

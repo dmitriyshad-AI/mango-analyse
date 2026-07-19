@@ -1949,3 +1949,14 @@ startup manifest/heartbeat и загруженного SHA. Текущий HEAD 
 Старой копии внутри репозитория и ссылки-двойника не оставляем. Перенос делается
 одним `mv` на том же диске после SQLite checkpoint/quick_check; письма,
 вложения и Customer Timeline не удаляются.
+
+### D-094. Шесть документов образуют активный источник правды
+
+Решение владельца 2026-07-19: текущее состояние проекта определяется только
+шестью документами: `AGENTS.md`, `README.md`, `ARCHITECTURE.md`,
+`docs/PROJECT_NOW.md`, `docs/RUNBOOK.md` и `docs/DECISIONS_LOG.md`. Актуальное
+ТЗ и audit pack дополняют их только в границах конкретной задачи.
+
+`docs/CURRENT_STATE.md`, `docs/ROADMAP.md`, `docs/PROJECT_REGISTRY.md` и
+`PROJECT_HISTORY.md` устарели и перенесены в `docs/_archive/`. Тем самым D-010
+заменено этим решением; архивные документы не используются как текущая правда.

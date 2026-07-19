@@ -57,11 +57,15 @@ Wappi -> integrations/draft_loop.py
 Перед работой читать в таком порядке:
 
 1. `AGENTS.md`;
-2. `docs/PROJECT_NOW.md`;
-3. `docs/DECISIONS_LOG.md`;
-4. `docs/RUNBOOK.md`;
-5. актуальное ТЗ;
-6. свежий audit pack из `audits/_inbox/`.
+2. `README.md`;
+3. `ARCHITECTURE.md`;
+4. `docs/PROJECT_NOW.md`;
+5. `docs/RUNBOOK.md`;
+6. `docs/DECISIONS_LOG.md`.
+
+Актуальное ТЗ и свежий audit pack дополняют эту шестёрку только в границах
+конкретной задачи. `docs/_archive/` хранит историю и не является источником
+текущей правды.
 
 Состояние процесса проверяется по PID, cwd, env, startup manifest и heartbeat,
 а не по старому имени папки в документе:

@@ -1,5 +1,8 @@
 # Project Registry: Mango
 
+> **УСТАРЕЛО.** Реестр от 2026-06-26 сохранён только для истории. Текущее
+> состояние генерирует `python3 scripts/project_now.py` в `docs/PROJECT_NOW.md`.
+
 Last updated: 2026-06-26
 
 This file is the repository-local project map. It separates four different states that must not be mixed:

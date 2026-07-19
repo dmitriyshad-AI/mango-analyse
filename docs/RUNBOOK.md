@@ -1,356 +1,228 @@
-# Runbook
+# Runbook Mango
 
-Дата обновления: 2026-05-23
+Обновлено: 2026-07-19.
 
-Назначение: безопасные команды и рабочие правила для проекта.
+Этот файл содержит текущие безопасные команды. Исторические команды и решения
+остаются в Git и `docs/DECISIONS_LOG.md`, но не считаются рабочей инструкцией.
 
 ## Перед любой работой
 
-Проверить ветку и рабочую папку:
-
 ```bash
-git branch --show-current
-git status --short
-```
-
-Посмотреть актуальное состояние:
-
-```bash
-sed -n '1,220p' docs/CURRENT_STATE.md
+git status --short --branch
+python3 scripts/project_now.py
+sed -n '1,220p' docs/PROJECT_NOW.md
 sed -n '1,220p' docs/DECISIONS_LOG.md
-sed -n '1,220p' docs/ROADMAP.md
 ```
 
-## Безопасный сбор тестов
+Для крупного ТЗ после штатного переноса в `tasks/_running`:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+python3 scripts/skills/tz_lint.py tasks/_running/<TZ.md>
+python3 scripts/preflight.py --tz tasks/_running/<TZ.md>
 ```
 
-## Безопасный точечный запуск тестов
+Не начинать изменяющий блок в чужом или грязном worktree. Не использовать
+`git add -A`.
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q <tests>
-```
+## Источник факта о live
 
-Пример:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_post_backfill_amo_ready_export.py
-```
-
-## Смысловая проверка
-
-Для базы знаний, Telegram/email-черновиков, CRM-текстов и клиентских ответов зеленые тесты дают только `formal_pass`.
-
-Перед словами "готово к использованию" нужен `semantic_pass` по правилам:
-
-```bash
-sed -n '1,260p' docs/SEMANTIC_REVIEW_RULES.md
-```
-
-Для базы знаний запускать:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
-  --release-dir product_data/knowledge_base/kb_release_20260520_v6_3_team_answers \
-  --out-dir audits/_inbox/<block>/semantic_review
-```
-
-Если `semantic_pass=false`, блок не считается завершенным, даже если `quality_passed=true`.
-
-## Разбор проблем бота по классам
-
-Для FAIL/PASS_WITH_NOTES в Telegram-пилоте использовать skill:
+Основная папка:
 
 ```text
-/Users/dmitrijfabarisov/.codex/skills/bot-failure-class-review/SKILL.md
+/Users/dmitrijfabarisov/Projects/Mango analyse
 ```
 
-Реестр классов:
+Wappi, calls A/B и customer-timeline nightly настроены на эту папку. Перед
+деплоем или изменением флагов обязателен жёсткий гейт:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 scripts/skills/live_truth.py --no-write
+```
+
+Дополнительно проверять фактические LaunchAgents:
+
+```bash
+launchctl print gui/$(id -u)/com.mango.wappi-draft-loop
+launchctl print gui/$(id -u)/com.mango.calls-process-a
+launchctl print gui/$(id -u)/com.mango.calls-process-b
+launchctl print gui/$(id -u)/com.mango.customer-timeline-nightly
+```
+
+Путь в plist сам по себе не доказывает, какой код загружен в уже работающий
+Python. Нужны PID, cwd, env, startup manifest и heartbeat.
+
+## Wappi draft-loop
+
+Read-only проверка:
+
+```bash
+cat /Users/dmitrijfabarisov/.mango_local/draft_loop/heartbeat.json
+cat /Users/dmitrijfabarisov/.mango_local/draft_loop/phase1b_startup_manifest.json
+tail -100 /Users/dmitrijfabarisov/.mango_local/draft_loop/launchd.stderr.log
+```
+
+Штатный installer с проверкой единственного процесса, `live_truth` и
+автоматическим возвратом предыдущего plist:
+
+```bash
+./scripts/start_wappi_draft_loop_launchd.sh
+```
+
+Команда меняет live-службу. Запускать её только по отдельному подтверждённому
+ТЗ. Не запускать `run_amo_wappi_draft_loop.py --live-write` вручную вместо
+installer.
+
+Wappi создаёт только менеджерскую заметку-черновик в AMO. Автоотправки клиенту
+нет.
+
+## Звонки: процессы A/B
+
+Текущая схема:
+
+- `process-a` запускается каждые 1800 секунд;
+- `process-b` запускается по требованию и не имеет интервала;
+- оба используют `scripts/run_mango_calls_process.sh` из основной папки.
+
+Read-only проверка:
+
+```bash
+launchctl print gui/$(id -u)/com.mango.calls-process-a
+launchctl print gui/$(id -u)/com.mango.calls-process-b
+tail -100 product_data/mango_calls_two_processes/logs/process-a.stderr.log
+tail -100 product_data/mango_calls_two_processes/logs/process-b.stderr.log
+```
+
+Штатная переустановка, только по отдельному подтверждённому ТЗ:
+
+```bash
+python3 scripts/install_mango_calls_two_processes_service.py \
+  --config /Users/dmitrijfabarisov/.mango_local/mango_calls_two_processes/config.json \
+  --env-file /Users/dmitrijfabarisov/.mango_secrets/mango_office.env \
+  --process-a-interval-seconds 1800 \
+  --install
+```
+
+Старый label `com.mango.calls-two-processes` не является действующим
+конвейером A/B.
+
+## Customer Timeline nightly
+
+Текущий запуск: ежедневно в 03:30 из основной папки.
+
+Read-only проверка службы:
+
+```bash
+launchctl print gui/$(id -u)/com.mango.customer-timeline-nightly
+tail -100 /Users/dmitrijfabarisov/.mango_local/customer_timeline_nightly/.codex_local/staging/nightly_service/launchd.stderr.log
+```
+
+Проверка текущей SQLite без записи:
+
+```bash
+sqlite3 \
+  'product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite' \
+  'PRAGMA query_only=ON; PRAGMA quick_check;'
+```
+
+Штатная установка, только по отдельному подтверждённому ТЗ:
+
+```bash
+bash scripts/install_customer_timeline_nightly_service.sh \
+  --plist deploy/customer_timeline_nightly/com.mango.customer-timeline-nightly.plist.template \
+  --code-root "$PWD" \
+  --nightly-home /Users/dmitrijfabarisov/.mango_local/customer_timeline_nightly \
+  --apply
+```
+
+Installer не снимает уже загруженный label. Если служба существует, не
+повторять команду поверх неё: переустановка оформляется отдельным cutover-ТЗ с
+проверкой текущего plist и возвратом при ошибке.
+
+## База знаний
+
+Текущий snapshot:
 
 ```text
-docs/BOT_FAILURE_CLASSES_REGISTRY.md
+product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/
+  kb_release_v3_snapshot.json
 ```
 
-Правило: не чинить один пример как отдельную фразу, пока не понятно, это единичный случай, проблема теста или повторяемый класс.
+Не подменять его старым v6.3 из исторических документов. Бот может называть
+цену, дату, расписание, адрес и условия только из подтверждённых client-safe
+фактов нужного бренда и области.
 
-## Что не запускать без отдельного подтверждения
+## Тесты
 
-- ASR;
-- Resolve+Analyze по реальным данным;
-- live AMO write;
-- live CRM write;
-- Tallanto write;
-- массовые batch/start/run-ui скрипты;
-- скрипты, которые пишут в `stable_runtime` как рабочее состояние;
-- удаление или перенос runtime-папок.
-
-## AMO Snapshot / Rollback
-
-Live-запись deal-aware полей теперь обязана создать:
-
-```text
-pre_write_snapshot.jsonl
-pre_write_snapshot.csv
-rollback_manifest.json
-live_write_report.csv
-live_write_report.json
-summary.json
-```
-
-Rollback по умолчанию запускать только в dry-run:
+Безопасный сбор:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/rollback_deal_aware_amo_fields.py \
-  --live-run-root <live_run_root> \
-  --dry-run
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 -m pytest --collect-only -q
 ```
 
-Реальный rollback запрещен без отдельного подтверждения Дмитрия. Для `--apply` нужен отдельный token:
-
-```text
-ROLLBACK_DEAL_AWARE_AMO_FIELDS
-```
-
-Первый live-микропилот после Блока A ограничен 1-5 сделками.
-
-## Runtime
-
-Текущие указатели можно читать:
+Точечный запуск:
 
 ```bash
-sed -n '1,220p' stable_runtime/CURRENT_RUNTIME.json
-cat stable_runtime/CANONICAL_EXPORT.txt
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 -m pytest -q <tests>
 ```
 
-Но нельзя менять `stable_runtime` DB/audio/transcripts без отдельного подтверждения.
-
-## Telegram Pilot
-
-Токены и настройки локального пилота:
-
-```text
-/Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env
-```
-
-Безопасная проверка настроек без отправки клиентам:
+Импорт ядра:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_public_pilot_bots.py \
-  --env-file /Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env \
-  --mode getme \
-  --brand all
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c \
+  "from mango_mvp.channels.subscription_llm_parts import SubscriptionLlmDraftProvider"
 ```
 
-Перезапуск локальных публичных ботов:
+Для клиентских ответов, базы знаний, CRM/AMO/Tallanto-текстов и коммерческих
+фактов зелёные тесты означают только `formal_pass`. До вывода о готовности нужен
+отдельный `semantic_pass` по `docs/SEMANTIC_REVIEW_RULES.md`.
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src bash scripts/restart_telegram_public_pilot_bots.sh
-```
+## Что запрещено без отдельного подтверждения
 
-Важно: `--mode poll` может реально отправлять ответы в публичные Telegram-боты. Запускать только когда понятно, что сотрудники тестируют пилот.
+- ASR и Resolve+Analyze по реальным данным;
+- live-write в AMO/CRM/Tallanto;
+- отправка сообщений клиентам;
+- изменение `stable_runtime` и боевой customer timeline;
+- тяжёлые batch/start/run-ui скрипты;
+- удаление или перенос runtime, worktree, веток, тегов и баз.
 
-Логи:
+## AMO snapshot и rollback
 
-```text
-.codex_local/telegram_pilot_bots/logs/
-.codex_local/telegram_pilot_bots/runtime/
-```
+Любой новый live-write блок обязан заранее иметь snapshot, readback и rollback.
+Rollback сначала запускается только в dry-run. Реальный rollback требует
+отдельного подтверждения владельца.
 
-Единый store пилота:
+Текущий Wappi-контур пишет только черновик-заметку. Это всё равно live-write в
+AMO и не должно запускаться вручную вне штатной службы.
 
-```text
-.codex_local/telegram_pilot/telegram_pilot.sqlite
-```
+## Audit pack и коммит
 
-Дневной отчёт из store:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_telegram_pilot_daily_report.py \
-  --db .codex_local/telegram_pilot/telegram_pilot.sqlite \
-  --date YYYY-MM-DD \
-  --out-dir audits/_inbox/telegram_pilot_daily_YYYYMMDD
-```
-
-Импорт feedback сотрудников из `employee_review_sheet.csv`:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/import_telegram_pilot_feedback.py \
-  --db .codex_local/telegram_pilot/telegram_pilot.sqlite \
-  --csv audits/_inbox/telegram_pilot_daily_YYYYMMDD/employee_review_sheet.csv \
-  --actor nastya
-```
-
-База знаний для ботов:
-
-```text
-product_data/knowledge_base/kb_release_20260520_v6_3_team_answers
-product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack
-```
-
-Каноничная сборка KB v6.3:
-
-```text
-docs/KB_BUILD_RUNBOOK_2026-05-26.md
-```
-
-Порядок быстрых проверок бота:
-
-1. preflight актуальности v8-фактов;
-2. точечные тесты DialogueMemory/answer-quality/journal;
-3. `v8_targeted16`;
-4. статичные `MEGA_autonomy_tests_v6` и `MEGA_multitopic_batch_v5`;
-5. полный v8 только отдельным длинным прогоном с `--resume`, полными транскриптами и review queue.
-
-Точечные тесты DialogueMemory:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
-  tests/test_dialogue_memory.py \
-  tests/test_telegram_pilot_context_builder.py \
-  tests/test_telegram_pilot_journal_report.py \
-  tests/test_telegram_dynamic_client_sim.py \
-  tests/test_subscription_llm_draft_provider.py
-```
-
-Быстрый параллельный запуск динамического симулятора:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py \
-  --scenarios "/Users/dmitrijfabarisov/Claude Projects/Foton/v8_dynamic_sim_2026-05-22/v8_targeted16_2026-05-22.jsonl" \
-  --out-dir audits/_inbox/telegram_dynamic_v8_targeted16_YYYYMMDD_HHMMSS \
-  --parallel 2 \
-  --resume
-```
-
-Для `codex`-режима рекомендуемый старт: `--parallel 2`. Если нет таймаутов и деградации, можно пробовать `--parallel 3`. Параллельность 10-50 для LLM-прогона не использовать как обычный acceptance: это скорее нагрузочный эксперимент, может давать нестабильность из-за лимитов Codex/модели.
-
-Безопасный локальный smoke на одновременные обращения без Telegram-отправок:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_pilot_concurrency_smoke.py \
-  --mode fake \
-  --requests 50 \
-  --concurrency 10 \
-  --out-dir audits/_inbox/telegram_pilot_concurrency_smoke_YYYYMMDD
-```
-
-Если нужно проверить реальную LLM-задержку без отправки сообщений клиентам, можно запустить малый codex-smoke:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_pilot_concurrency_smoke.py \
-  --mode codex \
-  --requests 10 \
-  --concurrency 2 \
-  --out-dir audits/_inbox/telegram_pilot_concurrency_codex_smoke_YYYYMMDD
-```
-
-## Audit Pack
-
-После значимого блока создать:
+После значимого блока создать один каталог:
 
 ```text
 audits/_inbox/<block>_<timestamp>/
 ```
 
-Минимальные файлы:
+Минимум: `implementation_notes.md`, `changed_files.txt`, `test_output.txt`,
+`risk_review.md`, `backward_compatibility.md`; для клиентского содержания также
+`semantic_review.md`.
 
-```text
-implementation_notes.md
-changed_files.txt
-test_output.txt
-semantic_review.md
-risk_review.md
-backward_compatibility.md
-```
+Перед коммитом:
 
-Для AMO/writeback блоков добавить:
+1. проверить `git diff` и `git diff --check`;
+2. запустить заявленные тесты;
+3. убедиться, что нет runtime, ПДн, секретов и чужих изменений;
+4. добавить только явные файлы своего блока;
+5. проверить staged diff перед commit/push.
 
-```text
-snapshot_contract.md
-rollback_contract.md
-dry_run_summary.md
-readback_plan.md
-live_write_status.md
-```
+## Навыки проекта
 
-Если live-write не запускался, явно написать:
-
-```text
-Live write was not executed.
-```
-
-## Коммиты
-
-Коммитить только после:
-
-1. понятного diff;
-2. тестов;
-3. audit pack;
-4. проверки, что в коммит не попали runtime-артефакты;
-5. проверки, что нет чужих unrelated изменений.
-
-Не смешивать в один коммит:
-
-- код разных блоков;
-- документы и runtime-выгрузки;
-- cleanup и функциональную реализацию;
-- live отчеты и исходный код.
-
-## Текущий порядок реализации
-
-Актуальный порядок для этого диалога:
-
-```text
-Telegram pilot journal -> dialogue strategy -> docs -> v8_targeted16 -> static v6/v5 -> audit pack
-```
-
-Исторический порядок `G -> A -> PBF -> B -> C -> D -> E` по AMO/deal-aware/customer timeline считать фундаментом, но не текущим основным блоком.
-
-## Customer Timeline Coverage
-
-Безопасный read-only отчет покрытия:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/audit_customer_timeline_coverage.py \
-  --deal-aware-candidates <path/to/deal_stage4_deal_candidates.csv> \
-  --timeline-db <path/to/customer_timeline.sqlite> \
-  --out-root <path/to/audit_output>
-```
-
-Нельзя писать output в `stable_runtime` без отдельного подтверждения.
-
-Stage 4 preview может читать customer timeline только по явному флагу:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_deal_aware_stage4_preview.py \
-  --customer-timeline-db <path/to/customer_timeline.sqlite> \
-  --enable-customer-timeline-context
-```
-
-Этот контекст остается только в preview/report полях и не попадает в AMO payload.
-
-## Навыки Codex
-
-Для security-аудита использовать skills:
-
-- `security-best-practices`;
-- `security-threat-model`;
-- `security-ownership-map`.
-
-Для PDF:
-
-- `pdf`;
-- Python-среда: `/Users/dmitrijfabarisov/.codex/skill-venv/bin/python`.
-
-Для notebooks:
-
-- `jupyter-notebook`;
-- Python-среда: `/Users/dmitrijfabarisov/.codex/skill-venv/bin/python`.
-
-Для долговечных CLI:
-
-- `cli-creator`.
-
-Не использовать эти skills для простых вопросов и мелких правок.
+- `scripts/skills/tz_lint.py` — advisory-проверка ТЗ;
+- `scripts/skills/inventory_before_build.py` — поиск существующей реализации;
+- `scripts/skills/fail_raw_export.py` — обязательное сырое доказательство FAIL;
+- `scripts/skills/wappi_draft_loop_replay.py` — read-only replay перед изменением
+  Wappi-петли;
+- `scripts/skills/live_truth.py` — жёсткий гейт перед live-действиями;
+- `mango-graphify` — локальная read-only карта, вывод проверяется в исходниках.

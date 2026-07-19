@@ -1,23 +1,25 @@
 # Контракт живого бота
 
-Обновлено: 2026-07-17. Это короткий неизменяемый минимум, который должен
-сохраняться при любом редеплое или упрощении кода.
+Обновлено: 2026-07-19. Это минимальный контракт, который сохраняется при любом
+редеплое или упрощении кода.
 
 ## Что фактически работает
 
 - Канал: Wappi -> draft-loop -> AMO.
-- Живой код Wappi: detached worktree
-  `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi`, ревизия
-  `5d109c38`.
-- Канонический код разработки: `main`. Пока Wappi не редеплоен, состояние
-  `main` нельзя называть живым.
+- Каноническая папка кода и runtime:
+  `/Users/dmitrijfabarisov/Projects/Mango analyse`, ветка `main`.
+- Последняя проверенная загруженная ревизия кода: `ca1779bc022e8f8c5f97a9f0544bf7d6280eece4`.
+  Снимок 2026-07-19 12:49 МСК: PID `35089`, heartbeat `status=ok`,
+  `auth_error_count=0`. PID меняется при перезапуске и не является константой.
+- Более новый docs-only коммит в `main` не означает, что Python-процесс уже
+  перезапущен. Перед любым live-действием фактические PID, cwd, env и SHA нужно
+  заново проверить через `scripts/skills/live_truth.py --no-write`.
 - Память читается из
   `/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
-- Draft-loop вызывает `SubscriptionLlmDraftProvider.build_draft()`. При
-  профиле `pilot_gold_v1` используется direct path и его последующие
-  детерминированные проверки.
-- Результат записывается только как черновик-заметка в AMO через
-  `add_draft_note_to_test_lead()`. Отправки клиенту этим контуром нет.
+- Draft-loop вызывает `SubscriptionLlmDraftProvider.build_draft()`, затем
+  единственный живой путь `direct_path` и его post-layers.
+- Результат записывается только как черновик-заметка в AMO. Клиентское сообщение
+  этим контуром не отправляется.
 
 ## Несжимаемые правила
 
@@ -40,12 +42,13 @@
 
 ## Проверка перед редеплоем
 
-- Зафиксировать фактические PID, worktree, SHA, профиль, флаги и путь к БД
-  через `scripts/skills/live_truth.py` и системные данные процесса.
-- Проверить один обычный вопрос, P0, кросс-бренд и неподдержанное число.
-- Для новых presale-refund замеров использовать актуальный ключ из
-  `targeted_riskzones_2026_05_26.jsonl`. Датированные производные ADR003-наборы
-  сохраняют исторические ключи прошлых прогонов и не являются текущим эталоном.
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 scripts/skills/live_truth.py --no-write
+```
+
+- Зафиксировать фактические PID, worktree, SHA, профиль, флаги и путь к БД.
+- Проверить обычный вопрос, P0, кросс-бренд и неподдержанное число.
 - Подтвердить, что создаётся AMO-заметка, а клиентское сообщение не
   отправляется.
 - Любое изменение правил выше обязано иметь воспроизводимый тест. Ослабление
@@ -53,10 +56,17 @@
 
 ## Источники в коде
 
-- `scripts/start_wappi_draft_loop_live.sh`
-- `src/mango_mvp/integrations/draft_loop.py`
-- `src/mango_mvp/channels/subscription_llm_parts/provider.py`
-- `src/mango_mvp/channels/subscription_llm_parts/post_layers.py`
-- `src/mango_mvp/channels/output_verification_floor.py`
-- `src/mango_mvp/channels/p0_recall_spec.py`
-- `src/mango_mvp/customer_timeline/bot_safe_runtime_context.py`
+- `scripts/start_wappi_draft_loop_launchd.sh` — штатная установка/перезапуск с
+  проверкой и автоматическим возвратом предыдущего plist при ошибке;
+- `scripts/start_wappi_draft_loop_phase1b_live.sh` — рабочий wrapper процесса;
+- `src/mango_mvp/integrations/draft_loop.py`;
+- `src/mango_mvp/channels/subscription_llm_parts/provider.py`;
+- `src/mango_mvp/channels/subscription_llm_parts/direct_path.py`;
+- `src/mango_mvp/channels/subscription_llm_parts/post_layers.py`;
+- `src/mango_mvp/channels/output_verification_floor.py`;
+- `src/mango_mvp/channels/p0_recall_spec.py`;
+- `src/mango_mvp/customer_timeline/bot_safe_runtime_context.py`.
+
+Rollback-тег `rollback/pre-refactoring-main-29b9ac26`, rollback-plist и три
+страховочных worktree сохраняются до отдельного решения владельца после личной
+приёмки. Они не являются текущим live-контуром.

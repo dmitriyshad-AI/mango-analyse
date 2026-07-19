@@ -1907,3 +1907,29 @@ Cleanup refs после deploy: после archive-tag в обоих remote уд
 одной крупной задаче. Чужой worktree, его `.codex_local` и runtime нельзя
 переключать или чистить. Новые номера решений выделяются только после проверки
 актуального журнала и активных веток на конфликт.
+
+### D-092. Direct path и единый защитный пол заменили удалённый legacy-контур
+
+Решение владельца 2026-07-19: `direct_path` является единственным живым путём
+построения черновика. Общие детерминированные проверки вынесены в
+`src/mango_mvp/channels/output_verification_floor.py`; post-processing остаётся
+в `subscription_llm_parts/post_layers.py`.
+
+Рефакторинг от тега `rollback/pre-refactoring-main-29b9ac26` до кодовой ревизии
+`190cd062` изменил 65 файлов: добавлено 6 098 строк, удалено 48 034, чистое
+сокращение 41 936 строк. Удалены неиспользуемые
+`dialogue_contract_pipeline.py`, `rules_engine.py`,
+`answer_quality_rewriter.py`, humanity-цепочка и их мёртвые тесты. P0, бренд,
+ПДн и факт-гейты сохранены в живом пути и покрыты проверками.
+
+Перед этим пакетом worktree-реестр был обновлён коммитом `ca1779bc`. Wappi был
+штатно переведён на `/Users/dmitrijfabarisov/Projects/Mango analyse`; startup
+manifest и heartbeat зафиксировали загруженную кодовую ревизию `ca1779bc`,
+профиль `pilot_gold_v1`, draft-only режим и отсутствие ошибок авторизации.
+Calls A/B и customer-timeline nightly также указывают на основную папку.
+
+Rollback-тег, rollback-plist и три страховочных worktree не являются live, но
+сохраняются до отдельного решения владельца после личной приёмки. Документальные
+коммиты после `ca1779bc` не меняют поведение уже загруженного Python-процесса;
+фактический SHA перед live-действием всегда проверяется через
+`scripts/skills/live_truth.py --no-write`.

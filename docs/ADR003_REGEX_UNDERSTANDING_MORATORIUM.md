@@ -240,10 +240,14 @@ Regex-бюджет `direct_path.py` повышен с 10 до 11 только д
 
 ## Разрешенное обновление 2026-07-18: структурный перенос output verification floor
 
-Реально вызываемые механические проверки выхода перенесены без изменения поведения из `dialogue_contract_pipeline.py` и `humanity_guards.py` в `output_verification_floor.py`. Старые модули сохраняют совместимые реэкспорты; legacy-ветка не удалена в этом пакете.
+Реально вызываемые механические проверки выхода перенесены без изменения поведения из `dialogue_contract_pipeline.py` и `humanity_guards.py` в `output_verification_floor.py`. На этапе переноса старые модули временно сохраняли совместимые реэкспорты; их окончательное удаление зафиксировано ниже.
 
 Суммарный regex-бюджет не вырос: 19 объявлений перемещены из `dialogue_contract_pipeline.py`, одно — из `humanity_guards.py`, всего 20 в новом модуле. Хэши и тексты паттернов в frozen snapshot не изменены; изменился только путь владельца. Три существующих env-декларации (`AUTONOMY_SCOPE_PRECISION_ENV`, `AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV`, `NUMBER_GATE_SCOPE_AWARE_ENV`) также сменили только файловый адрес. Новый смысл клиентского текста, флаг или маршрут не добавлен.
 
 ## Разрешенное обновление 2026-07-19: удаление мертвой humanity/tone-цепочки
 
 Удалены не вызываемые живым direct-path диспетчеры humanity/tone и их изолированные regex/marker-помощники. Новые правила понимания текста не добавлялись; frozen snapshots обновлены только на удаление записей.
+
+## Разрешенное обновление 2026-07-19: удаление DCP fallback
+
+После окончательного решения владельца отказаться от `TELEGRAM_DIRECT_PATH=0` удалены старый `dialogue_contract_pipeline.py`, его флаг и совместимый `humanity_guards.py`. Живые `parse_contract`, `p0_pre_gate`, `verify_output`, P0/бренд/число/meta/repeat-проверки остаются в `output_verification_floor.py`; их прямые регрессионные тесты перенесены на физического владельца. Исторические поля `dialogue_contract_pipeline` в транскриптах по-прежнему читаются аналитикой, но исполняемого fallback больше нет.

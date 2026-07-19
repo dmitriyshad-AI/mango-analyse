@@ -70,7 +70,6 @@ def build_replay_context(record: Mapping[str, Any], *, snapshot_path: Path) -> M
     payload["known_dialog_fields"] = known_slots
     payload["known_slots"] = known_slots
     payload["recent_messages"] = recent_messages
-    payload["TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"] = "1"
     payload["night_shadow_replay_mode"] = {
         "enabled": True,
         "shadow_only": True,

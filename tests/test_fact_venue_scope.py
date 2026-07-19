@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Mapping
 
 import mango_mvp.channels.subscription_llm as subscription_llm
-from mango_mvp.channels.dialogue_contract_pipeline import (
+from mango_mvp.channels.output_verification_floor import (
     AnswerContract,
     verify_output as verify_dialogue_contract_output,
 )

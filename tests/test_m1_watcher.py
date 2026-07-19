@@ -170,7 +170,6 @@ def test_empty_task_env_uses_production_stack_and_reports_llm_breakdown(tmp_path
 
     def runner(spec, deploy_dir, out_dir, command, env):
         seen_env.update(dict(env))
-        assert env["TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"] == "1"
         assert env["TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"] == "1"
         assert env["TELEGRAM_TONE_SELL_PROMPT"] == "1"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -197,7 +196,6 @@ def test_empty_task_env_uses_production_stack_and_reports_llm_breakdown(tmp_path
 
     report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
     assert "task_delta: {}" in report
-    assert '"TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"' in report
     assert '"TELEGRAM_SEMANTIC_OUTPUT_VERIFIER": "1"' in report
     assert '"bot_faithfulness": 3' in report
     assert seen_env["PYTHONPATH"] == "src"
@@ -216,7 +214,6 @@ def test_task_env_delta_overrides_default_production_stack(tmp_path):
 
     def runner(spec, deploy_dir, out_dir, command, env):
         assert env["TELEGRAM_TONE_SELL_PROMPT"] == "0"
-        assert env["TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"] == "1"
         assert env["TELEGRAM_STEP4_KEEP_ANSWER"] == "1"
         return _fake_runner(spec, deploy_dir, out_dir, command, env)
 
@@ -256,11 +253,9 @@ def test_production_env_stack_v2_contains_only_direct_path_profile() -> None:
         "TELEGRAM_A_TRAVEL_COMPOSE",
         "TELEGRAM_A_ESTIMATE_MODE",
         "TELEGRAM_COMPOSITE_CONTRACT_FIX",
-        "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE",
         "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD",
         "TELEGRAM_HANDOFF_TRACE",
         "TELEGRAM_OUTPUT_SANITIZER",
-        "TELEGRAM_RULES_ENGINE_PLANNER_INTENT",
         "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER",
         "DIALOGUE_CONTRACT_DEBUG_TRACE",
     }
@@ -281,7 +276,6 @@ def test_watcher_uses_v2_stack_only_when_selected(tmp_path):
     def runner(spec, deploy_dir, out_dir, command, env):
         seen_env.update(dict(env))
         assert env["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
-        assert "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE" not in env
         assert "TELEGRAM_A_FREE_NUMBER_GATE" not in env
         return _fake_runner(spec, deploy_dir, out_dir, command, env)
 
@@ -290,7 +284,6 @@ def test_watcher_uses_v2_stack_only_when_selected(tmp_path):
     report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
     assert "production_stack_version: v2" in report
     assert '"TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1"' in report
-    assert "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE" not in report
     assert seen_env["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
 
 

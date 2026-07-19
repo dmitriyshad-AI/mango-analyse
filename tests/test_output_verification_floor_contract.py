@@ -1,34 +1,17 @@
 from __future__ import annotations
 
-from mango_mvp.channels import dialogue_contract_pipeline as legacy_dcp
-from mango_mvp.channels import humanity_guards as legacy_humanity
 from mango_mvp.channels import output_verification_floor as floor
 from mango_mvp.channels import pilot_profile_runtime
 from mango_mvp.channels import subscription_llm_parts as facade
 from mango_mvp.channels.subscription_llm_parts import policy_routing, post_layers, provider, support
 
 
-_HUMANITY_EXPORTS = {
-    "_META_CLIENT_MARKERS",
-    "_META_FACT_PHRASE_RE",
-    "_WORD_CHARS",
-    "_has_meta_fact_phrase",
-    "_norm",
-    "_tokens",
-    "has_meta_leak",
-    "is_near_repeat",
-    "repeat_ratio",
-}
-
-
-def test_floor_manifest_has_one_compatibility_owner() -> None:
+def test_floor_manifest_has_one_physical_owner() -> None:
     assert len(floor.__all__) == 175
     assert "DIALOGUE_CONTRACT_PIPELINE_ENV" not in floor.__all__
     assert "new_concrete_anchors" not in floor.__all__
-
-    for name in floor.__all__:
-        compatibility_module = legacy_humanity if name in _HUMANITY_EXPORTS else legacy_dcp
-        assert getattr(compatibility_module, name) is getattr(floor, name), name
+    for name in ("parse_contract", "p0_pre_gate", "verify_output", "has_meta_leak", "is_near_repeat", "repeat_ratio"):
+        assert getattr(floor, name).__module__ == floor.__name__
 
 
 def test_live_consumers_import_the_floor_directly() -> None:
@@ -62,3 +45,29 @@ def test_floor_keeps_p0_brand_meta_and_repeat_behavior() -> None:
     previous = "По физике очно для 9 класса семестр стоит 44 600 рублей."
     assert floor.is_near_repeat(previous, [previous])
     assert floor.repeat_ratio(previous, previous) == 1.0
+
+
+def test_floor_meta_and_repeat_negative_controls() -> None:
+    prior = (
+        "Да, это можно уточнить заранее по 9 классу, физике, очно. "
+        "Такой вопрос до оплаты не оформляю как жалобу или заявление на возврат."
+    )
+    different = "По физике очно для 9 класса семестр стоит 44 600 рублей."
+
+    assert floor.is_near_repeat(prior, [prior])
+    assert not floor.is_near_repeat(different, [prior])
+    assert not floor.is_near_repeat("Поняла, спасибо.", ["Поняла, спасибо."])
+
+    for phrase in (
+        "В фактах нет информации по этому вопросу.",
+        "В базе нет точного ответа.",
+        "Цена не указана в фактах.",
+    ):
+        assert floor.has_meta_leak(phrase)
+
+    for phrase in (
+        "Точное время мы согласуем.",
+        "Дату уточнит менеджер.",
+        "В группе нет свободных мест.",
+    ):
+        assert not floor.has_meta_leak(phrase)

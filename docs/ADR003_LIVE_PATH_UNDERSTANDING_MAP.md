@@ -8,7 +8,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Ветка: `codex/adr003-semanticframe-migration`
 
-Статус: карта для пересчета остатка "минус-лазанья"; не является разрешением на удаление legacy-кода или включение новых флагов.
+Статус: историческая карта. На 2026-07-19 владелец отказался от DCP fallback; `dialogue_contract_pipeline.py`, `humanity_guards.py`, `rules_engine.py` и `answer_quality_rewriter.py` удалены после выноса живого output-floor в `output_verification_floor.py`.
 
 ## Короткий вывод
 
@@ -16,7 +16,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 
 Что уже доказано:
 
-- Живой `direct-path` раньше возвращал результат до старого монолитного конвейера. В Пакете 2 владелец окончательно отказался от fallback, legacy-хвост и `answer_quality_rewriter` удалены; `humanity_guards` и `known_context_redundant_question_guard` остаются legacy-кандидатами следующих пакетов.
+- Живой `direct-path` возвращает результат без старого монолитного конвейера. Владелец окончательно отказался от fallback; legacy-хвост, `answer_quality_rewriter`, `humanity_guards`, DCP и rules-engine удалены, а реально вызываемый output-floor сохранён отдельно.
 - Срезы `rewrite_quality`, `post_semantics` и `route_templates/redundant_guard` в локальной trace-диагностике дали 0 записей на 173 ходах. Для live direct-path их нельзя считать проверенными и нельзя строить для них apply-режим.
 - Живая точка `route_templates/autonomy_matrix` исполняется: в trace-диагностике 153 сравнимых записи, 1 расхождение. Расхождение безопасное: legacy выбрал более осторожный `manager_only` на оплатном/P0-соседнем ходе.
 
@@ -46,11 +46,7 @@ HEAD: `843c0b844b7029f59b2d0dec4c29f3f61d938d22`
 Старый монолитный хвост начинается после direct-path return. В частности:
 
 - `apply_answer_quality_rewriter(...)` удалён вместе с legacy-хвостом в Пакете 2.
-- `apply_known_context_redundant_question_guard(...)`: `provider.py:1039` и `provider.py:1057` в старом хвосте.
-- `apply_autonomy_matrix_guard(...)` в монолитном хвосте: `provider.py:1059`.
-- `apply_humanity_guards(...)`: `provider.py:1060`.
-
-Итого: если слой живет только в этом хвосте, он не является live direct-path точкой.
+Старый хвост и перечисленные только в нём вызовы удалены. Источник истины для текущих строк — сырой код актуального HEAD, а не номера строк этой исторической карты.
 
 ## Direct-path pipeline
 

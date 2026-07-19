@@ -492,7 +492,6 @@ async def run_checks(
         store_enabled=True,
         p0_register_path=temp_dir / "p0.csv",
         autonomy_enabled=config.autonomy_enabled,
-        dialogue_contract_pipeline_enabled=config.dialogue_contract_pipeline_enabled,
         context_overrides=context_overrides,
     )
     turns: list[LiveCheckTurn] = []
@@ -549,7 +548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         now=datetime.now(timezone.utc),
         stale_after_seconds=args.heartbeat_stale_after_sec,
     )
-    profile_selfcheck = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=config.dialogue_contract_pipeline_enabled)
+    profile_selfcheck = pilot_profile_selfcheck()
     expected_online_prices = expected_online_prices_from_snapshot(config.snapshot_path, config.brand)
     turns = ()
     failures = ()

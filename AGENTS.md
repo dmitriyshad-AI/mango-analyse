@@ -119,7 +119,7 @@
 
 Если карта собрана не на текущей версии репозитория, вывод "такого узла/связи нет" по карте делать нельзя. Отсутствие проверяй поиском по сырью на текущей версии.
 
-Утверждения карты о маршрутизации P0, разделении брендов, client-safe/manager-only фактах и защитных слоях всегда перепроверяй в исходниках; для P0/брендов/гвардов первым источником считать `src/mango_mvp/channels/rules_engine.py`.
+Утверждения карты о маршрутизации P0, разделении брендов, client-safe/manager-only фактах и защитных слоях всегда перепроверяй в исходниках; для P0 первым источником считать `src/mango_mvp/channels/p0_recall_spec.py`, для выходных P0/бренд/число-гвардов — `src/mango_mvp/channels/output_verification_floor.py` и живые вызовы в `subscription_llm_parts/`.
 
 `graphify-out/` — чувствительный локальный артефакт. Не коммитить, не передавать наружу, не использовать как runtime-истину.
 
@@ -145,9 +145,9 @@ Graphify-навык или wrapper обязан возвращать путь к
 
 Не вести несколько крупных блоков параллельно в одном рабочем дереве. Исключение: независимые read-only аудиты без изменений.
 
-## Frozen Legacy Bot Areas
+## Live Bot Core
 
-Legacy-слои `subscription_llm_parts/policy_routing.py`, `channels/rules_engine.py` и `channels/answer_quality_rewriter.py` считаются замороженной legacy-лазанью для текущего Telegram-пилота. Не расширяй их без отдельного ТЗ: живой пилотный путь идёт через direct path в `src/mango_mvp/channels/subscription_llm_parts/provider.py:913` -> `_build_direct_path_draft()` при `_direct_path_enabled(context)`, а legacy-ветки используются только как совместимость/страховочная история.
+Живой Telegram-путь безусловно идёт через `SubscriptionLlmDraftProvider.build_draft()` -> `_build_direct_path_draft()`. Удалённые DCP/rules-engine/answer-quality fallback-слои не восстанавливать; откат выполняется по git-ревизии. `subscription_llm_parts/policy_routing.py` содержит оставшиеся живые direct-path гварды, поэтому его нельзя считать целиком legacy.
 
 ## Git Discipline
 

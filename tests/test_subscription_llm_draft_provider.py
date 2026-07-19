@@ -12,17 +12,12 @@ import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
 import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
-from mango_mvp.channels.dialogue_contract_pipeline import (
+from mango_mvp.channels.output_verification_floor import (
     AnswerContract,
     AUTONOMY_SCOPE_PRECISION_ENV,
-    FactStore,
     NUMBER_GATE_SCOPE_AWARE_ENV,
-    _safe_fallback_text,
     autonomy_scope_precision_enabled,
-    build_faithfulness_prompt,
-    check_claim_faithfulness,
     number_gate_scope_aware_enabled,
-    run_pipeline,
     verify_output as verify_dialogue_contract_output,
 )
 from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
@@ -883,11 +878,6 @@ def test_neutral_discount_theme_is_allowed_as_manager_draft_without_auto_send() 
     assert "high_risk_manager_only" not in result.safety_flags
 
 
-def _route_shield_fact_store(facts: dict[str, str] | None = None) -> FactStore:
-    store_facts = dict(facts or {})
-    return FactStore(catalog=tuple(store_facts.keys()), store={"unpk": store_facts, "foton": store_facts})
-
-
 def _route_shield_contract(
     *,
     question: str = "Сколько стоит курс?",
@@ -934,310 +924,6 @@ def _a2_pipeline_metadata(
             "recovery_candidate_validated": True,
         }
     }
-
-
-def _route_shield_pipeline_result(
-    *,
-    client_message: str = "Сколько стоит курс?",
-    draft_text: str | None = "По подтверждённым данным: курс стоит 49 000 ₽.",
-    contract: dict | None = None,
-    facts: dict[str, str] | None = None,
-    faithfulness_fn=None,
-):
-    return run_pipeline(
-        conversation=({"role": "client", "text": client_message},),
-        active_brand="unpk",
-        fact_store=_route_shield_fact_store(facts),
-        understand_fn=lambda _prompt: contract or _route_shield_contract(keys=tuple((facts or {}).keys())),
-        draft_fn=None if draft_text is None else (lambda _prompt: draft_text),
-        faithfulness_fn=faithfulness_fn,
-    )
-
-
-
-
-
-
-
-
-def test_pravka5_semantic_critic_blocks_wrong_scope_and_contradicted_claims() -> None:
-    wrong_scope_result = check_claim_faithfulness(
-        "Это онлайн.",
-        facts={
-            "camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания.",
-            "regular.online.format": "Обычные онлайн-курсы проходят дистанционно.",
-        },
-        client_words="В каком формате лагерная смена?",
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "это онлайн",
-                    "evidence_fact_key": "regular.online.format",
-                    "verdict": "wrong_scope",
-                    "reason": "факт про обычный онлайн-курс, а вопрос про лагерную смену",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-    assert wrong_scope_result.unsupported == ("это онлайн",)
-
-    wrong_scope_pipeline = _route_shield_pipeline_result(
-        client_message="В каком формате лагерная смена?",
-        draft_text="Это онлайн.",
-        contract=_route_shield_contract(question="В каком формате лагерная смена?", keys=("camp.shift.format",)),
-        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "это онлайн",
-                    "evidence_fact_key": "camp.shift.format",
-                    "verdict": "wrong_scope",
-                    "reason": "черновик отвечает не в scope факта",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-    assert wrong_scope_pipeline.route == "draft_for_manager"
-    assert wrong_scope_pipeline.fallback_reason == "hard_verification_failed"
-
-    contradicted_result = check_claim_faithfulness(
-        "Да, программа подходит для 9 класса.",
-        facts={"program.grade": "Программа подтверждена для 10 класса."},
-        client_words="Подходит для 10 класса?",
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "программа подходит для 9 класса",
-                    "evidence_fact_key": "program.grade",
-                    "verdict": "contradicted",
-                    "reason": "факт подтверждает 10 класс, не 9",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-    assert contradicted_result.unsupported == ("программа подходит для 9 класса",)
-
-    contradicted = _route_shield_pipeline_result(
-        client_message="Подходит для 10 класса?",
-        draft_text="Да, программа подходит для 9 класса.",
-        contract=_route_shield_contract(question="Подходит для 10 класса?", keys=("program.grade",)),
-        facts={"program.grade": "Программа подтверждена для 10 класса."},
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "программа подходит для 9 класса",
-                    "evidence_fact_key": "program.grade",
-                    "verdict": "contradicted",
-                    "reason": "факт подтверждает 10 класс, не 9",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-    assert contradicted.route == "draft_for_manager"
-    assert contradicted.fallback_reason == "hard_verification_failed"
-
-
-def test_pravka5_semantic_critic_keeps_supported_same_scope_claim_autonomous() -> None:
-    supported = _route_shield_pipeline_result(
-        client_message="В каком формате лагерная смена?",
-        draft_text="ЛВШ Менделеево — очная городская смена без проживания.",
-        contract=_route_shield_contract(question="В каком формате лагерная смена?", keys=("camp.shift.format",)),
-        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "ЛВШ Менделеево — очная городская смена без проживания",
-                    "evidence_fact_key": "camp.shift.format",
-                    "verdict": "supported",
-                    "reason": "тот же продукт, формат и условия",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-    assert supported.route == "bot_answer_self"
-
-
-def test_pravka5_1_semantic_critic_prompt_names_remaining_fabrication_types() -> None:
-    prompt = build_faithfulness_prompt(
-        "Это онлайн, занятия по вторникам, других форматов нет, фокус на ОГЭ.",
-        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
-        client_words="Лагерь онлайн или очно?",
-    )
-
-    assert "ВЫБОР ФОРМАТА" in prompt
-    assert "онлайн или очно" in prompt
-    assert "РАСПИСАНИЕ/ДНИ/ВРЕМЯ" in prompt
-    assert "по вторникам" in prompt
-    assert "Лагерь/смена ≠ обычный курс ≠ олимпиадная подготовка" in prompt
-    assert "ОТРИЦАНИЕ И СПЕЦИФИКА" in prompt
-    assert "других форматов нет" in prompt
-    assert "фокус на ОГЭ" in prompt
-
-
-def test_pravka5_1_semantic_critic_blocks_specific_remaining_fabrication_verdicts() -> None:
-    cases = [
-        (
-            "онлайн или очно, цена 6 класс",
-            "Это онлайн.",
-            {"format.general": "Есть очные и онлайн-направления; точный формат зависит от выбранной программы."},
-            "это онлайн",
-            "unsupported",
-        ),
-        (
-            "Когда проходят занятия?",
-            "Занятия проходят в будни.",
-            {"program.general": "Программа доступна для 9 класса."},
-            "занятия проходят в будни",
-            "unsupported",
-        ),
-        (
-            "Что за летняя смена?",
-            "Это обычный онлайн-курс по олимпиадной подготовке.",
-            {"camp.shift": "ЛВШ Менделеево — летняя смена."},
-            "это обычный онлайн-курс по олимпиадной подготовке",
-            "wrong_scope",
-        ),
-        (
-            "Есть другие выездные форматы?",
-            "Других выездных форматов нет.",
-            {"camp.shift": "ЛВШ Менделеево — выездная смена."},
-            "других выездных форматов нет",
-            "unsupported",
-        ),
-        (
-            "Это курс под экзамен?",
-            "У курса фокус на ОГЭ.",
-            {"program.general": "Курс помогает подтянуть математику."},
-            "у курса фокус на ОГЭ",
-            "unsupported",
-        ),
-    ]
-
-    for client_words, draft, facts, claim, verdict in cases:
-        result = check_claim_faithfulness(
-            draft,
-            facts=facts,
-            client_words=client_words,
-            faithfulness_fn=lambda _prompt, claim=claim, verdict=verdict: {
-                "claims": [
-                    {
-                        "claim": claim,
-                        "evidence_fact_key": next(iter(facts)),
-                        "verdict": verdict,
-                        "reason": "калибровочный пример правки 5.1",
-                    }
-                ],
-                "unsupported": [],
-            },
-        )
-        assert result.unsupported == (claim,)
-
-
-def test_pravka5_1_semantic_critic_keeps_supported_right_topic() -> None:
-    result = check_claim_faithfulness(
-        "ЛВШ Менделеево — очная городская смена без проживания.",
-        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
-        client_words="Лагерь онлайн или очно?",
-        faithfulness_fn=lambda _prompt: {
-            "claims": [
-                {
-                    "claim": "ЛВШ Менделеево — очная городская смена без проживания",
-                    "evidence_fact_key": "camp.shift.format",
-                    "verdict": "supported",
-                    "reason": "факт про тот же лагерь и формат",
-                }
-            ],
-            "unsupported": [],
-        },
-    )
-
-    assert result.unsupported == ()
-
-
-def test_pravka5_2_complaint_zero_collect_uses_clean_handoff() -> None:
-    text = _safe_fallback_text(
-        AnswerContract(
-            active_brand="foton",
-            current_question="Жалоба: преподаватель ужасный, ребёнок ничего не понял.",
-            answerability="manager_only",
-            is_p0=True,
-            p0_reason="complaint",
-        ),
-        facts={
-            "discounts.current": "Скидка на второй предмет — 20%.",
-        },
-        context={"active_brand": "foton"},
-    )
-    lowered = text.casefold().replace("ё", "е")
-
-    assert "передам менеджеру" in lowered
-    assert "скидк" not in lowered
-    assert "укажите" not in lowered
-    assert "ребен" not in lowered
-    assert "как зовут" not in lowered
-    assert not any(char.isdigit() for char in text)
-
-
-def test_pravka5_2_refund_zero_collect_keeps_refund_handoff() -> None:
-    text = _safe_fallback_text(
-        AnswerContract(
-            active_brand="unpk",
-            current_question="Верните деньги, я недовольна занятиями.",
-            answerability="manager_only",
-            is_p0=True,
-            p0_reason="refund",
-        ),
-        facts={
-            "payment.installment": "Есть рассрочка через Т-Банк.",
-        },
-        context={"active_brand": "unpk"},
-    )
-    lowered = text.casefold().replace("ё", "е")
-
-    assert "возврат" in lowered
-    assert "передам" in lowered
-    assert "как отдельная справка" not in lowered
-    assert "т-банк" not in lowered
-
-
-def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> None:
-    secondary = _safe_fallback_text(
-        AnswerContract(
-            active_brand="unpk",
-            current_question="Можно помесячно прямым переводом на счёт?",
-            answerability="manager_only",
-        ),
-        facts={
-            "payment.installment": "Есть рассрочка через Т-Банк.",
-        },
-        context={"active_brand": "unpk"},
-    )
-    assert "менеджер" in secondary.casefold()
-    assert "оплату прямым переводом на счёт" in secondary.casefold()
-    assert "как отдельная справка" not in secondary.casefold()
-    assert "т-банк" not in secondary.casefold()
-
-    detail = _safe_fallback_text(
-        AnswerContract(
-            active_brand="unpk",
-            current_question="Какая цена для 6 класса?",
-            answerability="manager_only",
-        ),
-        facts={},
-        context={"active_brand": "unpk"},
-    )
-    assert "менеджер" in detail.casefold()
-    assert "цену или условия оплаты" in detail
-    assert "Какая цена для 6 класса" not in detail
-
-
-
-
 
 
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:
@@ -7693,7 +7379,7 @@ def test_direct_path_p0_preblock_stays_manager_only_with_output_sanitizer() -> N
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
-def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:
+def test_direct_path_keeps_clean_close() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -7705,7 +7391,6 @@ def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:
         context={
             "active_brand": "foton",
             DIRECT_PATH_ENV: "1",
-            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
             "confirmed_facts": {"trial.foton": "Фотон: пробное занятие есть."},
         },
     )

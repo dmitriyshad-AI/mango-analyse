@@ -205,7 +205,6 @@ def build_context_builder(
             channel_thread_id=key.value,
             channel_user_id=key.chat_id,
             current_message_id=current_message_id,
-            dialogue_contract_pipeline_enabled=True,
             sends_client_replies=False,
             debug_impersonation_enabled=False,
             crm_context=crm_context,
@@ -803,7 +802,7 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     if args.ai_office_env_file.expanduser().exists():
         load_env_file(args.ai_office_env_file)
     ensure_canonical_pilot_profile(warn=stderr_warning)
-    raise_for_failed_selfcheck(pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True))
+    raise_for_failed_selfcheck(pilot_profile_selfcheck())
     config = build_config(args)
     ai_office_config = AiOfficeClientConfig.from_env()
     wappi_config = WappiClientConfig.from_env()

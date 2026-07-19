@@ -63,7 +63,6 @@ TEXT_LIKE_EXPR_PARTS = (
 
 CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/contracts.py": 1,
-    "src/mango_mvp/channels/dialogue_contract_pipeline.py": 8,
     "src/mango_mvp/channels/dialogue_memory.py": 27,
     "src/mango_mvp/channels/fact_claim_audit.py": 1,
     "src/mango_mvp/channels/few_shot_reference.py": 1,
@@ -105,9 +104,7 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX_ENV",
         "TELEGRAM_AUTHORITATIVE_GATE_SCOPE_RELEVANCE_FIX",
     ),
-    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "FAITHFULNESS_SHADOW_ENV", "TELEGRAM_FAITHFULNESS_SHADOW"),
     ("src/mango_mvp/channels/output_verification_floor.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
-    ("src/mango_mvp/channels/dialogue_contract_pipeline.py", "QUALITY_CLARIFY_SCOPE_ENV", "TELEGRAM_Q_CLARIFY_SCOPE"),
     ("src/mango_mvp/channels/dialogue_memory.py", "MEMORY_CHILD_IDENTITY_MODEL_ENV", "TELEGRAM_CHILD_IDENTITY_MODEL"),
     ("src/mango_mvp/channels/dialogue_memory.py", "P0_LATCH_AUTORELEASE_V2_ENV", "TELEGRAM_P0_LATCH_AUTORELEASE_V2"),
     ("src/mango_mvp/channels/fact_venue_scope.py", "FACT_VENUE_SCOPE_ENV", "TELEGRAM_FACT_VENUE_SCOPE"),
@@ -169,7 +166,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV",
         "TELEGRAM_ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION",
     ),
-    ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "RULES_ENGINE_PLANNER_INTENT_ENV", "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"),
     ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "SCOPE_FACT_GUARD_ENV", "TELEGRAM_SCOPE_FACT_GUARD"),
     (
         "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
@@ -182,16 +178,6 @@ UNDERSTANDING_ENV_DECLARATIONS = (
         "TELEGRAM_DIALOG_SUMMARY_ROLLING",
     ),
     ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "STEP4_KEEP_ANSWER_ENV", "TELEGRAM_STEP4_KEEP_ANSWER"),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV",
-        "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL",
-    ),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV",
-        "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING",
-    ),
     ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "LLM_RETRIEVE_MODEL_ENV", "TELEGRAM_LLM_RETRIEVE_MODEL"),
     (
         "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",

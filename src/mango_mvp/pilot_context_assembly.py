@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV
 from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS, SubscriptionDraftResult
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
@@ -163,7 +162,6 @@ def build_pilot_context_payload(
     channel: str,
     channel_thread_id: str,
     channel_user_id: str,
-    dialogue_contract_pipeline_enabled: bool = True,
     sends_client_replies: bool = True,
     debug_impersonation_enabled: bool = True,
     debug_phone: str = "",
@@ -234,7 +232,6 @@ def build_pilot_context_payload(
     payload["active_brand"] = active_brand
     payload["snapshot_path"] = str(snapshot_path)
     payload["knowledge_snapshot_path"] = str(snapshot_path)
-    payload[DIALOGUE_CONTRACT_PIPELINE_ENV] = dialogue_contract_pipeline_enabled
     if known_client_fields:
         payload["known_client_fields"] = known_client_fields
     if known_dialog_fields:

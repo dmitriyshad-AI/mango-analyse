@@ -104,7 +104,6 @@ def build_replay_provider_context(
         channel_thread_id=f"{case.profile_id}:{case.chat_id}",
         channel_user_id=case.chat_id,
         current_message_id=case.turn_id,
-        dialogue_contract_pipeline_enabled=True,
         sends_client_replies=False,
         debug_impersonation_enabled=False,
         crm_context={},

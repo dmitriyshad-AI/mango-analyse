@@ -173,18 +173,13 @@ def _quality_guard_status() -> dict[str, bool]:
     }
 
 
-def current_draft_path(*, dialogue_contract_pipeline_enabled: bool) -> str:
-    if _pilot_gold_profile_enabled(None):
-        return "direct_path"
-    if dialogue_contract_pipeline_enabled:
-        return "dialogue_contract_pipeline"
-    return "legacy"
+def current_draft_path() -> str:
+    return "direct_path"
 
 
 def pilot_profile_selfcheck(
     *,
     require: bool | None = None,
-    dialogue_contract_pipeline_enabled: bool = True,
     env: Mapping[str, str] | None = None,
     require_all_default_on: bool = False,
 ) -> PilotProfileSelfCheck:
@@ -227,7 +222,7 @@ def pilot_profile_selfcheck(
         ok=not failures,
         required=required,
         effective_profile=profile_value if profile_enabled else "",
-        draft_path=current_draft_path(dialogue_contract_pipeline_enabled=dialogue_contract_pipeline_enabled),
+        draft_path=current_draft_path(),
         active_guards=active_guards,
         quality_guards=quality_guards,
         failures=tuple(dict.fromkeys(failures)),

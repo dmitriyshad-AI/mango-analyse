@@ -65,10 +65,8 @@ def test_kb_v67_client_safe_texts_do_not_regress_to_removed_process_terms():
 
 
 def test_kb_v67_r4_1_is_default_snapshot_now():
-    pipeline = (PROJECT_ROOT / "src" / "mango_mvp" / "channels" / "dialogue_contract_pipeline.py").read_text(
-        encoding="utf-8"
-    )
-    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in pipeline
-    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in pipeline
-    assert "kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json" not in pipeline
-    assert "kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json" not in pipeline
+    runner = (PROJECT_ROOT / "scripts" / "run_telegram_public_pilot_bots.py").read_text(encoding="utf-8")
+    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in runner
+    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in runner
+    assert "kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json" not in runner
+    assert "kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json" not in runner

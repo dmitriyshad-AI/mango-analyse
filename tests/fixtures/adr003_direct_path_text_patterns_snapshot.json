@@ -7487,14 +7487,6 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "<module>",
-    "symbol": "RULES_ENGINE_PLANNER_INTENT_ENV",
-    "value_preview": "\"TELEGRAM_RULES_ENGINE_PLANNER_INTENT\"",
-    "value_sha256": "f2e543ceff389f231a1560dc581a02557c47bf15f4e9ca1b9760f15b14646b6e"
-  },
-  {
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "<module>",
     "symbol": "SCOPE_FACT_GUARD_ENV",
     "value_preview": "\"TELEGRAM_SCOPE_FACT_GUARD\"",
     "value_sha256": "56c3c17646fb54c7a7bae3c3a5f2803b5b71f081528f089887b170d8fca7c31e"

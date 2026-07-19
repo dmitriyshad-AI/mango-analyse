@@ -44,11 +44,7 @@ from mango_mvp.channels.pilot_profile_runtime import (
     pilot_profile_selfcheck,
 )
 from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
-from mango_mvp.channels.dialogue_contract_pipeline import (
-    AUTONOMY_SCOPE_PRECISION_ENV,
-    DIALOGUE_CONTRACT_PIPELINE_ENV,
-    pipeline_enabled,
-)
+from mango_mvp.channels.output_verification_floor import AUTONOMY_SCOPE_PRECISION_ENV
 import mango_mvp.channels.dialogue_memory as dialogue_memory_module
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
 from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV
@@ -255,7 +251,6 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
     assert all(config.store_path == tmp_path / "pilot.sqlite" for config in configs)
     assert all(config.store_enabled is True for config in configs)
     assert all(config.autonomy_enabled is False for config in configs)
-    assert all(config.dialogue_contract_pipeline_enabled is True for config in configs)
     assert all(config.night_funnel_shadow_enabled is True for config in configs)
     assert all(config.night_funnel_shadow_only is True for config in configs)
     assert all(config.night_funnel_control_path == tmp_path / "bot_control.json" for config in configs)
@@ -430,7 +425,7 @@ def test_public_bot_selfcheck_requires_exact_pilot_profile(monkeypatch) -> None:
     monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
 
-    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    check = pilot_profile_selfcheck()
 
     assert check.ok is False
     assert "pilot_gold_profile_disabled" in check.failures
@@ -442,7 +437,7 @@ def test_public_bot_selfcheck_rejects_disabled_and_boolean_profile_aliases(monke
         monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, raw)
 
         activation = ensure_canonical_pilot_profile()
-        check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+        check = pilot_profile_selfcheck()
 
         assert activation.action == "operator_override_kept"
         assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == raw
@@ -459,7 +454,7 @@ def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, 
     env = {key: value for key, value in merged_env(env_file).items() if key == ENFORCE_CANONICAL_PROFILE_ENV}
     sync_env_to_process(env)
     activation = ensure_canonical_pilot_profile()
-    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    check = pilot_profile_selfcheck()
 
     assert activation.action == "set_default"
     assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == DIRECT_PATH_PILOT_CONFIG_VERSION
@@ -473,15 +468,15 @@ def test_public_bot_selfcheck_reports_intent_model_led_from_profile(monkeypatch)
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
     monkeypatch.delenv(INTENT_MODEL_LED_ENV, raising=False)
 
-    check_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    check_off = pilot_profile_selfcheck()
     assert check_off.active_guards["intent_model_led"] is False
 
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
-    check_on = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    check_on = pilot_profile_selfcheck()
     assert check_on.active_guards["intent_model_led"] is True
 
     monkeypatch.setenv(INTENT_MODEL_LED_ENV, "0")
-    check_explicit_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    check_explicit_off = pilot_profile_selfcheck()
     assert check_explicit_off.active_guards["intent_model_led"] is False
 
 
@@ -498,7 +493,7 @@ def test_public_bot_selfcheck_reports_live_guard_telemetry_without_requiring_env
 
     monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
-    profile_without_env = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    profile_without_env = pilot_profile_selfcheck()
     assert profile_without_env.ok is True
     assert profile_without_env.active_guards["fact_venue_scope"] is True
     assert profile_without_env.active_guards["autonomy_scope_precision"] is True
@@ -511,7 +506,7 @@ def test_public_bot_selfcheck_reports_live_guard_telemetry_without_requiring_env
 
     monkeypatch.setenv(P0_MODEL_LED_ENV, "1")
     monkeypatch.setenv(PROSE_MODEL_LED_ENV, "1")
-    with_live_env = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    with_live_env = pilot_profile_selfcheck()
     combined = heartbeat_active_guards(with_live_env)
 
     live_guard_keys = {
@@ -550,38 +545,6 @@ def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: P
     assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
 
 
-def test_configs_from_env_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:
-    configs = configs_from_env(
-        {
-            "MANGO_TELEGRAM_FOTON_BOT_TOKEN": "foton-token",
-            "MANGO_TELEGRAM_KB_SNAPSHOT": str(tmp_path / "snapshot.json"),
-            DIALOGUE_CONTRACT_PIPELINE_ENV: "0",
-        },
-        brand="foton",
-    )
-
-    assert len(configs) == 1
-    assert configs[0].dialogue_contract_pipeline_enabled is False
-
-
-def test_public_pilot_context_enables_dialogue_contract_pipeline_by_default(tmp_path: Path) -> None:
-    snapshot = _night_snapshot(tmp_path)
-    config = BrandBotConfig(
-        brand="foton",
-        token="token",
-        display_name="Фотон",
-        snapshot_path=snapshot,
-        store_enabled=False,
-    )
-    runtime = PublicPilotBotRuntime(config, debug_clients={})
-
-    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="Есть курс?")
-    runtime.close()
-
-    assert context[DIALOGUE_CONTRACT_PIPELINE_ENV] is True
-    assert pipeline_enabled(context) is True
-
-
 def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_MEMORY_PROVENANCE", raising=False)
     monkeypatch.delenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", raising=False)
@@ -618,7 +581,6 @@ def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path, monkeyp
         channel="telegram_bot",
         channel_thread_id="123",
         channel_user_id="123",
-        dialogue_contract_pipeline_enabled=True,
         sends_client_replies=True,
         debug_impersonation_enabled=True,
         crm_context={},
@@ -733,7 +695,6 @@ def test_extracted_context_supports_draft_loop_mode_without_client_send(tmp_path
         channel="wappi_telegram",
         channel_thread_id="profile-1:chat-1",
         channel_user_id="chat-1",
-        dialogue_contract_pipeline_enabled=True,
         sends_client_replies=False,
         debug_impersonation_enabled=False,
         crm_context={},
@@ -743,25 +704,6 @@ def test_extracted_context_supports_draft_loop_mode_without_client_send(tmp_path
     assert context["public_pilot_mode"]["debug_impersonation_enabled"] is False
     assert context["client_identity"]["channel"] == "wappi_telegram"
     assert context["client_identity"]["channel_thread_id"] == "profile-1:chat-1"
-
-
-def test_public_pilot_context_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:
-    snapshot = _night_snapshot(tmp_path)
-    config = BrandBotConfig(
-        brand="foton",
-        token="token",
-        display_name="Фотон",
-        snapshot_path=snapshot,
-        store_enabled=False,
-        dialogue_contract_pipeline_enabled=False,
-    )
-    runtime = PublicPilotBotRuntime(config, debug_clients={})
-
-    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="Есть курс?")
-    runtime.close()
-
-    assert context[DIALOGUE_CONTRACT_PIPELINE_ENV] is False
-    assert pipeline_enabled(context) is False
 
 
 def test_public_reply_text_strips_internal_markers() -> None:

@@ -774,7 +774,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise_for_failed_selfcheck(
                 pilot_profile_selfcheck(
                     require=True,
-                    dialogue_contract_pipeline_enabled=True,
                     require_all_default_on=True,
                 )
             )

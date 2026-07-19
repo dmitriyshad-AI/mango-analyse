@@ -8,18 +8,6 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event
-from mango_mvp.channels.dialogue_contract_pipeline import (
-    _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
-    _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
-    _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
-    _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
-    check_claim_faithfulness as check_dialogue_contract_faithfulness,
-    concrete_anchors as dialogue_contract_concrete_anchors,
-    faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
-    faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
-    faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
-    new_concrete_anchors as dialogue_contract_new_concrete_anchors,
-)
 from mango_mvp.channels.draft_prompt_builder import IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES, safe_schedule_template, should_force_manager_only
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
 from mango_mvp.channels.output_verification_floor import (
@@ -83,8 +71,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
 )
 
 ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV = "TELEGRAM_ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION"
-
-RULES_ENGINE_PLANNER_INTENT_ENV = "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"
 
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 

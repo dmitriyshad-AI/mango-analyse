@@ -19,21 +19,6 @@ import yaml
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
-from mango_mvp.channels.dialogue_contract_pipeline import (
-    Toggles as DialogueContractToggles,
-    build_conversation as build_dialogue_contract_conversation,
-    build_fact_store as build_dialogue_contract_fact_store,
-    check_claim_faithfulness as check_dialogue_contract_faithfulness,
-    faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
-    faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
-    faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
-    concrete_anchors as dialogue_contract_concrete_anchors,
-    _established_topic_from_context as dialogue_contract_established_topic_from_context,
-    new_concrete_anchors as dialogue_contract_new_concrete_anchors,
-    parse_contract as parse_dialogue_contract,
-    pipeline_enabled as dialogue_contract_pipeline_enabled,
-    run_pipeline as run_dialogue_contract_pipeline,
-)
 from mango_mvp.channels.output_verification_floor import (
     _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
     _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
@@ -343,7 +328,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     RESULT_GUARANTEE_INPUT_RE,
     RESULT_GUARANTEE_SAFE_TEXT,
-    RULES_ENGINE_PLANNER_INTENT_ENV,
     RouteDecision,
     SCOPE_FACT_GUARD_ENV,
     SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
@@ -460,12 +444,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     is_high_risk_result,
     known_context_fields,
 )
-
-DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL"
-
-
-DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING"
-
 
 A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
 

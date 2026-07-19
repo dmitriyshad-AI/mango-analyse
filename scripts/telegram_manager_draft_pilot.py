@@ -109,7 +109,7 @@ def run_long_polling(confirmation: str) -> int:
     config = TelegramBotPollingConfig.from_env()
     manager_config = TelegramManagerInboxConfig.from_env()
     ensure_canonical_pilot_profile(warn=stderr_warning)
-    raise_for_failed_selfcheck(pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True))
+    raise_for_failed_selfcheck(pilot_profile_selfcheck())
     if not manager_config.default_manager_chat_id:
         raise SystemExit(f"Long polling не запущен: нужно задать {TELEGRAM_MANAGER_CHAT_IDS_ENV}.")
 

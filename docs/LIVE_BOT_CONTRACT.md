@@ -57,6 +57,6 @@
 - `src/mango_mvp/integrations/draft_loop.py`
 - `src/mango_mvp/channels/subscription_llm_parts/provider.py`
 - `src/mango_mvp/channels/subscription_llm_parts/post_layers.py`
+- `src/mango_mvp/channels/output_verification_floor.py`
 - `src/mango_mvp/channels/p0_recall_spec.py`
-- `src/mango_mvp/channels/rules_engine.py`
 - `src/mango_mvp/customer_timeline/bot_safe_runtime_context.py`

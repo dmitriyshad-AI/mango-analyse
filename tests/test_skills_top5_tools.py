@@ -1,10 +1,29 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.skills import fail_raw_export, inventory_before_build, live_truth, tz_lint, wappi_draft_loop_replay
 from scripts.wappi_draft_loop_ops import ProcessInfo
+
+
+def _write_wappi_attestation(root: Path, *, head: str, started_at: str = "2026-07-19T08:55:41Z") -> tuple[Path, Path]:
+    manifest = root / "phase1b_startup_manifest.json"
+    heartbeat = root / "heartbeat.json"
+    manifest.write_text(
+        json.dumps({"head": head, "started_at": started_at, "cwd": str(root)}),
+        encoding="utf-8",
+    )
+    heartbeat.write_text(
+        json.dumps({"git_sha": head, "last_cycle_at": "2026-07-19T09:00:00Z", "code_root": str(root)}),
+        encoding="utf-8",
+    )
+    return manifest, heartbeat
+
+
+def _fixed_process_start(_pid: int) -> datetime:
+    return datetime(2026, 7, 19, 8, 55, 41, tzinfo=timezone.utc)
 
 
 def test_tz_lint_reuses_preflight_header_and_flags_common_tz_defects(tmp_path: Path) -> None:
@@ -135,6 +154,7 @@ def test_live_truth_snapshot_redacts_env_and_reports_head_drift(tmp_path: Path) 
     repo = tmp_path / "repo"
     repo.mkdir()
     process = ProcessInfo(pid=42, ppid=1, command=f"python3 {repo}/scripts/run_amo_wappi_draft_loop.py --loop")
+    manifest, heartbeat = _write_wappi_attestation(repo, head="actual")
 
     snapshot = live_truth.build_snapshot(
         repo_root=repo,
@@ -142,7 +162,11 @@ def test_live_truth_snapshot_redacts_env_and_reports_head_drift(tmp_path: Path) 
         env_reader=lambda _pid: ({"TELEGRAM_BOT_TOKEN": "secret", "TELEGRAM_FACT_VENUE_SCOPE": "1"}, "test"),
         lsof_reader=lambda _pid: [str(repo / "customer_timeline.sqlite")],
         cwd_reader=lambda _pid: repo,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 42,
         expected_heads={"run_amo_wappi_draft_loop.py": "expected"},
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
     )
 
     assert snapshot.status == "WARN"
@@ -157,6 +181,7 @@ def test_live_truth_accepts_full_expected_sha_for_short_runtime_head(
 ) -> None:
     process = ProcessInfo(pid=45, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
     monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "3fbe8d90")
+    manifest, heartbeat = _write_wappi_attestation(tmp_path, head="3fbe8d90")
 
     snapshot = live_truth.build_snapshot(
         repo_root=tmp_path,
@@ -164,7 +189,11 @@ def test_live_truth_accepts_full_expected_sha_for_short_runtime_head(
         env_reader=lambda _pid: ({}, "test"),
         lsof_reader=lambda _pid: [],
         cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 45,
         expected_heads={"run_amo_wappi_draft_loop.py": "3fbe8d90b0973e9aecfb3d4db61eee0f562a4404"},
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
     )
 
     assert snapshot.status == "PASS"
@@ -179,7 +208,7 @@ def test_live_truth_ignores_test_process_that_only_mentions_live_script(tmp_path
 
     snapshot = live_truth.build_snapshot(repo_root=tmp_path, processes=[process])
 
-    assert snapshot.status == "PASS"
+    assert snapshot.status == "NO_PROCESS"
     assert snapshot.processes == []
 
 
@@ -189,6 +218,7 @@ def test_live_truth_uses_process_cwd_for_relative_live_command(tmp_path: Path) -
     repo.mkdir()
     live.mkdir()
     process = ProcessInfo(pid=44, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+    manifest, heartbeat = _write_wappi_attestation(live, head="abc")
 
     snapshot = live_truth.build_snapshot(
         repo_root=repo,
@@ -196,10 +226,63 @@ def test_live_truth_uses_process_cwd_for_relative_live_command(tmp_path: Path) -
         env_reader=lambda _pid: ({}, "test"),
         lsof_reader=lambda _pid: [],
         cwd_reader=lambda _pid: live,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 44,
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
     )
 
-    assert snapshot.status == "PASS"
+    assert snapshot.status == "WARN"
     assert snapshot.processes[0].worktree == str(live)
+
+
+def test_live_truth_rejects_startup_manifest_from_previous_pid(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "abc")
+    process = ProcessInfo(pid=46, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+    manifest, heartbeat = _write_wappi_attestation(tmp_path, head="abc", started_at="2026-07-19T08:00:00Z")
+    heartbeat.write_text("{}", encoding="utf-8")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 46,
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
+    )
+
+    assert snapshot.status == "WARN"
+    assert snapshot.processes[0].head == ""
+    assert any("startup_manifest_pid_mismatch" in item for item in snapshot.processes[0].warnings)
+
+
+def test_live_truth_uses_current_heartbeat_when_manifest_is_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "abc")
+    process = ProcessInfo(pid=47, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+    manifest = tmp_path / "missing.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    heartbeat.write_text(
+        json.dumps({"git_sha": "abc", "last_cycle_at": "2026-07-19T09:00:00Z", "code_root": str(tmp_path)}),
+        encoding="utf-8",
+    )
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 47,
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
+    )
+
+    assert snapshot.processes[0].head == "abc"
+    assert snapshot.processes[0].head_source == "heartbeat"
 
 
 def test_inventory_before_build_uses_git_log_and_inventory_summary(tmp_path: Path, monkeypatch) -> None:

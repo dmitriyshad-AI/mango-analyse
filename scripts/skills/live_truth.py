@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -27,6 +29,12 @@ PROCESS_MARKERS = (
     "m1_watcher.py",
 )
 DEFAULT_DAILY_DIR = Path.home() / "Claude Projects" / "Foton" / "_daily"
+DEFAULT_WAPPI_RUNTIME_DIR = Path.home() / ".mango_local" / "draft_loop"
+DEFAULT_WAPPI_MANIFEST = DEFAULT_WAPPI_RUNTIME_DIR / "phase1b_startup_manifest.json"
+DEFAULT_WAPPI_HEARTBEAT = DEFAULT_WAPPI_RUNTIME_DIR / "heartbeat.json"
+WAPPI_PROCESS_MARKER = "run_amo_wappi_draft_loop.py"
+START_TIME_TOLERANCE_SECONDS = 10
+WAPPI_LAUNCHD_LABEL = "com.mango.wappi-draft-loop"
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,9 @@ class LiveProcessRow:
     pid: int
     worktree: str
     head: str
+    worktree_head: str
+    head_source: str
+    process_started_at: str
     command: str
     env: dict[str, str]
     db_paths: list[str]
@@ -83,6 +94,111 @@ def _process_cwd(pid: int) -> Path | None:
     return None
 
 
+def _process_started_at(pid: int) -> datetime | None:
+    completed = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    text = completed.stdout.strip()
+    if completed.returncode != 0 or not text:
+        return None
+    try:
+        return datetime.strptime(text, "%a %b %d %H:%M:%S %Y").astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _wappi_launchd_pid() -> int | None:
+    completed = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{WAPPI_LAUNCHD_LABEL}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    match = re.search(r"^\s*pid\s*=\s*(\d+)\s*$", completed.stdout, flags=re.MULTILINE)
+    return int(match.group(1)) if completed.returncode == 0 and match else None
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _path_matches(left: Any, right: Path) -> bool:
+    text = str(left or "").strip()
+    return bool(text) and Path(text).expanduser().resolve() == right.expanduser().resolve()
+
+
+def _wappi_loaded_head(
+    *,
+    process_started_at: datetime | None,
+    worktree: Path,
+    manifest_path: Path,
+    heartbeat_path: Path,
+) -> tuple[str, str, list[str]]:
+    manifest = _read_json_object(manifest_path)
+    heartbeat = _read_json_object(heartbeat_path)
+    warnings: list[str] = []
+
+    manifest_head = str(manifest.get("head") or "").strip()
+    manifest_started = _parse_timestamp(manifest.get("started_at"))
+    manifest_valid = bool(manifest_head and manifest_started and process_started_at)
+    if manifest_valid:
+        delta = abs((manifest_started - process_started_at).total_seconds())
+        manifest_valid = delta <= START_TIME_TOLERANCE_SECONDS
+        if not manifest_valid:
+            warnings.append(f"startup_manifest_pid_mismatch delta_seconds={delta:.0f}")
+    elif manifest:
+        warnings.append("startup_manifest_unverified")
+    if manifest and not _path_matches(manifest.get("cwd"), worktree):
+        manifest_valid = False
+        warnings.append(f"startup_manifest_cwd_mismatch manifest={manifest.get('cwd', '')} process={worktree}")
+
+    heartbeat_head = str(heartbeat.get("git_sha") or "").strip()
+    heartbeat_at = _parse_timestamp(heartbeat.get("last_cycle_at"))
+    heartbeat_valid = bool(heartbeat_head and heartbeat_at and process_started_at)
+    if heartbeat_valid and heartbeat_at < process_started_at:
+        heartbeat_valid = False
+        warnings.append("heartbeat_predates_process")
+    if heartbeat and not _path_matches(heartbeat.get("code_root"), worktree):
+        heartbeat_valid = False
+        warnings.append(f"heartbeat_cwd_mismatch heartbeat={heartbeat.get('code_root', '')} process={worktree}")
+
+    if manifest_valid and heartbeat_valid and not (
+        manifest_head.startswith(heartbeat_head) or heartbeat_head.startswith(manifest_head)
+    ):
+        warnings.append(f"runtime_head_disagreement manifest={manifest_head} heartbeat={heartbeat_head}")
+        return "", "unverified", warnings
+    if manifest_valid:
+        return manifest_head, "startup_manifest", warnings
+    if heartbeat_valid:
+        return heartbeat_head, "heartbeat", warnings
+    warnings.append("loaded_head_unverified")
+    return "", "unverified", warnings
+
+
 def _process_marker(command: str) -> str:
     try:
         tokens = shlex.split(str(command or ""))
@@ -112,22 +228,49 @@ def build_snapshot(
     env_reader=wappi_ops.read_process_environ,
     lsof_reader=_lsof_db_paths,
     cwd_reader=_process_cwd,
+    process_started_reader=_process_started_at,
+    wappi_pid_reader=_wappi_launchd_pid,
     expected_heads: Mapping[str, str] | None = None,
+    wappi_manifest_path: Path = DEFAULT_WAPPI_MANIFEST,
+    wappi_heartbeat_path: Path = DEFAULT_WAPPI_HEARTBEAT,
 ) -> LiveTruthSnapshot:
     process_rows: list[LiveProcessRow] = []
     expected_heads = expected_heads or {}
-    for process in processes if processes is not None else wappi_ops.list_processes():
-        marker = _process_marker(process.command)
-        if not marker:
-            continue
+    selected_processes = [
+        (process, marker)
+        for process in (processes if processes is not None else wappi_ops.list_processes())
+        if (marker := _process_marker(process.command))
+    ]
+    wappi_process_count = sum(marker == WAPPI_PROCESS_MARKER for _process, marker in selected_processes)
+    for process, marker in selected_processes:
         env, _source = env_reader(process.pid)
         process_cwd = cwd_reader(process.pid)
         worktree = process_cwd or _extract_cwd_from_command(process.command, repo_root)
-        head = _git_value(worktree, "rev-parse", "--short", "HEAD")
+        worktree_head = _git_value(worktree, "rev-parse", "HEAD")
+        process_started = process_started_reader(process.pid)
         warnings: list[str] = []
         if process_cwd is None:
             warnings.append(f"cwd_unavailable command_path_fallback={worktree}")
-        expected = expected_heads.get(marker) or expected_heads.get(str(worktree))
+        head = worktree_head
+        head_source = "worktree_unverified"
+        if marker == WAPPI_PROCESS_MARKER:
+            launchd_pid = wappi_pid_reader()
+            if launchd_pid is None:
+                warnings.append("wappi_launchd_pid_unavailable")
+            elif launchd_pid != process.pid:
+                warnings.append(f"wappi_launchd_pid_mismatch launchd={launchd_pid} process={process.pid}")
+            if wappi_process_count != 1:
+                warnings.append(f"wappi_process_count expected=1 actual={wappi_process_count}")
+            head, head_source, runtime_warnings = _wappi_loaded_head(
+                process_started_at=process_started,
+                worktree=worktree,
+                manifest_path=wappi_manifest_path,
+                heartbeat_path=wappi_heartbeat_path,
+            )
+            warnings.extend(runtime_warnings)
+        if not worktree_head:
+            warnings.append("worktree_head_unavailable")
+        expected = expected_heads.get(marker) or expected_heads.get(str(worktree)) or worktree_head
         if expected and not head:
             warnings.append(f"head_unavailable expected={expected}")
         elif expected and not (head.startswith(expected) or expected.startswith(head)):
@@ -138,15 +281,18 @@ def build_snapshot(
                 pid=process.pid,
                 worktree=str(worktree),
                 head=head,
+                worktree_head=worktree_head,
+                head_source=head_source,
+                process_started_at=process_started.isoformat() if process_started else "",
                 command=process.command,
                 env=wappi_ops.filter_runtime_env(env),
                 db_paths=lsof_reader(process.pid),
                 warnings=warnings,
             )
         )
-    status = "PASS" if not any(row.warnings for row in process_rows) else "WARN"
+    status = "NO_PROCESS" if not process_rows else "PASS" if not any(row.warnings for row in process_rows) else "WARN"
     return LiveTruthSnapshot(
-        schema_version="live_truth_sentinel_v1_2026_07_08",
+        schema_version="live_truth_sentinel_v2_2026_07_19",
         generated_at=datetime.now().isoformat(timespec="seconds"),
         repo={"path": str(repo_root), "head": _git_value(repo_root, "rev-parse", "--short", "HEAD")},
         processes=process_rows,

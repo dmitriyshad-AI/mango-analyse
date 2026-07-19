@@ -40,6 +40,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
   python3 scripts/skills/live_truth.py --no-write
 ```
 
+`PASS` допустим только когда живой PID связан с launchd, startup manifest и
+heartbeat, а загруженный SHA совпадает с текущим HEAD. `WARN` означает drift
+или неполную аттестацию; `NO_PROCESS` означает, что ожидаемый процесс не найден.
+Оба статуса блокируют live-действие.
+
 Дополнительно проверять фактические LaunchAgents:
 
 ```bash

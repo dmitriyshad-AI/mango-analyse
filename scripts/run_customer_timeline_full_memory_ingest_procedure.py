@@ -13,16 +13,17 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.customer_timeline.full_memory_ingest import (  # noqa: E402
-    DEFAULT_FRESH_IDENTITY_DB,
     DEFAULT_PRODUCTION_DB,
-    DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS,
-    DEFAULT_STAGE2_CORPUS_EVENTS,
-    DEFAULT_STAGE2_DELTA_RELINK_DECISIONS,
-    DEFAULT_STAGE2_DELTA_EVENTS,
     FullMemoryIngestConfig,
     parse_generated_at,
     run_full_memory_production_apply,
     run_full_memory_test_procedure,
+)
+from mango_mvp.productization.mail_archive import (  # noqa: E402
+    CANONICAL_MAIL_IDENTITY_DB,
+    CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+    CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+    DEFAULT_MAIL_DATA_ROOT,
 )
 
 
@@ -45,7 +46,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         / f"customer_timeline_prod_20260621_testcopy_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
     )
     parser.add_argument("--tenant-id", default="foton")
-    parser.add_argument("--identity-db", type=Path, default=DEFAULT_FRESH_IDENTITY_DB)
+    parser.add_argument(
+        "--identity-db",
+        type=Path,
+        default=DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_IDENTITY_DB,
+    )
     parser.add_argument("--event-jsonl", type=Path, action="append")
     parser.add_argument("--relink-decision-csv", type=Path, action="append")
     parser.add_argument("--generated-at", default="2026-06-21T00:00:00+00:00")
@@ -56,11 +61,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    event_paths = tuple(args.event_jsonl or (DEFAULT_STAGE2_CORPUS_EVENTS, DEFAULT_STAGE2_DELTA_EVENTS))
-    decision_paths = tuple(
-        args.relink_decision_csv
-        or (DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS, DEFAULT_STAGE2_DELTA_RELINK_DECISIONS)
+    event_paths = tuple(
+        args.event_jsonl
+        or (
+            DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+            DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+        )
     )
+    decision_paths = tuple(args.relink_decision_csv or ())
     config = FullMemoryIngestConfig(
         project_root=args.project_root,
         production_db=args.production_db,

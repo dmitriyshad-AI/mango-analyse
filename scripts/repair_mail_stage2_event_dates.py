@@ -24,6 +24,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_ARCHIVE_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+    DEFAULT_MAIL_DATA_ROOT,
 )
 
 
@@ -31,7 +32,7 @@ DEFAULT_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
     "customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
-DATA_PROJECT_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
+DATA_PROJECT_ROOT = DEFAULT_MAIL_DATA_ROOT
 DEFAULT_STAGE2_FULL = DATA_PROJECT_ROOT / CANONICAL_MAIL_STAGE2_FULL_EVENTS
 DEFAULT_STAGE2_DELTA = DATA_PROJECT_ROOT / CANONICAL_MAIL_STAGE2_DELTA_EVENTS
 DEFAULT_ARCHIVE_ROOTS = (DATA_PROJECT_ROOT / CANONICAL_MAIL_ARCHIVE_DB.parent,)

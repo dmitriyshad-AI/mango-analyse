@@ -110,6 +110,16 @@ python3 scripts/install_mango_calls_two_processes_service.py \
 
 Текущий запуск: ежедневно в 03:30 из основной папки.
 
+Единственный почтовый архив хранится вне репозитория:
+
+```text
+/Users/dmitrijfabarisov/Mango_Data/_external_handoffs/mail_archive_canonical_20260711
+```
+
+Все рабочие почтовые команды используют корень `MANGO_MAIL_DATA_ROOT`; его
+штатное значение — `/Users/dmitrijfabarisov/Mango_Data`. Старой копии архива
+внутри репозитория быть не должно.
+
 Read-only проверка службы:
 
 ```bash

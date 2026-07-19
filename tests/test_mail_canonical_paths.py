@@ -9,6 +9,7 @@ from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_IDENTITY_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+    DEFAULT_MAIL_DATA_ROOT,
 )
 from mango_mvp.question_catalog.builder import default_config
 from scripts.email_pipeline.archive_sources import default_archive_specs
@@ -23,7 +24,13 @@ from scripts.import_mail_bridge_to_customer_timeline import (
 
 def test_default_mail_readers_use_one_canonical_archive(tmp_path: Path) -> None:
     assert default_archive_specs(tmp_path)[0].path == tmp_path / CANONICAL_MAIL_ARCHIVE_DB
-    assert default_config(tmp_path).mail_archive_root == tmp_path / CANONICAL_MAIL_ARCHIVE_ROOT
+    assert default_archive_specs()[0].path == DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_ARCHIVE_DB
+    assert default_config(tmp_path).mail_archive_root == (
+        DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_ARCHIVE_ROOT
+    )
+    assert default_config(tmp_path, mail_data_root=tmp_path).mail_archive_root == (
+        tmp_path / CANONICAL_MAIL_ARCHIVE_ROOT
+    )
 
     config = FullMemoryIngestConfig(
         project_root=tmp_path,

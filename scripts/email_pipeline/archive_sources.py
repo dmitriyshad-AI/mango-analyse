@@ -7,7 +7,10 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Iterable
 
-from mango_mvp.productization.mail_archive import CANONICAL_MAIL_ARCHIVE_DB
+from mango_mvp.productization.mail_archive import (
+    CANONICAL_MAIL_ARCHIVE_DB,
+    DEFAULT_MAIL_DATA_ROOT,
+)
 
 from scripts.email_pipeline.classification import (
     ClassificationInput,
@@ -24,8 +27,11 @@ from scripts.email_pipeline.classification import (
 from scripts.email_pipeline.contact import Participant
 
 
-DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
-DEFAULT_PROD_TIMELINE = DEFAULT_SOURCE_ROOT / "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
+DEFAULT_SOURCE_ROOT = DEFAULT_MAIL_DATA_ROOT
+DEFAULT_PROD_TIMELINE = Path(
+    "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
+    "customer_timeline_prod_20260621/customer_timeline.sqlite"
+)
 
 @dataclass(frozen=True)
 class ArchiveSpec:

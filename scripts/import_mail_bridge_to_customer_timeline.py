@@ -34,12 +34,13 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_IDENTITY_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     CANONICAL_MAIL_STAGE2_FULL_EVENTS,
+    DEFAULT_MAIL_DATA_ROOT,
 )
 
 
 SCHEMA_VERSION = "mail_fresh_relink_customer_timeline_bridge_v1"
 DEFAULT_TENANT_ID = "foton"
-DEFAULT_MAIN_PROJECT_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
+DEFAULT_MAIN_PROJECT_ROOT = DEFAULT_MAIL_DATA_ROOT
 DEFAULT_EMAIL_FALLBACK_AT = "2026-06-21T00:00:00+00:00"
 
 

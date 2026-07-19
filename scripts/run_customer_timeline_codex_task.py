@@ -18,7 +18,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
 MANGO_READY_PACKAGE_DB = Path(
@@ -36,7 +35,9 @@ NIGHTLY_DV2_CONFIG = NIGHTLY_SERVICE_ROOT / "customer_timeline_nightly_service_d
 NIGHTLY_BASE_CONFIG = NIGHTLY_SERVICE_ROOT / "customer_timeline_nightly_service_config.json"
 STAGING_TIMELINE_DB = STAGING_ROOT / "customer_timeline_staging.sqlite"
 MAIL_STATE_DIR = STAGING_ROOT / "mail_pipeline"
-MAIL_DATA_ROOT = Path(os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Projects/Mango analyse"))
+MAIL_DATA_ROOT = Path(
+    os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Mango_Data")
+).expanduser()
 PROD_TIMELINE_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/"
     "customer_timeline_prod_20260621/customer_timeline.sqlite"

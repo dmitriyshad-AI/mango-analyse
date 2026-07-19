@@ -44,6 +44,9 @@ from mango_mvp.productization.mail_imap_snapshot import (
 
 
 MAIL_ARCHIVE_SCHEMA_VERSION = "mail_archive_v1"
+DEFAULT_MAIL_DATA_ROOT = Path(
+    os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Mango_Data")
+).expanduser()
 CANONICAL_MAIL_ARCHIVE_ROOT = Path("_external_handoffs/mail_archive_canonical_20260711")
 CANONICAL_MAIL_ARCHIVE_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "archive/mail_archive.sqlite"
 CANONICAL_MAIL_STAGE2_FULL_EVENTS = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/stage2_full_corpus_events.jsonl"

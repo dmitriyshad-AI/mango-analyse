@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-17.
+Обновлено: 2026-07-19.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -20,15 +20,17 @@
 
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота и локальных runtime-данных. | Основной worktree для последовательной разработки. |
-| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | detached `e6bfc2d0` | Зафиксированный код для calls и customer-timeline nightly. | Не переключать, пока launchd использует этот путь. |
-| `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi` | detached `5d109c38` | Фактический Wappi draft-loop (`com.mango.wappi-draft-loop`). | Не трогать до отдельного redeploy. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
+| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | detached `e6bfc2d0` | Старый служебный worktree, службы его больше не используют. | Держать только до личной приёмки нового live. |
+| `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi` | detached `5d109c38` | Старый Wappi-worktree, служба его больше не использует. | Держать только до личной приёмки нового live. |
+| `/Users/dmitrijfabarisov/Projects/Mango_refactoring_v2` | `codex/refactoring-v2-package0` | Временный worktree финального рефакторинга. | Удалять только после влития и личной приёмки. |
 
 ## Runtime-истина
 
-- Wappi-код: `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi`.
-- Calls и customer-timeline nightly:
-  `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712`.
+- Wappi, calls A/B и customer-timeline nightly запускаются из
+  `/Users/dmitrijfabarisov/Projects/Mango analyse`.
+- Точную загруженную ревизию Wappi подтверждают startup manifest, PID/env и
+  `scripts/skills/live_truth.py`; один путь в plist сам по себе её не доказывает.
 - Wappi пока читает customer timeline из
   `/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
   Поэтому папку `Mango analyse` нельзя удалять, но переключение её на `main`

@@ -190,8 +190,6 @@ def script_catalog() -> list[dict[str, str]]:
             status = "research"
         elif "telegram" in name:
             status = "one_off_or_research"
-        elif name in {"git_bootstrap.sh", "autocommit_push_loop.sh", "start_autocommit_push.sh", "stop_autocommit_push.sh"}:
-            status = "devops_legacy"
         else:
             status = "needs_review"
 

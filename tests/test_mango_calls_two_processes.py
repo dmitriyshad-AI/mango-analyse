@@ -280,7 +280,12 @@ def test_codex_network_probe_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> 
     assert codex_network_available() is False
 
 
-def test_environment_preflight_lists_failed_checks(tmp_path: Path) -> None:
+def test_environment_preflight_lists_failed_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("MANGO_OFFICE_API_KEY", raising=False)
+    monkeypatch.delenv("MANGO_OFFICE_API_SALT", raising=False)
     config = replace(
         config_for(tmp_path),
         python_executable=tmp_path / "missing-python",

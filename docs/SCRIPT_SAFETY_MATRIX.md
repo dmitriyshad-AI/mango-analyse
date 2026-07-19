@@ -52,7 +52,6 @@
 
 | Script | Owner | Safety class | Side effects / risk | Recommended use |
 |---|---|---|---|---|
-| `autocommit_push_loop.sh` | ops | `DANGEROUS_LEGACY` | Автоматический git commit/push loop. | Не использовать как нормальный workflow. |
 | `benchmark_asr_compare.py` | processing | `PROCESSING_MUTATES_DB` | ASR/benchmark workflow может быть тяжелым. | Только processing-диалог. |
 | `benchmark_codex_merge.py` | processing | `SAFE_REPORT_WRITES` | Benchmark/report artifacts. | Запускать только на тестовом input. |
 | `benchmark_codex_merge_models.py` | processing | `SAFE_REPORT_WRITES` | Benchmark/report artifacts. | Запускать только на тестовом input. |
@@ -79,7 +78,6 @@
 | `export_tallanto_schema.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto schema. | Можно для field mapping. |
 | `finalize_manual_non_conversation_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует хвосты обработки. | Только processing-диалог. |
 | `finalize_messages30_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует batch/tail. | Только processing-диалог. |
-| `git_bootstrap.sh` | ops | `DANGEROUS_LEGACY` | Git/bootstrap side effects. | Не запускать без чтения. |
 | `mango_office_appliance_loop_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run appliance loop. | Безопасный SaaS smoke. |
 | `mango_office_asr_approval_record.py` | productization | `SAFE_REPORT_WRITES` | Записывает approval record, не запускает ASR. | Безопасно. |
 | `mango_office_asr_execution_approval_gate.py` | productization | `SAFE_REPORT_WRITES` | Проверяет approval gate. | Безопасно. |
@@ -169,8 +167,6 @@
 | `run_analyze_ab_test.py` | processing | `PROCESSING_MUTATES_DB` | Analyze A/B workflow. | Только processing-диалог. |
 | `run_pilot_sales_moment_llm_review.py` | insights | `NETWORK_READ_ONLY` | Может обращаться к LLM API, пишет review artifacts. | Малые batch, без CRM writes. |
 | `smoke_test_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto API. | Безопасно при credentials. |
-| `start_autocommit_push.sh` | ops | `DANGEROUS_LEGACY` | Включает auto commit/push. | Не использовать как нормальный workflow. |
-| `stop_autocommit_push.sh` | ops | `SAFE_READ_ONLY` | Останавливает auto loop. | Можно для остановки legacy loop. |
 | `summarize_merge_usage.py` | ops | `SAFE_READ_ONLY` | Summaries/statistics. | Безопасно. |
 | `write_amo_ready_contacts.py` | crm | `CRM_LIVE_GUARDED` | По умолчанию dry-run report; live contact write только с confirmation. | Live: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. |
 | `write_recent_actionable_deals.py` | crm | `CRM_LIVE_GUARDED` | По умолчанию dry-run report; live deal writeback только с confirmation. | Live: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. |

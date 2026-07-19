@@ -21,9 +21,6 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_integrate_d3_d4_20260712` | detached `e6bfc2d0` | Старый служебный worktree, службы его больше не используют. | Держать только до личной приёмки нового live. |
-| `/Users/dmitrijfabarisov/Projects/Mango_live_5d109c38_wappi` | detached `5d109c38` | Старый Wappi-worktree, служба его больше не использует. | Держать только до личной приёмки нового live. |
-| `/Users/dmitrijfabarisov/Projects/Mango_refactoring_v2` | `codex/refactoring-v2-package0` | Временный worktree финального рефакторинга. | Удалять только после влития и личной приёмки. |
 
 ## Runtime-истина
 
@@ -35,9 +32,19 @@
   `/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
   Поэтому папку `Mango analyse` нельзя удалять, но переключение её на `main`
   путь к базе не меняет.
-- Старый launchd job `com.mango.calls-two-processes` загружен без PID и
-  ссылается на уже отсутствующую папку `Mango_calls_two_processes`. Это
-  отдельный кандидат на удаление конфигурации, не действующая служба.
+- Старый launchd job `com.mango.calls-two-processes` и его plist удалены;
+  рабочими остаются только отдельные процессы A/B.
+
+## Удалено 2026-07-19
+
+- `Mango_integrate_d3_d4_20260712`;
+- `Mango_live_5d109c38_wappi`;
+- `Mango_refactoring_v2`;
+- локальная ветка `codex/refactoring-v2-package0` после влития в `main`.
+
+Старые логи внутри worktree признаны расходными и удалены вместе с папками без
+создания новых копий. Нужные правила Ponytail из единственного уникального
+коммита `e6bfc2d0` уже содержатся в актуальном `AGENTS.md`.
 
 ## Удалено 2026-07-17
 

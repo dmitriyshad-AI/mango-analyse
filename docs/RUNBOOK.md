@@ -78,6 +78,31 @@ tail -100 /Users/dmitrijfabarisov/.mango_local/draft_loop/launchd.stderr.log
 ТЗ. Не запускать `run_amo_wappi_draft_loop.py --live-write` вручную вместо
 installer.
 
+### Чек-лист будущего редеплоя Wappi
+
+1. Убедиться, что `main`, `origin/main` и `yandex/main` совпадают, а tracked-код
+   чист. До переключения зафиксировать текущие PID, loaded SHA и plist через
+   `live_truth.py --no-write` и `launchctl print`.
+2. Проверить новый plist без изменения службы:
+
+   ```bash
+   bash scripts/start_wappi_draft_loop_launchd.sh --render-only | plutil -lint -
+   ```
+
+3. Не переиспользовать старый plist вручную. Installer сам подставляет текущий
+   SHA в `DRAFT_LOOP_EXPECTED_HEAD`. Внутренний phase1b-wrapper возвращает
+   `exit 78`, если SHA не совпал, tracked-код грязный или под `src/`, `scripts/`,
+   `deploy/` появился незакоммиченный код.
+4. Только после отдельного разрешения владельца запустить штатный installer.
+   Он сохраняет предыдущий plist и автоматически возвращает его, если bootstrap,
+   проверка единственного процесса или `live_truth` не прошли.
+5. После запуска требовать: ровно один Wappi PID, `live_truth=PASS`, loaded SHA
+   равен `HEAD`, heartbeat свежий, профиль `pilot_gold_v1`, auto-resolver и
+   клиентская отправка выключены. Затем проверить один новый менеджерский
+   черновик без отправки клиенту.
+6. При любом красном пункте не чинить службу вручную: подтвердить возврат
+   предыдущего plist/PID/SHA и остановить редеплой с сырым отчётом.
+
 Wappi создаёт только менеджерскую заметку-черновик в AMO. Автоотправки клиенту
 нет.
 

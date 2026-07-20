@@ -38,7 +38,10 @@ def test_pii_scanner_allows_kb_public_contacts(tmp_path: Path) -> None:
                 "facts": [
                     {
                         "fact_id": "contacts",
-                        "client_safe_text": "Телефон школы +7 900 123-45-67, email info@example.ru, telegram @school_help",
+                        "client_safe_text": (
+                            "Контакты школы: +7 900 123-45-67, email info@example.ru, "
+                            "telegram @school_help, сайт https://school.example/contacts"
+                        ),
                     }
                 ]
             },
@@ -48,9 +51,13 @@ def test_pii_scanner_allows_kb_public_contacts(tmp_path: Path) -> None:
     )
 
     allowlist = kb_contact_allowlist(snapshot)
-    findings = pii_findings("Контакты: +7 900 123-45-67, info@example.ru, @school_help", allowlist=allowlist)
+    findings = pii_findings(
+        "Контакты: +7 900 123-45-67, info@example.ru, @school_help, https://school.example/contacts",
+        allowlist=allowlist,
+    )
 
     assert findings == []
+    assert {finding["kind"] for finding in pii_findings("https://client.example/private", allowlist=allowlist)} == {"url"}
 
 
 def test_pseudonymized_ids_are_not_pii_signals() -> None:
@@ -58,7 +65,9 @@ def test_pseudonymized_ids_are_not_pii_signals() -> None:
 
 
 def test_hash_values_are_not_raw_id_findings_but_plain_ids_are() -> None:
-    assert pii_findings({"draft_before_hash": "a" * 64, "sha256": "b" * 64}) == []
+    digest_with_phone_shape = "abcde79001234567" + "a" * 48
+    assert pii_findings({"draft_before_hash": digest_with_phone_shape, "sha256": "b" * 64}) == []
+    assert {finding["kind"] for finding in pii_findings({"draft_before_hash": "phone 79001234567"})} == {"phone"}
     assert {finding["kind"] for finding in pii_findings({"chat_id": "12345678901234567890"})} == {"raw_id_key", "raw_id"}
 
 

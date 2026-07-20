@@ -10,6 +10,19 @@ from scripts.publish_snapshot.common import backup_plan_report, classify_publish
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
+def test_current_publish_config_uses_canonical_runtime_paths() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "scripts/publish_snapshot/config.marathon2_noch_current.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert payload["staging_db"] == (
+        "/Users/dmitrijfabarisov/.mango_local/customer_timeline_nightly/"
+        ".codex_local/staging/customer_timeline_staging.sqlite"
+    )
+    assert [reader["worktree"] for reader in payload["readers"]] == [
+        "/Users/dmitrijfabarisov/Projects/Mango analyse"
+    ]
+
+
 def _config(tmp_path: Path, prod: Path, staging: Path) -> Path:
     cfg = {
         "schema_version": "publish_snapshot_config_v1",

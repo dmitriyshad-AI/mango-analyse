@@ -46,6 +46,7 @@ SENSITIVE_ID_KEY_RE = re.compile(
 )
 TIMESTAMP_KEY_RE = re.compile(r"(^|_)(?:ts|time|timestamp|created_at|updated_at|date|datetime|ts_masked)$", re.I)
 HASH_KEY_RE = re.compile(r"(^|_)(?:hash|digest|sha|sha256)(_|$)", re.I)
+HEX_DIGEST_RE = re.compile(r"(?=[0-9a-f]*[a-f])[0-9a-f]{16,128}", re.I)
 PSEUDONYMIZED_ID_RE = re.compile(r"^\[[a-z0-9_]+:id_[a-z2-7]{8,}\]$")
 
 FAKE_NAMES = (
@@ -229,6 +230,8 @@ def pii_findings(value: Any, *, allowlist: Iterable[str] = ()) -> list[dict[str,
             for index, nested in enumerate(item):
                 walk(nested, f"{path}[{index}]", key=key_s)
         elif isinstance(item, str):
+            if HASH_KEY_RE.search(key_s) and HEX_DIGEST_RE.fullmatch(item):
+                return
             scan_text(item, path, timestamp_context=timestamp_context)
         elif isinstance(item, (int, float)) and not timestamp_context:
             scan_text(str(item), path, timestamp_context=False)
@@ -268,4 +271,5 @@ def kb_contact_allowlist(snapshot_path: Path) -> tuple[str, ...]:
         contacts.update(match.group("number") for match in LABELED_BARE_PHONE_RE.finditer(text_blob))
         contacts.update(match.group(0) for match in EMAIL_RE.finditer(text_blob))
         contacts.update(match.group(0) for match in USERNAME_RE.finditer(text_blob))
+        contacts.update(match.group(0) for match in URL_RE.finditer(text_blob))
     return tuple(sorted(contacts))

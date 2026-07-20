@@ -176,15 +176,16 @@ def _wappi_loaded_head(
         manifest_valid = False
         warnings.append(f"startup_manifest_cwd_mismatch manifest={manifest.get('cwd', '')} process={worktree}")
 
+    heartbeat_warnings: list[str] = []
     heartbeat_head = str(heartbeat.get("git_sha") or "").strip()
     heartbeat_at = _parse_timestamp(heartbeat.get("last_cycle_at"))
     heartbeat_valid = bool(heartbeat_head and heartbeat_at and process_started_at)
     if heartbeat_valid and heartbeat_at < process_started_at:
         heartbeat_valid = False
-        warnings.append("heartbeat_predates_process")
+        heartbeat_warnings.append("heartbeat_predates_process")
     if heartbeat and not _path_matches(heartbeat.get("code_root"), worktree):
         heartbeat_valid = False
-        warnings.append(f"heartbeat_cwd_mismatch heartbeat={heartbeat.get('code_root', '')} process={worktree}")
+        heartbeat_warnings.append(f"heartbeat_cwd_mismatch heartbeat={heartbeat.get('code_root', '')} process={worktree}")
 
     if manifest_valid and heartbeat_valid and not (
         manifest_head.startswith(heartbeat_head) or heartbeat_head.startswith(manifest_head)
@@ -193,6 +194,7 @@ def _wappi_loaded_head(
         return "", "unverified", warnings
     if manifest_valid:
         return manifest_head, "startup_manifest", warnings
+    warnings.extend(heartbeat_warnings)
     if heartbeat_valid:
         return heartbeat_head, "heartbeat", warnings
     warnings.append("loaded_head_unverified")

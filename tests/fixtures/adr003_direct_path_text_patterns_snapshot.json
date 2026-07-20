@@ -2705,16 +2705,6 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\D+",
     "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
-    "qualname": "_a2_mask_phone",
-    "symbol": "re.sub",
-    "target": "digits"
-  },
-  {
-    "flags": "\"\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\D+",
-    "pattern_sha256": "b7491d384ce1fa8b5f5a4f3d94b6571c27647eaa5ca3a77d4db93b1ed365f60f",
     "qualname": "_a2_phone_echoed",
     "symbol": "re.sub",
     "target": "digits"
@@ -4823,16 +4813,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:сегодня|завтра|послезавтра|утром|дн[её]м|вечером|после\\s+обеда|до\\s+\\d{1,2}|после\\s+\\d{1,2}|в\\s+\\d{1,2}(?::\\d{2})?|с\\s+\\d{1,2}\\s+до\\s+\\d{1,2})\\b",
-    "pattern_sha256": "9cac8a07a824ddb7297aaff16edeeb8543019d88e7bd1f47f6f61dff63cdfbc5",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_A2_TIME_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}",
     "pattern_sha256": "ef11b886a8b298d97b00bbf0faa216abbbc5b63827dd898182055349bd065d65",
     "qualname": "<module>",
@@ -6216,16 +6196,6 @@
     "pattern_preview": "менеджер|преподавател|педагог|куратор|пробн",
     "pattern_sha256": "1ec64f8ef448e5d18a58cbffe9bfd704042d181dc5ed4f07993e10960f47b350",
     "qualname": "_has_diagnosis_hedge_and_transfer",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
-    "pattern_preview": "\\d",
-    "pattern_sha256": "1a926a5aa2e0272871b61a9818c3254d446ab7b9697a3ef93cc9c53fc886e4cf",
-    "qualname": "_keep_answer_hard_anchors",
     "symbol": "re.search",
     "target": ""
   },

@@ -1370,15 +1370,6 @@ class CustomerTimelineSQLiteStore:
         self._upsert_ingestion_run(run, actor=actor)
         return run
 
-    def upsert_customer_identity(
-        self,
-        identity: CustomerIdentity,
-        *,
-        actor: str = "system",
-        ingestion_run_id: Optional[str] = None,
-    ) -> CustomerTimelineStoreWriteResult:
-        return self.upsert_customer(identity, actor=actor, ingestion_run_id=ingestion_run_id)
-
     def finish_ingestion_run(
         self,
         run_id: str,
@@ -1684,24 +1675,6 @@ class CustomerTimelineSQLiteStore:
             "timeline_events",
             "tenant_id = ? AND event_id = ?",
             (normalize_key(tenant_id, "tenant_id"), require_text(event_id, "event_id")),
-        )
-
-    def get_event_by_source(
-        self,
-        tenant_id: str,
-        source_system: str,
-        source_id: str,
-        event_type: str,
-    ) -> Optional[Mapping[str, Any]]:
-        return self._get_record(
-            "timeline_events",
-            "tenant_id = ? AND source_system = ? AND source_id = ? AND event_type = ?",
-            (
-                normalize_key(tenant_id, "tenant_id"),
-                normalize_key(source_system, "source_system"),
-                require_text(source_id, "source_id"),
-                normalize_key(event_type, "event_type"),
-            ),
         )
 
     def get_ingestion_run(self, run_id: str) -> Optional[Mapping[str, Any]]:

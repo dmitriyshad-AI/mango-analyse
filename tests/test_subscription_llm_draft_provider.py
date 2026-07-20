@@ -63,7 +63,6 @@ from mango_mvp.channels.subscription_llm import (
     TONE_WARM_FRAME_ENV,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     VERIFIER_HANDOFF_CLAIMS_ENV,
-    apply_a2_proactive_layer,
     apply_authoritative_output_gate,
     apply_conversation_intent_plan_guard,
     apply_tone_close_detect_layer,
@@ -71,13 +70,11 @@ from mango_mvp.channels.subscription_llm import (
     apply_warm_frame,
     apply_semantic_output_verifier,
     apply_prose_model_led_quality_guard,
-    apply_semantic_diagnosis_guard,
     _direct_path_context_fact_pack,
     _direct_path_render_fact_block,
     _direct_path_gold_real_enabled,
     build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
-    build_semantic_diagnosis_prompt,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     SEMANTIC_VERIFIER_DOWNGRADE_REASON,
     _output_sanitizer_enabled,
@@ -89,7 +86,6 @@ from mango_mvp.channels.subscription_llm import (
     apply_unconfirmed_operational_specificity_guard,
     _claim_supported_by_facts,
     _fresh_fact_texts,
-    _keep_answer_supported,
     _p0_text_with_antirepeat,
     _verified_informational_answer,
     contains_bot_identity_disclosure,
@@ -2151,30 +2147,6 @@ def test_tone_sell_prompt_observer_logs_missing_step_without_changing_text() -> 
     assert "sell_prompt_step_missing" not in with_new_step_words.metadata
 
 
-def test_tone_sell_prompt_allows_contact_capture_without_a2_proactive_offer() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Да, записаться можно. Оставьте телефон — менеджер подберёт группу.",
-        topic_id="theme:020_enrollment",
-        metadata={"tone_sell_prompt": {"enabled": True}},
-    )
-
-    captured = apply_a2_proactive_layer(
-        result,
-        client_message="Мой телефон +7 999 123-45-67, удобно завтра вечером",
-        context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
-    )
-
-    assert captured.route == "draft_for_manager"
-    assert captured.manager_followup_required is True
-    assert "a2_proactive_contact_captured" in captured.safety_flags
-    assert "+7" not in captured.draft_text
-    assert "999" not in captured.draft_text
-    assert "завтра вечером" not in captured.draft_text.casefold()
-    assert captured.metadata["a2_proactive"]["phone_masked"] == "[phone:***67]"
-    assert captured.metadata["a2_proactive"]["preferred_time"] == "[provided]"
-
-
 def test_authoritative_gate_does_not_turn_presale_refund_followup_into_p0() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -2429,59 +2401,6 @@ def test_authoritative_output_gate_is_downgrade_only_and_does_not_promote_routes
     assert gated.draft_text == result.draft_text
 
 
-def test_a2_contact_capture_creates_warm_handoff_without_echoing_pii() -> None:
-    result = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Да, курс есть. Если удобно, передам менеджеру — подскажите телефон и когда лучше связаться?",
-        topic_id="theme:020_enrollment",
-        safety_flags=("rules_engine_a2_offer_callback",),
-        metadata={"a2_proactive": {"step": "offer_callback"}},
-    )
-
-    captured = apply_a2_proactive_layer(
-        result,
-        client_message="Мой телефон +7 999 123-45-67, удобно завтра вечером",
-        context={"active_brand": "foton", "a_proactive_enabled": True},
-    )
-
-    assert captured.route == "draft_for_manager"
-    assert captured.manager_followup_required is True
-    assert "a2_proactive_contact_captured" in captured.safety_flags
-    assert "+7" not in captured.draft_text
-    assert "999" not in captured.draft_text
-    assert "завтра вечером" not in captured.draft_text.casefold()
-    assert captured.metadata["a2_proactive"]["phone_masked"] == "[phone:***67]"
-    assert captured.metadata["a2_proactive"]["preferred_time"] == "[provided]"
-    assert captured.metadata["a2_proactive"]["crm_write"] is False
-
-
-def test_a2_contact_capture_uses_known_phone_and_p0_blocks_capture() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Если удобно, передам менеджеру — подскажите, когда лучше связаться?",
-        topic_id="theme:020_enrollment",
-        safety_flags=("rules_engine_a2_offer_callback",),
-        metadata={"a2_proactive": {"step": "offer_callback"}},
-    )
-
-    known_phone = apply_a2_proactive_layer(
-        base,
-        client_message="Лучше после 18",
-        context={"active_brand": "foton", "a_proactive_enabled": True, "known_slots": {"phone_known": True}},
-    )
-    p0 = apply_a2_proactive_layer(
-        replace(base, route="manager_only", safety_flags=("high_risk_manager_only",)),
-        client_message="Верните деньги, мой телефон +7 999 123-45-67",
-        context={"active_brand": "foton", "a_proactive_enabled": True},
-    )
-
-    assert known_phone.route == "draft_for_manager"
-    assert known_phone.metadata["a2_proactive"]["phone_masked"] == "[known_phone]"
-    assert "после 18" not in known_phone.draft_text
-    assert p0.route == "manager_only"
-    assert "a2_proactive_contact_captured" not in p0.safety_flags
-
-
 def test_a2_gate_blocks_fake_enrollment_and_pii_echo_when_flagged() -> None:
     fake_done = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -2531,8 +2450,12 @@ def test_a2_gate_flags_question_barrage_and_rich_format_limits_emoji() -> None:
     )
 
     barrage_gated = apply_authoritative_output_gate(barrage, client_message="Хочу обсудить курс", context={"active_brand": "foton"})
-    emoji_clean = apply_a2_proactive_layer(emoji, client_message="Хочу обсудить курс", context={"active_brand": "foton", "a_rich_format_enabled": True})
-    serious_clean = apply_a2_proactive_layer(
+    emoji_clean = apply_authoritative_output_gate(
+        emoji,
+        client_message="Хочу обсудить курс",
+        context={"active_brand": "foton", "a_rich_format_enabled": True},
+    )
+    serious_clean = apply_authoritative_output_gate(
         serious,
         client_message="Ребёнок ничего не понял, хочу жалобу",
         context={"active_brand": "foton", "a_rich_format_enabled": True},
@@ -2647,26 +2570,7 @@ def test_volna_peresborki_semantic_coverage_negative_controls_block_real_fabrica
         assert not _claim_supported_by_facts(claim, facts), claim
 
 
-def test_step4_keep_answer_supported_allows_rephrasing_but_keeps_hard_anchors() -> None:
-    assert _keep_answer_supported(
-        "На второй предмет действует скидка 20%.",
-        ("Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов.",),
-    )
-    assert not _keep_answer_supported(
-        "Год стоит 70 900 ₽.",
-        ("УНПК: онлайн-курс для 9 класса, год — 69 900 ₽.",),
-    )
-    assert not _keep_answer_supported(
-        "Фотон: скидка 20%.",
-        ("УНПК: скидка на второй предмет составляет 20%.",),
-    )
-    assert not _keep_answer_supported(
-        "Менеджер вернётся завтра.",
-        ("Менеджер свяжется сегодня.",),
-    )
-
-
-def test_step4_keep_answer_flag_uses_verifier_not_substring_for_informational_yield() -> None:
+def test_verified_informational_answer_keeps_conservative_fact_match() -> None:
     facts = {
         "discount.second_subject": (
             "Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов."
@@ -2684,14 +2588,14 @@ def test_step4_keep_answer_flag_uses_verifier_not_substring_for_informational_yi
         ),
     )
 
-    assert _verified_informational_answer(
+    assert not _verified_informational_answer(
         result,
         client_message="Есть скидка на второй предмет?",
-        context={"active_brand": "foton", "TELEGRAM_STEP4_KEEP_ANSWER": "1"},
+        context={"active_brand": "foton"},
     )
 
 
-def test_step4_keep_answer_does_not_bypass_output_verifier_for_non_numeric_fabrication() -> None:
+def test_verified_informational_answer_rejects_non_numeric_fabrication() -> None:
     facts = {"platform.webinars": "УНПК: онлайн-вебинары проходят на платформе МТС Линк."}
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -2708,7 +2612,7 @@ def test_step4_keep_answer_does_not_bypass_output_verifier_for_non_numeric_fabri
     assert not _verified_informational_answer(
         result,
         client_message="Где проходят онлайн-занятия?",
-        context={"active_brand": "unpk", "TELEGRAM_STEP4_KEEP_ANSWER": "1"},
+        context={"active_brand": "unpk"},
     )
 
 
@@ -3682,242 +3586,6 @@ def test_semantic_output_verifier_cross_model_replay_fixture_is_consistent() -> 
 
     assert [item.route for item in results] == ["draft_for_manager", "draft_for_manager"]
     assert [item.metadata["authoritative_output_gate"]["action"] for item in results] == ["downgrade_keep_text", "downgrade_keep_text"]
-
-
-def test_semantic_diagnosis_guard_rewrites_claude_paraphrase_real_text() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Да, с тройками можно идти: сын сможет влиться в группу, отдельно догонять заранее не нужно.",
-        topic_id="theme:024_advice",
-        safety_flags=("rules_engine_phase2_anxiety_level_fit",),
-    )
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="У сына тройки, сможет ли он влиться?",
-        context={
-            "active_brand": "unpk",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": lambda _prompt: {
-                "individual_diagnosis": True,
-                "span": "сын сможет влиться",
-                "reason": "уверенная оценка конкретного ребёнка",
-            },
-        },
-    )
-
-    text = result.draft_text.casefold()
-    assert result.route == "bot_answer_self_for_pilot"
-    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
-    assert "сможет влиться" not in text
-    assert "с тройками можно идти" not in text
-    assert "заочно не буду оценивать" in text
-    assert "преподавател" in text
-    assert "менеджер" in text
-    assert result.metadata["semantic_diagnosis_guard"]["individual_diagnosis"] is True
-    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
-    gated = apply_authoritative_output_gate(
-        result,
-        client_message="У сына тройки, сможет ли он влиться?",
-        context={"active_brand": "unpk"},
-    )
-    assert gated.draft_text == result.draft_text
-    assert "authoritative_output_gate_blocked" not in gated.safety_flags
-
-
-def test_semantic_diagnosis_guard_rewrites_manager_only_substantive_real_text() -> None:
-    base = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text=(
-            "По таким вводным слишком тяжело быть не должно: ритм посильный, "
-            "а группу подберут под ребёнка."
-        ),
-        topic_id="theme:024_advice",
-        safety_flags=("high_risk_manager_only",),
-    )
-    calls: list[str] = []
-
-    def classifier(prompt: str) -> dict[str, object]:
-        calls.append(prompt)
-        return {
-            "individual_diagnosis": True,
-            "span": "слишком тяжело быть не должно",
-            "reason": "косвенная оценка нагрузки конкретного ребёнка",
-        }
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Дочка тревожится, ей не будет слишком тяжело?",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": classifier,
-        },
-    )
-
-    text = result.draft_text.casefold()
-    assert calls, "classifier must run for substantive manager_only drafts"
-    assert "слишком тяжело" not in text
-    assert "посильный ритм" not in text
-    assert "подберут под ребёнка" not in text
-    assert result.route == "manager_only"
-    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
-    assert result.metadata["semantic_diagnosis_guard"]["checked"] is True
-    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
-
-
-def test_semantic_diagnosis_guard_keeps_general_program_info_false_case() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="На платформе есть базовый уровень — он для тех, кто начинает с азов.",
-        topic_id="theme:024_advice",
-        safety_flags=("rules_engine_phase2_anxiety_capability",),
-    )
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Есть уровень попроще?",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": lambda _prompt: {
-                "individual_diagnosis": False,
-                "span": "",
-                "reason": "общая справка",
-            },
-        },
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
-
-
-def test_semantic_diagnosis_guard_keeps_manager_only_general_info_false_case() -> None:
-    base = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text="Есть базовый уровень и формат мини-группы; менеджер поможет подобрать подходящую группу.",
-        topic_id="theme:024_advice",
-        safety_flags=("draft_for_manager",),
-    )
-    called = False
-
-    def classifier(_prompt: str) -> dict[str, object]:
-        nonlocal called
-        called = True
-        return {"individual_diagnosis": False, "span": "", "reason": "общая справка"}
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Есть уровень попроще?",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": classifier,
-        },
-    )
-
-    assert called is True
-    assert result.draft_text == base.draft_text
-    assert result.route == "manager_only"
-    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
-
-
-def test_semantic_diagnosis_guard_keeps_already_hedged_transfer() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Уровень лучше сверить на пробном занятии: преподаватель сориентирует, а менеджер поможет подобрать группу.",
-        topic_id="theme:024_advice",
-    )
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Дочка справится?",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": lambda _prompt: {
-                "individual_diagnosis": True,
-                "span": "уровень лучше сверить",
-                "reason": "модель перестраховалась",
-            },
-        },
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "already_hedged_and_transferred"
-
-
-def test_semantic_diagnosis_guard_fail_soft_on_classifier_error() -> None:
-    base = SubscriptionDraftResult(
-        route="bot_answer_self_for_pilot",
-        draft_text="Да, дочка справится.",
-        topic_id="theme:024_advice",
-    )
-
-    def broken(_prompt: str):
-        raise RuntimeError("classifier down")
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Дочка справится?",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": broken,
-        },
-    )
-
-    assert result.draft_text == base.draft_text
-    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "classifier_error"
-
-
-def test_semantic_diagnosis_guard_does_not_touch_p0_manager_only() -> None:
-    base = SubscriptionDraftResult(
-        route="manager_only",
-        draft_text="Приняли обращение, передам менеджеру.",
-        topic_id="theme:009_refund",
-        safety_flags=("high_risk_manager_only",),
-    )
-    called = False
-
-    def classifier(_prompt: str):
-        nonlocal called
-        called = True
-        return {"individual_diagnosis": True}
-
-    result = apply_semantic_diagnosis_guard(
-        base,
-        client_message="Верните деньги, ребёнок не справится",
-        context={
-            "active_brand": "foton",
-            "semantic_diagnosis_guard_enabled": True,
-            "semantic_diagnosis_classifier_fn": classifier,
-        },
-    )
-
-    assert result.route == "manager_only"
-    assert result.draft_text == base.draft_text
-    assert called is False
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "locked_p0_or_high_risk_deferral"
-
-
-def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
-    prompt = build_semantic_diagnosis_prompt(
-        client_message="С тройками можно?",
-        bot_text="Да, с тройками можно идти.",
-    )
-
-    assert "с тройками можно идти" in prompt
-    assert "слишком тяжело быть не должно" in prompt
-    assert "посильный ритм" in prompt
-    assert "есть базовый и продвинутый уровень" in prompt
-    assert "Верни СТРОГО JSON" in prompt
-
-
 
 
 class _DirectPathProvider(SubscriptionLlmDraftProvider):

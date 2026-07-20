@@ -55,8 +55,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _fresh_fact_texts,
     _has_dialogue_contract_retrieved_facts,
     _intent_model_led_enabled,
-    _keep_answer_hard_anchors,
-    _keep_answer_supported,
     _normalize_fact_match_text,
     _pilot_profile_default_on_flag_enabled,
     _p0_model_led_complaint_backstop,
@@ -79,10 +77,6 @@ A_THREAD_ENV = "TELEGRAM_A_THREAD"
 PH2_OBJECTION_ENV = "TELEGRAM_PH2_OBJECTION"
 
 PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
-
-STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
-
-FIX1B_AUTONOMY_VERIFIED_FACTS_ENV = "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS"
 
 SEATS_DEFAULT_OPEN_ENV = "TELEGRAM_SEATS_DEFAULT_OPEN"
 
@@ -917,12 +911,8 @@ def _verified_informational_answer(
     fact_texts = _pipeline_fact_texts(result)
     if not fact_texts:
         return False
-    if _step4_keep_answer_enabled(context):
-        if not _keep_answer_supported(result.draft_text, tuple(fact_texts.values())):
-            return False
-    else:
-        if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
-            return False
+    if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
+        return False
     contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
     if contract.is_p0:
         return False
@@ -1092,175 +1082,12 @@ def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> Subscri
         metadata=metadata,
     )
 
-def apply_input_policy_guards(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    markers = detect_high_risk_input_markers(client_message, context=context)
-    if not markers:
-        return result
-    autonomy_flags = ("autonomy_blocked_high_risk",) if result.route in AUTONOMOUS_ROUTES else ()
-    flags = tuple(dict.fromkeys([*result.safety_flags, "high_risk_input_manager_only", "high_risk_manager_only", *autonomy_flags]))
-    checklist = tuple(
-        dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "Исходное сообщение клиента содержит высокорисковую тему: проверить вручную.",
-            ]
-        )
-    )
-    return replace(
-        result,
-        route="manager_only",
-        safety_flags=flags,
-        manager_checklist=checklist,
-        metadata={
-            **dict(result.metadata),
-            "forced_route_high_risk_input": list(markers),
-            **({"autonomy_blocked_high_risk": True} if autonomy_flags else {}),
-        },
-    )
-
-
-def _fix1b_autonomy_verified_facts_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping) and context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV) is not None:
-        return _truthy_value(context.get(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
-    return _truthy_value(os.getenv(FIX1B_AUTONOMY_VERIFIED_FACTS_ENV))
-
-
 def _fix1b_has_paid_operation_context(result: SubscriptionDraftResult) -> bool:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     direct_p0 = metadata.get("direct_path_model_p0")
     if isinstance(direct_p0, Mapping) and str(direct_p0.get("p0_kind") or "") == "paid_operation_context":
         return True
     return "direct_path_model_p0_paid_operation_context" in set(result.safety_flags)
-
-
-def _fix1b_has_positive_confirmed_fact_source(context: Optional[Mapping[str, Any]]) -> bool:
-    if not isinstance(context, Mapping):
-        return False
-    positive_key_markers = (
-        "price",
-        "address",
-        "schedule",
-        "format",
-        "product",
-        "program",
-        "course",
-        "camp",
-        "lvsh",
-        "group",
-        "platform",
-        "installment",
-    )
-    negative_key_markers = ("absence", "missing", "not_available", "unavailable", "closed", "cancelled")
-
-    def walk(value: Any) -> bool:
-        if isinstance(value, Mapping):
-            for key, nested in value.items():
-                key_text = str(key or "").casefold()
-                if any(marker in key_text for marker in negative_key_markers):
-                    continue
-                if any(marker in key_text for marker in positive_key_markers):
-                    return True
-                if walk(nested):
-                    return True
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            return any(walk(item) for item in value)
-        return False
-
-    return any(
-        walk(context.get(key))
-        for key in (
-            "confirmed_facts",
-            "facts_context",
-            "dialogue_contract_pipeline",
-            "knowledge_snippets",
-            "context_used",
-        )
-    )
-
-
-def _fix1b_autonomy_verified_facts_corridor(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> bool:
-    if not _fix1b_autonomy_verified_facts_enabled(context):
-        return False
-    if result.message_type != "question":
-        return False
-    topic = str(result.topic_id or "").strip()
-    if topic not in AUTONOMY_MATRIX_SAFE_TOPIC_IDS or not _autonomy_topic_allowed(topic, context):
-        return False
-    active_brand = _active_brand(context)
-    if active_brand == "unknown":
-        return False
-    if "conversation_intent_plan_live_availability" in result.safety_flags:
-        return False
-    if is_high_risk_result(result) or detect_high_risk_input_markers(client_message, context=context):
-        return False
-    if _fix1b_has_paid_operation_context(result):
-        return False
-    if not _has_client_safe_current_fact(context):
-        return False
-    if not _fix1b_has_positive_confirmed_fact_source(context):
-        return False
-    fact_texts = _fresh_fact_texts(context)
-    if not fact_texts:
-        return False
-    draft_text = str(result.draft_text or "")
-    if not _claim_supported_by_facts(draft_text, fact_texts):
-        return False
-    facts_blob = " ".join(str(item or "") for item in fact_texts)
-    if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):
-        return False
-    if find_unsupported_numeric_promises(draft_text, context=context):
-        return False
-    if _fix1b_draft_mentions_foreign_brand(draft_text, active_brand=active_brand):
-        return False
-    if _result_has_live_status_missing_fact(result, client_message=client_message, context=context):
-        return False
-    if _asks_live_status_or_booking_question(draft_text):
-        return False
-    plan = _conversation_intent_plan(context)
-    scope = str(plan.get("fact_scope") or "").strip()
-    if scope and _scope_guard_has_foreign_concrete_fact(
-        draft_text,
-        requested_scope=scope,
-        blocked_neighbor_scopes=tuple(str(item) for item in plan.get("blocked_neighbor_scopes", ()) or ()),
-    ):
-        return False
-    return True
-
-
-def _fix1b_draft_mentions_foreign_brand(draft_text: str, *, active_brand: str) -> bool:
-    terms = BRAND_FORBIDDEN_TERMS.get(active_brand, ())
-    normalized = str(draft_text or "").casefold()
-    return any(str(term or "").casefold() in normalized for term in terms if str(term or "").strip())
-
-
-def _with_fix1b_autonomy_trace(
-    result: SubscriptionDraftResult,
-    *,
-    enabled: bool,
-    status: str,
-    reason: str,
-    changed_fields: Sequence[str] = (),
-) -> SubscriptionDraftResult:
-    record = semantic_reading_trace_record(
-        reading_class="fix1b",
-        enabled=enabled,
-        status=status,
-        decision="allow_autonomy" if status == "fix1b_promote" else "keep_guard",
-        reason=reason,
-        source="autonomy_matrix_guard",
-        changed_fields=changed_fields,
-    )
-    return replace(result, metadata=append_reading_trace_record(result.metadata, record))
 
 
 def apply_autonomy_matrix_guard(
@@ -1386,43 +1213,18 @@ def apply_autonomy_matrix_guard(
             "Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
             draft_text=_live_status_manager_check_text(client_message=client_message, context=context),
         )
-    fix1b_corridor = _fix1b_autonomy_verified_facts_corridor(
-        result,
-        client_message=client_message,
-        context=context,
-    )
-    if _fix1b_autonomy_verified_facts_enabled(context):
-        result = _with_fix1b_autonomy_trace(
-            result,
-            enabled=True,
-            status="fix1b_promote" if fix1b_corridor else "no_op",
-            reason="verified_fact_corridor" if fix1b_corridor else "corridor_not_satisfied",
-            changed_fields=("route", "safety_flags", "manager_checklist") if fix1b_corridor else (),
-        )
-        flags = list(result.safety_flags)
-        checklist = list(result.manager_checklist)
-        metadata = dict(result.metadata)
     if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text):
-        if fix1b_corridor:
-            metadata["fix1b_autonomy_verified_facts"] = True
-        else:
-            return demote(
-                "draft_for_manager",
-                "autonomy_default_cautious_missing_facts",
-                "Автономный ответ запрещен: есть недостающие факты.",
-            )
+        return demote(
+            "draft_for_manager",
+            "autonomy_default_cautious_missing_facts",
+            "Автономный ответ запрещен: есть недостающие факты.",
+        )
     if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text):
-        if fix1b_corridor:
-            metadata["fix1b_autonomy_verified_facts"] = True
-        else:
-            return demote(
-                "draft_for_manager",
-                "autonomy_default_cautious_unverified_fact",
-                "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
-            )
-    if fix1b_corridor:
-        flags.append("fix1b_autonomy_verified_facts_promoted")
-        metadata["fix1b_autonomy_verified_facts"] = True
+        return demote(
+            "draft_for_manager",
+            "autonomy_default_cautious_unverified_fact",
+            "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
+        )
     if "conversation_intent_plan_live_availability" in flags:
         return demote(
             "draft_for_manager",
@@ -3006,33 +2808,6 @@ def _do_not_reask_slot_names_from_context(context: Optional[Mapping[str, Any]]) 
     return result
 
 
-def apply_funnel_policy_guard(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    funnel = context.get("funnel_state") if isinstance(context, Mapping) and isinstance(context.get("funnel_state"), Mapping) else {}
-    if not funnel:
-        return result
-    if str(funnel.get("lead_stage") or "") != "p0_manager_only" and str(funnel.get("next_step_type") or "") != "manager_only_p0":
-        return result
-    flags = tuple(dict.fromkeys([*result.safety_flags, "autonomy_blocked_funnel_p0", "high_risk_manager_only"]))
-    checklist = tuple(
-        dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "Детерминированная воронка распознала P0/high-risk часть: не отправлять автономно.",
-            ]
-        )
-    )
-    return replace(
-        result,
-        route="manager_only",
-        safety_flags=flags,
-        manager_checklist=checklist,
-        metadata={**dict(result.metadata), "autonomy_blocked_funnel_p0": True},
-    )
-
 def _known_context_repair_text(
     result: SubscriptionDraftResult,
     *,
@@ -3902,10 +3677,3 @@ def _extract_numeric_promise_claims(text: str) -> tuple[str, ...]:
             if claim:
                 claims.append(claim)
     return tuple(dict.fromkeys(claims))
-
-def _step4_keep_answer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping) and context.get(STEP4_KEEP_ANSWER_ENV) is not None:
-        return _truthy_value(context.get(STEP4_KEEP_ANSWER_ENV))
-    if isinstance(context, Mapping) and context.get("step4_keep_answer_enabled") is not None:
-        return _truthy_value(context.get("step4_keep_answer_enabled"))
-    return _truthy_value(os.getenv(STEP4_KEEP_ANSWER_ENV))

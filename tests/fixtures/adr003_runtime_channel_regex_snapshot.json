@@ -1306,14 +1306,6 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "\\b(?:сегодня|завтра|послезавтра|утром|дн[её]м|вечером|после\\s+обеда|до\\s+\\d{1,2}|после\\s+\\d{1,2}|в\\s+\\d{1,2}(?::\\d{2})?|с\\s+\\d{1,2}\\s+до\\s+\\d{1,2})\\b",
-    "pattern_sha256": "9cac8a07a824ddb7297aaff16edeeb8543019d88e7bd1f47f6f61dff63cdfbc5",
-    "qualname": "<module>",
-    "target": "_A2_TIME_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "\\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\\s+обеда|в\\s+течение\\s+\\d+\\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|до\\s+\\d{1,2}(?::\\d{2})?|к\\s+\\d{1,2}",
     "pattern_sha256": "ef11b886a8b298d97b00bbf0faa216abbbc5b63827dd898182055349bd065d65",
     "qualname": "<module>",

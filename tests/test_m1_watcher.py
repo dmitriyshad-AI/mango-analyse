@@ -214,7 +214,6 @@ def test_task_env_delta_overrides_default_production_stack(tmp_path):
 
     def runner(spec, deploy_dir, out_dir, command, env):
         assert env["TELEGRAM_TONE_SELL_PROMPT"] == "0"
-        assert env["TELEGRAM_STEP4_KEEP_ANSWER"] == "1"
         return _fake_runner(spec, deploy_dir, out_dir, command, env)
 
     assert _run_ready_cycle(_new_watcher(tmp_path, runner=runner)) == "success"
@@ -222,7 +221,6 @@ def test_task_env_delta_overrides_default_production_stack(tmp_path):
     report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
     assert 'task_delta: {"TELEGRAM_TONE_SELL_PROMPT": "0"}' in report
     assert '"TELEGRAM_TONE_SELL_PROMPT": "0"' in report
-    assert '"TELEGRAM_STEP4_KEEP_ANSWER": "1"' in report
 
 
 def test_effective_task_env_adds_canonical_profile_only_when_enforced() -> None:
@@ -237,7 +235,6 @@ def test_effective_task_env_adds_canonical_profile_only_when_enforced() -> None:
 
 def test_production_env_stack_v2_contains_only_direct_path_profile() -> None:
     m1_only_flags = {
-        "TELEGRAM_STEP4_KEEP_ANSWER",
         "TELEGRAM_A_FREE_NUMBER_GATE",
         "TELEGRAM_STEP4_NUMBER_GROUNDING",
         "TELEGRAM_PH2_TONE",
@@ -253,7 +250,6 @@ def test_production_env_stack_v2_contains_only_direct_path_profile() -> None:
         "TELEGRAM_A_TRAVEL_COMPOSE",
         "TELEGRAM_A_ESTIMATE_MODE",
         "TELEGRAM_COMPOSITE_CONTRACT_FIX",
-        "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD",
         "TELEGRAM_HANDOFF_TRACE",
         "TELEGRAM_OUTPUT_SANITIZER",
         "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER",

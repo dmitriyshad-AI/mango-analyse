@@ -19,14 +19,13 @@ def test_adr003_flag_acceptance_runner_shell_syntax() -> None:
 def test_adr003_flag_acceptance_runner_allows_only_package_flags() -> None:
     text = _runner_text()
 
-    assert "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS|TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
+    assert "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
     assert "TARGET_FLAG must be one of" in text
 
 
 def test_adr003_flag_acceptance_runner_isolates_sibling_package_flags() -> None:
     text = _runner_text()
 
-    assert "-u TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS" in text
     assert "-u TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX" in text
     assert "-u TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
     assert "package_flags_off=(" in text

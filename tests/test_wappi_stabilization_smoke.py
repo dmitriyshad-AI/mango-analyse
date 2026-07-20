@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
-from mango_mvp.channels.subscription_llm import SubscriptionDraftResult, apply_input_policy_guards, apply_payment_confirmation_guard
+from mango_mvp.channels.subscription_llm import SubscriptionDraftResult, apply_payment_confirmation_guard
 
 
 def _draft(text: str, *, topic_id: str = "theme:003_payment_status") -> SubscriptionDraftResult:
@@ -26,16 +26,6 @@ def test_payment_status_is_not_autoconfirmed_without_two_sources() -> None:
     assert result.route == "manager_only"
     assert "оплата отмечена" not in result.draft_text.casefold()
     assert any("payment" in flag for flag in result.safety_flags)
-
-
-def test_real_refund_is_manager_only_p0_without_llm() -> None:
-    result = apply_input_policy_guards(
-        _draft("Передам менеджеру.", topic_id="theme:009_refund"),
-        client_message="Хочу вернуть деньги за курс и расторгнуть договор.",
-    )
-
-    assert result.route == "manager_only"
-    assert "high_risk_input_manager_only" in result.safety_flags
 
 
 def test_prompt_contract_covers_brand_docs_family_phone_and_live_places() -> None:

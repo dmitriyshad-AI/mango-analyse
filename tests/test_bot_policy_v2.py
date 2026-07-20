@@ -7,7 +7,6 @@ import pytest
 from mango_mvp.channels import subscription_llm
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
-    apply_input_policy_guards,
     detect_high_risk_input_markers,
 )
 
@@ -36,18 +35,9 @@ def _require_guard(name: str) -> Callable[..., SubscriptionDraftResult]:
     return guard
 
 
-def _assert_input_is_not_forced_manager_only(client_message: str, forbidden_marker: str) -> None:
+def _assert_input_is_not_high_risk(client_message: str, forbidden_marker: str) -> None:
     markers = detect_high_risk_input_markers(client_message)
     assert forbidden_marker not in markers
-
-    result = apply_input_policy_guards(
-        _draft(),
-        client_message=client_message,
-        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
-    )
-
-    assert result.route == "draft_for_manager"
-    assert "high_risk_input_manager_only" not in result.safety_flags
 
 
 def _payment_context(
@@ -70,44 +60,35 @@ def _payment_context(
 
 
 def test_matkap_information_question_is_not_forced_manager_only() -> None:
-    _assert_input_is_not_forced_manager_only("Можно оплатить обучение материнским капиталом?", "matkap")
-    _assert_input_is_not_forced_manager_only("Какие документы нужны для маткапитала?", "matkap")
+    _assert_input_is_not_high_risk("Можно оплатить обучение материнским капиталом?", "matkap")
+    _assert_input_is_not_high_risk("Какие документы нужны для маткапитала?", "matkap")
 
 
 def test_tax_deduction_information_question_is_not_forced_manager_only() -> None:
-    _assert_input_is_not_forced_manager_only("Можно оформить налоговый вычет за обучение?", "tax")
-    _assert_input_is_not_forced_manager_only("Вы даете справку для налоговой?", "tax")
+    _assert_input_is_not_high_risk("Можно оформить налоговый вычет за обучение?", "tax")
+    _assert_input_is_not_high_risk("Вы даете справку для налоговой?", "tax")
 
 
-def test_refund_request_still_forces_manager_only() -> None:
+def test_refund_request_is_classified_high_risk() -> None:
     message = "Хочу вернуть деньги и расторгнуть договор."
 
     markers = detect_high_risk_input_markers(message)
-    result = apply_input_policy_guards(_draft(), client_message=message)
-
     assert "refund" in markers
-    assert result.route == "manager_only"
-    assert "high_risk_input_manager_only" in result.safety_flags
-    assert result.metadata["forced_route_high_risk_input"]
 
 
-def test_legal_threat_still_forces_manager_only() -> None:
+def test_legal_threat_is_classified_high_risk() -> None:
     message = "Если не решите вопрос сегодня, подам иск в суд и обращусь в Роспотребнадзор."
 
     markers = detect_high_risk_input_markers(message)
-    result = apply_input_policy_guards(_draft(), client_message=message)
-
     assert "legal" in markers
-    assert result.route == "manager_only"
-    assert "high_risk_input_manager_only" in result.safety_flags
 
 
 def test_general_legal_reference_does_not_force_manager_only() -> None:
-    _assert_input_is_not_forced_manager_only("Можно ли по закону получить справку об обучении?", "legal")
+    _assert_input_is_not_high_risk("Можно ли по закону получить справку об обучении?", "legal")
 
 
 def test_payment_report_does_not_force_manager_only_without_confirmation() -> None:
-    _assert_input_is_not_forced_manager_only("Я оплатил курс, чек пришлю чуть позже.", "payment_status")
+    _assert_input_is_not_high_risk("Я оплатил курс, чек пришлю чуть позже.", "payment_status")
 
 
 def test_payment_confirmation_requires_matching_amo_tallanto() -> None:

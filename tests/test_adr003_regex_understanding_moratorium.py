@@ -168,32 +168,11 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ),
     ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "SCOPE_FACT_GUARD_ENV", "TELEGRAM_SCOPE_FACT_GUARD"),
     (
-        "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-        "FIX1B_AUTONOMY_VERIFIED_FACTS_ENV",
-        "TELEGRAM_FIX1B_AUTONOMY_VERIFIED_FACTS",
-    ),
-    (
         "src/mango_mvp/channels/dialogue_memory.py",
         "DIALOG_SUMMARY_ROLLING_ENV",
         "TELEGRAM_DIALOG_SUMMARY_ROLLING",
     ),
-    ("src/mango_mvp/channels/subscription_llm_parts/policy_routing.py", "STEP4_KEEP_ANSWER_ENV", "TELEGRAM_STEP4_KEEP_ANSWER"),
     ("src/mango_mvp/channels/subscription_llm_parts/post_layers.py", "LLM_RETRIEVE_MODEL_ENV", "TELEGRAM_LLM_RETRIEVE_MODEL"),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "SEMANTIC_DIAGNOSIS_GUARD_ENV",
-        "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD",
-    ),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "SEMANTIC_DIAGNOSIS_MODEL_ENV",
-        "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL",
-    ),
-    (
-        "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-        "SEMANTIC_DIAGNOSIS_REASONING_ENV",
-        "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING",
-    ),
     (
         "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
         "SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV",

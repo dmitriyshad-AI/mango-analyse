@@ -122,8 +122,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _has_dialogue_contract_retrieved_facts,
     _append_fact_texts,
     _claim_supported_by_facts,
-    _keep_answer_supported,
-    _keep_answer_hard_anchors,
     _fact_match_anchors,
     _fact_match_unit_anchors,
     _fact_match_schedule_condition_anchors,
@@ -331,7 +329,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     RouteDecision,
     SCOPE_FACT_GUARD_ENV,
     SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
-    STEP4_KEEP_ANSWER_ENV,
     SUBJECT_GUARD_MARKERS,
     TAX_AMOUNT_SAFE_TEXT,
     TAX_FNS_REVIEW_SAFE_TEXT,
@@ -416,7 +413,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _scope_guard_required_fact_keys,
     _select_nonrepeating_text,
     _semantic_haystack,
-    _step4_keep_answer_enabled,
     _strict_informational_yield_ok,
     _strip_false_p0_flags,
     _subjects_from_retrieved_facts,
@@ -425,8 +421,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _verified_informational_answer,
     apply_autonomy_matrix_guard,
     apply_conversation_intent_plan_guard,
-    apply_funnel_policy_guard,
-    apply_input_policy_guards,
     apply_known_context_redundant_question_guard,
     apply_payment_confirmation_guard,
     apply_subscription_policy_guards,
@@ -443,15 +437,6 @@ A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
 
 
 A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
-
-
-SEMANTIC_DIAGNOSIS_GUARD_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD"
-
-
-SEMANTIC_DIAGNOSIS_MODEL_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL"
-
-
-SEMANTIC_DIAGNOSIS_REASONING_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING"
 
 
 SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
@@ -497,12 +482,6 @@ _MANAGER_CONTACT_PROMISE_PATTERNS = (
     re.compile(r"\b(?:менеджер\w*|сотрудник\w*)\b[^.!?\n]{0,80}\b(?:верн[её]тся|свяжется|подключится|ответит)\b", re.I),
     re.compile(r"\b(?:верн[её]тся|свяжется|подключится|ответит)\b[^.!?\n]{0,80}\b(?:менеджер\w*|сотрудник\w*)\b", re.I),
     re.compile(r"\bпередам\b[^.!?\n]{0,40}\b(?:вопрос\s+|вас\s+)?менеджер\w*\b", re.I),
-)
-
-
-SEMANTIC_DIAGNOSIS_SAFE_TEXT = (
-    "Заочно не буду оценивать уровень конкретного ребёнка. Лучше сверить уровень и нагрузку с преподавателем; "
-    "менеджер поможет сверить детали и подобрать аккуратный следующий шаг."
 )
 
 
@@ -1909,13 +1888,6 @@ def apply_prose_model_led_quality_guard(
     )
 
 
-_A2_TIME_RE = re.compile(
-    r"\b(?:сегодня|завтра|послезавтра|утром|дн[её]м|вечером|после\s+обеда|до\s+\d{1,2}|"
-    r"после\s+\d{1,2}|в\s+\d{1,2}(?::\d{2})?|с\s+\d{1,2}\s+до\s+\d{1,2})\b",
-    re.I,
-)
-
-
 _A2_FAKE_DONE_RE = re.compile(
     r"я\s+(?:вас\s+)?записал|вы\s+записаны|запись\s+оформлена|оформил\s+запись|записал\s+на\s+курс",
     re.I,
@@ -1926,22 +1898,6 @@ _A2_EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F900
 
 
 _A2_SERIOUS_TAGS = {"p0", "refund", "complaint", "manager_only", "legal", "guarantee"}
-
-
-def apply_a2_proactive_layer(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    """A2.1 callback/contact capture plus deterministic rich-format guard."""
-
-    updated = result
-    if _a2_proactive_enabled(context) or sell_prompt_enabled(context):
-        updated = _a2_contact_capture_handoff(updated, client_message=client_message, context=context)
-    if _a2_rich_format_enabled(context):
-        updated = _a2_apply_rich_format_guard(updated, client_message=client_message, context=context)
-    return updated
 
 
 _TONE_SELL_PROMPT_STEP_RE = re.compile(
@@ -2381,89 +2337,6 @@ def _tone_close_pending_text() -> str:
     return "Спасибо! Менеджер проверит детали и вернётся с ответом."
 
 
-def _a2_contact_capture_handoff(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-) -> SubscriptionDraftResult:
-    if result.route == "manager_only" or _a2_p0_or_high_risk(result, client_message=client_message, context=context):
-        return result
-    phone = _a2_extract_phone(client_message)
-    phone_known = _a2_context_phone_known(context)
-    has_time = _a2_has_time(client_message)
-    if not phone and not (phone_known and has_time):
-        return result
-    metadata = dict(result.metadata)
-    metadata["a2_proactive"] = {
-        **(dict(metadata.get("a2_proactive") or {}) if isinstance(metadata.get("a2_proactive"), Mapping) else {}),
-        "enabled": True,
-        "step": "offer_callback",
-        "contact_captured": True,
-        "phone_masked": _a2_mask_phone(phone) if phone else "[known_phone]",
-        "preferred_time": "[provided]" if has_time else "",
-        "crm_write": False,
-        "policy_source": "deterministic",
-    }
-    text = (
-        "Спасибо, передам менеджеру — он свяжется с вами в удобное время."
-        if has_time
-        else "Спасибо, передам менеджеру — он свяжется с вами и уточнит удобное время."
-    )
-    checklist = tuple(
-        dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "A2.1: клиент оставил контакт/время; связаться вручную, без CRM-записи из бота.",
-            ]
-        )
-    )
-    return replace(
-        result,
-        route="draft_for_manager" if result.route != "manager_only" else result.route,
-        draft_text=text,
-        safety_flags=tuple(
-            dict.fromkeys(
-                [
-                    *result.safety_flags,
-                    "a2_proactive_contact_captured",
-                    "manager_approval_required",
-                    "no_auto_send",
-                ]
-            )
-        ),
-        manager_checklist=checklist,
-        manager_followup_required=True,
-        metadata=metadata,
-    )
-
-
-def _a2_apply_rich_format_guard(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-) -> SubscriptionDraftResult:
-    text = str(result.draft_text or "")
-    context_tag = _a2_context_tag(result, client_message=client_message, context=context)
-    cleaned = _a2_enforce_emoji_limit(text, context_tag=context_tag)
-    if cleaned == text:
-        return result
-    metadata = dict(result.metadata)
-    metadata["a2_rich_format"] = {
-        **(dict(metadata.get("a2_rich_format") or {}) if isinstance(metadata.get("a2_rich_format"), Mapping) else {}),
-        "enabled": True,
-        "emoji_guard_applied": True,
-        "context_tag": context_tag,
-    }
-    return replace(
-        result,
-        draft_text=cleaned,
-        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "a2_rich_format_emoji_guarded"])),
-        metadata=metadata,
-    )
-
-
 def _a2_proactive_enabled(context: Optional[Mapping[str, Any]]) -> bool:
     if isinstance(context, Mapping):
         for key in ("a_proactive_enabled", "proactive_enabled", A_PROACTIVE_ENV):
@@ -2482,60 +2355,6 @@ def _a2_rich_format_enabled(context: Optional[Mapping[str, Any]]) -> bool:
     if tone_rich_format_enabled(context):
         return True
     return _truthy_value(os.getenv(A_RICH_FORMAT_ENV))
-
-
-def _a2_p0_or_high_risk(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-) -> bool:
-    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
-    if any(marker in flags for marker in ("high_risk", "zero_collect", "legal", "complaint", "payment_dispute")):
-        return True
-    safety = classify_answer_safety(
-        client_message=client_message,
-        context=context,
-        topic_id=result.topic_id,
-        route=result.route,
-        safety_flags=result.safety_flags,
-    )
-    return bool(safety.p0_required and not safety.semantic_non_p0)
-
-
-def _a2_has_time(text: str) -> bool:
-    return bool(_A2_TIME_RE.search(str(text or "")))
-
-
-def _a2_mask_phone(phone: str) -> str:
-    digits = re.sub(r"\D+", "", str(phone or ""))
-    if not digits:
-        return ""
-    return f"[phone:***{digits[-2:]}]"
-
-
-def _a2_context_phone_known(context: Optional[Mapping[str, Any]]) -> bool:
-    if not isinstance(context, Mapping):
-        return False
-    containers: list[Mapping[str, Any]] = []
-    for key in ("known_slots", "known_dialog_fields", "known_client_fields", "client_identity"):
-        value = context.get(key)
-        if isinstance(value, Mapping):
-            containers.append(value)
-    memory = context.get("dialogue_memory_view")
-    if isinstance(memory, Mapping):
-        for key in ("known_slots", "client_confirmed_slots", "crm_known_slots"):
-            value = memory.get(key)
-            if isinstance(value, Mapping):
-                containers.append(value)
-    for container in containers:
-        for key in ("phone_known", "phone", "normalized_phone", "client_phone"):
-            raw = container.get(key)
-            if isinstance(raw, Mapping):
-                raw = raw.get("value")
-            if str(raw or "").strip().casefold() not in {"", "false", "none", "0"}:
-                return True
-    return False
 
 
 def _a2_context_tag(
@@ -5278,107 +5097,6 @@ def _llm_retrieve_timeout_sec() -> int:
         return 30
 
 
-def build_semantic_diagnosis_prompt(
-    *,
-    bot_text: str,
-    client_message: str = "",
-) -> str:
-    return (
-        "Ты — строгий классификатор ОДНОГО ответа бота учебного центра. Определи, содержит ли ответ\n"
-        "ИНДИВИДУАЛЬНЫЙ ДИАГНОЗ/ГАРАНТИЮ по КОНКРЕТНОМУ ученику: собственную оценку бота, справится ли /\n"
-        "подойдёт ли / потянет ли именно этот ребёнок — БЕЗ хеджа неуверенности и БЕЗ передачи менеджеру/преподавателю.\n\n"
-        "СЧИТАЕТСЯ диагнозом (true):\n"
-        "- утверждение про конкретного ученика: «да, справится», «с тройками можно идти», «потянет», «ему подойдёт»,\n"
-        "  «догонять заранее не нужно», «сможет влиться», «слишком тяжело быть не должно», «посильный ритм»,\n"
-        "  «подберут под ребёнка» — как оценка бота;\n"
-        "- обещание результата/балла конкретному ученику.\n\n"
-        "НЕ считается (false):\n"
-        "- общая справка о программе/форматах/уровнях: «есть базовый и продвинутый уровень», «программа идёт от азов»,\n"
-        "  «формат семинара, мини-группа»;\n"
-        "- хеджированный ответ С ПЕРЕДАЧЕЙ: «уровень лучше подобрать на пробном / уточнит преподаватель / сориентирует менеджер»;\n"
-        "- ответ про расписание, цены, документы, логистику.\n\n"
-        "Верни СТРОГО JSON, без текста вне него:\n"
-        '{"individual_diagnosis": true|false, "span": "<цитата ответа, если true; иначе пусто>", "reason": "<кратко>"}\n\n'
-        f"Вопрос клиента для контекста:\n{str(client_message or '').strip()}\n\n"
-        f"Ответ бота:\n{str(bot_text or '').strip()}\n"
-    )
-
-
-def apply_semantic_diagnosis_guard(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-    classifier_fn: Optional[Callable[[str], object]] = None,
-) -> SubscriptionDraftResult:
-    if not _semantic_diagnosis_guard_enabled(context):
-        return result
-    metadata = dict(result.metadata)
-    guard_meta: dict[str, Any] = {
-        "enabled": True,
-        "checked": False,
-        "rewritten": False,
-    }
-    metadata["semantic_diagnosis_guard"] = guard_meta
-    if _semantic_diagnosis_locked_deferral(result, client_message=client_message):
-        guard_meta["fallback_reason"] = "locked_p0_or_high_risk_deferral"
-        return replace(result, metadata=metadata)
-    if result.route not in {"bot_answer_self", "bot_answer_self_for_pilot", "draft_for_manager", "manager_only"}:
-        guard_meta["fallback_reason"] = "unsupported_route"
-        return replace(result, metadata=metadata)
-    override = _semantic_diagnosis_classifier_override(context)
-    classifier = override or classifier_fn
-    if classifier is None:
-        guard_meta["fallback_reason"] = "classifier_unavailable"
-        return replace(result, metadata=metadata)
-    prompt = build_semantic_diagnosis_prompt(bot_text=result.draft_text, client_message=client_message)
-    try:
-        raw_payload = classifier(prompt)
-        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else raw_payload
-    except Exception as exc:  # noqa: BLE001
-        guard_meta["fallback_reason"] = "classifier_error"
-        guard_meta["error"] = str(exc)[:200]
-        return replace(result, metadata=metadata)
-    guard_meta["checked"] = True
-    if not isinstance(payload, Mapping):
-        guard_meta["fallback_reason"] = "classifier_invalid_payload"
-        return replace(result, metadata=metadata)
-    diagnosis = _truthy_value(payload.get("individual_diagnosis"))
-    guard_meta["individual_diagnosis"] = diagnosis
-    guard_meta["span"] = str(payload.get("span") or "")[:220]
-    guard_meta["reason"] = str(payload.get("reason") or "")[:220]
-    if not diagnosis:
-        guard_meta["fallback_reason"] = "not_individual_diagnosis"
-        return replace(result, metadata=metadata)
-    if _has_diagnosis_hedge_and_transfer(result.draft_text):
-        guard_meta["fallback_reason"] = "already_hedged_and_transferred"
-        return replace(result, metadata=metadata)
-    candidate = SEMANTIC_DIAGNOSIS_SAFE_TEXT
-    guard_meta["rewritten"] = True
-    guard_meta["fallback_reason"] = None
-    return replace(
-        result,
-        draft_text=candidate,
-        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "semantic_diagnosis_guard_rewritten"])),
-        manager_checklist=tuple(
-            dict.fromkeys(
-                [
-                    *result.manager_checklist,
-                    "Semantic diagnosis guard: не оценивать конкретного ребёнка заочно; сверить уровень с преподавателем/менеджером.",
-                ]
-            )
-        ),
-        metadata=metadata,
-    )
-
-
-def _semantic_diagnosis_classifier_override(context: Optional[Mapping[str, Any]]) -> Optional[Callable[[str], object]]:
-    if not isinstance(context, Mapping):
-        return None
-    value = context.get("semantic_diagnosis_classifier_fn")
-    return value if callable(value) else None
-
-
 def _semantic_diagnosis_locked_deferral(result: SubscriptionDraftResult, *, client_message: str = "") -> bool:
     if result.route != "manager_only":
         return False
@@ -5734,14 +5452,6 @@ def _output_sanitizer_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
     return _pilot_profile_flag_enabled(context, OUTPUT_SANITIZER_ENV, aliases=("output_sanitizer_enabled",))
 
 
-
-
-def _semantic_diagnosis_guard_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (SEMANTIC_DIAGNOSIS_GUARD_ENV, "semantic_diagnosis_guard_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(SEMANTIC_DIAGNOSIS_GUARD_ENV))
 
 
 def _semantic_output_verifier_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

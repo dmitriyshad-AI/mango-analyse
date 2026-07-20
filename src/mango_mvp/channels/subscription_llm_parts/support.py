@@ -323,33 +323,6 @@ def _claim_supported_by_facts(claim: str, fact_texts: Sequence[str]) -> bool:
     return any(claim_anchors <= _fact_match_anchors(text) for text in fact_texts)
 
 
-def _keep_answer_supported(claim: str, fact_texts: Sequence[str]) -> bool:
-    normalized_claim = _normalize_fact_match_text(claim)
-    if not normalized_claim:
-        return False
-    normalized_facts = [_normalize_fact_match_text(text) for text in fact_texts if _normalize_fact_match_text(text)]
-    if not normalized_facts:
-        return False
-    hard_claim_anchors = _keep_answer_hard_anchors(claim)
-    if not hard_claim_anchors:
-        return True
-    fact_hard_anchors: set[str] = set()
-    for text in fact_texts:
-        fact_hard_anchors.update(_keep_answer_hard_anchors(text))
-    return hard_claim_anchors <= fact_hard_anchors
-
-
-def _keep_answer_hard_anchors(text: Any) -> set[str]:
-    result: set[str] = set()
-    for anchor in _fact_match_anchors(text):
-        value = str(anchor or "")
-        if value.startswith(("brand:", "unit:", "deadline:")):
-            result.add(value)
-        elif re.search(r"\d", value):
-            result.add(value)
-    return result
-
-
 def _fact_match_anchors(text: Any) -> set[str]:
     source = str(text or "")
     low = source.casefold().replace("ё", "е").replace("\u00a0", " ")

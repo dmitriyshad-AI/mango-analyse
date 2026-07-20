@@ -21,7 +21,7 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_fix_answer_substitution` | `codex/fix-answer-substitution` | Исправление подмены ответа, финального output-gate и измерительного пакета M1. | Удалить после регрейда, влития и подтверждения нового M1-прогона. |
+| `/Users/dmitrijfabarisov/Projects/Mango_fix_answer_substitution` | `codex/cleanup-sleeping-top10` | Точечное удаление доказанно мёртвых веток кода по ТЗ 2026-07-20. | Удалить после регрейда, влития и подтверждения следующего рестарта main. |
 
 ## Runtime-истина
 

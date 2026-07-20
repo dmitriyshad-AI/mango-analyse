@@ -373,7 +373,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _autonomy_policy,
     _autonomy_topic_allowed,
     _compact_conversation_intent_plan_for_metadata,
-    _confirmed_fact_texts,
     _context_has_missing_fact_signal,
     _context_with_dialogue_contract_retrieved_facts,
     _conversation_intent_plan,
@@ -381,8 +380,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _dedupe_sentence,
     _dialog_context_haystack,
     _draft_confirms_payment,
-    _draft_is_low_value_without_exact_fact,
-    _ensure_sentence,
     _extract_numeric_promise_claims,
     _fact_key_root,
     _float_value,
@@ -408,8 +405,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _payment_status,
     _pipeline_contract,
     _pipeline_fact_texts,
-    _prefer_format_facts,
-    _promoted_verified_fact_text,
     _remove_repeated_known_data_questions,
     _result_has_live_status_missing_fact,
     _retrieved_fact_matches_active_brand,
@@ -421,7 +416,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _scope_guard_required_fact_keys,
     _select_nonrepeating_text,
     _semantic_haystack,
-    _soften_current_price_deadline_text,
     _step4_keep_answer_enabled,
     _strict_informational_yield_ok,
     _strip_false_p0_flags,
@@ -1695,6 +1689,7 @@ def _direct_path_finalize_metadata(
 ) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
     direct = dict(metadata.get("direct_path") or {})
+    recorded_before_gate_route = str(direct.get("route_before_gate") or before_gate_route)
     gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
     verifier = metadata.get("semantic_output_verifier") if isinstance(metadata.get("semantic_output_verifier"), Mapping) else {}
     gate_action = str(gate.get("action") or "").strip()
@@ -1718,7 +1713,7 @@ def _direct_path_finalize_metadata(
             reason_evidence = dict(direct.get("reason_evidence") or {})
     direct.update(
         {
-            "route_before_gate": before_gate_route,
+            "route_before_gate": recorded_before_gate_route,
             "route_after": result.route,
             "authoritative_gate_action": gate_action,
             "direct_path_downgraded": downgraded,
@@ -1736,7 +1731,10 @@ def _direct_path_finalize_metadata(
         for item in (direct.get("template_from_kb_trace") or ())
         if isinstance(item, Mapping)
     ]
-    template_trace.extend(dict(item) for item in _template_from_kb_context_trace(context))
+    for item in _template_from_kb_context_trace(context):
+        record = dict(item)
+        if record not in template_trace:
+            template_trace.append(record)
     if template_trace:
         direct["template_from_kb_trace"] = template_trace
         metadata["template_from_kb_trace"] = template_trace
@@ -1747,7 +1745,7 @@ def _direct_path_finalize_metadata(
             gate=gate,
             verifier=verifier,
             answerability_self=answerability_self,
-            before_gate_route=before_gate_route,
+            before_gate_route=recorded_before_gate_route,
             final_route=result.route,
             gate_action=gate_action,
             downgraded=downgraded,
@@ -2587,7 +2585,14 @@ def apply_authoritative_output_gate(
 
     result = apply_output_sanitizer(result, context=context, client_message=client_message)
     result = apply_prose_model_led_quality_guard(result, context=context, client_message=client_message)
-    findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
+    previous_gate = result.metadata.get("authoritative_output_gate") if isinstance(result.metadata, Mapping) else {}
+    previous_findings = previous_gate.get("findings") if isinstance(previous_gate, Mapping) else ()
+    findings = _dedupe_gate_findings(
+        [
+            *(item for item in previous_findings if isinstance(item, Mapping)),
+            *_authoritative_gate_findings(result, client_message=client_message, context=context),
+        ]
+    )
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
     direct_path_keep_text = _authoritative_gate_direct_path_keep_text(result, findings)
     actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade", "downgrade_keep_text"}]

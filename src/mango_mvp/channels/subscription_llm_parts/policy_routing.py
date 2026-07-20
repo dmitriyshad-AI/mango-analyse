@@ -1432,25 +1432,38 @@ def apply_autonomy_matrix_guard(
 
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
-    draft_text = result.draft_text
-    if (
-        _draft_is_low_value_without_exact_fact(draft_text)
-        and not _is_verified_client_safe_template(draft_text)
-        and not _verified_fact_template_blocked_by_inline_handoff(result)
-    ):
-        fact_answer = _promoted_verified_fact_text(result, context=context, client_message=client_message)
-        if fact_answer:
-            draft_text = fact_answer
-            flags.append("autonomy_verified_fact_answer_template_applied")
-            metadata["autonomy_verified_fact_answer_template_applied"] = True
     if original_route == "draft_for_manager":
+        selected_fact_texts = _pipeline_fact_texts(result)
+        supported_selected_answer = bool(
+            selected_fact_texts
+            and _claim_supported_by_facts(result.draft_text, tuple(selected_fact_texts.values()))
+            and not _informational_yield_has_unbacked_concrete_anchors(
+                result.draft_text,
+                facts_blob=" ".join(selected_fact_texts.values()),
+            )
+        )
+        verified_answer = (
+            _is_verified_client_safe_template(result.draft_text)
+            or _verified_informational_answer(result, client_message=client_message, context=context)
+            or supported_selected_answer
+        )
+        if not verified_answer:
+            flags.append("autonomy_matrix_kept_unverified_draft")
+            checklist.append("Черновик не подтверждён выбранными фактами: оставить менеджеру без подстановки другого факта.")
+            metadata["autonomy_matrix_kept_unverified_draft"] = True
+            return replace(
+                result,
+                route="draft_for_manager",
+                safety_flags=tuple(dict.fromkeys(flags)),
+                manager_checklist=tuple(dict.fromkeys(checklist)),
+                metadata=metadata,
+            )
         flags.append("autonomy_matrix_promoted_safe_draft")
         checklist.append("Зелёная тема с проверенным клиентским фактом: можно отвечать автономно в пилотном режиме.")
         metadata["autonomy_matrix_promoted_safe_draft"] = True
     return replace(
         result,
         route="bot_answer_self_for_pilot" if original_route == "draft_for_manager" else result.route,
-        draft_text=draft_text,
         safety_flags=tuple(dict.fromkeys(flags)),
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
@@ -3640,264 +3653,6 @@ def _context_has_missing_fact_signal(context: Optional[Mapping[str, Any]]) -> bo
     if isinstance(facts_context, Mapping):
         return _truthy_value(facts_context.get("facts_missing")) or _truthy_value(facts_context.get("missing"))
     return False
-
-def _draft_is_low_value_without_exact_fact(draft_text: str) -> bool:
-    text = str(draft_text or "").casefold().replace("ё", "е")
-    if not text.strip():
-        return True
-    useful_markers = ("класс", "предмет", "формат", "очно", "онлайн", "цель", "вариант", "курс", "смен", "программа")
-    if any(marker in text for marker in useful_markers) and len(text) >= 160:
-        return False
-    generic_markers = ("уточним", "уточню", "проверим", "проверю", "передам", "свяжется", "вернемся", "вернусь")
-    return any(marker in text for marker in generic_markers) or len(text) < 120
-
-def _verified_fact_template_blocked_by_inline_handoff(result: SubscriptionDraftResult) -> bool:
-    frame = _intent_actions_frame(result)
-    if _intent_actions_frame_fail_reason(frame):
-        return False
-    return str(frame.get("requested_action") or "").strip() == "handoff_manager"
-
-def _promoted_verified_fact_text(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-    client_message: str = "",
-) -> str:
-    facts = _confirmed_fact_texts(context, limit=8 if result.topic_id == "theme:014_format" else 3)
-    if not facts:
-        return ""
-    fact_sentence = " ".join(_ensure_sentence(fact) for fact in facts)
-    prose_model_led = _prose_model_led_enabled(context)
-    if result.topic_id == "theme:001_pricing":
-        asks_validity = any(
-            marker in str(client_message or "").casefold().replace("ё", "е")
-            for marker in ("сейчас", "поменяет", "изменит", "потом", "подраст", "повыс", "актуальн")
-        )
-        suffix = " Это текущая цена на сейчас; позже она может подрасти, точную дату не называю без проверки." if asks_validity else ""
-        known = known_context_fields(context)
-        next_step = (
-            "Дальше можно подобрать подходящую группу и удобный вариант оплаты."
-            if known.get("grade") and (known.get("format") or known.get("subject"))
-            else "Если напишете класс ребёнка и удобный формат, подберём самый подходящий вариант оплаты."
-        )
-        return _soften_current_price_deadline_text(
-            (
-                f"{fact_sentence}{suffix} {next_step}"
-                if prose_model_led
-                else f"По проверенным условиям. {fact_sentence}{suffix} {next_step}"
-            ),
-            client_message=client_message,
-        )
-    if result.topic_id == "theme:013_schedule":
-        if prose_model_led:
-            return f"{fact_sentence} Если напишете класс, предмет и удобный день, подберём ближайший подходящий вариант."
-        return (
-            f"По расписанию есть проверенная информация. {fact_sentence} "
-            "Если напишете класс, предмет и удобный день, подберём ближайший подходящий вариант."
-        )
-    if result.topic_id == "theme:014_format":
-        facts = _prefer_format_facts(facts, query=client_message) or facts
-        fact_sentence = " ".join(_ensure_sentence(fact) for fact in facts[:3])
-        if prose_model_led:
-            return f"{fact_sentence} Если напишете класс и цель обучения, поможем подобрать подходящую группу."
-        return (
-            f"По формату есть проверенная информация. {fact_sentence} "
-            "Если напишете класс и цель обучения, поможем подобрать подходящую группу."
-        )
-    if result.topic_id in {"theme:016_program", "theme:020_enrollment", "theme:021_continuation", "theme:022_age_level_testing", "theme:023_trial_class"}:
-        if prose_model_led:
-            return f"{fact_sentence} Напишите класс, предмет и цель обучения — подберём подходящий следующий шаг."
-        return (
-            f"По программе можно сориентироваться так. {fact_sentence} "
-            "Напишите класс, предмет и цель обучения — подберём подходящий следующий шаг."
-        )
-    if result.topic_id in {"theme:005_discounts", "theme:006_installment"}:
-        if prose_model_led:
-            return f"{fact_sentence} Если напишете курс и формат, подскажем, какой вариант удобнее под вашу ситуацию."
-        return (
-            f"По условиям оплаты есть проверенная информация. {fact_sentence} "
-            "Если напишете курс и формат, подскажем, какой вариант удобнее под вашу ситуацию."
-        )
-    if result.topic_id in {"theme:007_matkap_payment", "theme:008_tax_deduction", "theme:011_contract", "theme:012_certificates"}:
-        if prose_model_led:
-            return f"{fact_sentence} Если напишете, какой именно документ нужен, подскажем следующий шаг."
-        return (
-            f"По документам есть проверенная информация. {fact_sentence} "
-            "Если напишете, какой именно документ нужен, подскажем следующий шаг."
-        )
-    if prose_model_led:
-        return f"{fact_sentence} Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
-    return (
-        f"По проверенной информации. {fact_sentence} "
-        "Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
-    )
-
-def _confirmed_fact_texts(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[str, ...]:
-    if not isinstance(context, Mapping):
-        return ()
-    value = context.get("confirmed_facts")
-    texts: list[str] = []
-    if isinstance(value, Mapping):
-        for item in value.values():
-            cleaned = _client_clean_fact_text(item)
-            if cleaned:
-                texts.append(cleaned)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for item in value:
-            cleaned = _client_clean_fact_text(item)
-            if cleaned:
-                texts.append(cleaned)
-    return tuple(dict.fromkeys(texts[: max(1, limit)]))
-
-def _prefer_format_facts(facts: Sequence[str], *, query: str = "") -> tuple[str, ...]:
-    query_text = str(query or "").casefold().replace("ё", "е")
-    asks_online = has_any_marker(query_text, ("онлайн", "дистанц"))
-    asks_offline = has_any_marker(query_text, ("очно", "офлайн"))
-    preferred: list[str] = []
-    for fact in facts:
-        normalized = fact.casefold().replace("ё", "е")
-        if has_any_marker(normalized, ("учебный год", "уровень обучения")):
-            continue
-        if asks_online and has_marker(normalized, "очно") and not has_marker(normalized.replace("онлайн-платформа", ""), "онлайн"):
-            continue
-        if asks_offline and has_marker(normalized, "онлайн") and not has_marker(normalized, "очно"):
-            continue
-        if has_any_marker(normalized, ("онлайн-платформа", "мтс линк", "webinar", "запис", "очно", "онлайн")):
-            preferred.append(fact)
-    return tuple(preferred)
-
-def _ensure_sentence(text: str) -> str:
-    value = " ".join(str(text or "").split()).rstrip()
-    if not value:
-        return ""
-    return value if value.endswith((".", "!", "?")) else f"{value}."
-
-
-def _soften_current_price_deadline_text(text: str, *, client_message: str = "") -> str:
-    value = " ".join(str(text or "").split())
-    if not value:
-        return ""
-    date_pattern = r"(?:1\s+(?:июля|августа)|0?1[./-]0?[78](?:[./-]\d{2,4})?)"
-    has_deadline = bool(
-        re.search(rf"\b(?:до|после|для\s+периода\s+до)\s+{date_pattern}\b", value, flags=re.I)
-        or re.search(rf"\bдата\s*[—–:;-]\s*{date_pattern}\b", value, flags=re.I)
-        or re.search(rf"\b{date_pattern}\s+2026(?:\s+года?)?\b", value, flags=re.I)
-    )
-    has_future_price_guarantee = bool(
-        re.search(r"\bчерез\s+(?:недел\w*|месяц\w*)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)", value, flags=re.I)
-        or re.search(r"\b(?:значит|по\s+этому\s+правилу)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)", value, flags=re.I)
-        or re.search(r"\bцен\w*[^.?!]{0,80}(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)", value, flags=re.I)
-        or re.search(r"\b(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]{0,80}\bцен\w*", value, flags=re.I)
-    )
-    has_fixation_claim = bool(re.search(r"\bзафиксировать\s+(?:текущ(?:ую|ие)|цену|условия)\b", value, flags=re.I))
-    has_broken_fixation_fragment = "Оформление по текущим условиям проверит менеджер" in value
-    if not has_deadline and not has_future_price_guarantee and not has_fixation_claim and not has_broken_fixation_fragment:
-        return value
-    had_deadline = has_deadline or has_future_price_guarantee
-    value = re.sub(
-        rf"(?:^|(?<=[.!?])\s*)да,\s*уточняю:\s*дата\s*[—–:;-]\s*{date_pattern}(?:\s+2026)?(?:\s+года?)?[.?!]?\s*",
-        "",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        rf"\bдата\s*[—–:;-]\s*{date_pattern}(?:\s+2026)?(?:\s+года?)?[,.!?;]?\s*",
-        "",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        rf"\s*после\s+{date_pattern}(?:\s+2026)?(?:\s+года?)?[^.?!]*(?:[.?!]|$)",
-        ". ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(rf"\s+при\s+оформлении\s+до\s+{date_pattern}(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
-    value = re.sub(rf"\s+при\s+раннем\s+бронировании\s+до\s+{date_pattern}(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
-    value = re.sub(rf"\s+по\s+текущим\s+данным\s+такие\s+условия\s+указаны\s+для\s+периода\s+до\s+{date_pattern}(?:\s+2026)?(?:\s+года?)?;?", "", value, flags=re.I)
-    value = re.sub(rf"\s+до\s+{date_pattern}(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
-    value = re.sub(r"\s*сейчас\s+по\s+дате\s+вы\s+укладываетесь[;,.]?", " Сейчас действует текущая цена,", value, flags=re.I)
-    value = re.sub(r"\s*по\s+дате\s+вы\s+укладываетесь[;,.]?", "", value, flags=re.I)
-    value = re.sub(
-        r"\b(?:вы|мы)\s+(?:успеваете|успеваем|укладываетесь)\b[^.?!]*(?:[.?!]|;)?",
-        "Сейчас действует текущая цена. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\bПосле\s+этой\s+даты\s+стоимость\s+может\s+(?:отличаться|измениться)[.?!]?",
-        "Позже цена может измениться.",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\bЧерез\s+(?:недел\w*|месяц\w*)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)[^.?!]*(?:[.?!]|$)",
-        "Точную дату изменения цены без проверки не называю. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\b(?:Значит|По\s+этому\s+правилу)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)[^.?!]*(?:[.?!]|$)",
-        "Точную дату изменения цены без проверки не называю. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\bцен\w*[^.?!]{0,80}(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]*(?:[.?!]|$)",
-        "Точную дату изменения цены без проверки не называю. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\b(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]{0,80}\bцен\w*[^.?!]*(?:[.?!]|$)",
-        "Точную дату изменения цены без проверки не называю. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\b(?:передать\s+)?оформление\s+по\s+текущим\s+условиям\b",
-        "передать менеджеру проверку оформления по текущим условиям",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"\bзафиксировать\s+(?:текущ(?:ую|ие)|цену|условия)[^.?!]*(?:[.?!]|$)",
-        "Оформление по текущим условиям проверит менеджер. ",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"Раннее\s+бронирование\s+позволяет\s+Оформление\s+по\s+текущим\s+условиям\s+проверит\s+менеджер\.",
-        "Оформление по текущим условиям проверит менеджер.",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"как\s+Оформление\s+по\s+текущим\s+условиям\s+проверит\s+менеджер\.",
-        "как оформить по текущим условиям.",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(
-        r"Чтобы\s+Оформление\s+по\s+текущим\s+условиям\s+проверит\s+менеджер\.",
-        "Чтобы оформить по текущим условиям, менеджер проверит актуальные условия.",
-        value,
-        flags=re.I,
-    )
-    value = _dedupe_sentence(value, "Оформление по текущим условиям проверит менеджер.")
-    value = re.sub(r"\s+([.,!?])", r"\1", value)
-    value = re.sub(r"\.{2,}", ".", value)
-    value = re.sub(r"\s{2,}", " ", value).strip()
-    asks_validity = any(
-        marker in str(client_message or "").casefold().replace("ё", "е")
-        for marker in ("сейчас", "поменяет", "изменит", "остан", "сохран", "потом", "подраст", "повыс")
-    )
-    asks_date = "дат" in str(client_message or "").casefold().replace("ё", "е")
-    if (asks_validity or had_deadline or has_fixation_claim) and "может измениться" not in value and "подраст" not in value:
-        value = value.rstrip(".") + ". Это текущая цена на сейчас; позже она может подрасти."
-    if asks_date and "точную дату изменения цены" not in value.casefold():
-        value = value.rstrip(".") + ". Точную дату изменения цены менеджер подтвердит при оформлении."
-    return value
 
 def _dedupe_sentence(text: str, sentence: str) -> str:
     value = str(text or "")

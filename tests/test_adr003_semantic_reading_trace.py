@@ -65,15 +65,44 @@ def test_direct_path_pipeline_off_masks_keeps_metadata_without_trace(monkeypatch
     baseline = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text="Здравствуйте! Адрес занятий — ул. Краснопрудная, 28.",
-        metadata={"direct_path": {"enabled": True, "model_called": True}, "stable_marker": "base"},
+        metadata={
+            "direct_path": {
+                "enabled": True,
+                "model_called": True,
+                "retrieved_facts": {"address.foton": "Адрес занятий — ул. Краснопрудная, 28."},
+            },
+            "dialogue_contract_pipeline": {
+                "contract": {
+                    "current_question": "Какой адрес занятий?",
+                    "subquestions": [
+                        {
+                            "text": "Какой адрес занятий?",
+                            "answerable": "self",
+                            "needed_fact_keys": ["address.foton"],
+                        }
+                    ],
+                    "answerability": "answer_self",
+                },
+                "retrieved_facts": {"address.foton": "Адрес занятий — ул. Краснопрудная, 28."},
+            },
+            "stable_marker": "base",
+        },
     )
     provider = _FakeDirectPipelineProvider(baseline)
 
-    result = provider.build_draft("Где проходят занятия?", context={"TELEGRAM_DIRECT_PATH": "1"})
+    result = provider.build_draft(
+        "Какой адрес занятий?",
+        context={
+            "TELEGRAM_DIRECT_PATH": "1",
+            "active_brand": "foton",
+            "confirmed_facts": {"address": "Адрес занятий — ул. Краснопрудная, 28."},
+        },
+    )
 
     assert result.route == baseline.route
     assert result.draft_text == baseline.draft_text
-    assert result.metadata == baseline.metadata
+    assert result.metadata["stable_marker"] == "base"
+    assert result.metadata["authoritative_output_gate"]["action"] == "pass"
     assert "semantic_reading_trace" not in result.metadata
     assert "semantic_reading_trace" not in result.metadata["direct_path"]
 

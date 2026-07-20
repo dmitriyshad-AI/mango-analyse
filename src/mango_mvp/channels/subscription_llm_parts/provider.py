@@ -361,7 +361,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _autonomy_policy,
     _autonomy_topic_allowed,
     _compact_conversation_intent_plan_for_metadata,
-    _confirmed_fact_texts,
     _context_has_missing_fact_signal,
     _context_with_dialogue_contract_retrieved_facts,
     _conversation_intent_plan,
@@ -369,8 +368,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _dedupe_sentence,
     _dialog_context_haystack,
     _draft_confirms_payment,
-    _draft_is_low_value_without_exact_fact,
-    _ensure_sentence,
     _extract_numeric_promise_claims,
     _fact_key_root,
     _float_value,
@@ -396,8 +393,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _payment_status,
     _pipeline_contract,
     _pipeline_fact_texts,
-    _prefer_format_facts,
-    _promoted_verified_fact_text,
     _remove_repeated_known_data_questions,
     _result_has_live_status_missing_fact,
     _retrieved_fact_matches_active_brand,
@@ -409,7 +404,6 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _scope_guard_required_fact_keys,
     _select_nonrepeating_text,
     _semantic_haystack,
-    _soften_current_price_deadline_text,
     _step4_keep_answer_enabled,
     _strict_informational_yield_ok,
     _strip_false_p0_flags,
@@ -774,7 +768,15 @@ class SubscriptionLlmDraftProvider:
         decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
         reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
         roles_traced = apply_roles_read_trace(reask_traced, context=context)
-        return apply_semantic_reading_trace_finalize(roles_traced, context=context)
+        before_final_gate_route = roles_traced.route
+        final_gated = apply_authoritative_output_gate(roles_traced, client_message=client_message, context=context)
+        finalized = _direct_path_finalize_metadata(
+            final_gated,
+            before_gate_route=before_final_gate_route,
+            client_message=client_message,
+            context=context,
+        )
+        return apply_semantic_reading_trace_finalize(finalized, context=context)
 
     def _build_direct_path_draft(
         self,

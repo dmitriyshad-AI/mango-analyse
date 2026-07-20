@@ -4477,6 +4477,9 @@ def test_direct_path_deal_action_autonomy_uses_intent_topic() -> None:
             DIRECT_PATH_ENV: "1",
             subscription_llm.DEAL_ACTION_DECISION_ENV: "1",
             "client_safe_fact_verified": True,
+            "confirmed_facts": {
+                "foton_online_price_physics_8": "Фотон: онлайн-курс физики для 8 класса стоит 47 250 ₽."
+            },
             "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
             "conversation_intent_plan": {"topic_id": "theme:001_pricing", "primary_intent": "pricing"},
         },
@@ -8104,31 +8107,6 @@ def test_prose_model_led_prompt_block_is_flagged_only() -> None:
     assert "Качество текста:" in on_prompt
     assert "Не начинай с казённых фраз" in on_prompt
     assert "не обещай место" in on_prompt
-
-
-def test_prose_model_led_verified_fact_fallback_removes_robotic_opening() -> None:
-    result = SubscriptionDraftResult(
-        route="draft_for_manager",
-        topic_id="theme:001_pricing",
-        draft_text="Передам менеджеру.",
-    )
-    context = {
-        "confirmed_facts": {
-            "price": "Фотон: очный курс для 8 класса стоит 44 600 ₽ за семестр.",
-        }
-    }
-
-    off = subscription_llm._promoted_verified_fact_text(result, context=context, client_message="Сколько стоит?")
-    on = subscription_llm._promoted_verified_fact_text(
-        result,
-        context={**context, PROSE_MODEL_LED_ENV: "1"},
-        client_message="Сколько стоит?",
-    )
-
-    assert "По проверенным условиям" in off
-    assert not off.startswith("Да,")
-    assert "сориентирую по проверенной" not in on.casefold()
-    assert "44 600 ₽" in on
 
 
 def test_prose_model_led_off_is_noop_for_placeholder_and_repeat() -> None:

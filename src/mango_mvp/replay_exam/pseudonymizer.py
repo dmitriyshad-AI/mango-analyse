@@ -45,7 +45,10 @@ SENSITIVE_ID_KEY_RE = re.compile(
     re.I,
 )
 TIMESTAMP_KEY_RE = re.compile(r"(^|_)(?:ts|time|timestamp|created_at|updated_at|date|datetime|ts_masked)$", re.I)
-HASH_KEY_RE = re.compile(r"(^|_)(?:hash|digest|sha|sha256)(_|$)", re.I)
+HASH_KEY_RE = re.compile(
+    r"(^|_)(?:hash|digest|sha|sha256)(_|$)|^(?:trigger_turn_id|release_event_id|code_commit|expected_code_commit)$",
+    re.I,
+)
 HEX_DIGEST_RE = re.compile(r"(?=[0-9a-f]*[a-f])[0-9a-f]{16,128}", re.I)
 PSEUDONYMIZED_ID_RE = re.compile(r"^\[[a-z0-9_]+:id_[a-z2-7]{8,}\]$")
 
@@ -68,12 +71,13 @@ PROGRAM_NAME_STOP_PHRASES = (
 )
 
 
-def _has_birth_date_context(text: str) -> bool:
+def _birth_date_has_context(text: str, match: re.Match[str]) -> bool:
+    window = text[max(0, match.start() - 160) : match.end() + 160]
     return bool(
-        BIRTH_DATE_CONTEXT_RE.search(text)
+        BIRTH_DATE_CONTEXT_RE.search(window)
         or (
-            CLASS_CONTEXT_RE.search(text)
-            and (PHONE_RE.search(text) or LABELED_BARE_PHONE_RE.search(text) or "[phone]" in text)
+            CLASS_CONTEXT_RE.search(window)
+            and (PHONE_RE.search(window) or LABELED_BARE_PHONE_RE.search(window) or "[phone]" in window)
         )
     )
 
@@ -92,14 +96,15 @@ class ReplayPseudonymizer:
 
     def text(self, value: str) -> str:
         text = str(value or "")
-        mask_birth_dates = _has_birth_date_context(text)
         text = PHONE_RE.sub("[phone]", text)
         text = LABELED_BARE_PHONE_RE.sub(
             lambda match: f"{match.group('label')}{match.group('separator')}[phone]",
             text,
         )
-        if mask_birth_dates:
-            text = BIRTH_DATE_RE.sub("[date_of_birth]", text)
+        text = BIRTH_DATE_RE.sub(
+            lambda match: "[date_of_birth]" if _birth_date_has_context(text, match) else match.group(0),
+            text,
+        )
         text = EMAIL_RE.sub("[email]", text)
         text = USERNAME_RE.sub("[username]", text)
         text = URL_RE.sub("[url]", text)
@@ -196,8 +201,10 @@ def pii_findings(value: Any, *, allowlist: Iterable[str] = ()) -> list[dict[str,
             add("phone", path, match.group(0))
         for match in LABELED_BARE_PHONE_RE.finditer(text):
             add("phone", path, match.group("number"))
-        if not timestamp_context and _has_birth_date_context(text):
+        if not timestamp_context:
             for match in BIRTH_DATE_RE.finditer(text):
+                if not _birth_date_has_context(text, match):
+                    continue
                 add("date_of_birth", path, match.group(0))
         for match in EMAIL_RE.finditer(text):
             add("email", path, match.group(0))

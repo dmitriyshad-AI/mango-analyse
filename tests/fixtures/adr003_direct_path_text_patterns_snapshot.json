@@ -424,14 +424,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"онлайн-платформа\", \"мтс линк\", \"webinar\", \"запис\", \"очно\", \"онлайн\")",
-    "args_sha256": "4fe3bd95c9fe0051c936c9bbef21f89b88e56bb7c31af95a29b65c2333ce6f3a",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"онлайн\", \"online\", \"дистан\")",
     "args_sha256": "73f73d8ad0a4ec31c14339660adeef2e94a2cdee24aab9915fc670b7fa2eb689",
     "node_kind": "marker_helper_call",
@@ -445,14 +437,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_memory_llm_slot_supported_by_latest_client",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"онлайн\", \"дистанц\")",
-    "args_sha256": "8c8e0b380b851662e5a23a2d5dd35220d4424c11b63cbc3511a1b34d50c0a2c0",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
     "symbol": "has_any_marker"
   },
   {
@@ -493,14 +477,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_normalize_format",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"очно\", \"офлайн\")",
-    "args_sha256": "631e9824a28ec98329b67623496fdd0549771161222042d8cd0fce712dc4fd7b",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
     "symbol": "has_any_marker"
   },
   {
@@ -750,14 +726,6 @@
     "path": "src/mango_mvp/channels/conversation_intent_plan.py",
     "qualname": "_is_payment_terms_question",
     "symbol": "_has_any_marker"
-  },
-  {
-    "args_preview": "(\"учебный год\", \"уровень обучения\")",
-    "args_sha256": "0aed2362bdea3b229cd689b0c093e9ed5011fd9f4e90ede5b8a1bf19f7be4853",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
-    "symbol": "has_any_marker"
   },
   {
     "args_preview": "(\"фрагмент\", \"онлайн\", \"дистанц\")",
@@ -1064,43 +1032,11 @@
     "symbol": "has_marker"
   },
   {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"онлайн\"",
-    "args_sha256": "418f8bc6e6f24a3317a2d5ddd44d8af3ad3a388a3afc4dc40e316131a3bfea06",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
-    "symbol": "has_marker"
-  },
-  {
     "args_preview": "\"оформ\"",
     "args_sha256": "d46bae9f55638295225337ac39f120d8a67f5b9d30c3eeafb4120e11c6248c36",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_is_current_terms_question",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"очно\"",
-    "args_sha256": "c13db22c51439bc0fdb65ad33f0c0a920de7da2ab8aa214b3643b7a5558712c1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
-    "symbol": "has_marker"
-  },
-  {
-    "args_preview": "\"очно\"",
-    "args_sha256": "c13db22c51439bc0fdb65ad33f0c0a920de7da2ab8aa214b3643b7a5558712c1",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_prefer_format_facts",
     "symbol": "has_marker"
   },
   {
@@ -1552,14 +1488,6 @@
     "symbol": "NotIn"
   },
   {
-    "expression_preview": "\"Оформление по текущим условиям проверит менеджер\" in value",
-    "expression_sha256": "ff33c512fbbe99dcd894aa7b3b4fb36e821501b18ff674e677566374c95ae12b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "In"
-  },
-  {
     "expression_preview": "\"ПРЕДЫДУЩАЯ СВОДКА\" in prompt_text",
     "expression_sha256": "85da6c5b69f1a4d385f117b972b04734134406cc56ad5b7251ee85816baf3036",
     "node_kind": "string_contains",
@@ -1693,14 +1621,6 @@
     "node_kind": "string_contains",
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_query_asks_for_date",
-    "symbol": "In"
-  },
-  {
-    "expression_preview": "\"дат\" in str(client_message or \"\").casefold().replace(\"ё\", \"е\")",
-    "expression_sha256": "6450454f17c7016d4683f26c86b84e1f4946fb855773d477aa832c50b2278395",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_soften_current_price_deadline_text",
     "symbol": "In"
   },
   {
@@ -1966,14 +1886,6 @@
     "path": "src/mango_mvp/channels/telegram_pilot_context_builder.py",
     "qualname": "_expand_required_fact_types",
     "symbol": "In"
-  },
-  {
-    "expression_preview": "\"может измениться\" not in value",
-    "expression_sha256": "90d292dd9b702ea660553da56457f902555df5ff7cfcffe0be203eb6da5aac1b",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "NotIn"
   },
   {
     "expression_preview": "\"москва\" in text",
@@ -2272,14 +2184,6 @@
     "symbol": "In"
   },
   {
-    "expression_preview": "\"подраст\" not in value",
-    "expression_sha256": "e2f4e8fbba00b35a136cf07de2b61a012ee1143204fd9935b6ff58b753366411",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "NotIn"
-  },
-  {
     "expression_preview": "\"предмет\" in normalized",
     "expression_sha256": "5e3f69434ff718e2b726f8cf9f2afeb947850065e8e6bbc4015fa8ea67193b4e",
     "node_kind": "string_contains",
@@ -2406,14 +2310,6 @@
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "_risk_flags_from_safety",
     "symbol": "In"
-  },
-  {
-    "expression_preview": "\"точную дату изменения цены\" not in value.casefold()",
-    "expression_sha256": "fbb4b4b29c126b8cbde495f457ed70e6f666f7916eb946f5bc40e964dbe3d493",
-    "node_kind": "string_contains",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "NotIn"
   },
   {
     "expression_preview": "\"уров\" in normalized",
@@ -2704,46 +2600,6 @@
     "target": ""
   },
   {
-    "flags": "\" \"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\s{2,}",
-    "pattern_sha256": "58bd9b945a05045214d8b932491aff633f1cb79878ca46d9f060e3422b800f71",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": ""
-  },
-  {
-    "flags": "\" Сейчас действует текущая цена,\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\s*сейчас\\s+по\\s+дате\\s+вы\\s+укладываетесь[;,.]?",
-    "pattern_sha256": "efd287cc059bd18e59728bc148b7ed937449eaa22c56761368433587198b1164",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\". \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\s*после\\s+{date_pattern}(?:\\s+2026)?(?:\\s+года?)?[^.?!]*(?:[.?!]|$)\"",
-    "pattern_sha256": "2823bb898a10e2fd31ab94f65cb595de0214df7dd8200f986d652b3daf390833",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\".\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\.{2,}",
-    "pattern_sha256": "51bdd69a3ca180bab5afed68a849169720076545c1417b88588d4cc8fc3b6cc8",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
     "flags": "\"\" | re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
@@ -2752,76 +2608,6 @@
     "qualname": "_extract_json_object",
     "symbol": "re.sub",
     "target": "raw"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\s*по\\s+дате\\s+вы\\s+укладываетесь[;,.]?",
-    "pattern_sha256": "55b044aee1efbc91498056e30d5fbfb3c82921764258d6ddfa29560af3814266",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"(?:^|(?<=[.!?])\\s*)да,\\s*уточняю:\\s*дата\\s*[—–:;-]\\s*{date_pattern}(?:\\s+2026)?(?:\\s+года?)?[.?!]?\\s*\"",
-    "pattern_sha256": "7c5e67f418862083222063707d8573e2949cb884a0f2e43b050c89ef517f2ae3",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\bдата\\s*[—–:;-]\\s*{date_pattern}(?:\\s+2026)?(?:\\s+года?)?[,.!?;]?\\s*\"",
-    "pattern_sha256": "33e4b58338160e2ba8dcd668d29e43ce0279c3b920c91252442c175635dcee08",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\s+до\\s+{date_pattern}(?:\\s+2026)?(?:\\s+года?)?\"",
-    "pattern_sha256": "9afb0cf4f0872f8df423bd9854eb861645f7ed6c64384bc16f819356e33ef018",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\s+по\\s+текущим\\s+данным\\s+такие\\s+условия\\s+указаны\\s+для\\s+периода\\s+до\\s+{date_pattern}(?:\\s+2026)?(?:\\s+года?)?;?\"",
-    "pattern_sha256": "db5bcf4c1a2d65ade7ec94ec7b73de22a5f322854dcd5e1f9888641e42919d35",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\s+при\\s+оформлении\\s+до\\s+{date_pattern}(?:\\s+2026)?(?:\\s+года?)?\"",
-    "pattern_sha256": "78ba924d1340dfae50c203275290855904a3a31641483ccca688d06d44e2724b",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\s+при\\s+раннем\\s+бронировании\\s+до\\s+{date_pattern}(?:\\s+2026)?(?:\\s+года?)?\"",
-    "pattern_sha256": "ee8079cf7e3637eb6913ee8604882e2ede6bcddeec4fd45fc05e2710c67c5190",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
   },
   {
     "flags": "\"\" | re.I",
@@ -2972,116 +2758,6 @@
     "qualname": "_clean_child_key",
     "symbol": "re.sub",
     "target": ""
-  },
-  {
-    "flags": "\"Оформление по текущим условиям проверит менеджер. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bзафиксировать\\s+(?:текущ(?:ую|ие)|цену|условия)[^.?!]*(?:[.?!]|$)",
-    "pattern_sha256": "9ef849460dd230b1b9575b8aca46d46f4615d85b1429fea057e2f8fc298515ad",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Оформление по текущим условиям проверит менеджер.\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "Раннее\\s+бронирование\\s+позволяет\\s+Оформление\\s+по\\s+текущим\\s+условиям\\s+проверит\\s+менеджер\\.",
-    "pattern_sha256": "deff57abbcb8283ed5ad79c074cc8c7c90de83cd752146a9d2d6b6b97d25120f",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Позже цена может измениться.\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bПосле\\s+этой\\s+даты\\s+стоимость\\s+может\\s+(?:отличаться|измениться)[.?!]?",
-    "pattern_sha256": "50e908aef3c7c7686f0062bad222f32f0f92bb7b124641a3a5a7ff7708a0a91d",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Сейчас действует текущая цена. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:вы|мы)\\s+(?:успеваете|успеваем|укладываетесь)\\b[^.?!]*(?:[.?!]|;)?",
-    "pattern_sha256": "d9f1a3d95232b5f8f6f08160f6e2163f431e1cbb6c152f32bd6191bc8ffe5851",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Точную дату изменения цены без проверки не называю. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:Значит|По\\s+этому\\s+правилу)[^.?!]*(?:не\\s+(?:должн\\w*|будет)|остан\\w*|сохран\\w*)[^.?!]*(?:друг\\w*|измен\\w*|помен\\w*|цен\\w*)[^.?!]*(?:[.?!]|$)",
-    "pattern_sha256": "78ecad82b544aadb09f966da5e6a34fd651cea3d0f1efa23e9c157a7a1b7cf60",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Точную дату изменения цены без проверки не называю. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:не\\s+(?:измен\\w*|поменя\\w*)|остан\\w*|сохран\\w*)[^.?!]{0,80}\\bцен\\w*[^.?!]*(?:[.?!]|$)",
-    "pattern_sha256": "01db8dc2dc614c44207e4c9b6312e5889929f8db794495cb262cdbea25edfd1a",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Точную дату изменения цены без проверки не называю. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bЧерез\\s+(?:недел\\w*|месяц\\w*)[^.?!]*(?:не\\s+(?:должн\\w*|будет)|остан\\w*|сохран\\w*)[^.?!]*(?:друг\\w*|измен\\w*|помен\\w*|цен\\w*)[^.?!]*(?:[.?!]|$)",
-    "pattern_sha256": "753b690095c6031f2b0bade44cdc6dc20962cba5dd613d46e7e7bc9b8f0392df",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Точную дату изменения цены без проверки не называю. \" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bцен\\w*[^.?!]{0,80}(?:не\\s+(?:измен\\w*|поменя\\w*)|остан\\w*|сохран\\w*)[^.?!]*(?:[.?!]|$)",
-    "pattern_sha256": "941037a4ea2652844981bf5d2f4a7e2d2a3272d0aa561527f1e14e647327ac3c",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"Чтобы оформить по текущим условиям, менеджер проверит актуальные условия.\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "Чтобы\\s+Оформление\\s+по\\s+текущим\\s+условиям\\s+проверит\\s+менеджер\\.",
-    "pattern_sha256": "8d39c3c91c7980b95468b0e975e67def765dfba09e7be7f31db5d237daddf454",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"как оформить по текущим условиям.\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "как\\s+Оформление\\s+по\\s+текущим\\s+условиям\\s+проверит\\s+менеджер\\.",
-    "pattern_sha256": "25a5579119d17692a96b67d70fac2ccbaf91be395eccce23eac171d3de1a40eb",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "\"передать менеджеру проверку оформления по текущим условиям\" | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:передать\\s+)?оформление\\s+по\\s+текущим\\s+условиям\\b",
-    "pattern_sha256": "17272ce5bc23eda8b95d4e40fd920bf68754e2b3e9fcc2a4c8ea3f3bfa40c29d",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.sub",
-    "target": "value"
   },
   {
     "flags": "_DIRECT_PATH_SCOPE_OVERCLAIM_DOT_SENTINEL",
@@ -3940,16 +3616,6 @@
     "pattern_preview": "\\s+([,.;:!?])",
     "pattern_sha256": "ab0c8b55b6b94b1f0481c30a8b15be44b8f87d7aab9a953e5f74349c3c5b985a",
     "qualname": "_normalize_output_sanitizer_text",
-    "symbol": "re.sub",
-    "target": "value"
-  },
-  {
-    "flags": "r\"\\1\"",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\s+([.,!?])",
-    "pattern_sha256": "739bbdac7d806ada7a359ecc751dc3ae4af0c6ffe15d688f47417d8697c9cde2",
-    "qualname": "_soften_current_price_deadline_text",
     "symbol": "re.sub",
     "target": "value"
   },
@@ -6330,86 +5996,6 @@
     "pattern_preview": "pattern",
     "pattern_sha256": "1fd38d5cbd2a997b91f725cb1cb0a710849db30dac491ee42e92443fd8e3c1a2",
     "qualname": "_has_precise_claim",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:значит|по\\s+этому\\s+правилу)[^.?!]*(?:не\\s+(?:должн\\w*|будет)|остан\\w*|сохран\\w*)[^.?!]*(?:друг\\w*|измен\\w*|помен\\w*|цен\\w*)",
-    "pattern_sha256": "63d6eb0833d3d0a586d33965904bdd3f5726d010214f5395c67fb20ff9a6affa",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\b(?:не\\s+(?:измен\\w*|поменя\\w*)|остан\\w*|сохран\\w*)[^.?!]{0,80}\\bцен\\w*",
-    "pattern_sha256": "5286f0c133f32ed386dc4ca1983aae2d45fdbf5f98379fda5fc1dc09dcc67349",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bзафиксировать\\s+(?:текущ(?:ую|ие)|цену|условия)\\b",
-    "pattern_sha256": "4eb9da09b2fdafb8f105fdf61c3c6effc4aaff5e1e41c49253b746c33bd8d32f",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bцен\\w*[^.?!]{0,80}(?:не\\s+(?:измен\\w*|поменя\\w*)|остан\\w*|сохран\\w*)",
-    "pattern_sha256": "f45c316e8c94306c4c902908234e85a56974dc97590940c093f5d082c06941e3",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "\\bчерез\\s+(?:недел\\w*|месяц\\w*)[^.?!]*(?:не\\s+(?:должн\\w*|будет)|остан\\w*|сохран\\w*)[^.?!]*(?:друг\\w*|измен\\w*|помен\\w*|цен\\w*)",
-    "pattern_sha256": "9cbcf2a2526edf2be5db1154721fab8020565d8f6e9237331af02d437795d849",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\b(?:до|после|для\\s+периода\\s+до)\\s+{date_pattern}\\b\"",
-    "pattern_sha256": "29f46695a3819c3accea6a366a37a40fec785aa07ecefdbb9f510f727ff3d452",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\b{date_pattern}\\s+2026(?:\\s+года?)?\\b\"",
-    "pattern_sha256": "d2155bf748e4566d6c52aa522b6faf3eccd17e9c90ad0ece97dfc5e918fa45f6",
-    "qualname": "_soften_current_price_deadline_text",
-    "symbol": "re.search",
-    "target": ""
-  },
-  {
-    "flags": "value | re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
-    "pattern_preview": "rf\"\\bдата\\s*[—–:;-]\\s*{date_pattern}\\b\"",
-    "pattern_sha256": "c0cfa6a985667f7022edc71e7954162fffc703d782c1606494da1c435f7eb20b",
-    "qualname": "_soften_current_price_deadline_text",
     "symbol": "re.search",
     "target": ""
   },

@@ -33,6 +33,10 @@ Wappi
   фактов.
 - `customer_timeline/bot_safe_runtime_context.py` допускает в контекст только
   разрешённую bot-safe память.
+- `apply_payment_confirmation_guard()` и `apply_unstated_subject_guard()`
+  вызываются в `provider.py` перед общим `apply_authoritative_output_gate()`.
+  Они включаются только явным `TELEGRAM_PAYMENT_SUBJECT_GUARDS=1`; по умолчанию
+  и в профиле `pilot_gold_v1` флаг выключен до M1-приёмки и решения владельца.
 
 ## Несжимаемые границы
 

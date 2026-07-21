@@ -21,7 +21,8 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `codex/payment-subject-guards` | Подключение двух существующих защит ответа за общим default-OFF флагом и подготовка приватного M1-экзамена. | Удалить после M1 PASS, влития принятого кода и live-приёмки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `exam/payment-subject-guards` | Неизменяемый приватный M1-экзамен двух защит; production-код уже в `main`, флаг OFF. | Удалить после завершения и смысловой приёмки M1. |
+| `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
 
 ## Runtime-истина
 
@@ -35,6 +36,13 @@
   путь к базе не меняет.
 - Старый launchd job `com.mango.calls-two-processes` и его plist удалены;
   рабочими остаются только отдельные процессы A/B.
+
+## Завершено 2026-07-21
+
+- `codex/payment-subject-guards` влита fast-forward в `main`; две защиты
+  остаются default-OFF до результата M1 и отдельного решения владельца;
+- feature-ветка удаляется после публикации `main`; её коммит остаётся в истории
+  `main`, поэтому отдельная копия исходников не нужна.
 
 ## Удалено 2026-07-19
 

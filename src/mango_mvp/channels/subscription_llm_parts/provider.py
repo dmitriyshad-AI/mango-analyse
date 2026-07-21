@@ -108,6 +108,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _pilot_profile_flag_enabled,
     _pilot_profile_default_on_flag_enabled,
     _pilot_profile_overrides,
+    PAYMENT_SUBJECT_GUARDS_ENV,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
     _seats_default_open_allowlisted_result,
@@ -747,7 +748,11 @@ class SubscriptionLlmDraftProvider:
         reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
         roles_traced = apply_roles_read_trace(reask_traced, context=context)
         before_final_gate_route = roles_traced.route
-        final_gated = apply_authoritative_output_gate(roles_traced, client_message=client_message, context=context)
+        protected = roles_traced
+        if _pilot_profile_default_on_flag_enabled(context, PAYMENT_SUBJECT_GUARDS_ENV):
+            protected = apply_payment_confirmation_guard(protected, client_message=client_message, context=context)
+            protected = apply_unstated_subject_guard(protected, client_message=client_message, context=context)
+        final_gated = apply_authoritative_output_gate(protected, client_message=client_message, context=context)
         finalized = _direct_path_finalize_metadata(
             final_gated,
             before_gate_route=before_final_gate_route,

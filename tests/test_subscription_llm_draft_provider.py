@@ -3619,6 +3619,96 @@ class _DirectPathSequenceProvider(SubscriptionLlmDraftProvider):
         return result
 
 
+def test_payment_subject_guards_default_off_keeps_current_output() -> None:
+    claim = "Вижу, что оплата отмечена."
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+        "amo_payment_status": "paid",
+    }
+    default_off = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+    ).build_draft("Прошла ли оплата?", context=context)
+    explicit_off = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+    ).build_draft(
+        "Прошла ли оплата?", context={**context, "TELEGRAM_PAYMENT_SUBJECT_GUARDS": "0"}
+    )
+
+    assert default_off == explicit_off
+    assert "TELEGRAM_PAYMENT_SUBJECT_GUARDS" not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert "payment_confirmation_guarded" not in default_off.safety_flags
+
+
+def test_payment_subject_guards_require_two_paid_sources_through_build_draft() -> None:
+    claim = "Вижу, что оплата отмечена."
+    base_context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "TELEGRAM_PAYMENT_SUBJECT_GUARDS": "1",
+        "amo_payment_status": "paid",
+    }
+    unverified = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+    ).build_draft("Прошла ли оплата?", context=base_context)
+    verified = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+    ).build_draft(
+        "Прошла ли оплата?",
+        context={**base_context, "tallanto_payment_status": "paid"},
+    )
+
+    assert unverified.route == "manager_only"
+    assert unverified.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "payment_confirmation_without_two_sources" in unverified.safety_flags
+    assert verified.route == "bot_answer_self_for_pilot"
+    assert verified.draft_text == claim
+
+
+def test_payment_subject_guards_remove_unstated_subject_through_build_draft() -> None:
+    draft = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Советую математику.",
+        topic_id="theme:001_programs",
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "TELEGRAM_PAYMENT_SUBJECT_GUARDS": "1",
+    }
+    result = _DirectPathProvider(draft).build_draft("Какие курсы есть?", context=context)
+    client_named = _DirectPathProvider(draft).build_draft("А математика есть?", context=context)
+
+    assert result.route == "draft_for_manager"
+    assert "математи" not in result.draft_text.casefold()
+    assert "unstated_subject_guarded" in result.safety_flags
+    assert client_named.route == "bot_answer_self_for_pilot"
+    assert client_named.draft_text == "Советую математику."
+    assert "unstated_subject_guarded" not in client_named.safety_flags
+
+
+def test_payment_subject_guards_keep_subject_confirmed_in_memory() -> None:
+    draft = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Советую физику.",
+        topic_id="theme:001_programs",
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "TELEGRAM_PAYMENT_SUBJECT_GUARDS": "1",
+        "dialogue_memory_view": {"known_slots": {"subject": "физика"}},
+    }
+
+    result = _DirectPathProvider(draft).build_draft("Какие курсы есть?", context=context)
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Советую физику."
+    assert "unstated_subject_guarded" not in result.safety_flags
+
+
 class _DirectPathRetrieverProvider(_DirectPathProvider):
     def __init__(self, result: SubscriptionDraftResult, retriever_payload: Mapping[str, object] | Exception) -> None:
         super().__init__(result)

@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-19.
+Обновлено: 2026-07-21.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -21,7 +21,7 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_fix_answer_substitution` | `codex/cleanup-sleeping-top10` | Точечное удаление доказанно мёртвых веток кода по ТЗ 2026-07-20. | Удалить после регрейда, влития и подтверждения следующего рестарта main. |
+| `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `codex/payment-subject-guards` | Подключение двух существующих защит ответа за общим default-OFF флагом и подготовка приватного M1-экзамена. | Удалить после M1 PASS, влития принятого кода и live-приёмки. |
 
 ## Runtime-истина
 

@@ -10,6 +10,7 @@ from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answ
 
 from .machine_gate import number_index, run_machine_gate
 from .models import BotReplayResult, ReplayCase, ReplayMessage
+from .pseudonymizer import public_contact_allowlist
 
 
 Provider = Callable[[ReplayCase, Mapping[str, object]], BotReplayResult]
@@ -34,6 +35,7 @@ _BLOCKED_METADATA_KEYS = frozenset(
         "history",
         "recent_messages",
         "prefix_messages",
+        "previous_turn",
         "raw",
         "blob",
     }
@@ -257,8 +259,14 @@ def _run_dialog_cases(dialog_cases: Sequence[ReplayCase], provider: Provider) ->
                 "crm_context": {},
             },
         )
+        client_safe_fact_texts = _current_turn_client_safe_fact_texts(result.metadata)
         client_safe_numbers = _current_turn_client_safe_numbers(result.metadata)
-        gate = run_machine_gate(case, result, client_safe_numbers=client_safe_numbers)
+        gate = run_machine_gate(
+            case,
+            result,
+            client_safe_numbers=client_safe_numbers,
+            pii_allowlist=public_contact_allowlist(client_safe_fact_texts),
+        )
         next_memory = update_dialogue_memory_after_answer(
             dialogue_memory,
             answer_text=result.bot_text,

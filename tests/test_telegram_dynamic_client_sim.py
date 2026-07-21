@@ -4278,7 +4278,7 @@ def test_human_review_rows_prioritize_explicit_hard_gate_over_number_audit():
     assert rows[0]["hard_gate_cause"] == "bot_issue"
 
 
-def test_metric_intervals_request_second_run_when_hard_gate_ci_crosses_target():
+def test_metric_intervals_use_exact_zero_failure_gate_for_small_sample():
     intervals = sim.build_metric_intervals(
         dialogs=10,
         pass_count=10,
@@ -4287,6 +4287,29 @@ def test_metric_intervals_request_second_run_when_hard_gate_ci_crosses_target():
         send_unedited={"unedited_rate": 1.0, "unedited_autonomous_turns": 10, "candidate_autonomous_turns": 10, "unedited_rate_ci": {"low": 0.9, "high": 1.0}},
     )
 
+    assert intervals["gate_policy"] == "exact_zero_failures"
+    assert intervals["needs_second_run"] is False
+
+    failed = sim.build_metric_intervals(
+        dialogs=10,
+        pass_count=9,
+        hard_gate_pass_count=9,
+        tone_scores=[90] * 10,
+        send_unedited={"unedited_rate": 1.0, "unedited_autonomous_turns": 10, "candidate_autonomous_turns": 10, "unedited_rate_ci": {"low": 0.9, "high": 1.0}},
+    )
+    assert set(failed["needs_second_run_reasons"]) == {"dialog_failure_observed", "hard_gate_failure_observed"}
+
+
+def test_metric_intervals_keep_confidence_gate_for_large_sample():
+    intervals = sim.build_metric_intervals(
+        dialogs=60,
+        pass_count=60,
+        hard_gate_pass_count=60,
+        tone_scores=[90] * 60,
+        send_unedited={"unedited_rate": 1.0, "unedited_autonomous_turns": 60, "candidate_autonomous_turns": 60, "unedited_rate_ci": {"low": 0.94, "high": 1.0}},
+    )
+
+    assert intervals["gate_policy"] == "confidence_intervals"
     assert "hard_gate_pass_rate_ci_crosses_target" in intervals["needs_second_run_reasons"]
 
 

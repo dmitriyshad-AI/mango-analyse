@@ -4960,20 +4960,26 @@ def build_metric_intervals(
         },
     }
     reasons: list[str] = []
-    for key in ("dialog_pass_rate", "hard_gate_pass_rate", "send_unedited_rate"):
-        metric = intervals[key]
-        ci = metric.get("ci")
-        value = metric.get("value")
-        target = metric.get("target")
-        if value is None or not isinstance(ci, Mapping) or target is None:
-            continue
-        if ci.get("low") <= target <= ci.get("high"):
-            reasons.append(f"{key}_ci_crosses_target")
+    small_sample = 0 < dialogs < 60
+    if small_sample:
+        if pass_count < dialogs:
+            reasons.append("dialog_failure_observed")
+    else:
+        for key in ("dialog_pass_rate", "hard_gate_pass_rate", "send_unedited_rate"):
+            metric = intervals[key]
+            ci = metric.get("ci")
+            value = metric.get("value")
+            target = metric.get("target")
+            if value is None or not isinstance(ci, Mapping) or target is None:
+                continue
+            if ci.get("low") <= target <= ci.get("high"):
+                reasons.append(f"{key}_ci_crosses_target")
     hard_metric = intervals["hard_gate_pass_rate"]
     if hard_metric.get("value") is not None and hard_metric.get("value") < 1:
         reasons.append("hard_gate_failure_observed")
     return {
         "metrics_intervals": intervals,
+        "gate_policy": "exact_zero_failures" if small_sample else "confidence_intervals",
         "needs_second_run": bool(reasons),
         "needs_second_run_reasons": reasons,
     }

@@ -46,10 +46,12 @@ SENSITIVE_ID_KEY_RE = re.compile(
 )
 TIMESTAMP_KEY_RE = re.compile(r"(^|_)(?:ts|time|timestamp|created_at|updated_at|date|datetime|ts_masked)$", re.I)
 HASH_KEY_RE = re.compile(
-    r"(^|_)(?:hash|digest|sha|sha256)(_|$)|^(?:trigger_turn_id|release_event_id|code_commit|expected_code_commit)$",
+    r"(^|_)(?:hash|digest|sha|sha256)(_|$)|^(?:trigger_turn_id|release_event_id)$",
     re.I,
 )
+COMMIT_KEY_RE = re.compile(r"(^|_)commit(_|$)", re.I)
 HEX_DIGEST_RE = re.compile(r"(?=[0-9a-f]*[a-f])[0-9a-f]{16,128}", re.I)
+FULL_GIT_SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.I)
 PSEUDONYMIZED_ID_RE = re.compile(r"^\[[a-z0-9_]+:id_[a-z2-7]{8,}\]$")
 
 FAKE_NAMES = (
@@ -156,8 +158,8 @@ class ReplayPseudonymizer:
         return value
 
 
-def pii_signals(value: Any) -> list[str]:
-    return sorted({finding["kind"] for finding in pii_findings(value)})
+def pii_signals(value: Any, *, allowlist: Iterable[str] = ()) -> list[str]:
+    return sorted({finding["kind"] for finding in pii_findings(value, allowlist=allowlist)})
 
 
 def _allowlist_values(values: Iterable[str] = ()) -> set[str]:
@@ -239,6 +241,8 @@ def pii_findings(value: Any, *, allowlist: Iterable[str] = ()) -> list[dict[str,
         elif isinstance(item, str):
             if HASH_KEY_RE.search(key_s) and HEX_DIGEST_RE.fullmatch(item):
                 return
+            if COMMIT_KEY_RE.search(key_s) and FULL_GIT_SHA_RE.fullmatch(item):
+                return
             scan_text(item, path, timestamp_context=timestamp_context)
         elif isinstance(item, (int, float)) and not timestamp_context:
             scan_text(str(item), path, timestamp_context=False)
@@ -247,10 +251,24 @@ def pii_findings(value: Any, *, allowlist: Iterable[str] = ()) -> list[dict[str,
     return findings
 
 
+def public_contact_allowlist(texts: Iterable[str]) -> tuple[str, ...]:
+    contacts: set[str] = set()
+    for text_blob in texts:
+        lowered = text_blob.casefold()
+        if not any(marker in lowered for marker in ("телефон", "почта", "email", "telegram", "контакт", "писать можно")):
+            continue
+        contacts.update(match.group(0) for match in PHONE_RE.finditer(text_blob))
+        contacts.update(match.group("number") for match in LABELED_BARE_PHONE_RE.finditer(text_blob))
+        contacts.update(match.group(0) for match in EMAIL_RE.finditer(text_blob))
+        contacts.update(match.group(0) for match in USERNAME_RE.finditer(text_blob))
+        contacts.update(match.group(0) for match in URL_RE.finditer(text_blob))
+    return tuple(sorted(contacts))
+
+
 def kb_contact_allowlist(snapshot_path: Path) -> tuple[str, ...]:
     payload = json.loads(snapshot_path.expanduser().read_text(encoding="utf-8"))
     facts = payload.get("facts") or payload.get("facts_registry") or []
-    contacts: set[str] = set()
+    contact_texts: list[str] = []
 
     def collect_texts(item: Any) -> list[str]:
         if isinstance(item, str):
@@ -274,9 +292,5 @@ def kb_contact_allowlist(snapshot_path: Path) -> tuple[str, ...]:
         lowered = text_blob.casefold()
         if not any(marker in lowered for marker in ("телефон", "почта", "email", "telegram", "контакт", "писать можно")):
             continue
-        contacts.update(match.group(0) for match in PHONE_RE.finditer(text_blob))
-        contacts.update(match.group("number") for match in LABELED_BARE_PHONE_RE.finditer(text_blob))
-        contacts.update(match.group(0) for match in EMAIL_RE.finditer(text_blob))
-        contacts.update(match.group(0) for match in USERNAME_RE.finditer(text_blob))
-        contacts.update(match.group(0) for match in URL_RE.finditer(text_blob))
-    return tuple(sorted(contacts))
+        contact_texts.append(text_blob)
+    return public_contact_allowlist(contact_texts)

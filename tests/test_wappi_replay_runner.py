@@ -28,6 +28,35 @@ def test_replay_runner_parallelizes_by_dialog_and_reports_zero_client_llm(tmp_pa
     assert (tmp_path / "replay_results.jsonl").exists()
 
 
+def test_replay_runner_threads_pii_allowlist_into_machine_gate() -> None:
+    cases = [ReplayCase("d", "p", "c", "d#1", "foton", "Как связаться?", "")]
+
+    def provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        del case, context
+        return BotReplayResult(
+            route="draft_for_manager",
+            bot_text="Телефон центра: 8 (495) 500-25-88.",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "contacts_foton.phone": "Фотон: контакты — телефон 8 (495) 500-25-88."
+                    }
+                }
+            },
+        )
+
+    rows = run_replay_exam(cases, provider)
+
+    assert rows[0]["machine_gate"]["passed"] is True
+
+    def untrusted_provider(case: ReplayCase, context: dict[str, object]) -> BotReplayResult:
+        del case, context
+        return BotReplayResult(route="draft_for_manager", bot_text="Телефон центра: 8 (495) 500-25-88.")
+
+    untrusted_rows = run_replay_exam(cases, untrusted_provider)
+    assert "pii_in_bot_text" in untrusted_rows[0]["machine_gate"]["flags"]
+
+
 def test_replay_runner_threads_dialogue_memory_between_turns() -> None:
     cases = [
         ReplayCase("d", "p", "c", "d#1", "foton", "Нужна физика", "Ответ", turn_index=1),
@@ -197,8 +226,10 @@ def test_replay_runner_does_not_allow_numbers_from_previous_turn_retrieved_facts
             bot_text="Стоимость сейчас — 12 345 ₽.",
             metadata={
                 "previous_turn": {
-                    "retrieved_facts": {
-                        "old.price": {"client_safe_text": "Стоимость в прошлом ответе — 12 345 ₽."}
+                    "direct_path": {
+                        "retrieved_facts": {
+                            "old.price": {"client_safe_text": "Стоимость в прошлом ответе — 12 345 ₽."}
+                        }
                     }
                 },
                 "direct_path": {"retrieved_facts": {}},

@@ -67,8 +67,17 @@ def test_pseudonymized_ids_are_not_pii_signals() -> None:
 
 def test_hash_values_are_not_raw_id_findings_but_plain_ids_are() -> None:
     digest_with_phone_shape = "abcde79001234567" + "a" * 48
-    assert pii_findings({"draft_before_hash": digest_with_phone_shape, "sha256": "b" * 64}) == []
+    assert pii_findings(
+        {
+            "draft_before_hash": digest_with_phone_shape,
+            "sha256": "b" * 64,
+            "base_exam_commit": "f276f3d56009571dbf93ac87fe305aea640e70fb",
+        }
+    ) == []
     assert {finding["kind"] for finding in pii_findings({"draft_before_hash": "phone 79001234567"})} == {"phone"}
+    assert {finding["kind"] for finding in pii_findings({"deployment_commit": "phone 79001234567"})} == {"phone"}
+    assert {finding["kind"] for finding in pii_findings({"deployment_commit": "12345678901234567890"})} == {"raw_id"}
+    assert {finding["kind"] for finding in pii_findings({"deployment_commit": "a" * 39})} == {"raw_id"}
     assert {finding["kind"] for finding in pii_findings({"chat_id": "12345678901234567890"})} == {"raw_id_key", "raw_id"}
 
 

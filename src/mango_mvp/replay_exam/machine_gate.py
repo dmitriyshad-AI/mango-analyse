@@ -26,7 +26,8 @@ class MachineGateResult:
 
 def extract_numbers(text: str) -> set[str]:
     result: set[str] = set()
-    for match in NUMBER_RE.finditer(str(text or "")):
+    value = re.sub(r"(?<=\d)[–—−](?=\d)", "-", str(text or ""))
+    for match in NUMBER_RE.finditer(value):
         raw = match.group(0).strip()
         normalized = re.sub(r"\s+", "", raw)
         if normalized:
@@ -55,6 +56,7 @@ def run_machine_gate(
     result: BotReplayResult,
     *,
     client_safe_numbers: Sequence[str] = (),
+    pii_allowlist: Sequence[str] = (),
     judge_payloads: Sequence[object] = (),
 ) -> MachineGateResult:
     flags: list[str] = []
@@ -71,10 +73,10 @@ def run_machine_gate(
         flags.append("other_brand")
     if brand == "unpk" and "фотон" in text:
         flags.append("other_brand")
-    if pii_signals(result.bot_text):
+    if pii_signals(result.bot_text, allowlist=pii_allowlist):
         flags.append("pii_in_bot_text")
     for payload in judge_payloads:
-        if pii_signals(payload):
+        if pii_signals(payload, allowlist=pii_allowlist):
             flags.append("pii_in_judge_payload")
             break
     if case.expected_p0:

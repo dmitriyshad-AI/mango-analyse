@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from difflib import SequenceMatcher
@@ -39,6 +40,7 @@ MIN_RAW_HISTORY_LIMIT = 12
 OLDER_DIALOGUE_SUMMARY_PREFIX = "Ранее в диалоге:"
 CONFIG_FINGERPRINT_SCHEMA_VERSION = "draft_loop_config_fingerprint_v1_2026_06_10"
 DEFAULT_AUTH_ERROR_LIMIT = 3
+MAX_DEFERRED_PAIR_MISSING = 5000
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 _SERVICE_HISTORY_MARKER_RE = re.compile(
     r"\b(?:message_id|chat_id|profile_id|lead_id|source_system|dedupe_key|event_id)\b|[{}\[\]]",
@@ -276,8 +278,9 @@ class DraftLoopJournal:
 
 
 class DraftLoopState:
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, persist: bool = True) -> None:
         self.path = Path(path).expanduser()
+        self.persist = bool(persist)
         self.payload = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -289,6 +292,7 @@ class DraftLoopState:
                 "manager_edit_matches": [],
                 "auth_error_count": 0,
                 "quarantined_pairs": {},
+                "deferred_pair_missing": {},
             }
         try:
             decoded = json.loads(self.path.read_text(encoding="utf-8"))
@@ -302,6 +306,7 @@ class DraftLoopState:
         decoded.setdefault("manager_edit_matches", [])
         decoded.setdefault("auth_error_count", 0)
         decoded.setdefault("quarantined_pairs", {})
+        decoded.setdefault("deferred_pair_missing", {})
         return decoded
 
     def processed_keys(self) -> set[tuple[str, str, str]]:
@@ -322,6 +327,75 @@ class DraftLoopState:
         if marker not in items:
             items.append(marker)
         self.payload["processed"] = items[-5000:]
+        deferred = dict(self.payload.get("deferred_pair_missing") or {})
+        deferred.pop(_message_state_key(message), None)
+        self.payload["deferred_pair_missing"] = deferred
+
+    def pair_missing_is_deferred(self, message: WappiHistoryMessage) -> bool:
+        deferred = self.payload.get("deferred_pair_missing")
+        return isinstance(deferred, Mapping) and _message_state_key(message) in deferred
+
+    def deferred_pair_missing_messages(self, profile_id: str, chat_id: str) -> list[WappiHistoryMessage]:
+        deferred = self.payload.get("deferred_pair_missing")
+        if not isinstance(deferred, Mapping):
+            return []
+        result: list[WappiHistoryMessage] = []
+        for item in deferred.values():
+            if not isinstance(item, Mapping):
+                continue
+            if str(item.get("profile_id") or "") != profile_id or str(item.get("chat_id") or "") != chat_id:
+                continue
+            result.append(
+                WappiHistoryMessage(
+                    profile_id=profile_id,
+                    chat_id=chat_id,
+                    message_id=str(item.get("message_id") or ""),
+                    text=str(item.get("text") or ""),
+                    message_type=str(item.get("message_type") or "text"),
+                    timestamp=int(item.get("timestamp") or 0),
+                    from_me=bool(item.get("from_me")),
+                    contact_name=str(item.get("contact_name") or ""),
+                    from_where=str(item.get("from_where") or ""),
+                )
+            )
+        return [item for item in result if item.message_id and item.text.strip()]
+
+    def deferred_pair_missing_chat_ids(self, profile_id: str) -> tuple[str, ...]:
+        deferred = self.payload.get("deferred_pair_missing")
+        if not isinstance(deferred, Mapping):
+            return ()
+        return tuple(
+            sorted(
+                {
+                    str(item.get("chat_id") or "")
+                    for item in deferred.values()
+                    if isinstance(item, Mapping)
+                    and str(item.get("profile_id") or "") == profile_id
+                    and str(item.get("chat_id") or "")
+                }
+            )
+        )
+
+    def defer_pair_missing(self, message: WappiHistoryMessage) -> None:
+        deferred = dict(self.payload.get("deferred_pair_missing") or {})
+        deferred[_message_state_key(message)] = {
+            "profile_id": message.profile_id,
+            "chat_id": message.chat_id,
+            "message_id": message.message_id,
+            "text": message.text,
+            "message_type": message.message_type,
+            "timestamp": message.timestamp,
+            "from_me": message.from_me,
+            "contact_name": message.contact_name,
+            "from_where": message.from_where,
+        }
+        if len(deferred) > MAX_DEFERRED_PAIR_MISSING:
+            newest = sorted(
+                deferred.items(),
+                key=lambda item: (int(item[1].get("timestamp") or 0), item[0]),
+            )[-MAX_DEFERRED_PAIR_MISSING:]
+            deferred = dict(newest)
+        self.payload["deferred_pair_missing"] = deferred
 
     def pending_notes(self) -> dict[str, Mapping[str, Any]]:
         raw = self.payload.get("pending_notes")
@@ -393,6 +467,8 @@ class DraftLoopState:
         self.payload["quarantined_pairs"] = rows
 
     def save(self) -> None:
+        if not self.persist:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(self.payload, ensure_ascii=False, indent=2, sort_keys=True)
         fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
@@ -480,7 +556,7 @@ def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHist
     timestamp_raw = raw.get("time") or raw.get("timestamp") or 0
     try:
         timestamp = int(float(timestamp_raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         timestamp = 0
     while timestamp > 4_102_444_800:
         timestamp = int(timestamp / 1000)
@@ -525,6 +601,26 @@ class AmoWappiDraftLoop:
         self.code_identity = dict(code_identity or build_draft_loop_code_identity())
 
     def run_once(self, *, dry_run: bool = True) -> Mapping[str, Any]:
+        if not dry_run:
+            return self._run_once(dry_run=False)
+        original_state = self.state
+        dry_state = DraftLoopState(original_state.path, persist=False)
+        dry_state.payload = deepcopy(original_state.payload)
+        self.state = dry_state
+        try:
+            result = self._run_once(dry_run=True)
+            operational_state_changed = False
+            for key in ("manager_edit_matches", "auth_error_count"):
+                if original_state.payload.get(key) != dry_state.payload.get(key):
+                    original_state.payload[key] = deepcopy(dry_state.payload.get(key))
+                    operational_state_changed = True
+            if operational_state_changed:
+                original_state.save()
+            return result
+        finally:
+            self.state = original_state
+
+    def _run_once(self, *, dry_run: bool) -> Mapping[str, Any]:
         stop_active = self.config.stop_path.expanduser().exists()
         if self.state.auth_error_count() >= max(1, int(self.config.auth_error_limit)):
             summary = {
@@ -554,7 +650,12 @@ class AmoWappiDraftLoop:
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
         try:
             for profile in self.config.profiles.values():
-                for dialog in self._iter_dialogs(profile):
+                dialogs = list(self._iter_dialogs(profile))
+                listed_chat_ids = {str(item.get("id") or "").strip() for item in dialogs}
+                for chat_id in self.state.deferred_pair_missing_chat_ids(profile.profile_id):
+                    if chat_id not in listed_chat_ids and self.config.pair_for(DraftLoopKey(profile.profile_id, chat_id)):
+                        dialogs.append({"id": chat_id, "_deferred_only": True})
+                for dialog in dialogs:
                     if not isinstance(dialog, Mapping):
                         continue
                     chat_id = str(dialog.get("id") or "").strip()
@@ -564,24 +665,33 @@ class AmoWappiDraftLoop:
                         self.journal.append({"event": "chat_skipped", "profile_id": profile.profile_id, "chat_id": chat_id, "reason": "non_private"})
                         skipped_count += 1
                         continue
-                    try:
-                        messages = self._fetch_messages(profile, chat_id)
-                    except Exception as exc:  # noqa: BLE001
-                        if not _is_deferred_fetch_exception(exc):
-                            raise
-                        deferred_fetch_count += 1
-                        self.journal.append(
-                            {
-                                "event": "deferred_fetch",
-                                "profile_id": profile.profile_id,
-                                "chat_id": chat_id,
-                                "channel": profile.channel,
-                                "reason": "wappi_fetch_messages_deferred",
-                                "error": str(exc)[:500],
-                                "created_at": self.now_fn().astimezone(timezone.utc).isoformat(),
-                            }
+                    if bool(dialog.get("_deferred_only")):
+                        messages = []
+                    else:
+                        try:
+                            messages = self._fetch_messages(profile, chat_id)
+                        except Exception as exc:  # noqa: BLE001
+                            if not _is_deferred_fetch_exception(exc):
+                                raise
+                            deferred_fetch_count += 1
+                            self.journal.append(
+                                {
+                                    "event": "deferred_fetch",
+                                    "profile_id": profile.profile_id,
+                                    "chat_id": chat_id,
+                                    "channel": profile.channel,
+                                    "reason": "wappi_fetch_messages_deferred",
+                                    "error": str(exc)[:500],
+                                    "created_at": self.now_fn().astimezone(timezone.utc).isoformat(),
+                                }
+                            )
+                            continue
+                    deferred_messages = self.state.deferred_pair_missing_messages(profile.profile_id, chat_id)
+                    if deferred_messages:
+                        messages = sorted(
+                            {item.key: item for item in [*deferred_messages, *messages]}.values(),
+                            key=lambda item: (item.timestamp, item.message_id),
                         )
-                        continue
                     manager_edit_count += self._classify_manager_edits(profile, chat_id, messages)
                     inbound_new = [
                         item
@@ -810,6 +920,7 @@ class AmoWappiDraftLoop:
     ) -> Mapping[str, int]:
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
+        auto_pair_skipped = 0
         if pair is None:
             candidate = self._resolve_auto_candidate(key, profile, dialog, messages, inbound_new[-1])
             if (
@@ -845,35 +956,27 @@ class AmoWappiDraftLoop:
                         }
                     )
                 for item in inbound_new:
+                    if not self.state.pair_missing_is_deferred(item):
+                        self.state.defer_pair_missing(item)
+                self.state.save()
+            if pair is None:
+                for item in inbound_new:
+                    if self.state.pair_missing_is_deferred(item):
+                        continue
                     self.journal.append(
                         {
-                            **_message_event("not_before_skipped", item, status="skipped"),
-                            "lead_id": pair.lead_id,
-                            "not_before_ts": pair.not_before_ts,
-                            "reason": "auto_pair_created_watermark",
+                            **_message_event("pair_missing", item, status="skipped"),
+                            "auto_candidate": dict(candidate or {}),
                         }
                     )
-                    self.state.mark_processed(item)
-                self.state.save()
-                return {
-                    "processed": 0,
-                    "skipped": len(inbound_new),
-                    "bot_calls": 0,
-                    "auto_resolver_reason": "matched",
-                }
-            self.journal.append(
-                {
-                    **_message_event("pair_missing", inbound_new[-1], status="skipped"),
-                    "auto_candidate": dict(candidate or {}),
-                }
-            )
-            reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
-            if dry_run:
-                for item in inbound_new:
-                    self.state.mark_processed(item)
-                self.state.save()
-                return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
-            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
+                    if not dry_run:
+                        self.state.defer_pair_missing(item)
+                if inbound_new and not dry_run:
+                    self.state.save()
+                reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+                if dry_run:
+                    return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
+                return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
         if self.state.is_pair_quarantined(key):
             for item in inbound_new:
                 self.journal.append(
@@ -883,11 +986,18 @@ class AmoWappiDraftLoop:
                         "quarantine": dict(self.state.quarantined_pairs().get(key.value) or {}),
                     }
                 )
-                self.state.mark_processed(item)
-            self.state.save()
+                if not dry_run:
+                    self.state.mark_processed(item)
+            if not dry_run:
+                self.state.save()
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
-        too_old = [item for item in inbound_new if item.timestamp <= 0 or item.timestamp <= pair.not_before_ts]
-        skipped_before = len(too_old)
+        too_old = [
+            item
+            for item in inbound_new
+            if (item.timestamp <= 0 or item.timestamp <= pair.not_before_ts)
+            and not self.state.pair_missing_is_deferred(item)
+        ]
+        skipped_before = auto_pair_skipped + len(too_old)
         if too_old:
             for item in too_old:
                 self.journal.append(
@@ -897,10 +1007,12 @@ class AmoWappiDraftLoop:
                         "not_before_ts": pair.not_before_ts,
                     }
                 )
-                self.state.mark_processed(item)
+                if not dry_run:
+                    self.state.mark_processed(item)
             inbound_new = [item for item in inbound_new if item not in too_old]
             if not inbound_new:
-                self.state.save()
+                if not dry_run:
+                    self.state.save()
                 return {"processed": 0, "skipped": len(too_old), "bot_calls": 0}
         brand = self.config.brand_for_profile(profile.profile_id)
         if brand != pair.expected_brand:
@@ -913,9 +1025,6 @@ class AmoWappiDraftLoop:
                 }
             )
             if dry_run:
-                for item in inbound_new:
-                    self.state.mark_processed(item)
-                self.state.save()
                 return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0}
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
         client_message = inbound_new[-1].text
@@ -947,7 +1056,7 @@ class AmoWappiDraftLoop:
         route = str(getattr(result, "route", "") or "")
         safety_flags = tuple(str(item) for item in (getattr(result, "safety_flags", ()) or ()))
         draft_text = str(getattr(result, "draft_text", "") or "")
-        if _memory_provenance_enabled():
+        if not dry_run and _memory_provenance_enabled():
             memory_source = (
                 context.get("dialogue_memory_state")
                 if isinstance(context.get("dialogue_memory_state"), Mapping)
@@ -984,9 +1093,6 @@ class AmoWappiDraftLoop:
         }
         self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
         if dry_run:
-            for item in inbound_new:
-                self.state.mark_processed(item)
-            self.state.save()
             return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
         self.state.set_pending(last_message, pending_payload)
         self.state.save()

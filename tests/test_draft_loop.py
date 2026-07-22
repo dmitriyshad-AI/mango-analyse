@@ -20,6 +20,7 @@ from mango_mvp.integrations.draft_loop import (
     DraftLoopProfile,
     DraftLoopState,
     DraftWindow,
+    MAX_DEFERRED_PAIR_MISSING,
     OutgoingWindowMessage,
     WappiHistoryMessage,
     _auto_pair_note,
@@ -295,7 +296,7 @@ def test_draft_loop_skips_messages_at_or_before_not_before_ts_and_zero_timestamp
     assert {row["message_id"] for row in skipped} == {"m0", "m1"}
 
 
-def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(tmp_path: Path) -> None:
+def test_draft_loop_auto_pair_is_persisted_once_and_keeps_current_message(tmp_path: Path) -> None:
     auto_pairs = tmp_path / "auto_pairs.json"
     cfg = _config(tmp_path)
     cfg = DraftLoopConfig(
@@ -329,8 +330,9 @@ def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(t
     summary = loop.run_once(dry_run=False)
     summary_second = loop.run_once(dry_run=False)
 
-    assert summary["skipped"] == 1
-    assert summary["bot_calls"] == 0
+    assert summary["processed"] == 1
+    assert summary["skipped"] == 0
+    assert summary["bot_calls"] == 1
     assert summary_second["bot_calls"] == 0
     loaded = load_pairs_file(auto_pairs, default_source="auto")
     pair = loaded[DraftLoopKey("profile-foton", "chat-1")]
@@ -338,6 +340,118 @@ def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(t
     assert pair.not_before_ts == 1200
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sum(1 for row in rows if row["event"] == "auto_pair_created") == 1
+
+
+def test_draft_loop_auto_pair_replays_deferred_pair_missing_once(tmp_path: Path) -> None:
+    auto_pairs = tmp_path / "auto_pairs.json"
+    cfg = _config(tmp_path)
+    cfg = DraftLoopConfig(
+        profiles=cfg.profiles,
+        pairs=cfg.pairs,
+        auto_pairs_path=auto_pairs,
+        allowed_test_lead_ids=cfg.allowed_test_lead_ids,
+        state_path=cfg.state_path,
+        journal_path=cfg.journal_path,
+        manager_edit_log_path=cfg.manager_edit_log_path,
+        heartbeat_path=cfg.heartbeat_path,
+        stop_path=cfg.stop_path,
+        debounce_seconds=cfg.debounce_seconds,
+    )
+    message = _message("m1", ts=1000)
+    wappi = FakeWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "user"}]},
+        {("profile-foton", "chat-1"): [message]},
+    )
+    amo = FakeAmo()
+    bot = FakeBot()
+    resolver_calls = 0
+
+    def resolver(**kwargs):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        if resolver_calls == 1:
+            return {"status": "rejected", "reason": "no_match"}
+        return {"status": "matched", "lead_id": "49832125", "match_key": "Telegram ID"}
+
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=resolver,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=False)
+    second = loop.run_once(dry_run=False)
+    third = loop.run_once(dry_run=False)
+
+    assert first["processed"] == first["bot_calls"] == 0
+    assert second["processed"] == second["bot_calls"] == 1
+    assert third["processed"] == third["bot_calls"] == 0
+    assert len(bot.calls) == len(amo.notes) == 1
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows if row["event"] == "pair_missing"] == ["pair_missing"]
+    assert [row["event"] for row in rows if row["event"] == "auto_pair_created"] == ["auto_pair_created"]
+    assert not any(row["event"] == "not_before_skipped" and row["message_id"] == "m1" for row in rows)
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+    assert state["deferred_pair_missing"] == {}
+
+
+def test_draft_loop_auto_pair_keeps_message_arriving_with_match(tmp_path: Path) -> None:
+    auto_pairs = tmp_path / "auto_pairs.json"
+    cfg = _config(tmp_path)
+    cfg = DraftLoopConfig(
+        profiles=cfg.profiles,
+        pairs=cfg.pairs,
+        auto_pairs_path=auto_pairs,
+        allowed_test_lead_ids=cfg.allowed_test_lead_ids,
+        state_path=cfg.state_path,
+        journal_path=cfg.journal_path,
+        manager_edit_log_path=cfg.manager_edit_log_path,
+        heartbeat_path=cfg.heartbeat_path,
+        stop_path=cfg.stop_path,
+        debounce_seconds=cfg.debounce_seconds,
+    )
+    first_message = _message("m1", ts=1000)
+    second_message = _message("m2", ts=1100)
+    wappi = FakeWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "user"}]},
+        {("profile-foton", "chat-1"): [first_message]},
+    )
+    resolver_calls = 0
+
+    def resolver(**kwargs):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        if resolver_calls == 1:
+            return {"status": "rejected", "reason": "no_match"}
+        return {"status": "matched", "lead_id": "49832125", "match_key": "Telegram ID"}
+
+    bot = FakeBot()
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=resolver,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=False)
+    wappi.messages_by_chat[("profile-foton", "chat-1")] = [first_message, second_message]
+    second = loop.run_once(dry_run=False)
+
+    assert first["processed"] == 0
+    assert second["processed"] == 2
+    assert second["bot_calls"] == 1
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
+    assert state["deferred_pair_missing"] == {}
+    assert len(bot.calls) == 1
 
 
 def test_draft_loop_auto_resolver_failure_is_manual_review_not_crash(tmp_path: Path) -> None:
@@ -850,7 +964,7 @@ def test_draft_loop_state_loss_does_not_duplicate_written_note_from_journal(tmp_
     assert bot.calls == []
 
 
-def test_draft_loop_dry_run_marks_processed_and_does_not_duplicate_drafts(tmp_path: Path) -> None:
+def test_draft_loop_dry_run_replays_without_persisting_processed_state(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
     amo = FakeAmo()
@@ -862,17 +976,16 @@ def test_draft_loop_dry_run_marks_processed_and_does_not_duplicate_drafts(tmp_pa
 
     assert first["processed"] == 1
     assert first["bot_calls"] == 1
-    assert second["processed"] == 0
-    assert second["bot_calls"] == 0
+    assert second["processed"] == 1
+    assert second["bot_calls"] == 1
     assert amo.notes == []
-    assert len(bot.calls) == 1
+    assert len(bot.calls) == 2
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [row["event"] for row in rows if row["event"] == "draft_created"] == ["draft_created"]
-    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
-    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+    assert [row["event"] for row in rows if row["event"] == "draft_created"] == ["draft_created", "draft_created"]
+    assert not (tmp_path / "state.json").exists()
 
 
-def test_draft_loop_dry_run_marks_pair_missing_and_does_not_duplicate_skip(tmp_path: Path) -> None:
+def test_draft_loop_dry_run_pair_missing_does_not_persist_state(tmp_path: Path) -> None:
     amo = FakeAmo()
     bot = FakeBot()
     loop = _loop(tmp_path, messages=[_message("m1")], pairs={}, amo=amo, bot=bot)
@@ -883,18 +996,81 @@ def test_draft_loop_dry_run_marks_pair_missing_and_does_not_duplicate_skip(tmp_p
     assert first["processed"] == 1
     assert first["skipped"] == 1
     assert first["bot_calls"] == 0
-    assert second["processed"] == 0
-    assert second["skipped"] == 0
+    assert second["processed"] == 1
+    assert second["skipped"] == 1
     assert second["bot_calls"] == 0
     assert amo.notes == []
     assert bot.calls == []
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows if row["event"] == "pair_missing"] == ["pair_missing", "pair_missing"]
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_draft_loop_live_defers_pair_missing_without_losing_message(tmp_path: Path) -> None:
+    message = _message("m1")
+    loop = _loop(tmp_path, messages=[message], pairs={})
+
+    first = loop.run_once(dry_run=False)
+    second = _loop(tmp_path, messages=[message], pairs={}).run_once(dry_run=False)
+
+    assert first["processed"] == second["processed"] == 0
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [row["event"] for row in rows if row["event"] == "pair_missing"] == ["pair_missing"]
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["processed"] == []
+    assert list(state["deferred_pair_missing"]) == ["profile-foton\tchat-1\tm1"]
+    assert state["deferred_pair_missing"]["profile-foton\tchat-1\tm1"]["text"] == "Цена?"
+
+    key = DraftLoopKey("profile-foton", "chat-1")
+    amo = FakeAmo()
+    bot = FakeBot()
+    configured = _loop(
+        tmp_path,
+        messages=[],
+        pairs={
+            key: DraftLoopPair(
+                key=key,
+                lead_id="49832125",
+                expected_brand="foton",
+                not_before_ts=int(message["time"]) + 60,
+            )
+        },
+        amo=amo,
+        bot=bot,
+    )
+    configured.wappi_client = FakeWappi({"profile-foton": []}, {})
+
+    recovered = configured.run_once(dry_run=False)
+
+    assert recovered["processed"] == recovered["bot_calls"] == 1
+    assert len(bot.calls) == len(amo.notes) == 1
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert {item["message_id"] for item in state["processed"]} == {"m1"}
+    assert state["deferred_pair_missing"] == {}
 
 
-def test_draft_loop_dry_run_marks_brand_mismatch_and_does_not_duplicate_skip(tmp_path: Path) -> None:
+def test_deferred_pair_missing_buffer_is_bounded(tmp_path: Path) -> None:
+    state = DraftLoopState(tmp_path / "state.json", persist=False)
+    for index in range(MAX_DEFERRED_PAIR_MISSING + 1):
+        state.defer_pair_missing(
+            WappiHistoryMessage(
+                profile_id="profile-foton",
+                chat_id="chat-1",
+                message_id=f"m-{index}",
+                text="Цена?",
+                message_type="text",
+                timestamp=index,
+                from_me=False,
+            )
+        )
+
+    deferred = state.payload["deferred_pair_missing"]
+    assert len(deferred) == MAX_DEFERRED_PAIR_MISSING
+    assert "profile-foton\tchat-1\tm-0" not in deferred
+    assert f"profile-foton\tchat-1\tm-{MAX_DEFERRED_PAIR_MISSING}" in deferred
+
+
+def test_draft_loop_dry_run_brand_mismatch_does_not_persist_state(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="unpk")
     amo = FakeAmo()
@@ -907,15 +1083,17 @@ def test_draft_loop_dry_run_marks_brand_mismatch_and_does_not_duplicate_skip(tmp
     assert first["processed"] == 1
     assert first["skipped"] == 1
     assert first["bot_calls"] == 0
-    assert second["processed"] == 0
-    assert second["skipped"] == 0
+    assert second["processed"] == 1
+    assert second["skipped"] == 1
     assert second["bot_calls"] == 0
     assert amo.notes == []
     assert bot.calls == []
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [row["event"] for row in rows if row["event"] == "brand_pair_mismatch"] == ["brand_pair_mismatch"]
-    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
-    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+    assert [row["event"] for row in rows if row["event"] == "brand_pair_mismatch"] == [
+        "brand_pair_mismatch",
+        "brand_pair_mismatch",
+    ]
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_draft_loop_retries_pending_note_once(tmp_path: Path) -> None:

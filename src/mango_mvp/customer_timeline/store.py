@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.ids import (
 from mango_mvp.customer_timeline.safety import (
     customer_timeline_safety_contract,
     guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
 )
 from mango_mvp.customer_timeline.source_policy import assert_bot_context_chunk_source_policy
 
@@ -53,6 +54,18 @@ RUNTIME_DB_FILENAMES = {
     "channel_product.sqlite",
     "telegram_history_channel.sqlite",
 }
+
+
+def customer_timeline_readonly_uri(path: Path | str) -> str:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    return resolved.as_uri() + "?mode=ro"
+
+
+def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
+    customer = require_text(customer_id, "customer_id")
+    return tuple(dict.fromkeys((customer, f"customer:{customer}")))
+
+
 FORBIDDEN_PERSISTED_PAYLOAD_KEYS = {
     "raw_payload",
     "provider_raw_payload",
@@ -458,6 +471,8 @@ class CustomerTimelineSQLiteStore:
         self.allowed_root = Path(root).resolve(strict=False)
         guard_customer_timeline_sqlite_path(self.db_path)
         self.read_only = bool(read_only)
+        if not self.read_only:
+            guard_customer_timeline_writable_path(self.db_path)
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
@@ -1610,7 +1625,11 @@ class CustomerTimelineSQLiteStore:
             "resolution_status": normalized_status,
             "reason": normalized_reason,
             "source_refs": list(refs),
-            "ingestion_run_id": ingestion_run_id,
+            "ingestion_run_id": (
+                existing_payload.get("ingestion_run_id")
+                if existing_payload.get("mapping_id") == mapping_id
+                else ingestion_run_id
+            ),
             "metadata": dict(metadata or {}),
             "created_at": created_at.isoformat(),
             "updated_at": updated_at.isoformat(),
@@ -1668,6 +1687,25 @@ class CustomerTimelineSQLiteStore:
             "customer_identities",
             "tenant_id = ? AND customer_id = ?",
             (normalize_key(tenant_id, "tenant_id"), require_text(customer_id, "customer_id")),
+        )
+
+    def get_opportunity_by_source(
+        self,
+        tenant_id: str,
+        *,
+        source_system: str,
+        source_id: str,
+        opportunity_type: str,
+    ) -> Optional[Mapping[str, Any]]:
+        return self._get_record(
+            "customer_opportunities",
+            "tenant_id = ? AND source_system = ? AND source_id = ? AND opportunity_type = ?",
+            (
+                normalize_key(tenant_id, "tenant_id"),
+                normalize_key(source_system, "source_system"),
+                require_text(source_id, "source_id"),
+                normalize_key(opportunity_type, "opportunity_type"),
+            ),
         )
 
     def get_event(self, tenant_id: str, event_id: str) -> Optional[Mapping[str, Any]]:
@@ -1746,6 +1784,56 @@ class CustomerTimelineSQLiteStore:
             """,
             (*params, checked_limit(limit, "limit"),),
         ).fetchall()
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_identity_links_for_values(
+        self,
+        tenant_id: str,
+        *,
+        link_type: str,
+        link_values: Sequence[str],
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        normalized_type = normalize_key(link_type, "link_type")
+        values = tuple(sorted({require_text(value, "link_value") for value in link_values}))
+        rows: list[sqlite3.Row] = []
+        for offset in range(0, len(values), 400):
+            batch = values[offset : offset + 400]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                self._con.execute(
+                    f"""
+                    SELECT record_json FROM identity_links
+                    WHERE tenant_id = ? AND link_type = ? AND link_value IN ({placeholders})
+                    ORDER BY match_class, source_system, source_ref, link_id
+                    """,
+                    (tenant, normalized_type, *batch),
+                ).fetchall()
+            )
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_identity_links_for_customers(
+        self,
+        tenant_id: str,
+        *,
+        customer_ids: Sequence[str],
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        values = tuple(sorted({require_text(value, "customer_id") for value in customer_ids}))
+        rows: list[sqlite3.Row] = []
+        for offset in range(0, len(values), 400):
+            batch = values[offset : offset + 400]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                self._con.execute(
+                    f"""
+                    SELECT record_json FROM identity_links
+                    WHERE tenant_id = ? AND customer_id IN ({placeholders})
+                    ORDER BY match_class, source_system, source_ref, link_id
+                    """,
+                    (tenant, *batch),
+                ).fetchall()
+            )
         return tuple(json_loads(row["record_json"]) for row in rows)
 
     def list_customer_id_mappings(
@@ -1900,6 +1988,14 @@ class CustomerTimelineSQLiteStore:
             conflict_types,
             normalizer=lambda item: normalize_key(item, "conflict_type"),
         )
+        refs = customer_entity_ref_values(customer)
+        clauses.append(
+            "json_valid(record_json) AND EXISTS ("
+            "SELECT 1 FROM json_each(record_json, '$.entity_refs') ref "
+            f"WHERE CAST(ref.value AS TEXT) IN ({','.join('?' for _ in refs)})"
+            ")"
+        )
+        params.extend(refs)
         rows = self._con.execute(
             f"""
             SELECT record_json FROM timeline_conflicts
@@ -1909,10 +2005,33 @@ class CustomerTimelineSQLiteStore:
             """,
             (*params, checked_limit(limit, "limit")),
         ).fetchall()
-        items = [json_loads(row["record_json"]) for row in rows]
-        return tuple(
-            item for item in items if customer in json_dumps(item.get("entity_refs") or ())
-        )
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_conflicts(
+        self,
+        tenant_id: str,
+        *,
+        statuses: Sequence[str] = (),
+        limit: int = 500,
+        cursor: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [normalize_key(tenant_id, "tenant_id")]
+        append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "conflict_status"))
+        page_limit, offset = normalize_pagination(limit, cursor)
+        rows = self._con.execute(
+            f"""
+            SELECT record_json FROM timeline_conflicts
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at, conflict_id
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_limit + 1, offset),
+        ).fetchall()
+        return {
+            "items": [json_loads(row["record_json"]) for row in rows[:page_limit]],
+            "next_cursor": str(offset + page_limit) if len(rows) > page_limit else None,
+        }
 
     def list_ingestion_runs(
         self,
@@ -2145,12 +2264,14 @@ class CustomerTimelineSQLiteStore:
 
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
-            uri = f"{self.db_path.as_uri()}?mode=ro&immutable=1"
-            con = sqlite3.connect(uri, uri=True, timeout=15)
+            con = sqlite3.connect(customer_timeline_readonly_uri(self.db_path), uri=True, timeout=15)
             con.execute("PRAGMA query_only = ON")
         else:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             con = sqlite3.connect(self.db_path, timeout=30)
+            self.db_path.chmod(0o600)
+            if ".codex_local" in self.db_path.parent.parts:
+                self.db_path.parent.chmod(0o700)
             con.execute("PRAGMA journal_mode = WAL")
             con.execute("PRAGMA busy_timeout = 30000")
         con.row_factory = sqlite3.Row
@@ -2161,6 +2282,7 @@ class CustomerTimelineSQLiteStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.db_path.with_suffix(self.db_path.suffix + ".writer.lock")
         handle = lock_path.open("a+", encoding="utf-8")
+        lock_path.chmod(0o600)
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -2960,6 +3082,9 @@ def customer_timeline_sqlite_safety_contract() -> Mapping[str, Any]:
         **customer_timeline_safety_contract(),
         "network_calls": False,
         "write_product_timeline_db": True,
+        "write_staging_timeline_db": True,
+        "write_appointed_prod_db": False,
+        "prod_publish_via_snapshot_only": True,
         "read_only_mode_available": True,
         "query_only_read_only_connections": True,
         "stores_raw_payload_by_default": False,
@@ -3131,6 +3256,7 @@ __all__ = [
     "CustomerTimelineSQLiteStore",
     "CustomerTimelineStoreWriteResult",
     "build_fts_query",
+    "customer_timeline_readonly_uri",
     "customer_timeline_sqlite_safety_contract",
     "existing_timeline_email_content_signatures",
     "guard_customer_timeline_sqlite_path",

@@ -39,10 +39,15 @@ def main(argv: list[str] | None = None) -> int:
         allowed_root=args.allowed_root,
         out_xlsx=args.out_xlsx,
         tenant_id=args.tenant_id,
-        customer_ids=tuple(dict.fromkeys(customer_ids)),
+        customer_ids=(
+            tuple(dict.fromkeys(customer_ids))
+            if customer_ids or args.customer_ids_file is not None
+            else None
+        ),
         canonical_calls_db=args.canonical_calls_db,
         reconcile_json=args.reconcile_json,
         limit=args.limit,
+        enforce_outreach_eligibility=True,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

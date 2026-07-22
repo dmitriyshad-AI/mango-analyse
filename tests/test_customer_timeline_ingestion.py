@@ -61,7 +61,8 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
         csv_encoding="cp1251",
         observed_at=NOW,
     )
-    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
     service = TimelineImportService(store)
 
     first = service.import_records(
@@ -83,6 +84,7 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
     after = source_snapshot(source)
     summary = store.summary()
     email_links = store.list_identity_links("foton", link_type="email", link_value="parent@example.com")
+    phone_links = store.list_identity_links("foton", link_type="phone", link_value="+79161112233")
     conflicts = store.list_audit_log("foton", entity_type="timeline_conflict")["items"]
 
     assert before == after
@@ -95,9 +97,197 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
     assert summary["counts"]["customer_id_mappings"] == 2
     assert summary["counts"]["ingestion_runs"] == 1
     assert len({item["customer_id"] for item in email_links}) == 2
+    assert {item["match_class"] for item in phone_links} == {"ambiguous"}
     assert {item["reason"] for item in store.list_customer_id_mappings("foton")} == {"family_phone_ambiguous"}
     assert conflicts[0]["action"] == "timeline_conflict_created"
     assert second.write_status_counts["duplicate"] >= first.write_status_counts["created"]
+    store.close()
+
+
+def test_local_source_loader_honors_limit(tmp_path: Path) -> None:
+    source = tmp_path / "rows.jsonl"
+    source.write_text("".join(json.dumps({"id": index}) + "\n" for index in range(5)), encoding="utf-8")
+
+    records = load_local_source_records(
+        source,
+        allowed_root=tmp_path,
+        source_system="tallanto_snapshot",
+        limit=2,
+    )
+
+    assert [record.payload["id"] for record in records] == [0, 1]
+
+
+def test_tallanto_student_id_keeps_customer_when_contact_changes(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+
+    def import_snapshot(phone: str, key: str) -> None:
+        record = TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref="snapshot.jsonl#1",
+            payload={
+                "tallanto_id": "student-1",
+                "display_name": "Ученик",
+                "primary_phone": phone,
+                "snapshot_at": NOW.isoformat(),
+            },
+            observed_at=NOW,
+        )
+        service.import_records(
+            (record,),
+            normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+            tenant_id="foton",
+            source_ref=key,
+            idempotency_key=key,
+            actor="test",
+        )
+
+    import_snapshot("+7 916 111-22-33", "snapshot-1")
+    first_customer_id = store.list_identity_links(
+        "foton",
+        link_type="tallanto_student_id",
+        link_value="student-1",
+    )[0]["customer_id"]
+    first_touch_count = store.get_customer("foton", first_customer_id)["touch_count"]
+    import_snapshot("+7 916 999-88-77", "snapshot-2")
+    tallanto_links = store.list_identity_links(
+        "foton",
+        link_type="tallanto_student_id",
+        link_value="student-1",
+    )
+
+    assert {link["customer_id"] for link in tallanto_links} == {first_customer_id}
+    assert store.summary()["counts"]["customer_identities"] == 1
+    assert store.get_customer("foton", first_customer_id)["touch_count"] == first_touch_count
+    store.close()
+
+
+def test_tallanto_does_not_merge_two_existing_customers_on_conflicting_contact(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    first = TimelineSourceRecord(
+        source_system="tallanto_snapshot",
+        source_ref="snapshot#first",
+        payload={
+            "tallanto_id": "student-conflict",
+            "display_name": "Ученик",
+            "primary_phone": "+7 916 111-22-33",
+            "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+    service.import_records(
+        (first,),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="snapshot-first",
+        idempotency_key="snapshot-first",
+        actor="test",
+    )
+    first_customer = store.list_identity_links(
+        "foton", link_type="tallanto_student_id", link_value="student-conflict"
+    )[0]["customer_id"]
+    other = CustomerIdentity(
+        tenant_id="foton",
+        identity_status="strong",
+        display_name="Другой клиент",
+        primary_phone="+79169998877",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store.upsert_customer(other)
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=other.customer_id,
+            link_type="phone",
+            link_value="+79169998877",
+            source_system="test",
+            source_ref="other-phone",
+        )
+    )
+    conflicting = TimelineSourceRecord(
+        source_system="tallanto_snapshot",
+        source_ref="snapshot#conflict",
+        payload={
+            "tallanto_id": "student-conflict",
+            "display_name": "Ученик",
+            "primary_phone": "+7 916 999-88-77",
+            "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+
+    report = service.import_records(
+        (conflicting,),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="snapshot-conflict",
+        idempotency_key="snapshot-conflict",
+        actor="test",
+    )
+
+    links = store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-conflict")
+    assert {link["customer_id"] for link in links} == {first_customer}
+    assert store.summary()["counts"]["customer_identities"] == 2
+    assert report.normalized_counts["conflicts"] == 1
+    store.close()
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT conflict_type FROM timeline_conflicts").fetchone()[0] == "tallanto_identity_conflict"
+
+
+def test_tallanto_does_not_merge_phone_and_email_owned_by_different_customers(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
+    for customer_id, link_type, link_value in (
+        ("customer:phone", "phone", "+79161112233"),
+        ("customer:email", "email", "parent@example.com"),
+    ):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id=customer_id,
+                identity_status="strong",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type=link_type,
+                link_value=link_value,
+                source_system="test",
+                source_ref=f"test:{customer_id}",
+            )
+        )
+    record = TimelineSourceRecord(
+        source_system="tallanto_snapshot",
+        source_ref="snapshot#cross-identity",
+        payload={
+            "tallanto_id": "student-new",
+            "primary_phone": "+7 916 111-22-33",
+            "primary_email": "parent@example.com",
+            "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+
+    report = TimelineImportService(store).import_records(
+        (record,),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="snapshot-cross-identity",
+        idempotency_key="snapshot-cross-identity",
+        actor="test",
+    )
+
+    assert report.normalized_counts["conflicts"] == 1
+    assert store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-new") == ()
+    assert store.summary()["counts"]["customer_identities"] == 2
     store.close()
 
 
@@ -191,6 +381,9 @@ def test_phone_identity_union_uses_existing_store_customer_across_import_runs(tm
     assert store.summary()["counts"]["customer_identities"] == 1
     assert store.summary()["counts"]["timeline_conflicts"] == 0
     assert {item["event_type"] for item in events} == {"amo_deal_stage", "mango_call"}
+    assert customers[0].get("display_name") != "Сделка ЕГЭ"
+    amo_event = next(item for item in events if item["event_type"] == "amo_deal_stage")
+    assert amo_event["subject"] == "Сделка ЕГЭ"
     assert {item["new_customer_id"] for item in mappings} == {customer_id}
     assert {item["reason"] for item in mappings} >= {"phone_identity_union", "unchanged"}
     store.close()

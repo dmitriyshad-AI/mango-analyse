@@ -29,6 +29,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--max-events", type=int)
+    parser.add_argument(
+        "--reconsider-pending",
+        action="store_true",
+        help="Recheck prior unmatched mail after identity sources were refreshed; cross-brand rows stay excluded.",
+    )
+    parser.add_argument(
+        "--archive-db",
+        action="append",
+        default=[],
+        help="Read-only canonical mail archive fallback; may be provided more than once.",
+    )
+    parser.add_argument(
+        "--aggregate-only",
+        action="store_true",
+        help="Write only aggregate counts; do not persist row-level identifiers.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="Write changes to the staging DB.")
     mode.add_argument("--dry-run", action="store_true", help="Plan only. This is the default.")
@@ -44,6 +60,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         tenant_id=args.tenant_id,
         apply=bool(args.apply),
         max_events=args.max_events,
+        reconsider_pending=bool(args.reconsider_pending),
+        fallback_archive_dbs=tuple(Path(path) for path in args.archive_db),
+        aggregate_only=bool(args.aggregate_only),
     )
     report = run_mail_link_enrich(config)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True, default=str))

@@ -22,7 +22,7 @@ from mango_mvp.customer_timeline import (
 )
 from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_timezone
 from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_contract, customer_timeline_safety_contract
-from mango_mvp.customer_timeline.store import guard_customer_timeline_sqlite_path
+from mango_mvp.customer_timeline.store import customer_entity_ref_values, guard_customer_timeline_sqlite_path
 
 
 DERIVE_CUSTOMER_TIMELINE_SIGNALS_CLI_SCHEMA_VERSION = "derive_customer_timeline_signals_cli_v1"
@@ -63,6 +63,7 @@ def run_derive_customer_timeline_signals(config: DeriveCustomerTimelineSignalsCo
     )
     try:
         customer_ids = (config.customer_id,) if config.customer_id else _list_customer_ids(store, config.tenant_id, config.limit)
+        conflict_index, conflicts_preloaded = _conflict_index(store, config.tenant_id) if not config.customer_id else ({}, 0)
         results = [
             recompute_customer_signals(
                 store,
@@ -72,6 +73,7 @@ def run_derive_customer_timeline_signals(config: DeriveCustomerTimelineSignalsCo
                 apply=config.apply,
                 hot_lead_silence_days=config.hot_lead_silence_days,
                 actor=config.actor,
+                preloaded_conflicts=_customer_conflicts(conflict_index, customer_id) if conflict_index else None,
             )
             for customer_id in customer_ids
         ]
@@ -87,6 +89,7 @@ def run_derive_customer_timeline_signals(config: DeriveCustomerTimelineSignalsCo
         "as_of": config.as_of.isoformat(),
         "hot_lead_silence_days": config.hot_lead_silence_days,
         "customers": len(results),
+        "conflicts_preloaded": conflicts_preloaded,
         "summary": _merge_results(results),
         "results": [result.to_json_dict() for result in results],
         "safety": {
@@ -113,6 +116,30 @@ def _list_customer_ids(store: CustomerTimelineSQLiteStore, tenant_id: str, limit
         if not cursor:
             break
     return tuple(customer_ids)
+
+
+def _conflict_index(store: CustomerTimelineSQLiteStore, tenant_id: str) -> tuple[dict[str, list[Mapping[str, Any]]], int]:
+    by_ref: dict[str, list[Mapping[str, Any]]] = {}
+    cursor: Optional[str] = None
+    total = 0
+    while True:
+        page = store.list_conflicts(tenant_id, statuses=("open", "active"), limit=500, cursor=cursor)
+        items = tuple(page["items"])
+        total += len(items)
+        for conflict in items:
+            for ref in conflict.get("entity_refs") or ():
+                by_ref.setdefault(str(ref), []).append(conflict)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return by_ref, total
+
+
+def _customer_conflicts(index: Mapping[str, Sequence[Mapping[str, Any]]], customer_id: str) -> tuple[Mapping[str, Any], ...]:
+    result: dict[str, Mapping[str, Any]] = {}
+    for ref in customer_entity_ref_values(customer_id):
+        for conflict in index.get(ref, ()):
+            result[str(conflict.get("conflict_id") or id(conflict))] = conflict
+    return tuple(result.values())
 
 
 def _merge_results(results: Sequence[Any]) -> Mapping[str, Any]:

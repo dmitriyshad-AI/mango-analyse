@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline.a2_mail_ingest import A2V3_MAIL_SOURCE_SYSTEM
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
@@ -20,7 +22,12 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 NOW = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
 
 
-def _seed_customer_with_links(db_path: Path, allowed_root: Path) -> None:
+def _seed_customer_with_links(
+    db_path: Path,
+    allowed_root: Path,
+    *,
+    email_source_system: str = "test",
+) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
         store.upsert_customer(
             CustomerIdentity(
@@ -57,7 +64,7 @@ def _seed_customer_with_links(db_path: Path, allowed_root: Path) -> None:
                 customer_id="customer:email",
                 link_type="email",
                 link_value="parent@example.com",
-                source_system="test",
+                source_system=email_source_system,
                 source_ref="test",
                 confidence=0.95,
             )
@@ -160,7 +167,62 @@ def _write_archive(tmp_path: Path, *, sha: str, email: str, text: str) -> tuple[
     return source_file, archive_db
 
 
-def test_mail_link_enrich_links_phone_from_signature_without_opening_bot_visibility(tmp_path: Path) -> None:
+def _seed_trusted_customer_brand(db_path: Path, *, customer_id: str, brand: str) -> None:
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS a2v3_customer_brand_profiles (
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              brand TEXT NOT NULL,
+              source TEXT NOT NULL,
+              reason TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO a2v3_customer_brand_profiles VALUES ('foton', ?, ?, 'customer_history', 'single_known_brand_in_history')",
+            (customer_id, brand),
+        )
+
+
+@pytest.mark.parametrize(("customer_brand", "expected_outcome"), (("foton", "strong"), ("unpk", "blocked")))
+def test_mail_link_enrich_blocks_trusted_cross_brand_phone_match(
+    tmp_path: Path,
+    customer_brand: str,
+    expected_outcome: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    _seed_trusted_customer_brand(db_path, customer_id="customer:phone", brand=customer_brand)
+    sha = "9" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unknown@example.com",
+        text="Здравствуйте, интересует Фотон.\n\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out", apply=True)
+    )
+
+    assert report["counts"][f"planned.{expected_outcome}"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute(
+            "SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()
+    if expected_outcome == "strong":
+        assert event[0] == "customer:phone"
+    else:
+        assert event[0] is None
+        assert event[1] == "ambiguous"
+        assert json.loads(event[2])["metadata"]["pending_reason"] == "cross_brand_signal"
+
+
+def test_mail_link_enrich_blocks_phone_email_customer_contradiction(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     _seed_customer_with_links(db_path, tmp_path)
     sha = "a" * 64
@@ -181,20 +243,117 @@ def test_mail_link_enrich_links_phone_from_signature_without_opening_bot_visibil
         )
     )
 
-    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["planned.blocked"] == 1
     assert report["safety"]["allowed_for_bot_before"] == report["safety"]["allowed_for_bot_after"] == 0
     assert report["safety"]["mail_stage2_allowed_for_bot_before"] == report["safety"]["mail_stage2_allowed_for_bot_after"] == 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         event = con.execute("SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
-        chunk = con.execute(
-            "SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks WHERE event_id=?",
-            (json.loads(event["record_json"])["event_id"],),
-        ).fetchone()
-    assert event["customer_id"] == "customer:phone"
-    assert event["match_status"] == "strong_unique"
+        chunks = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+    assert event["customer_id"] is None
+    assert event["match_status"] == "ambiguous"
     assert json.loads(event["record_json"])["metadata"]["fresh_relink"] is True
-    assert tuple(chunk) == (0, 1)
+    assert json.loads(event["record_json"])["metadata"]["pending_reason"] == "phone_email_customer_conflict"
+    assert chunks == 0
+
+
+@pytest.mark.parametrize(
+    ("email_source_system", "expected_outcome"),
+    (("test", "strong"), ("mail_archive_stage2", "blocked")),
+)
+def test_mail_link_enrich_resolves_shared_family_phone_only_with_external_strong_email(
+    tmp_path: Path,
+    email_source_system: str,
+    expected_outcome: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system=email_source_system)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:email",
+                link_type="phone",
+                link_value="+79161234567",
+                source_system="test",
+                source_ref="family-test",
+                confidence=0.95,
+            )
+        )
+    sha = "d" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out", apply=True)
+    )
+
+    assert report["counts"][f"planned.{expected_outcome}"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute("SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
+    if expected_outcome == "strong":
+        assert event[0] == "customer:email"
+        assert event[1] == "strong_unique"
+        assert json.loads(event[2])["metadata"]["mail_link_enrich"]["reason"] == "shared_phone_strong_email_intersection"
+    else:
+        assert event[0] is None
+        assert event[1] == "ambiguous"
+        assert json.loads(event[2])["metadata"]["pending_reason"] == "phone_multiple_customers"
+
+
+@pytest.mark.parametrize("match_class", ("inferred", "manual"))
+def test_mail_link_enrich_does_not_promote_non_authoritative_phone_link(
+    tmp_path: Path,
+    match_class: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:inferred",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Inferred parent",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:inferred",
+                link_type="phone",
+                link_value="+79161234567",
+                source_system="mail_archive_stage2",
+                source_ref="inferred-test",
+                match_class=match_class,
+                confidence=0.6,
+            )
+        )
+    sha = "e" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out", apply=True)
+    )
+
+    assert report["counts"]["planned.unmatched"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute("SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
+        chunks = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+    assert event[0] is None
+    assert event[1] == "unmatched"
+    assert json.loads(event[2])["metadata"]["pending_reason"] == "phone_non_authoritative_identity_link"
+    assert chunks == 0
 
 
 def test_mail_link_enrich_keeps_email_only_and_body_phone_as_weak_pending(tmp_path: Path) -> None:
@@ -265,3 +424,187 @@ def test_mail_link_enrich_reads_stage2_archive_db_without_legacy_payload(tmp_pat
     assert payload["metadata"]["pending_reason"] == "weak_email_only"
     assert payload["metadata"]["mail_link_enrich"]["reason"] == "email_unique_identity_link"
     assert payload["record"]["payload"]["contact_email_hash"]
+
+
+def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "f" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
+        payload = json.loads(row[0])
+        payload["metadata"]["pending_reason"] = "no_strong_identity_match"
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id=?",
+            (json.dumps(payload, ensure_ascii=False, sort_keys=True), sha),
+        )
+
+    default_report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "default")
+    )
+    reconsidered = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "reconsidered",
+            reconsider_pending=True,
+        )
+    )
+
+    assert default_report["target_events"] == 0
+    assert reconsidered["target_events"] == 1
+    assert reconsidered["counts"]["planned.strong"] == 1
+
+
+def test_mail_link_enrich_never_reconsiders_cross_brand_pending(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    sha = "9" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Другой бренд")
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
+        payload = json.loads(row[0])
+        payload["metadata"]["pending_reason"] = "cross_brand_signal"
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id=?",
+            (json.dumps(payload, ensure_ascii=False, sort_keys=True), sha),
+        )
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            reconsider_pending=True,
+        )
+    )
+
+    assert report["target_events"] == 0
+
+
+def test_mail_link_enrich_uses_explicit_archive_fallback_for_deleted_old_path(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "8" * 64
+    source_file, archive_db = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    source_file.unlink()
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            fallback_archive_dbs=(archive_db,),
+        )
+    )
+
+    assert report["target_events"] == 1
+    assert report["counts"]["planned.strong"] == 1
+
+
+def test_mail_link_enrich_keeps_unique_tallanto_email_weak_without_phone(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    sha = "7" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out")
+    )
+
+    assert report["counts"]["planned.weak_email"] == 1
+    assert report["counts"]["reason.email_unique_identity_link"] == 1
+
+
+def test_mail_link_enrich_blocks_links_to_partial_customer(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer:phone'")
+    sha = "6" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
+    )
+
+    assert report["counts"]["planned.blocked"] == 1
+    assert report["counts"]["reason.phone_customer_identity_not_strong"] == 1
+    assert not (tmp_path / "out" / "mail_link_enrich_decisions.jsonl").exists()
+    assert (tmp_path / "out").stat().st_mode & 0o777 == 0o700
+
+
+def test_mail_link_enrich_apply_aggregate_only_exposes_no_row_ids(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "5" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    with sqlite3.connect(db_path) as con:
+        event_id = con.execute("SELECT event_id FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0]
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+            aggregate_only=True,
+        )
+    )
+
+    report_path = tmp_path / "out" / "mail_link_enrich_apply_report.json"
+    report_text = report_path.read_text(encoding="utf-8")
+    assert report["apply"] == {"counts": report["apply"]["counts"]}
+    assert not (tmp_path / "out" / "mail_link_enrich_decisions.jsonl").exists()
+    assert event_id not in report_text
+    assert "customer:phone" not in report_text
+    with sqlite3.connect(db_path) as con:
+        run_payload = json.loads(
+            con.execute(
+                "SELECT record_json FROM ingestion_runs WHERE run_kind='mail_link_enrich'"
+            ).fetchone()[0]
+        )
+    assert run_payload["metadata"] == {"counts": report["apply"]["counts"]}
+    assert event_id not in json.dumps(run_payload["metadata"], sort_keys=True)
+    assert "customer:phone" not in json.dumps(run_payload["metadata"], sort_keys=True)

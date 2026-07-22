@@ -108,6 +108,52 @@ def test_nightly_incremental_uses_overlap_and_repeat_adds_no_duplicates(tmp_path
     assert cursor["last_cursor_ts"] == "2026-06-21T10:04:00+00:00"
 
 
+def test_nightly_missing_only_source_ignores_and_preserves_cursor(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "old_missing.jsonl"
+    write_jsonl(
+        source_path,
+        [{
+            "source_id": "old-missing",
+            "customer_id": "customer:test-1",
+            "event_type": "amo_deal_stage",
+            "created_at": "2020-01-01T00:00:00+00:00",
+            "updated_at": "2020-01-01T00:00:00+00:00",
+            "summary": "Старое отсутствующее событие",
+        }],
+    )
+    with CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path) as store:
+        before = store.upsert_ingestion_cursor(
+            "foton",
+            "amocrm_snapshot",
+            last_cursor_ts=datetime(2026, 7, 12, tzinfo=timezone.utc),
+            metadata={"sentinel": "keep"},
+        ).to_json_dict()
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(IncrementalSourceConfig(
+            name="old_missing",
+            source_system="amocrm_snapshot",
+            path=source_path,
+            source_ref="backfill:missing",
+            ignore_cursor=True,
+            preserve_cursor=True,
+        ),),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+    )
+
+    first = run_nightly_incremental(config)
+    second = run_nightly_incremental(config)
+
+    with CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path) as store:
+        after = store.get_ingestion_cursor("foton", "amocrm_snapshot").to_json_dict()
+    assert first["sources"][0]["rows_selected"] == 1
+    assert first["cursor_updates"] == second["cursor_updates"] == []
+    assert before == after
+    assert event_count(tmp_path) == 1
+
+
 def test_nightly_incremental_uses_updated_at_not_only_created_at(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     source_path = tmp_path / "amo_updates.jsonl"

@@ -82,6 +82,8 @@ def source_from_json(payload: Any) -> IncrementalSourceConfig:
         source_ref=str(payload["source_ref"]) if payload.get("source_ref") else None,
         normalizer=str(payload.get("normalizer") or "jsonl"),
         required=bool(payload.get("required", True)),
+        ignore_cursor=bool(payload.get("ignore_cursor", False)),
+        preserve_cursor=bool(payload.get("preserve_cursor", False)),
     )
 
 

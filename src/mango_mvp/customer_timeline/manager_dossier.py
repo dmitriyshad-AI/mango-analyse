@@ -3,12 +3,28 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.p0_recall_spec import hard_codes_from_text
+from mango_mvp.customer_timeline.derived_signals import _is_access_event
+from mango_mvp.customer_timeline.freshness import (
+    MANAGER_REQUIRED_SOURCE_SYSTEMS,
+    manager_freshness_gate,
+    source_freshness_rows,
+)
+from mango_mvp.customer_timeline.next_step_resolver import (
+    NEXT_STEP_STATUS_ACTIVE,
+    NEXT_STEP_STATUS_EMPTY,
+    _event_text,
+    _is_non_closing_service_event,
+    resolve_customer_next_step,
+)
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.store import customer_entity_ref_values, customer_timeline_readonly_uri
 
 
 MANAGER_DOSSIER_SCHEMA_VERSION = "customer_timeline_manager_dossier_v1"
@@ -48,6 +64,28 @@ PRODUCT_KEYS = {
     "interest",
     "interests",
 }
+MANAGER_OUTREACH_SIGNAL_TYPES = (
+    "client_returned",
+    "callback_due",
+    "deal_stalling",
+    "season_return_candidate",
+)
+MANAGER_OUTREACH_RISK_SIGNAL_TYPES = ("paid_no_access", "duplicate_contact")
+MANAGER_KNOWN_BRANDS = frozenset({"foton", "unpk"})
+MANAGER_OPTOUT_PHRASES = (
+    "не пишите",
+    "больше не пишите",
+    "перестаньте писать",
+    "не звоните",
+    "больше не звоните",
+    "не надо мне звонить",
+    "не беспокойте",
+    "не связывайтесь",
+    "удалите номер",
+    "отпишите меня",
+    "хочу отписаться",
+    "не хочу получать рассылку",
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +107,7 @@ class CustomerDossier:
     tenant_id: str
     customer_id: str
     display_name: str
+    brand: str
     phone: str
     email: str
     actuality_header: str = ""
@@ -76,6 +115,7 @@ class CustomerDossier:
     money: tuple[DossierRow, ...] = field(default_factory=tuple)
     signals: tuple[DossierRow, ...] = field(default_factory=tuple)
     next_step: str = ""
+    next_step_source: str = ""
     objections: tuple[DossierRow, ...] = field(default_factory=tuple)
     chronology: tuple[DossierRow, ...] = field(default_factory=tuple)
     interests: tuple[DossierMarker, ...] = field(default_factory=tuple)
@@ -101,6 +141,12 @@ def build_customer_dossier(
     ).fetchone()
     if customer is None:
         raise ValueError(f"customer not found: {customer_id}")
+    customer_record = _safe_json(customer["record_json"])
+    brands = [
+        str(item).strip().casefold()
+        for item in (_mapping(customer_record.get("metadata")).get("brands") or ())
+        if str(item).strip()
+    ]
     opportunities = con.execute(
         """
         SELECT opportunity_id, record_json
@@ -117,6 +163,7 @@ def build_customer_dossier(
         WHERE tenant_id = ?
           AND customer_id = ?
           AND event_type = 'mango_call'
+          AND match_status = 'strong_unique'
           AND (superseded_by IS NULL OR superseded_by = '')
         ORDER BY event_at DESC, event_id DESC
         LIMIT 100
@@ -136,19 +183,31 @@ def build_customer_dossier(
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
     signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
+    next_step, next_step_source = _next_step_for_dossier(
+        con, tenant_id=tenant_id, customer_id=customer_id, signals=signals
+    )
     return CustomerDossier(
         tenant_id=str(customer["tenant_id"]),
         customer_id=str(customer["customer_id"]),
         display_name=_clean_text(customer["display_name"]),
+        brand=brands[0] if len(brands) == 1 else "",
         phone=_clean_text(customer["primary_phone"]),
         email=_clean_text(customer["primary_email"]),
         actuality_header=actuality_header,
-        family=tuple(_family_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
+        family=tuple(
+            _family_rows(
+                con,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                active_brand=brands[0] if len(brands) == 1 else "",
+            )
+        ),
         money=tuple(_money_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
         signals=tuple(signals),
-        next_step=_next_step_from_signals(signals),
+        next_step=next_step,
+        next_step_source=next_step_source,
         objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
-        chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=40)),
+        chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=12)),
         interests=tuple(_dedupe_markers(interests, limit=8)),
         pains=tuple(_dedupe_markers(pains, limit=8)),
     )
@@ -160,10 +219,12 @@ def build_manager_dossier_workbook(
     allowed_root: Path | str,
     out_xlsx: Path | str,
     tenant_id: str = "foton",
-    customer_ids: Sequence[str] = (),
+    customer_ids: Sequence[str] | None = None,
     canonical_calls_db: Path | str | None = None,
     reconcile_json: Path | str | None = None,
     limit: int = 50,
+    enforce_freshness: bool = True,
+    enforce_outreach_eligibility: bool = False,
 ) -> Mapping[str, Any]:
     db = Path(timeline_db).expanduser().resolve(strict=False)
     out = _guard_local_dossier_output_path(out_xlsx, allowed_root)
@@ -171,13 +232,33 @@ def build_manager_dossier_workbook(
     canonical_calls, canonical_warning = _load_canonical_calls_fail_soft(canonical_calls_db)
     reconcile = _read_json(Path(reconcile_json).expanduser()) if reconcile_json else {}
     with _connect_ro(db) as con:
-        ids = tuple(customer_ids) or tuple(_full_dossier_segment_customer_ids(con, tenant_id=tenant_id, limit=limit))
-        freshness = _source_freshness(con)
+        ids = (
+            tuple(_full_dossier_segment_customer_ids(con, tenant_id=tenant_id, limit=limit))
+            if customer_ids is None
+            else tuple(customer_ids)
+        )
+        freshness = _source_freshness(con, tenant_id=tenant_id)
+        freshness_gate = manager_freshness_gate(freshness)
+        if enforce_freshness and not freshness_gate["passed"]:
+            reasons = ", ".join(
+                f"{item['source_system']}:{item['reason']}" for item in freshness_gate["blockers"]
+            )
+            raise RuntimeError(f"manager freshness gate failed: {reasons}")
         segment_total = _full_dossier_segment_count(con, tenant_id=tenant_id)
         actuality_header = _actuality_header(freshness, reconcile)
         dossiers: list[CustomerDossier] = []
         missing_customer_ids: list[str] = []
+        exclusion_counts: Counter[str] = Counter()
         for customer_id in ids:
+            if enforce_outreach_eligibility:
+                eligibility = manager_outreach_eligibility(
+                    con,
+                    tenant_id=tenant_id,
+                    customer_id=customer_id,
+                )
+                if not eligibility["eligible"]:
+                    exclusion_counts.update(eligibility["reasons"])
+                    continue
             try:
                 dossiers.append(
                     build_customer_dossier(
@@ -199,6 +280,8 @@ def build_manager_dossier_workbook(
         "customers": len(dossiers),
         "missing_customer_ids_count": len(missing_customer_ids),
         "missing_customer_ids_sample": missing_customer_ids[:10],
+        "outreach_eligibility_enforced": bool(enforce_outreach_eligibility),
+        "outreach_exclusion_counts": dict(exclusion_counts),
         "full_dossier_segment_total": segment_total,
         "interests_total": sum(len(item.interests) for item in dossiers),
         "pains_total": sum(len(item.pains) for item in dossiers),
@@ -208,14 +291,16 @@ def build_manager_dossier_workbook(
         "objections_total": sum(len(item.objections) for item in dossiers),
         "chronology_rows_total": sum(len(item.chronology) for item in dossiers),
         "next_step_rows_total": sum(1 for item in dossiers if item.next_step),
+        "missing_next_step_rows_total": sum(1 for item in dossiers if not item.next_step),
         "canonical_calls_loaded": len(canonical_calls),
         "canonical_calls_warning": canonical_warning,
         "actuality_header": actuality_header,
         "source_freshness_top": freshness[:12],
+        "freshness_gate": freshness_gate,
         "reconcile_status": reconcile.get("status") if reconcile else "missing",
         "out_xlsx": str(out),
         "safety": {
-            "source_open_mode": "sqlite_mode_ro_immutable",
+            "source_open_mode": "sqlite_mode_ro",
             "write_crm": False,
             "write_tallanto": False,
             "send_messages": False,
@@ -288,24 +373,237 @@ def _canonical_call_candidate_keys(event: sqlite3.Row) -> tuple[str, ...]:
 
 
 def _connect_ro(path: Path) -> sqlite3.Connection:
-    uri = f"{path.as_uri()}?mode=ro&immutable=1"
-    con = sqlite3.connect(uri, uri=True)
+    con = sqlite3.connect(customer_timeline_readonly_uri(path), uri=True)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only = ON")
     return con
 
 
+def manager_outreach_eligibility(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    signal_id: str | None = None,
+    as_of: datetime | None = None,
+) -> Mapping[str, Any]:
+    """Fail closed before a customer reaches a proactive manager list."""
+    con.row_factory = sqlite3.Row
+    now = as_of or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    required_tables = ("customer_identities", "derived_signals", "timeline_events", "timeline_conflicts", "family_links_v1")
+    missing = [table for table in required_tables if not _table_exists(con, table)]
+    if missing:
+        return {"eligible": False, "reasons": tuple(f"safety_table_missing:{table}" for table in missing)}
+
+    identity = con.execute(
+        "SELECT identity_status, record_json FROM customer_identities WHERE tenant_id=? AND customer_id=?",
+        (tenant_id, customer_id),
+    ).fetchone()
+    reasons: list[str] = []
+    identity_record = _safe_json(identity["record_json"]) if identity else {}
+    brands = {
+        str(item).strip().casefold()
+        for item in (_mapping(identity_record.get("metadata")).get("brands") or ())
+        if str(item).strip()
+    }
+    if not identity or str(identity["identity_status"] or "") != "strong":
+        reasons.append("identity_not_strong")
+    if len(brands) != 1 or not brands.issubset(MANAGER_KNOWN_BRANDS):
+        reasons.append("brand_not_exactly_one_known")
+
+    signal_clauses = [
+        "tenant_id=?", "customer_id=?", "status='active'",
+        f"signal_type IN ({','.join('?' for _ in MANAGER_OUTREACH_SIGNAL_TYPES)})",
+        "(expires_at IS NULL OR expires_at='' OR julianday(expires_at)>=julianday(?))",
+    ]
+    signal_params: list[Any] = [tenant_id, customer_id, *MANAGER_OUTREACH_SIGNAL_TYPES, now.isoformat()]
+    if signal_id:
+        signal_clauses.append("signal_id=?")
+        signal_params.append(signal_id)
+    signal = con.execute(
+        f"SELECT signal_id, event_id, signal_type, created_at, record_json FROM derived_signals "
+        f"WHERE {' AND '.join(signal_clauses)} ORDER BY created_at DESC, signal_id LIMIT 1",
+        tuple(signal_params),
+    ).fetchone()
+    if signal is None:
+        reasons.append("no_active_outreach_signal")
+
+    refs = customer_entity_ref_values(customer_id)
+    open_conflict = con.execute(
+        "SELECT 1 FROM timeline_conflicts c WHERE c.tenant_id=? AND c.status IN ('open','active') "
+        "AND json_valid(c.record_json) AND EXISTS (SELECT 1 FROM json_each(c.record_json,'$.entity_refs') r "
+        f"WHERE CAST(r.value AS TEXT) IN ({','.join('?' for _ in refs)})) LIMIT 1",
+        (tenant_id, *refs),
+    ).fetchone()
+    if open_conflict:
+        reasons.append("open_identity_conflict")
+    family_risk = con.execute(
+        "SELECT 1 FROM family_links_v1 WHERE tenant_id=? AND customer_id=? "
+        "AND (COALESCE(status,'')!='confident' OR COALESCE(confidence,'') NOT IN ('high','medium')) LIMIT 1",
+        (tenant_id, customer_id),
+    ).fetchone()
+    if family_risk:
+        reasons.append("family_ambiguous")
+    risk_signal = con.execute(
+        f"SELECT signal_type FROM derived_signals WHERE tenant_id=? AND customer_id=? AND status='active' "
+        f"AND signal_type IN ({','.join('?' for _ in MANAGER_OUTREACH_RISK_SIGNAL_TYPES)}) "
+        "AND (expires_at IS NULL OR expires_at='' OR julianday(expires_at)>=julianday(?)) LIMIT 1",
+        (tenant_id, customer_id, *MANAGER_OUTREACH_RISK_SIGNAL_TYPES, now.isoformat()),
+    ).fetchone()
+    if risk_signal:
+        reasons.append(f"active_risk_signal:{risk_signal['signal_type']}")
+
+    evidence_at: datetime | None = None
+    signal_created_at: datetime | None = None
+    if signal is not None:
+        signal_created_at = _parse_iso_datetime(signal["created_at"])
+        signal_record = _safe_json(signal["record_json"])
+        event_id = _clean_text(signal["event_id"] or signal_record.get("event_id"))
+        if event_id:
+            event = con.execute(
+                "SELECT event_at,event_type,match_status,superseded_by FROM timeline_events "
+                "WHERE tenant_id=? AND customer_id=? AND event_id=? LIMIT 1",
+                (tenant_id, customer_id, event_id),
+            ).fetchone()
+            if event is None:
+                reasons.append("signal_evidence_not_owned")
+            elif event["superseded_by"]:
+                reasons.append("signal_evidence_superseded")
+            elif str(event["event_type"] or "") == "mango_call" and str(event["match_status"] or "") != "strong_unique":
+                reasons.append("signal_evidence_ambiguous_call")
+            else:
+                evidence_at = _parse_iso_datetime(event["event_at"])
+        elif str(signal["signal_type"]) == "season_return_candidate":
+            evidence_at = _parse_iso_datetime(_mapping(signal_record.get("metadata")).get("last_purchase_at"))
+            if evidence_at is None:
+                reasons.append("signal_evidence_missing")
+            elif not _season_purchase_matches(
+                con,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                evidence_at=evidence_at,
+            ):
+                reasons.append("season_purchase_not_confirmed")
+            elif _has_active_customer_access(con, tenant_id=tenant_id, customer_id=customer_id):
+                reasons.append("active_access_or_learning")
+        else:
+            reasons.append("signal_evidence_missing")
+
+    scan_from = min(filter(None, (signal_created_at, now - timedelta(days=30))), default=now - timedelta(days=30))
+    event_rows = con.execute(
+        "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
+        "FROM timeline_events WHERE tenant_id=? AND customer_id=? AND (superseded_by IS NULL OR superseded_by='') "
+        "AND julianday(event_at)>=julianday(?) ORDER BY event_at,event_id",
+        (tenant_id, customer_id, scan_from.isoformat()),
+    ).fetchall()
+    outbound_cutoff = max(filter(None, (evidence_at, now - timedelta(days=30))), default=now - timedelta(days=30))
+    for row in event_rows:
+        event = dict(row)
+        stored = _safe_json(row["record_json"])
+        event["record"] = _mapping(stored.get("record"))
+        event["metadata"] = _mapping(stored.get("metadata"))
+        text = _event_text(event)
+        if (
+            str(row["direction"] or "").casefold() == "outbound"
+            and (_parse_iso_datetime(row["event_at"]) or now) > outbound_cutoff
+            and not _is_non_closing_service_event(event)
+        ):
+            reasons.append("meaningful_outbound_after_evidence")
+    # ponytail: block historical hard risks until a structured resolution/opt-in field exists.
+    reasons.extend(_durable_contact_risks(con, tenant_id=tenant_id, customer_id=customer_id))
+    unique_reasons = tuple(dict.fromkeys(reasons))
+    return {
+        "eligible": not unique_reasons,
+        "reasons": unique_reasons,
+        "signal_id": str(signal["signal_id"]) if signal else None,
+        "signal_type": str(signal["signal_type"]) if signal else None,
+        "brand": next(iter(brands)) if len(brands) == 1 else None,
+    }
+
+
+def _season_purchase_matches(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    evidence_at: datetime,
+) -> bool:
+    if not _table_exists(con, "customer_purchases_v1"):
+        return False
+    row = con.execute(
+        "SELECT SUM(total_in) AS total_in, SUM(total_out) AS total_out, "
+        "SUM(deals_cnt) AS deals_cnt, MAX(last_purchase_at) AS last_purchase_at "
+        "FROM customer_purchases_v1 WHERE tenant_id=? AND customer_id=? AND money_kind='fact'",
+        (tenant_id, customer_id),
+    ).fetchone()
+    stored_at = _parse_iso_datetime(row["last_purchase_at"]) if row else None
+    return bool(
+        row
+        and float(row["total_in"] or 0) > 0
+        and float(row["total_out"] or 0) == 0
+        and int(row["deals_cnt"] or 0) > 0
+        and stored_at
+        and stored_at.date() == evidence_at.date()
+    )
+
+
+def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> bool:
+    rows = con.execute(
+        "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
+        "FROM timeline_events WHERE tenant_id=? AND customer_id=? "
+        "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
+        (tenant_id, customer_id),
+    ).fetchall()
+    for row in rows:
+        event = dict(row)
+        stored = _safe_json(row["record_json"])
+        event["record"] = _mapping(stored.get("record"))
+        event["metadata"] = _mapping(stored.get("metadata"))
+        if _is_access_event(event):
+            return True
+    return False
+
+
+def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> tuple[str, ...]:
+    rows = con.execute(
+        "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
+        "FROM timeline_events WHERE tenant_id=? AND customer_id=? "
+        "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
+        (tenant_id, customer_id),
+    ).fetchall()
+    risks: list[str] = []
+    for row in rows:
+        event = dict(row)
+        stored = _safe_json(row["record_json"])
+        event["record"] = _mapping(stored.get("record"))
+        event["metadata"] = _mapping(stored.get("metadata"))
+        text = _event_text(event)
+        if hard_codes_from_text(text):
+            risks.append("durable_p0_history")
+        if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
+            risks.append("durable_opt_out")
+    return tuple(dict.fromkeys(risks))
+
+
 def _full_dossier_segment_customer_ids(con: sqlite3.Connection, *, tenant_id: str, limit: int) -> list[str]:
     sql = """
-        SELECT customer_id
-        FROM timeline_events
-        WHERE tenant_id = ?
-          AND customer_id IS NOT NULL
-          AND customer_id != ''
-        GROUP BY customer_id
-        HAVING SUM(event_type = 'mango_call') > 0
-           AND SUM(event_type = 'email_message') > 0
-        ORDER BY MAX(event_at) DESC, customer_id
+        SELECT e.customer_id
+        FROM timeline_events e
+        JOIN customer_identities ci
+          ON ci.tenant_id=e.tenant_id AND ci.customer_id=e.customer_id
+        WHERE e.tenant_id = ?
+          AND e.customer_id IS NOT NULL
+          AND e.customer_id != ''
+          AND (e.superseded_by IS NULL OR e.superseded_by = '')
+          AND ci.identity_status='strong'
+          AND COALESCE(json_array_length(json_extract(ci.record_json, '$.metadata.brands')), 0)=1
+          AND LOWER(json_extract(ci.record_json, '$.metadata.brands[0]')) IN ('foton','unpk')
+        GROUP BY e.customer_id
+        HAVING SUM(e.event_type = 'mango_call' AND e.match_status = 'strong_unique') > 0
+           AND SUM(e.event_type = 'email_message') > 0
+        ORDER BY MAX(e.event_at) DESC, e.customer_id
     """
     params: tuple[Any, ...]
     if limit > 0:
@@ -320,14 +618,20 @@ def _full_dossier_segment_count(con: sqlite3.Connection, *, tenant_id: str) -> i
     row = con.execute(
         """
         SELECT COUNT(*) FROM (
-          SELECT customer_id
-          FROM timeline_events
-          WHERE tenant_id = ?
-            AND customer_id IS NOT NULL
-            AND customer_id != ''
-          GROUP BY customer_id
-          HAVING SUM(event_type = 'mango_call') > 0
-             AND SUM(event_type = 'email_message') > 0
+          SELECT e.customer_id
+          FROM timeline_events e
+          JOIN customer_identities ci
+            ON ci.tenant_id=e.tenant_id AND ci.customer_id=e.customer_id
+          WHERE e.tenant_id = ?
+            AND e.customer_id IS NOT NULL
+            AND e.customer_id != ''
+            AND (e.superseded_by IS NULL OR e.superseded_by = '')
+            AND ci.identity_status='strong'
+            AND COALESCE(json_array_length(json_extract(ci.record_json, '$.metadata.brands')), 0)=1
+            AND LOWER(json_extract(ci.record_json, '$.metadata.brands[0]')) IN ('foton','unpk')
+          GROUP BY e.customer_id
+          HAVING SUM(e.event_type = 'mango_call' AND e.match_status = 'strong_unique') > 0
+             AND SUM(e.event_type = 'email_message') > 0
         )
         """,
         (tenant_id,),
@@ -350,26 +654,33 @@ def _read_json(path: Path | None) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _source_freshness(con: sqlite3.Connection) -> list[Mapping[str, Any]]:
+def _source_freshness(con: sqlite3.Connection, *, tenant_id: str = "foton") -> list[Mapping[str, Any]]:
     if not _table_exists(con, "timeline_events"):
         return []
-    return [
-        dict(row)
-        for row in con.execute(
-            """
-            SELECT source_system, MAX(event_at) AS max_event_at, COUNT(*) AS events
-            FROM timeline_events
-            GROUP BY source_system
-            ORDER BY max_event_at DESC, source_system
-            """
-        ).fetchall()
-    ]
+    return source_freshness_rows(
+        con,
+        tenant_id=tenant_id,
+        expected_sources=MANAGER_REQUIRED_SOURCE_SYSTEMS,
+    )
 
 
 def _actuality_header(freshness: Sequence[Mapping[str, Any]], reconcile: Mapping[str, Any]) -> str:
-    freshness_text = "; ".join(f"{_display_freshness_source(row.get('source_system'))}={row.get('max_event_at')}" for row in freshness[:8])
-    if not freshness_text:
-        freshness_text = "нет данных"
+    cursor_text = "; ".join(
+        f"{_display_freshness_source(row.get('source_system'))}={row.get('cursor_at') or 'нет курсора'}"
+        for row in freshness[:8]
+    ) or "нет данных"
+    cursor_checked_text = "; ".join(
+        f"{_display_freshness_source(row.get('source_system'))}={row.get('cursor_updated_at') or 'нет проверки'}"
+        for row in freshness[:8]
+    ) or "нет данных"
+    event_text = "; ".join(
+        f"{_display_freshness_source(row.get('source_system'))}={row.get('max_event_at')}"
+        for row in freshness[:8]
+    ) or "нет данных"
+    imported_text = "; ".join(
+        f"{_display_freshness_source(row.get('source_system'))}={row.get('imported_at') or 'нет успешного импорта'}"
+        for row in freshness[:8]
+    ) or "нет данных"
     status = str(reconcile.get("status") or "")
     if status == "checked":
         reconcile_text = (
@@ -382,7 +693,13 @@ def _actuality_header(freshness: Sequence[Mapping[str, Any]], reconcile: Mapping
     else:
         reconcile_text = "не проводилась"
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return f"Данные: staging max event_at по источникам: {freshness_text}; собрано {generated_at}; сверка с живым AMO: {reconcile_text}"
+    return (
+        f"Данные: cursor_at по источникам: {cursor_text}; "
+        f"cursor checked_at отдельно: {cursor_checked_text}; "
+        f"imported_at отдельно: {imported_text}; "
+        f"max event_at отдельно: {event_text}; собрано {generated_at}; "
+        f"сверка с живым AMO: {reconcile_text}"
+    )
 
 
 def _display_freshness_source(source: Any) -> str:
@@ -401,7 +718,13 @@ def _display_freshness_source(source: Any) -> str:
     return mapping.get(str(source or ""), _clean_text(source) or "неизвестный источник")
 
 
-def _family_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
+def _family_rows(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    active_brand: str,
+) -> list[DossierRow]:
     if not _table_exists(con, "family_links_v1"):
         return []
     rows = con.execute(
@@ -429,6 +752,8 @@ def _family_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -
             details.append(f"предметы: {subjects}")
         if row["brand"]:
             details.append(f"бренд: {row['brand']}")
+            if active_brand and str(row["brand"]).casefold() != active_brand.casefold():
+                details.append("исторический другой бренд — не переносить в текущее предложение")
         if str(row["status"]) != "confident" or str(row["confidence"]) not in {"high", "medium"}:
             details.append("уточнить семейную связь")
         if details:
@@ -456,7 +781,7 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
         label = labels.get(kind, kind)
         text = (
             f"{label}, период {row['period']}: вход {_format_money(row['total_in'])}; "
-            f"возвраты/исход {_format_money(row['total_out'])}; сделок {int(row['deals_cnt'] or 0)}"
+            f"списания/расход {_format_money(row['total_out'])}; сделок {int(row['deals_cnt'] or 0)}"
         )
         if row["last_purchase_at"]:
             text += f"; последнее событие {row['last_purchase_at']}"
@@ -474,7 +799,11 @@ def _signal_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -
         SELECT signal_type, severity, expires_at, confidence, requires_manager_review, record_json
         FROM derived_signals
         WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
-        ORDER BY severity DESC, expires_at, signal_type
+          AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) >= julianday('now'))
+        ORDER BY CASE severity
+                   WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4
+                 END,
+                 expires_at, signal_type
         LIMIT 12
         """,
         (tenant_id, customer_id),
@@ -507,6 +836,63 @@ def _next_step_from_signals(signals: Sequence[DossierRow]) -> str:
         if _meaningful_next_step(value):
             return value
     return ""
+
+
+def _next_step_for_dossier(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    signals: Sequence[DossierRow],
+) -> tuple[str, str]:
+    rows = con.execute(
+        """
+        SELECT event_id, customer_id, event_at, event_type, source_system, source_id,
+               source_ref, subject, summary, text_preview, direction, record_json
+        FROM timeline_events
+        WHERE tenant_id = ? AND customer_id = ?
+          AND (superseded_by IS NULL OR superseded_by = '')
+          AND (event_type != 'mango_call' OR match_status = 'strong_unique')
+        ORDER BY event_at DESC, event_id DESC
+        LIMIT 500
+        """,
+        (tenant_id, customer_id),
+    ).fetchall()
+    events: list[Mapping[str, Any]] = []
+    for row in rows:
+        stored = _safe_json(row["record_json"])
+        event = dict(row)
+        event["record"] = dict(stored["record"]) if isinstance(stored.get("record"), Mapping) else {}
+        event["metadata"] = dict(stored["metadata"]) if isinstance(stored.get("metadata"), Mapping) else {}
+        event["stage_before"] = stored.get("stage_before")
+        event["stage_after"] = stored.get("stage_after")
+        events.append(event)
+    conflicts: list[Mapping[str, Any]] = []
+    if _table_exists(con, "timeline_conflicts"):
+        customer_refs = set(customer_entity_ref_values(customer_id))
+        for row in con.execute(
+            "SELECT conflict_type, status, record_json FROM timeline_conflicts WHERE tenant_id = ? AND status = 'open'",
+            (tenant_id,),
+        ).fetchall():
+            record = dict(_safe_json(row["record_json"]))
+            entity_refs = {str(item) for item in (record.get("entity_refs") or ())}
+            if customer_refs.isdisjoint(entity_refs):
+                continue
+            record.setdefault("conflict_type", row["conflict_type"])
+            record.setdefault("status", row["status"])
+            conflicts.append(record)
+    resolved = resolve_customer_next_step(
+        events,
+        readiness={"open_conflicts": len(conflicts)},
+        conflicts=conflicts,
+        customer_id=customer_id,
+    )
+    if resolved.status == NEXT_STEP_STATUS_ACTIVE and _meaningful_next_step(resolved.action):
+        return resolved.display_text, "timeline_events"
+    if resolved.status != NEXT_STEP_STATUS_EMPTY:
+        return "", ""
+    fallback = _next_step_from_signals(signals)
+    return fallback, "derived_signals" if fallback else ""
 
 
 def _meaningful_next_step(value: str) -> bool:
@@ -553,6 +939,7 @@ def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: st
         WHERE tenant_id = ?
           AND customer_id = ?
           AND (superseded_by IS NULL OR superseded_by = '')
+          AND (event_type != 'mango_call' OR match_status = 'strong_unique')
         ORDER BY event_at DESC, event_id DESC
         LIMIT ?
         """,
@@ -792,6 +1179,21 @@ def _safe_json(value: str | None) -> Mapping[str, Any]:
     return payload if isinstance(payload, Mapping) else {}
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 def _dedupe_texts(values: Sequence[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -825,7 +1227,7 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     wb = Workbook()
     overview = wb.active
     overview.title = "Оглавление"
-    overview.append(("customer_id", "Имя", "Семья", "Сигналы", "Следующий шаг", "Интересов", "Болей", "Возражений", "Хронология"))
+    overview.append(("customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг", "Интересов", "Болей", "Возражений", "Хронология"))
     overview.freeze_panes = "A2"
     for cell in overview[1]:
         cell.font = Font(bold=True)
@@ -835,9 +1237,10 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
             (
                 dossier.customer_id,
                 dossier.display_name,
+                dossier.brand,
                 len(dossier.family),
                 len(dossier.signals),
-                "да" if dossier.next_step else "",
+                dossier.next_step,
                 len(dossier.interests),
                 len(dossier.pains),
                 len(dossier.objections),
@@ -852,6 +1255,7 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
         if dossier.actuality_header:
             ws.append(("Актуальность", dossier.actuality_header, _display_source("timeline_events/reconcile")))
         ws.append(("Кто", dossier.display_name, _display_source("customer_identities")))
+        ws.append(("Бренд", dossier.brand or "Не определён однозначно", _display_source("customer_identities")))
         ws.append(("Контакт", f"{dossier.phone} {dossier.email}".strip(), _display_source("customer_identities")))
         for row in dossier.family:
             ws.append((row.section, row.text, _display_source(row.source)))
@@ -859,8 +1263,13 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
             ws.append((row.section, row.text, _display_source(row.source)))
         for row in dossier.signals:
             ws.append((row.section, row.text, _display_source(row.source)))
-        if dossier.next_step:
-            ws.append(("Следующий шаг", dossier.next_step, _display_source("derived_signals")))
+        ws.append(
+            (
+                "Следующий шаг",
+                dossier.next_step or "Не определён: менеджеру нужно выбрать действие после проверки истории.",
+                _display_source(dossier.next_step_source) if dossier.next_step else "Требует решения менеджера",
+            )
+        )
         for row in dossier.objections:
             ws.append((row.section, row.text, _display_source(row.source)))
         for item in dossier.interests:

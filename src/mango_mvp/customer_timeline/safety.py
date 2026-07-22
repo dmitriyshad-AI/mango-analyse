@@ -71,6 +71,13 @@ def is_customer_timeline_prod_path(path: Path | str) -> bool:
     return any("customer_timeline_prod_" in part.casefold() for part in Path(path).parts)
 
 
+def guard_customer_timeline_writable_path(path: Path | str) -> Path:
+    resolved = Path(path).expanduser().resolve(strict=False)
+    if is_customer_timeline_prod_path(resolved):
+        raise ValueError(f"customer timeline prod is snapshot-only; write staging and publish atomically: {resolved}")
+    return resolved
+
+
 def guard_customer_timeline_output_path(path: Path | str, allowed_root: Path | str) -> Path:
     resolved = Path(path).resolve(strict=False)
     root = Path(allowed_root).resolve(strict=False)

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri
 from mango_mvp.existing_clients.amo_step1_snapshot import (
     DEFAULT_ENV_PATH,
     AmoMcpClient,
@@ -45,13 +46,13 @@ class OpenOpportunity:
 
 
 def connect_ro(db: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
+    con = sqlite3.connect(customer_timeline_readonly_uri(db), uri=True)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only = ON")
     return con
 
 
-def selected_stalled_customers(con: sqlite3.Connection, *, limit: int) -> list[str]:
+def selected_stalled_customers(con: sqlite3.Connection, *, limit: int, tenant_id: str = "foton") -> list[str]:
     rows = con.execute(
         """
         SELECT
@@ -64,7 +65,8 @@ def selected_stalled_customers(con: sqlite3.Connection, *, limit: int) -> list[s
          AND p.customer_id = s.customer_id
          AND p.period = 'all_time'
          AND p.money_kind = 'fact'
-        WHERE s.signal_type = 'deal_stalling'
+        WHERE s.tenant_id = ?
+          AND s.signal_type = 'deal_stalling'
           AND s.status = 'active'
           AND s.customer_id IS NOT NULL
           AND s.customer_id != ''
@@ -72,12 +74,14 @@ def selected_stalled_customers(con: sqlite3.Connection, *, limit: int) -> list[s
         ORDER BY fact_total_in DESC, latest_signal_at DESC, s.customer_id
         LIMIT ?
         """,
-        (int(limit),),
+        (tenant_id, int(limit)),
     ).fetchall()
     return [str(row["customer_id"]) for row in rows]
 
 
-def open_opportunities_for_customers(con: sqlite3.Connection, customer_ids: Sequence[str]) -> list[OpenOpportunity]:
+def open_opportunities_for_customers(
+    con: sqlite3.Connection, customer_ids: Sequence[str], *, tenant_id: str = "foton"
+) -> list[OpenOpportunity]:
     if not customer_ids:
         return []
     placeholders = ",".join("?" for _ in customer_ids)
@@ -97,13 +101,14 @@ def open_opportunities_for_customers(con: sqlite3.Connection, customer_ids: Sequ
          AND p.customer_id = o.customer_id
          AND p.period = 'all_time'
          AND p.money_kind = 'fact'
-        WHERE o.opportunity_type = 'amo_deal'
+        WHERE o.tenant_id = ?
+          AND o.opportunity_type = 'amo_deal'
           AND o.customer_id IN ({placeholders})
           AND o.source_id IS NOT NULL
           AND o.source_id != ''
         ORDER BY fact_total_in DESC, o.customer_id, o.source_id
         """,
-        tuple(customer_ids),
+        (tenant_id, *customer_ids),
     ).fetchall()
     result: list[OpenOpportunity] = []
     for row in rows:
@@ -238,7 +243,7 @@ def reconcile(
         "generated_at": generated_at,
         "status": "checked",
         "timeline_db": str(db),
-        "source_open_mode": "sqlite_mode_ro_immutable",
+        "source_open_mode": "sqlite_mode_ro",
         "mcp_env": str(mcp_env.expanduser()),
         "top_customer_limit": limit,
         "customers_selected": len(customer_ids),
@@ -268,7 +273,7 @@ def _unavailable_report(
         "status": "unavailable",
         "reason": reason,
         "timeline_db": str(timeline_db),
-        "source_open_mode": "sqlite_mode_ro_immutable",
+        "source_open_mode": "sqlite_mode_ro",
         "mcp_env": str(mcp_env.expanduser()),
         "customers_selected": len(customer_ids),
         "open_opportunities_planned": len(opportunities),

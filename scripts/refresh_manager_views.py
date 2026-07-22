@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path  # noqa: E402
+from mango_mvp.customer_timeline.wappi_history_import import file_sha256, git_worktree_provenance  # noqa: E402
 from build_manager_dossier import build_manager_dossier_workbook  # noqa: E402
 from build_wave0_manager_lists import build_workbook as build_wave0_workbook  # noqa: E402
 
@@ -53,23 +55,38 @@ def refresh_manager_views(
         out_xlsx=out_root / f"{stamp}_wave0_dengi_na_polu.xlsx",
         allowed_root=allowed_root,
         reconcile_json=reconcile_json,
-        limit_per_sheet=500,
+        limit_per_sheet=limit,
+    )
+    dossier_customer_ids = (
+        customer_ids
+        if customer_ids_file is not None
+        else [str(item) for item in wave0.get("selected_customer_ids", ()) if str(item)][:limit]
     )
     dossier = build_manager_dossier_workbook(
         timeline_db=timeline_db,
         allowed_root=allowed_root,
         out_xlsx=out_root / f"{stamp}_wave1_manager_dossier.xlsx",
-        customer_ids=tuple(customer_ids),
+        customer_ids=tuple(dossier_customer_ids),
         canonical_calls_db=canonical_calls_db,
         reconcile_json=reconcile_json,
         limit=limit,
+        enforce_outreach_eligibility=True,
     )
-    return {
+    manifest = {
         "status": "built",
         "generated_at": generated_at,
+        "provenance": _manager_views_provenance(timeline_db),
+        "artifact_sha256": {
+            "wave0_xlsx": file_sha256(Path(str(wave0["out_xlsx"]))),
+            "wave1_xlsx": file_sha256(Path(str(dossier["out_xlsx"]))),
+        },
+        "safety_gate_counts": _safety_gate_counts(wave0),
         "wave0": wave0,
         "dossier": dossier,
     }
+    manifest_path = out_root / f"{stamp}_manager_views_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {**manifest, "manifest_path": str(manifest_path)}
 
 
 def _read_customer_ids(path: Path | None) -> list[str]:
@@ -85,6 +102,40 @@ def _guard_local_manager_views_dir(path: Path, allowed_root: Path) -> Path:
     if not relative.parts or relative.parts[0] != ".codex_local":
         raise ValueError("manager views contain PII and must stay under .codex_local")
     return resolved
+
+
+def _manager_views_provenance(timeline_db: Path) -> dict:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        git_head = proc.stdout.strip() if proc.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        git_head = None
+    return {
+        "git_head": git_head,
+        **git_worktree_provenance(ROOT),
+        "timeline_db_sha256": file_sha256(timeline_db.expanduser().resolve(strict=False)),
+    }
+
+
+def _safety_gate_counts(wave0: dict) -> dict[str, int]:
+    observed = wave0.get("eligibility_exclusion_counts") or {}
+    return {
+        reason: int(observed.get(reason, 0))
+        for reason in (
+            "durable_p0_history",
+            "durable_opt_out",
+            "active_access_or_learning",
+            "family_ambiguous",
+            "open_identity_conflict",
+            "meaningful_outbound_after_evidence",
+        )
+    }
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

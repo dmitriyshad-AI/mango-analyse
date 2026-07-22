@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -131,6 +131,45 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(tmp_path: Path)
     assert rows["fact"]["total_in"] == 7000
     assert rows["fact"]["deals_cnt"] == 1
     assert json.loads(rows["fact"]["sources_json"])["money_source"] == "tallanto_payment"
+
+
+def test_stage5_tallanto_balance_charge_does_not_become_refund_or_new_purchase(tmp_path: Path) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for source_id, event_at, direction in (
+            ("pay-in", NOW, "in"),
+            ("pay-out", NOW + timedelta(days=1), "out"),
+            ("pay-school-out", NOW + timedelta(days=2), " school_out "),
+        ):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer-1",
+                    event_type=TimelineEventType.TALLANTO_PAYMENT,
+                    event_at=event_at,
+                    source_system="tallanto_crm_call",
+                    source_id=source_id,
+                    source_ref=f"tallanto:most_finances:{source_id}",
+                    direction=TimelineDirection.SYSTEM,
+                    subject="Tallanto payment",
+                    summary=direction,
+                    match_status="strong_unique",
+                    record={"amount": 7000, "payment_direction": direction},
+                    created_at=event_at,
+                )
+            )
+
+    refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        fact = con.execute(
+            "SELECT total_in,total_out,deals_cnt,last_purchase_at FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchone()
+    assert fact["total_in"] == 7000
+    assert fact["total_out"] == 7000
+    assert fact["deals_cnt"] == 1
+    assert fact["last_purchase_at"] == NOW.isoformat()
 
 
 def test_stage5_migrates_legacy_customer_purchases_to_plan(tmp_path: Path) -> None:

@@ -878,7 +878,11 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
         warnings.append("out_dir_not_under_external_handoffs")
 
     out_dir_git_ignored = git_check_ignored(out_dir)
-    if not out_dir_git_ignored:
+    out_dir_outside_git = _git_root_for_path(out_dir) is None
+    out_dir_commit_safe = out_dir_git_ignored or (
+        out_dir_outside_git and out_dir_under_external_handoffs
+    )
+    if not out_dir_commit_safe:
         blocking_risks.append("out_dir_not_git_ignored")
 
     email_normalized = normalize_email(config.email_address)
@@ -971,6 +975,8 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
             "out_dir_not_stable_runtime": out_dir_not_stable_runtime,
             "out_dir_under_external_handoffs": out_dir_under_external_handoffs,
             "out_dir_git_ignored": out_dir_git_ignored,
+            "out_dir_outside_git": out_dir_outside_git,
+            "out_dir_commit_safe": out_dir_commit_safe,
             "identity_db_exists": identity_db_exists,
             "identity_db_not_stable_runtime": identity_db_not_stable_runtime,
         },
@@ -6278,8 +6284,7 @@ def best_effort_git_provenance() -> Mapping[str, Any]:
 
 def git_check_ignored(path: Path) -> bool:
     resolved = path.resolve(strict=False)
-    candidates = (resolved, *resolved.parents)
-    git_root = next((item for item in candidates if (item / ".git").exists()), None)
+    git_root = _git_root_for_path(resolved)
     if git_root is None:
         return False
     try:
@@ -6295,8 +6300,21 @@ def git_check_ignored(path: Path) -> bool:
     return completed.returncode == 0
 
 
+def _git_root_for_path(path: Path) -> Optional[Path]:
+    resolved = path.resolve(strict=False)
+    return next((item for item in (resolved, *resolved.parents) if (item / ".git").exists()), None)
+
+
+def _mail_output_commit_safe(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    git_root = _git_root_for_path(resolved)
+    if git_root is not None:
+        return git_check_ignored(resolved)
+    return "_external_handoffs" in resolved.parts
+
+
 def guard_git_ignored_output(path: Path, label: str) -> None:
-    if not git_check_ignored(path):
+    if not _mail_output_commit_safe(path):
         raise ValueError(f"{label} must be git-ignored before writing raw mail artifacts")
 
 

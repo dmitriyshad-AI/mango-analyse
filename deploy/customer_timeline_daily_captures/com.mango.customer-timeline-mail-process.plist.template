@@ -16,7 +16,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>MANGO_MAIL_DATA_ROOT</key>
-    <string>/Users/dmitrijfabarisov/Projects/Mango analyse</string>
+    <string>/Users/dmitrijfabarisov/Mango_Data</string>
   </dict>
   <key>StandardOutPath</key>
   <string>__MANGO_CODE_ROOT__/.codex_local/staging/mail_pipeline/mail-process.launchd.stdout.log</string>

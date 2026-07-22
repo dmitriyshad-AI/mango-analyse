@@ -27,6 +27,7 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     write_json,
 )
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_IDENTITY_DB,
@@ -442,6 +443,7 @@ def run_full_memory_production_apply(config: FullMemoryIngestConfig) -> Mapping[
     """Run the owner-approved production ingest, leaving data in the appointed DB."""
 
     assert_safe_production_target(config)
+    guard_customer_timeline_writable_path(config.production_db)
     started_at = datetime.now(timezone.utc)
     production_root = config.production_db.parent
     if not config.production_db.exists():

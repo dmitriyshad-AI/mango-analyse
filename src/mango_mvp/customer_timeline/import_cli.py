@@ -29,7 +29,11 @@ from mango_mvp.customer_timeline.ingestion import (
     timeline_ingestion_safety_contract,
     zero_normalized_counts,
 )
-from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safety import (
+    blocked_live_actions,
+    guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     guard_customer_timeline_sqlite_path,
@@ -76,6 +80,8 @@ class TimelineImportCliConfig:
         source_path = guard_customer_timeline_output_path(self.source_path, root)
         timeline_db = guard_customer_timeline_sqlite_path(self.timeline_db)
         timeline_db = guard_customer_timeline_output_path(timeline_db, root)
+        if self.apply:
+            guard_customer_timeline_writable_path(timeline_db)
         out_path = guard_customer_timeline_output_path(self.out_path, root) if self.out_path else None
         if out_path and out_path == source_path:
             raise ValueError("report output path must not overwrite source path")
@@ -103,6 +109,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if config.out_path:
             config.out_path.parent.mkdir(parents=True, exist_ok=True)
             config.out_path.write_text(f"{text}\n", encoding="utf-8")
+            config.out_path.chmod(0o600)
         else:
             print(text)
         return 0 if report["validation_ok"] else 1
@@ -332,6 +339,7 @@ def load_records_for_config(config: TimelineImportCliConfig) -> tuple[TimelineSo
         csv_encoding=config.csv_encoding,
         csv_delimiter=config.csv_delimiter,
         observed_at=config.observed_at,
+        limit=config.limit,
     )
 
 

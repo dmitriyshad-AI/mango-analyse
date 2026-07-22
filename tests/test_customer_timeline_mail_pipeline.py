@@ -207,7 +207,7 @@ def test_mail_download_failure_does_not_advance_cursor(
     assert not (state / "mail_download_cursor.json").exists()
 
 
-def _write_archive(path: Path, *, sha: str, event_at: str) -> None:
+def _write_archive(path: Path, *, sha: str, event_at: str | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as con:
         con.execute(
@@ -219,13 +219,14 @@ def _write_archive(path: Path, *, sha: str, event_at: str) -> None:
               message_kind TEXT,
               mailbox TEXT,
               extracted_text_path TEXT,
-              updated_at TEXT
+              updated_at TEXT,
+              first_ingested_at TEXT
             )
             """
         )
         con.execute(
-            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (sha, event_at, "Тема", "external", "INBOX", "", event_at),
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (sha, event_at, "Тема", "external", "INBOX", "", event_at or "2026-07-12T10:04:00+00:00", "2026-07-12T10:04:00+00:00"),
         )
 
 
@@ -243,6 +244,7 @@ def _write_timeline_with_cursor(path: Path, cursor: str) -> None:
               PRIMARY KEY (tenant_id, source_system)
             );
             CREATE TABLE timeline_events (
+              tenant_id TEXT,
               source_id TEXT,
               customer_id TEXT,
               match_status TEXT,
@@ -317,6 +319,103 @@ def test_mail_process_reuses_builder_and_timeline_cursor(tmp_path: Path) -> None
     assert [item["source_system"] for item in config["sources"]] == ["mail_archive_stage2"]
 
 
+def test_mail_process_overlap_preserves_existing_strong_link_without_enrich_metadata(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    sha = "c" * 64
+    canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
+    _write_archive(canonical, sha=sha, event_at="2026-07-12T10:02:00+00:00")
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    with sqlite3.connect(timeline) as con:
+        con.execute(
+            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("foton", sha, "customer:existing", "strong_unique", 0.97, json.dumps({"metadata": {}}), "mail_archive_stage2"),
+        )
+    state.mkdir(parents=True)
+    download.atomic_write_json(
+        state / "mail_download_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": download.runtime_identity(download.ROOT),
+            "truncated": False,
+            "errors": 0,
+            "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            "archive_db_paths": [],
+        },
+    )
+
+    report = process.execute(
+        process.parse_args(
+            [
+                "--code-root", str(download.ROOT),
+                "--data-root", str(data_root),
+                "--state-dir", str(state),
+                "--timeline-db", str(timeline),
+            ]
+        )
+    )
+
+    rows = [json.loads(line) for line in Path(report["output_jsonl"]).read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["customer_id"] == "customer:existing"
+    assert rows[0]["match_status"] == "strong_unique"
+    assert rows[0]["confidence"] == 0.97
+
+
+def test_mail_process_missing_only_selects_absent_sha_with_fallback_date(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    state = tmp_path / ".codex_local/staging/mail_pipeline"
+    canonical = data_root / download.CANONICAL_RELATIVE_ROOT / "archive/mail_archive.sqlite"
+    _write_archive(canonical, sha="a" * 64, event_at="2026-07-01T10:00:00+00:00")
+    with sqlite3.connect(canonical) as con:
+        con.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("b" * 64, None, "Без даты", "external", "INBOX", "", "2026-07-02T10:00:00+00:00", "2026-07-02T09:00:00+00:00"),
+        )
+    timeline = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    with sqlite3.connect(timeline) as con:
+        con.execute(
+            "INSERT INTO timeline_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("foton", "a" * 64, None, "unmatched", 0.0, "{}", "mail_archive_stage2"),
+        )
+    state.mkdir(parents=True)
+    runtime = download.runtime_identity(download.ROOT)
+    download.atomic_write_json(
+        state / "mail_download_manifest.json",
+        {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "runtime": runtime,
+            "truncated": False,
+            "errors": 0,
+            "mailbox_reports": {"inbox": {"status": "ok"}, "sent": {"status": "ok"}},
+            "archive_db_paths": [],
+        },
+    )
+
+    report = process.execute(
+        process.parse_args(
+            [
+                "--code-root", str(download.ROOT),
+                "--data-root", str(data_root),
+                "--state-dir", str(state),
+                "--timeline-db", str(timeline),
+                "--backfill-missing-only",
+            ]
+        )
+    )
+
+    assert report["rows_written"] == 1
+    assert report["existing_skipped"] == 1
+    assert report["fallback_date_rows"] == 1
+    config = json.loads(Path(report["config"]).read_text(encoding="utf-8"))
+    assert config["sources"][0]["ignore_cursor"] is True
+    assert config["sources"][0]["preserve_cursor"] is True
+
+
 def test_mail_process_requires_explicit_bootstrap_when_cursor_missing(tmp_path: Path) -> None:
     timeline = tmp_path / "timeline.sqlite"
     with sqlite3.connect(timeline):
@@ -324,6 +423,21 @@ def test_mail_process_requires_explicit_bootstrap_when_cursor_missing(tmp_path: 
 
     with pytest.raises(RuntimeError, match="mail_cursor_unavailable_and_no_bootstrap"):
         process.read_cursor(timeline, bootstrap=None, overlap_seconds=300)
+
+
+def test_mail_import_reads_cursor_from_wal_mode_backup_without_sidecars(tmp_path: Path) -> None:
+    timeline = tmp_path / "backup.sqlite"
+    _write_timeline_with_cursor(timeline, "2026-07-12T10:05:00+00:00")
+    with sqlite3.connect(timeline) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    Path(f"{timeline}-wal").unlink(missing_ok=True)
+    Path(f"{timeline}-shm").unlink(missing_ok=True)
+
+    state = mail_import.read_mail_cursor_state(timeline)
+
+    assert state is not None
+    assert state["last_cursor_ts"] == "2026-07-12T10:05:00+00:00"
 
 
 def test_mail_process_rejects_prod_or_non_staging_timeline_paths(tmp_path: Path) -> None:

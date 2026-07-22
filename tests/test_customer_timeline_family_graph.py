@@ -44,6 +44,18 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
     assert event[3]
 
 
+def test_family_graph_generated_at_ignores_future_source_rows(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:future", phone="+79000000011")
+    _seed_event(db_path, tmp_path, customer_id="customer:future", source_id="future", summary="Тест.")
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE timeline_events SET created_at='2099-01-01T00:00:00+00:00'")
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    assert report["generated_at"] != "2099-01-01T00:00:00+00:00"
+
+
 def test_family_graph_never_marks_multiple_children_high_without_unique_mention(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:multi", phone="+79000000002")

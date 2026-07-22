@@ -1200,6 +1200,7 @@ def _normalize_brand(value: Any) -> str:
 
 
 def _stable_generated_at(db_path: Path) -> str:
+    latest_allowed = datetime.now(timezone.utc).isoformat()
     with _connect(db_path, write=False) as con:
         rows = con.execute(
             """
@@ -1208,7 +1209,9 @@ def _stable_generated_at(db_path: Path) -> str:
               UNION ALL SELECT MAX(created_at) FROM bot_context_chunks
               UNION ALL SELECT MAX(created_at) FROM derived_signals
             )
-            """
+            WHERE value <= ?
+            """,
+            (latest_allowed,),
         ).fetchone()
     return str(rows[0] or "1970-01-01T00:00:00+00:00")
 

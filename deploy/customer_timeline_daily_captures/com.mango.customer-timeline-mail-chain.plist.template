@@ -14,7 +14,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>MANGO_MAIL_DATA_ROOT</key>
-    <string>/Users/dmitrijfabarisov/Projects/Mango analyse</string>
+    <string>/Users/dmitrijfabarisov/Mango_Data</string>
     <key>CUSTOMER_TIMELINE_NIGHTLY_HOME</key>
     <string>__CUSTOMER_TIMELINE_NIGHTLY_HOME__</string>
   </dict>

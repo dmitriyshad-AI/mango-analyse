@@ -68,6 +68,12 @@ def test_paid_no_access_is_not_created_when_abonement_or_class_access_exists() -
     assert with_class == ()
 
 
+def test_managed_signals_ignore_future_events() -> None:
+    future_payment = tallanto_payment("payment-future", event_at=NOW + timedelta(days=1))
+
+    assert derive_active_signals(DerivedSignalInputs(TENANT, CUSTOMER, events=(future_payment,), as_of=NOW)) == ()
+
+
 def test_hot_lead_silent_7d_is_created_only_without_new_touch() -> None:
     interest = touch_event("call-1", NOW - timedelta(days=8), summary="Клиент интересуется курсом ЕГЭ и ценой")
     later_system_payment = tallanto_payment("payment-1", event_at=NOW - timedelta(days=3))
@@ -133,8 +139,19 @@ def test_duplicate_contact_signal_ignores_resolved_or_unrelated_conflicts() -> N
         "entity_refs": [CUSTOMER],
         "created_at": NOW.isoformat(),
     }
+    prefix_collision = {
+        "conflict_id": "timeline_conflict:3",
+        "tenant_id": TENANT,
+        "conflict_type": "ambiguous_identity",
+        "severity": "medium",
+        "status": "open",
+        "entity_refs": ["customer:10"],
+        "created_at": NOW.isoformat(),
+    }
 
-    assert derive_active_signals(DerivedSignalInputs(TENANT, CUSTOMER, events=(), conflicts=(resolved, unrelated))) == ()
+    assert derive_active_signals(
+        DerivedSignalInputs(TENANT, CUSTOMER, events=(), conflicts=(resolved, unrelated, prefix_collision))
+    ) == ()
 
 
 def test_recompute_paid_no_access_is_idempotent_and_resolves_when_access_appears(tmp_path: Path) -> None:
@@ -264,6 +281,36 @@ def test_derive_signals_cli_dry_run_is_read_only_and_apply_writes_only_timeline_
     assert count_rows(db_path, "derived_signals") == 1
 
 
+def test_bulk_derive_preloads_conflicts_instead_of_scanning_per_customer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = seeded_store(tmp_path)
+    store.record_conflict(
+        TENANT,
+        conflict_type="ambiguous_identity",
+        entity_refs=(CUSTOMER, "customer:2"),
+        status="open",
+    )
+    store.close()
+
+    def fail_per_customer(*_args, **_kwargs):
+        raise AssertionError("bulk derive must not scan all conflicts per customer")
+
+    monkeypatch.setattr(CustomerTimelineSQLiteStore, "list_conflicts_by_customer", fail_per_customer)
+    report = run_derive_customer_timeline_signals(
+        DeriveCustomerTimelineSignalsConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id=TENANT,
+            as_of=NOW,
+            limit=10,
+        )
+    )
+
+    assert report["conflicts_preloaded"] == 1
+    assert report["summary"]["signal_type_counts"] == {DUPLICATE_CONTACT_SIGNAL: 1}
+
+
 def test_derive_signals_customer_listing_paginates_until_limit(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path)
     try:
@@ -336,7 +383,13 @@ def test_sg_v1_derives_client_returned_callback_due_stalling_hot_streak_and_seas
         tenant_id=TENANT,
         customer_id=CUSTOMER,
         events=(),
-        purchases={"deals_cnt": 1, "last_purchase_at": (NOW - timedelta(days=220)).isoformat()},
+        purchases={
+            "total_in": 12000,
+            "total_out": 0,
+            "deals_cnt": 1,
+            "last_purchase_at": (NOW - timedelta(days=220)).isoformat(),
+            "computability": "computed",
+        },
         as_of=NOW,
     )
 
@@ -365,9 +418,41 @@ def test_sg_v1_callback_due_requires_manager_promise_not_inbound_or_quote() -> N
     inbound_request = touch_event("inbound-callback", NOW - timedelta(days=5), summary="Пожалуйста, позвоните мне")
     quoted_history = touch_event("quoted", NOW - timedelta(days=5), summary="Обычный ответ", direction="outbound")
     quoted_history["record"] = {"thread_context": "В старой переписке было: завтра перезвоним клиенту"}
+    negated_promise = touch_event(
+        "negated",
+        NOW - timedelta(days=5),
+        summary="Не перезвоню клиенту без его запроса",
+        direction="outbound",
+    )
+    conditional_promise = touch_event(
+        "conditional",
+        NOW - timedelta(days=5),
+        summary="Напишем, если появятся места",
+        direction="outbound",
+    )
+    same_second_answer = touch_event(
+        "same-second-answer",
+        NOW - timedelta(days=5),
+        summary="Ответ уже отправлен",
+        direction="outbound",
+    )
+    same_second_promise = touch_event(
+        "same-second-promise",
+        NOW - timedelta(days=5),
+        summary="Перезвоним клиенту",
+        direction="outbound",
+    )
 
     assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(inbound_request,), as_of=NOW) == ()
     assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(quoted_history,), as_of=NOW) == ()
+    assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(negated_promise,), as_of=NOW) == ()
+    assert derive_sg_v1_signals(tenant_id=TENANT, customer_id=CUSTOMER, events=(conditional_promise,), as_of=NOW) == ()
+    assert derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(same_second_promise, same_second_answer),
+        as_of=NOW,
+    ) == ()
 
 
 def test_sg_v1_ignores_future_events() -> None:
@@ -385,7 +470,13 @@ def test_sg_v1_ignores_future_events() -> None:
 
 
 def test_sg_v1_season_return_is_stable_inside_month() -> None:
-    purchases = {"deals_cnt": 1, "last_purchase_at": (NOW - timedelta(days=220)).isoformat()}
+    purchases = {
+        "total_in": 12000,
+        "total_out": 0,
+        "deals_cnt": 1,
+        "last_purchase_at": (NOW - timedelta(days=220)).isoformat(),
+        "computability": "computed",
+    }
 
     first = derive_sg_v1_signals(
         tenant_id=TENANT,
@@ -406,6 +497,32 @@ def test_sg_v1_season_return_is_stable_inside_month() -> None:
     assert first.created_at == second.created_at
     assert first.expires_at == second.expires_at
     assert first.metadata == second.metadata
+
+
+def test_sg_v1_season_return_requires_positive_payment_without_reversal() -> None:
+    base = {
+        "deals_cnt": 1,
+        "last_purchase_at": (NOW - timedelta(days=220)).isoformat(),
+        "computability": "computed",
+    }
+
+    no_payment = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(),
+        purchases={**base, "total_in": 0, "total_out": 5000},
+        as_of=NOW,
+    )
+    reversed_payment = derive_sg_v1_signals(
+        tenant_id=TENANT,
+        customer_id=CUSTOMER,
+        events=(),
+        purchases={**base, "total_in": 5000, "total_out": 5000},
+        as_of=NOW,
+    )
+
+    assert no_payment == ()
+    assert reversed_payment == ()
 
 
 def test_sg_v1_backfill_is_idempotent(tmp_path: Path) -> None:

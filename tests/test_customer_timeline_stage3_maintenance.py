@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -186,3 +187,49 @@ def test_stage3_chunk_label_backfill_is_conservative_for_raw_mail(tmp_path: Path
     assert payload["metadata"]["client_safe_reason"] == "stage2_mail_manager_review_pending"
     assert payload["metadata"]["client_safe_policy_version"] == "cs_v1"
     assert payload["metadata"]["memory_status"] == "manager_review_required"
+
+
+def test_stage3_hardens_legacy_mail_chunk_columns_and_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = _identity()
+        store.upsert_customer(customer)
+        event = _email_event(customer, source_id="9" * 64, preview="Старое письмо.")
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(_mail_chunk(event, text="Полный текст старого письма"))
+
+    with sqlite3.connect(db_path) as con:
+        row = con.execute("SELECT chunk_id, record_json FROM bot_context_chunks").fetchone()
+        payload = json.loads(row[1])
+        payload["allowed_for_bot"] = True
+        payload["requires_manager_review"] = False
+        con.execute(
+            """
+            UPDATE bot_context_chunks
+            SET allowed_for_bot = 1, requires_manager_review = 0, record_json = ?
+            WHERE chunk_id = ?
+            """,
+            (json.dumps(payload, ensure_ascii=False), row[0]),
+        )
+        con.commit()
+
+    report = run_stage3_maintenance(
+        Stage3MaintenanceConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+        )
+    )
+
+    assert report["mail_stage2_visibility_hardening"]["updated_chunks"] == 1
+    assert report["after"]["mail_stage2_chunks_allowed"] == 0
+    assert report["after"]["mail_stage2_chunks_without_review"] == 0
+    with sqlite3.connect(db_path) as con:
+        allowed, review, record_json = con.execute(
+            "SELECT allowed_for_bot, requires_manager_review, record_json FROM bot_context_chunks"
+        ).fetchone()
+    payload = json.loads(record_json)
+    assert (allowed, review) == (0, 1)
+    assert payload["allowed_for_bot"] is False
+    assert payload["requires_manager_review"] is True

@@ -45,6 +45,8 @@ class IncrementalSourceConfig:
     source_ref: Optional[str] = None
     normalizer: str = "jsonl"
     required: bool = True
+    ignore_cursor: bool = False
+    preserve_cursor: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_key(self.name, "source name"))
@@ -436,13 +438,15 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                     )
                 except Exception as exc:  # fail-soft per source; the service gate decides whether this is blocking.
                     reason = f"source_exception:{type(exc).__name__}"
-                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    if not source.preserve_cursor:
+                        update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
                     report["sources"].append(source_failure_report(source, reason=reason, error=exc))
                     report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
                 report["sources"].append(loaded.to_json_dict())
                 if loaded.skipped_reason:
-                    update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
+                    if not source.preserve_cursor:
+                        update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=loaded.skipped_reason))
                     continue
                 if not loaded.records:
@@ -466,7 +470,8 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                     )
                 except Exception as exc:  # keep other sources running if one importer breaks.
                     reason = f"import_exception:{type(exc).__name__}"
-                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    if not source.preserve_cursor:
+                        update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
                 affected.update(loaded.affected_customer_ids)
@@ -475,10 +480,11 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                 import_reports.append(imported_payload)
                 if not imported.validation_ok:
                     reason = f"import_validation_failed:rejected_count={imported.rejected_count}"
-                    update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
+                    if not source.preserve_cursor:
+                        update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=reason))
                     continue
-                if loaded.max_source_ts is not None:
+                if loaded.max_source_ts is not None and not source.preserve_cursor:
                     cursor_ts = loaded.max_source_ts - timedelta(seconds=config.safety_margin_seconds)
                     existing_cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
                     persisted_cursor_ts = cursor_ts
@@ -586,8 +592,10 @@ def load_incremental_jsonl_source(
     safety_margin_seconds: int,
 ) -> SourceLoadResult:
     cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
-    fetch_from = cursor_ts_for_source_ref(cursor.metadata if cursor else None, source) if cursor else None
-    if fetch_from is None and cursor is not None and not has_source_ref_cursors(cursor.metadata):
+    fetch_from = None if source.ignore_cursor else (
+        cursor_ts_for_source_ref(cursor.metadata if cursor else None, source) if cursor else None
+    )
+    if not source.ignore_cursor and fetch_from is None and cursor is not None and not has_source_ref_cursors(cursor.metadata):
         fetch_from = cursor.last_cursor_ts
     if not source.path.exists():
         return SourceLoadResult(
@@ -768,7 +776,9 @@ def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:
 
 def normalized_timestamp(row: Mapping[str, Any]) -> str:
     return str(
-        row.get("updated_at")
+        row.get("snapshot_at")
+        or row.get("captured_at")
+        or row.get("updated_at")
         or row.get("created_at")
         or row.get("event_at")
         or row.get("date_last")

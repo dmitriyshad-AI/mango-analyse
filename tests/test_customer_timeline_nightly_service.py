@@ -323,6 +323,104 @@ def test_nightly_service_runs_optional_mail_link_enrich_and_publishes_metrics(tm
     assert manifest["source_counts"] == []
 
 
+def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    captured = {}
+
+    def fake_run(config):
+        captured["config"] = config
+        return {
+            "cursor_before": {"amo_leads_updated_at": "2026-07-01T00:00:00+00:00"},
+            "cursor_after": {"amo_leads_updated_at": "2026-07-02T00:00:00+00:00"},
+            "fetch": {"amo_leads_updated_at": {"page_cap_hit": False}},
+            "repeat_run_duplicates": 0,
+            "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
+            "first_run": {"cards": {"source_errors": []}, "events": {"source_errors": []}},
+            "second_run": {"source_errors": []},
+        }
+
+    monkeypatch.setattr(nightly_service_module, "run_amo_incremental", fake_run)
+    config_path = tmp_path / "amo_service_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "nightly_service"),
+                "publish_dir": str(tmp_path / "published"),
+                "tenant_id": "foton",
+                "steps": [
+                    {
+                        "name": "amo_incremental_shadow",
+                        "kind": "amo_incremental",
+                        "enabled": True,
+                        "required": False,
+                        "config": {
+                            "out_root": str(tmp_path / "amo_incremental"),
+                            "mcp_env": str(tmp_path / "amo.env"),
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["repeat_run_duplicates"] == 0
+    assert captured["config"].timeline_db == db_path
+    assert captured["config"].copy_db is False
+
+
+def test_nightly_service_amo_incremental_failure_is_optional(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_amo_incremental",
+        lambda _config: (_ for _ in ()).throw(TimeoutError("AMO unavailable")),
+    )
+    config_path = tmp_path / "amo_service_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "nightly_service"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "amo_incremental_shadow",
+                        "kind": "amo_incremental",
+                        "enabled": True,
+                        "required": False,
+                        "config": {
+                            "out_root": str(tmp_path / "amo_incremental"),
+                            "mcp_env": str(tmp_path / "amo.env"),
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "skipped_optional_failed"
+    assert report["steps"][0]["error_type"] == "TimeoutError"
+    assert report["snapshot_manifest"]["latest_published"] is True
+
+
 def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

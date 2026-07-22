@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional, Sequence
 
+from mango_mvp.customer_timeline.amo_incremental import AmoIncrementalConfig, run_amo_incremental
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
@@ -37,6 +38,7 @@ class NightlyServiceStep:
     monitor_config: Optional[Mapping[str, Any]] = None
     mail_link_config: Optional[MailLinkEnrichConfig] = None
     mango_sweep_config: Optional[Mapping[str, Any]] = None
+    amo_incremental_config: Optional[AmoIncrementalConfig] = None
     reason: Optional[str] = None
 
 
@@ -56,10 +58,17 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ")
     timeline_db, allowed_root, out_root, publish_dir = validated_service_paths(config)
+    timeline_db.parent.mkdir(parents=True, exist_ok=True)
     out_root.mkdir(parents=True, exist_ok=True)
     publish_dir.mkdir(parents=True, exist_ok=True)
+    timeline_db.parent.chmod(0o700)
+    out_root.chmod(0o700)
+    publish_dir.chmod(0o700)
+    if timeline_db.exists():
+        timeline_db.chmod(0o600)
     run_dir = out_root / f"run_{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.chmod(0o700)
     report: dict[str, Any] = {
         "schema_version": NIGHTLY_SERVICE_SCHEMA_VERSION,
         "run_id": run_id,
@@ -223,6 +232,49 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     }
                 )
                 continue
+            if step.kind == "amo_incremental":
+                try:
+                    if step.amo_incremental_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_amo_incremental(step.amo_incremental_config)
+                    step_ok = amo_incremental_report_ok(step_report)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_ok else ("failed" if step.required else "skipped_optional_failed")
+                if status == "failed":
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "cursor_before": step_report.get("cursor_before"),
+                            "cursor_after": step_report.get("cursor_after"),
+                            "fetch": step_report.get("fetch"),
+                            "repeat_run_duplicates": step_report.get("repeat_run_duplicates"),
+                            "safety": step_report.get("safety"),
+                        },
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
             if step.kind != "nightly_incremental":
                 reason = f"unsupported nightly service step kind: {step.kind}"
                 if step.required:
@@ -370,6 +422,7 @@ def service_step_from_json(
     monitor_config = None
     mail_link_config = None
     mango_sweep_config = None
+    amo_incremental_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
         if not isinstance(config_payload, Mapping):
@@ -409,6 +462,24 @@ def service_step_from_json(
         if not isinstance(raw_config, Mapping):
             raise ValueError(f"step {name} requires config")
         mango_sweep_config = dict(raw_config)
+    elif kind == "amo_incremental":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        amo_incremental_config = AmoIncrementalConfig(
+            source_db=Path(str(raw_config.get("source_db") or timeline_db)),
+            out_root=Path(str(raw_config["out_root"])),
+            mcp_env=Path(str(raw_config["mcp_env"])),
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            mcp_transport=str(raw_config["mcp_transport"]) if raw_config.get("mcp_transport") else None,
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            safety_overlap_seconds=int(raw_config.get("safety_overlap_seconds", 300)),
+            page_limit=int(raw_config.get("page_limit", 250)),
+            max_pages=int(raw_config.get("max_pages", 20)),
+            sleep_sec=float(raw_config.get("sleep_sec", 1.05)),
+            copy_db=False,
+        )
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
     return NightlyServiceStep(
@@ -420,6 +491,7 @@ def service_step_from_json(
         monitor_config=monitor_config,
         mail_link_config=mail_link_config,
         mango_sweep_config=mango_sweep_config,
+        amo_incremental_config=amo_incremental_config,
         reason=reason,
     )
 
@@ -482,6 +554,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 for key in ("out_jsonl", "report_out", "manifest_path", "inventory_out"):
                     if step.mango_sweep_config.get(key):
                         guard_customer_timeline_output_path(Path(str(step.mango_sweep_config[key])), allowed_root)
+            if step.amo_incremental_config is not None:
+                guard_customer_timeline_output_path(step.amo_incremental_config.timeline_db, allowed_root)
+                guard_customer_timeline_output_path(step.amo_incremental_config.allowed_root, allowed_root)
+                guard_customer_timeline_output_path(step.amo_incremental_config.out_root, allowed_root)
             continue
         guard_customer_timeline_output_path(step.config.timeline_db, allowed_root)
         guard_customer_timeline_output_path(step.config.allowed_root, allowed_root)
@@ -489,6 +565,22 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
         for source in step.config.sources:
             guard_customer_timeline_output_path(source.path, allowed_root)
     return timeline_db, allowed_root, out_root, publish_dir
+
+
+def amo_incremental_report_ok(report: Mapping[str, Any]) -> bool:
+    safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
+    if any(safety.get(key) is not False for key in ("amo_write", "tallanto_write", "crm_write")):
+        return False
+    fetch = report.get("fetch") if isinstance(report.get("fetch"), Mapping) else {}
+    if any(isinstance(item, Mapping) and item.get("page_cap_hit") for item in fetch.values()):
+        return False
+    reports = [report.get("second_run")]
+    first = report.get("first_run") if isinstance(report.get("first_run"), Mapping) else {}
+    reports.extend((first.get("cards"), first.get("events")))
+    return not any(
+        isinstance(item, Mapping) and item.get("source_errors")
+        for item in reports
+    )
 
 
 def run_local_freshness_monitor(

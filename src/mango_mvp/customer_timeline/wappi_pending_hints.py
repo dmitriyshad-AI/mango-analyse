@@ -230,6 +230,7 @@ def build_pending_hints(
                 chat_id=pending.chat_id,
                 limits=limits,
                 request_counter=stats,
+                request_budget=limits.request_limit_total,
             )
             message_requests += stats.requests
             calls_before = resolver.amo_auto_calls

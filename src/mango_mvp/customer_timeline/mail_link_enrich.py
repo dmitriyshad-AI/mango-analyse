@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -41,6 +41,7 @@ MAIL_LINK_ENRICH_SCHEMA_VERSION = "mail_link_enrich_v1"
 MAIL_LINK_ENRICH_SOURCE_REF = "mail_link_enrich:stage2_pending"
 PHONE_LINK_TYPES = ("phone", "primary_phone", "mango_client_phone", "whatsapp_phone")
 EMAIL_LINK_TYPES = ("email", "primary_email")
+MAIL_IDENTITY_SOURCE_SYSTEMS = {"mail_archive", A2V3_MAIL_SOURCE_SYSTEM}
 OWN_DOMAINS = {"kmipt.ru", "cdpofoton.ru", "foton.school", "amocrm.ru", "amocrm.com"}
 OWN_EMAILS = {"edu@kmipt.ru"}
 HOTLINE_PHONE_DIGITS = {"88000000000", "88005553535", "74951234567"}
@@ -59,11 +60,19 @@ class MailLinkEnrichConfig:
     tenant_id: str = "foton"
     apply: bool = False
     max_events: Optional[int] = None
+    reconsider_pending: bool = False
+    fallback_archive_dbs: tuple[Path, ...] = ()
+    aggregate_only: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeline_db", Path(self.timeline_db).expanduser())
         object.__setattr__(self, "allowed_root", Path(self.allowed_root).expanduser())
         object.__setattr__(self, "out_dir", Path(self.out_dir).expanduser())
+        object.__setattr__(
+            self,
+            "fallback_archive_dbs",
+            tuple(Path(path).expanduser() for path in self.fallback_archive_dbs),
+        )
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         if self.max_events is not None and self.max_events < 0:
             raise ValueError("max_events must not be negative")
@@ -95,18 +104,35 @@ class ContactResult:
 
 def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
     timeline_db, allowed_root = _validated_paths(config)
-    config.out_dir.mkdir(parents=True, exist_ok=True)
+    config.out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config.out_dir.chmod(0o700)
     before = _snapshot_counts(timeline_db)
-    targets = _load_target_events(timeline_db, tenant_id=config.tenant_id, max_events=config.max_events)
+    targets = _load_target_events(
+        timeline_db,
+        tenant_id=config.tenant_id,
+        max_events=config.max_events,
+        reconsider_pending=config.reconsider_pending,
+    )
     archive_cache: dict[Path, sqlite3.Connection] = {}
+    participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]] = {}
     decisions: list[dict[str, Any]] = []
     counters: Counter[str] = Counter(target_events=len(targets))
     try:
         with sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True) as ro:
             ro.row_factory = sqlite3.Row
             ro.execute("PRAGMA query_only=ON")
+            identity_index = _load_identity_index(ro, tenant_id=config.tenant_id)
+            customer_brands = _load_trusted_customer_brands(ro, tenant_id=config.tenant_id)
             for row in targets:
-                decision = _plan_event(row, ro, archive_cache)
+                decision = _plan_event(
+                    row,
+                    ro,
+                    archive_cache,
+                    participant_cache,
+                    identity_index,
+                    fallback_archive_dbs=config.fallback_archive_dbs,
+                )
+                decision = _block_cross_brand_decision(row, decision, customer_brands)
                 decisions.append(_decision_report(row, decision))
                 counters[f"planned.{decision.outcome}"] += 1
                 if decision.reason:
@@ -124,6 +150,7 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
             targets=targets,
             decisions=decisions,
             out_dir=config.out_dir,
+            aggregate_only=config.aggregate_only,
         )
     after = _snapshot_counts(timeline_db)
     report = {
@@ -132,6 +159,8 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
         "timeline_db": str(timeline_db),
         "allowed_root": str(allowed_root),
         "target_events": len(targets),
+        "reconsider_pending": config.reconsider_pending,
+        "fallback_archive_db_count": len(config.fallback_archive_dbs),
         "counts": dict(counters),
         "apply": apply_report,
         "before": before,
@@ -149,11 +178,16 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
             "mail_stage2_allowed_for_bot_changed": before["mail_stage2_allowed_for_bot"] != after["mail_stage2_allowed_for_bot"],
         },
     }
-    (config.out_dir / "mail_link_enrich_decisions.jsonl").write_text(
-        "\n".join(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in decisions) + ("\n" if decisions else ""),
-        encoding="utf-8",
-    )
-    _write_json(config.out_dir / ("mail_link_enrich_apply_report.json" if config.apply else "mail_link_enrich_dry_run_report.json"), report)
+    if not config.aggregate_only:
+        decisions_path = config.out_dir / "mail_link_enrich_decisions.jsonl"
+        decisions_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in decisions) + ("\n" if decisions else ""),
+            encoding="utf-8",
+        )
+        decisions_path.chmod(0o600)
+    report_path = config.out_dir / ("mail_link_enrich_apply_report.json" if config.apply else "mail_link_enrich_dry_run_report.json")
+    _write_json(report_path, report)
+    report_path.chmod(0o600)
     return report
 
 
@@ -166,7 +200,13 @@ def _validated_paths(config: MailLinkEnrichConfig) -> tuple[Path, Path]:
     return timeline_db, allowed_root
 
 
-def _load_target_events(db_path: Path, *, tenant_id: str, max_events: Optional[int]) -> list[sqlite3.Row]:
+def _load_target_events(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    max_events: Optional[int],
+    reconsider_pending: bool,
+) -> list[sqlite3.Row]:
     sql = """
         SELECT *
         FROM timeline_events
@@ -175,10 +215,16 @@ def _load_target_events(db_path: Path, *, tenant_id: str, max_events: Optional[i
           AND match_status = 'unmatched'
           AND (customer_id IS NULL OR customer_id = '')
           AND json_extract(record_json, '$.metadata.pending_attribution') = 1
-          AND json_extract(record_json, '$.metadata.pending_reason') IS NULL
+          AND (
+            json_extract(record_json, '$.metadata.pending_reason') IS NULL
+            OR (
+              ? = 1
+              AND json_extract(record_json, '$.metadata.pending_reason') != 'cross_brand_signal'
+            )
+          )
         ORDER BY event_at, event_id
     """
-    params: list[Any] = [tenant_id, A2V3_MAIL_SOURCE_SYSTEM]
+    params: list[Any] = [tenant_id, A2V3_MAIL_SOURCE_SYSTEM, int(reconsider_pending)]
     if max_events is not None:
         sql += " LIMIT ?"
         params.append(max_events)
@@ -192,22 +238,74 @@ def _plan_event(
     row: sqlite3.Row,
     timeline_ro: sqlite3.Connection,
     archive_cache: dict[Path, sqlite3.Connection],
+    participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]],
+    identity_index: Mapping[tuple[str, str], Sequence[Mapping[str, Any]]],
+    *,
+    fallback_archive_dbs: Sequence[Path] = (),
 ) -> LinkDecision:
     payload = _event_payload(row)
     source_payload = _source_payload(payload)
     archive_db = _archive_db_for_source_payload(source_payload)
-    raw_message = _load_archive_message(archive_db, str(row["source_id"]), archive_cache) if archive_db else {}
+    archive_dbs = [path for path in (archive_db, *fallback_archive_dbs) if path and path.is_file()]
+    raw_message: Mapping[str, Any] = {}
+    for candidate in dict.fromkeys(archive_dbs):
+        raw_message = _load_archive_message(
+            candidate,
+            str(row["source_id"]),
+            archive_cache,
+            participant_cache,
+        )
+        if raw_message:
+            break
     contact = _contact_from_archive_row(str(row["direction"]), raw_message)
     email = normalize_email(contact.contact_email)
     phone = _normalize_phone(contact.contact_phone)
-    if phone:
-        phone_resolution = _resolve_identity_value(
+    phone_resolution = (
+        _resolve_identity_value(
             timeline_ro,
             tenant_id=str(row["tenant_id"]),
             link_types=PHONE_LINK_TYPES,
             link_value=phone,
+            identity_index=identity_index,
         )
+        if phone
+        else _empty_identity_resolution()
+    )
+    email_resolution = (
+        _resolve_identity_value(
+            timeline_ro,
+            tenant_id=str(row["tenant_id"]),
+            link_types=EMAIL_LINK_TYPES,
+            link_value=email,
+            identity_index=identity_index,
+        )
+        if email
+        else _empty_identity_resolution()
+    )
+    phone_ids = set(phone_resolution["candidate_customer_ids"])
+    email_ids = set(email_resolution["candidate_customer_ids"])
+    candidates = tuple(sorted(phone_ids | email_ids))
+
+    if phone_ids and email_ids and phone_ids.isdisjoint(email_ids):
+        return LinkDecision(
+            "blocked",
+            "phone_email_customer_conflict",
+            contact_email=email or None,
+            contact_phone=phone or None,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=candidates,
+        )
+    if phone:
         if phone_resolution["status"] == "strong":
+            if email_resolution["status"] in {"ambiguous", "blocked"}:
+                return LinkDecision(
+                    "blocked",
+                    f"email_{email_resolution['reason']}",
+                    contact_email=email or None,
+                    contact_phone=phone,
+                    contact_source=contact.contact_source,
+                    candidate_customer_ids=candidates,
+                )
             return LinkDecision(
                 "strong",
                 "strong_phone_identity_link",
@@ -216,8 +314,23 @@ def _plan_event(
                 contact_email=email or None,
                 contact_phone=phone,
                 contact_source=contact.contact_source,
-                candidate_customer_ids=tuple(phone_resolution["candidate_customer_ids"]),
+                candidate_customer_ids=candidates,
             )
+        if phone_resolution["status"] == "ambiguous":
+            external_email_ids = set(email_resolution.get("external_strong_customer_ids", ()))
+            intersection = phone_ids & external_email_ids
+            if len(intersection) == 1:
+                customer_id = next(iter(intersection))
+                return LinkDecision(
+                    "strong",
+                    "shared_phone_strong_email_intersection",
+                    customer_id=customer_id,
+                    method="phone_email_identity_intersection",
+                    contact_email=email or None,
+                    contact_phone=phone,
+                    contact_source=contact.contact_source,
+                    candidate_customer_ids=candidates,
+                )
         if phone_resolution["status"] in {"ambiguous", "blocked"}:
             return LinkDecision(
                 "blocked",
@@ -225,16 +338,10 @@ def _plan_event(
                 contact_email=email or None,
                 contact_phone=phone,
                 contact_source=contact.contact_source,
-                candidate_customer_ids=tuple(phone_resolution["candidate_customer_ids"]),
+                candidate_customer_ids=candidates,
             )
     if email:
-        email_resolution = _resolve_identity_value(
-            timeline_ro,
-            tenant_id=str(row["tenant_id"]),
-            link_types=EMAIL_LINK_TYPES,
-            link_value=email,
-        )
-        if email_resolution["status"] in {"strong", "ambiguous", "blocked"}:
+        if email_resolution["status"] != "unmatched":
             return LinkDecision(
                 "weak_email",
                 f"email_{email_resolution['reason']}",
@@ -245,6 +352,15 @@ def _plan_event(
                 contact_source=contact.contact_source,
                 candidate_customer_ids=tuple(email_resolution["candidate_customer_ids"]),
             )
+    if phone_resolution["status"] == "weak":
+        return LinkDecision(
+            "unmatched",
+            "phone_non_authoritative_identity_link",
+            contact_email=email or None,
+            contact_phone=phone or None,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=tuple(phone_resolution["candidate_customer_ids"]),
+        )
     if contact.contact_ambiguous:
         return LinkDecision("blocked", contact.contact_reason, contact_source=contact.contact_source)
     if contact.contact_missing:
@@ -255,6 +371,50 @@ def _plan_event(
         contact_email=email or None,
         contact_phone=phone or None,
         contact_source=contact.contact_source,
+    )
+
+
+def _load_trusted_customer_brands(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, str]:
+    if not con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_customer_brand_profiles'"
+    ).fetchone():
+        return {}
+    rows = con.execute(
+        """
+        SELECT customer_id, brand
+        FROM a2v3_customer_brand_profiles
+        WHERE tenant_id = ?
+          AND source = 'customer_history'
+          AND reason IN ('single_known_brand_in_history', 'dominant_brand_history')
+        """,
+        (tenant_id,),
+    ).fetchall()
+    return {
+        str(row["customer_id"]): brand
+        for row in rows
+        if (brand := _normalize_brand(row["brand"])) in {"foton", "unpk"}
+    }
+
+
+def _block_cross_brand_decision(
+    row: sqlite3.Row,
+    decision: LinkDecision,
+    customer_brands: Mapping[str, str],
+) -> LinkDecision:
+    if decision.outcome != "strong" or not decision.customer_id:
+        return decision
+    customer_brand = customer_brands.get(decision.customer_id, "unknown")
+    mail_brand = _brand_for_event(row, source_payload=_source_payload(_event_payload(row)))
+    if customer_brand not in {"foton", "unpk"} or mail_brand not in {"foton", "unpk"}:
+        return decision
+    if customer_brand == mail_brand:
+        return decision
+    return replace(
+        decision,
+        outcome="blocked",
+        reason="cross_brand_signal",
+        customer_id=None,
+        method=None,
     )
 
 
@@ -302,6 +462,7 @@ def _load_archive_message(
     archive_db: Path,
     message_sha: str,
     archive_cache: dict[Path, sqlite3.Connection],
+    participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]],
 ) -> Mapping[str, Any]:
     db = archive_db.resolve(strict=False)
     con = archive_cache.get(db)
@@ -313,17 +474,16 @@ def _load_archive_message(
     msg = con.execute("SELECT * FROM messages WHERE sha256 = ?", (message_sha,)).fetchone()
     if msg is None:
         return {}
-    participants = [
-        dict(row)
+    by_message = participant_cache.get(db)
+    if by_message is None:
+        grouped: dict[str, list[Mapping[str, Any]]] = {}
         for row in con.execute(
-            """
-            SELECT header_name, display_name, email_normalized, domain
-            FROM message_participants
-            WHERE message_sha256 = ?
-            """,
-            (message_sha,),
-        )
-    ]
+            "SELECT message_sha256, header_name, display_name, email_normalized, domain FROM message_participants"
+        ):
+            grouped.setdefault(str(row["message_sha256"]), []).append(dict(row))
+        participant_cache[db] = grouped
+        by_message = grouped
+    participants = by_message.get(message_sha, [])
     text = ""
     extracted = Path(str(msg["extracted_text_path"] or ""))
     if not extracted.is_absolute():
@@ -535,24 +695,28 @@ def _resolve_identity_value(
     tenant_id: str,
     link_types: Sequence[str],
     link_value: str,
+    identity_index: Mapping[tuple[str, str], Sequence[Mapping[str, Any]]] | None = None,
 ) -> Mapping[str, Any]:
     if not link_value:
         return {"status": "unmatched", "reason": "missing_value", "candidate_customer_ids": ()}
-    placeholders = ",".join("?" for _ in link_types)
-    rows = con.execute(
-        f"""
-        SELECT l.customer_id, l.match_class, c.identity_status
-        FROM identity_links l
-        LEFT JOIN customer_identities c
-          ON c.tenant_id = l.tenant_id AND c.customer_id = l.customer_id
-        WHERE l.tenant_id = ?
-          AND l.link_type IN ({placeholders})
-          AND l.link_value = ?
-          AND l.customer_id IS NOT NULL
-          AND l.customer_id != ''
-        """,
-        (tenant_id, *link_types, link_value),
-    ).fetchall()
+    if identity_index is not None:
+        rows = [row for link_type in link_types for row in identity_index.get((link_type, link_value), ())]
+    else:
+        placeholders = ",".join("?" for _ in link_types)
+        rows = con.execute(
+            f"""
+            SELECT l.customer_id, l.match_class, l.source_system, c.identity_status
+            FROM identity_links l
+            LEFT JOIN customer_identities c
+              ON c.tenant_id = l.tenant_id AND c.customer_id = l.customer_id
+            WHERE l.tenant_id = ?
+              AND l.link_type IN ({placeholders})
+              AND l.link_value = ?
+              AND l.customer_id IS NOT NULL
+              AND l.customer_id != ''
+            """,
+            (tenant_id, *link_types, link_value),
+        ).fetchall()
     customer_ids = sorted({str(row["customer_id"]) for row in rows if row["customer_id"]})
     if not customer_ids:
         return {"status": "unmatched", "reason": "no_identity_link", "candidate_customer_ids": ()}
@@ -560,13 +724,65 @@ def _resolve_identity_value(
         return {"status": "ambiguous", "reason": "multiple_customers", "candidate_customer_ids": tuple(customer_ids)}
     if any(str(row["match_class"]) == IdentityMatchClass.AMBIGUOUS.value for row in rows):
         return {"status": "ambiguous", "reason": "ambiguous_identity_link", "candidate_customer_ids": tuple(customer_ids)}
-    if any(str(row["identity_status"] or "").lower() == "ambiguous" for row in rows):
-        return {"status": "blocked", "reason": "customer_identity_ambiguous", "candidate_customer_ids": tuple(customer_ids)}
+    identity_statuses = {str(row["identity_status"] or "").lower() for row in rows}
+    if identity_statuses != {"strong"}:
+        return {"status": "blocked", "reason": "customer_identity_not_strong", "candidate_customer_ids": tuple(customer_ids)}
+    strong_customer_ids = {
+        str(row["customer_id"])
+        for row in rows
+        if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
+    }
+    external_strong_customer_ids = {
+        str(row["customer_id"])
+        for row in rows
+        if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
+        and str(row["source_system"]) not in MAIL_IDENTITY_SOURCE_SYSTEMS
+    }
+    if not strong_customer_ids:
+        return {
+            "status": "weak",
+            "reason": "non_authoritative_identity_link",
+            "candidate_customer_ids": tuple(customer_ids),
+            "external_strong_customer_ids": tuple(external_strong_customer_ids),
+        }
     return {
         "status": "strong",
         "reason": "unique_identity_link",
         "customer_id": customer_ids[0],
         "candidate_customer_ids": tuple(customer_ids),
+        "external_strong_customer_ids": tuple(external_strong_customer_ids),
+    }
+
+
+def _load_identity_index(
+    con: sqlite3.Connection, *, tenant_id: str
+) -> Mapping[tuple[str, str], Sequence[Mapping[str, Any]]]:
+    link_types = tuple(dict.fromkeys((*PHONE_LINK_TYPES, *EMAIL_LINK_TYPES)))
+    placeholders = ",".join("?" for _ in link_types)
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in con.execute(
+        f"""
+        SELECT l.link_type, l.link_value, l.customer_id, l.match_class, l.source_system, c.identity_status
+        FROM identity_links l
+        LEFT JOIN customer_identities c
+          ON c.tenant_id = l.tenant_id AND c.customer_id = l.customer_id
+        WHERE l.tenant_id = ?
+          AND l.link_type IN ({placeholders})
+          AND l.customer_id IS NOT NULL
+          AND l.customer_id != ''
+        """,
+        (tenant_id, *link_types),
+    ):
+        grouped.setdefault((str(row["link_type"]), str(row["link_value"])), []).append(dict(row))
+    return grouped
+
+
+def _empty_identity_resolution() -> Mapping[str, Any]:
+    return {
+        "status": "unmatched",
+        "reason": "missing_value",
+        "candidate_customer_ids": (),
+        "external_strong_customer_ids": (),
     }
 
 
@@ -593,6 +809,7 @@ def _apply_decisions(
     targets: Sequence[sqlite3.Row],
     decisions: Sequence[Mapping[str, Any]],
     out_dir: Path,
+    aggregate_only: bool,
 ) -> Mapping[str, Any]:
     by_event = {str(row["event_id"]): row for row in targets}
     counters: Counter[str] = Counter()
@@ -650,10 +867,17 @@ def _apply_decisions(
             accepted_count=int(counters["updated_events"] + counters["created_chunks"]),
             rejected_count=0,
             output_ref=str(out_dir / "mail_link_enrich_apply_report.json"),
-            metadata={"counts": dict(counters), "changed_event_ids": changed_event_ids[:100]},
+            metadata=(
+                {"counts": dict(counters)}
+                if aggregate_only
+                else {"counts": dict(counters), "changed_event_ids": changed_event_ids[:100]}
+            ),
             actor="mail_link_enrich",
         )
-    return {"counts": dict(counters), "changed_event_ids_sample": changed_event_ids[:20]}
+    report: dict[str, Any] = {"counts": dict(counters)}
+    if not aggregate_only:
+        report["changed_event_ids_sample"] = changed_event_ids[:20]
+    return report
 
 
 def _updated_event_from_decision(row: sqlite3.Row, decision: Mapping[str, Any]) -> TimelineEvent:
@@ -819,9 +1043,9 @@ def _upsert_fact_for_decision(con: sqlite3.Connection, event: TimelineEvent, dec
         "amount_uncertain": 0,
         "email_brand": event.metadata.get("brand") or "unknown",
         "email_brand_source": "mail_link_enrich_infer",
-        "customer_brand": event.metadata.get("brand") or "unknown",
-        "customer_brand_source": "mail_link_enrich_event_brand",
-        "customer_brand_reason": "event_level_brand_only",
+        "customer_brand": "unknown",
+        "customer_brand_source": "unresolved",
+        "customer_brand_reason": "email_brand_is_not_customer_brand",
         "contact_email": None,
         "contact_phone": None,
         "contact_name": None,

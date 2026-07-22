@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import json
+import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
@@ -56,6 +57,34 @@ def valid_nightly_payload(staging_root: Path) -> dict:
             {"name": "mail_archive_incremental", "enabled": True, "required": True},
         ],
     }
+
+
+def test_mail_existing_state_is_tenant_scoped(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE timeline_events (
+              tenant_id TEXT,
+              source_system TEXT,
+              source_id TEXT,
+              customer_id TEXT,
+              match_status TEXT,
+              confidence REAL,
+              record_json TEXT
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO timeline_events VALUES (?, 'mail_archive_stage2', ?, ?, 'strong_unique', 1.0, '{}')",
+            (("foton", "same", "customer-foton"), ("other", "same", "customer-other")),
+        )
+
+    state = builder.load_existing_mail_link_state(db_path, tenant_id="foton")
+    source_ids = builder.load_existing_mail_source_ids(db_path, tenant_id="foton")
+
+    assert state["same"]["customer_id"] == "customer-foton"
+    assert source_ids == {"same"}
 
 
 def test_tallanto_api_capture_is_fail_closed_without_explicit_env(monkeypatch) -> None:
@@ -319,6 +348,10 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     steps = {step["name"]: step for step in payload["steps"]}
     sources = steps["calls_and_amo_incremental"]["config"]["sources"]
     assert [source["source_system"] for source in sources] == ["mango_processed_summary"]
+    amo = steps["amo_incremental_shadow"]
+    assert amo["kind"] == "amo_incremental"
+    assert amo["required"] is False
+    assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
 
 
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:

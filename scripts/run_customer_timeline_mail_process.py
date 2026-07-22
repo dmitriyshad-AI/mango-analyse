@@ -91,11 +91,12 @@ def read_cursor(timeline_db: Path, *, bootstrap: str | None, overlap_seconds: in
 
 
 def safe_archive_paths(
-    *, data_root: Path, download_manifest: Mapping[str, Any]
+    *, data_root: Path, download_manifest: Mapping[str, Any], explicit_paths: Sequence[Path] = ()
 ) -> list[Path]:
     canonical_root = (data_root / CANONICAL_RELATIVE_ROOT).resolve()
     paths = [(data_root / CANONICAL_MAIL_ARCHIVE_DB).resolve()]
     paths.extend(Path(str(item)).resolve() for item in download_manifest["archive_db_paths"])
+    paths.extend(path.resolve() for path in explicit_paths)
     unique: list[Path] = []
     for path in paths:
         if canonical_root not in path.parents:
@@ -152,11 +153,19 @@ def _execute_locked(args: argparse.Namespace) -> Mapping[str, Any]:
         expected_runtime=runtime,
         max_age_hours=args.max_download_age_hours,
     )
-    archive_paths = safe_archive_paths(data_root=data_root, download_manifest=download)
-    cursor_start = read_cursor(
-        timeline_db,
-        bootstrap=args.bootstrap_cursor,
-        overlap_seconds=args.overlap_seconds,
+    archive_paths = safe_archive_paths(
+        data_root=data_root,
+        download_manifest=download,
+        explicit_paths=tuple(Path(path) for path in args.archive_db),
+    )
+    cursor_start = (
+        datetime.fromtimestamp(0, timezone.utc)
+        if args.backfill_missing_only
+        else read_cursor(
+            timeline_db,
+            bootstrap=args.bootstrap_cursor,
+            overlap_seconds=args.overlap_seconds,
+        )
     )
     process_dir = state_dir / "process"
     process_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +179,8 @@ def _execute_locked(args: argparse.Namespace) -> Mapping[str, Any]:
         text_limit=args.text_limit,
         timeline_db=timeline_db,
         archive_db_paths=archive_paths,
+        missing_only=bool(args.backfill_missing_only),
+        tenant_id="foton",
     )
     config_path = process_dir / "mail_incremental_config.json"
     config = {
@@ -188,6 +199,8 @@ def _execute_locked(args: argparse.Namespace) -> Mapping[str, Any]:
                 "source_ref": "mail_pipeline:mail_archive_stage2",
                 "normalizer": "mail_archive_stage2",
                 "required": True,
+                "ignore_cursor": bool(args.backfill_missing_only),
+                "preserve_cursor": bool(args.backfill_missing_only),
             }
         ],
     }
@@ -203,11 +216,14 @@ def _execute_locked(args: argparse.Namespace) -> Mapping[str, Any]:
         "download_manifest_sha256": sha256_file(download_path),
         "cursor_source": "ingestion_cursors.mail_archive_stage2",
         "cursor_start_with_overlap": cursor_start.isoformat(),
+        "backfill_missing_only": bool(args.backfill_missing_only),
         "overlap_seconds": args.overlap_seconds,
         "archive_databases": db_inventory(archive_paths),
         "builder_manifest": str(builder_manifest),
         "builder_manifest_sha256": sha256_file(builder_manifest),
         "rows_written": int(builder.get("rows_written") or 0),
+        "existing_skipped": int(builder.get("existing_skipped") or 0),
+        "fallback_date_rows": int(builder.get("fallback_date_rows") or 0),
         "linked_rows": int(builder.get("linked_rows") or 0),
         "pending_rows": int(builder.get("pending_rows") or 0),
         "max_event_at": builder.get("max_event_at"),
@@ -241,6 +257,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--overlap-seconds", type=int, default=300)
     parser.add_argument("--max-download-age-hours", type=float, default=4.0)
     parser.add_argument("--text-limit", type=int, default=1200)
+    parser.add_argument("--backfill-missing-only", action="store_true")
+    parser.add_argument("--archive-db", action="append", default=[])
     return parser.parse_args(argv)
 
 

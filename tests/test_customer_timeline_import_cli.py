@@ -7,6 +7,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline.import_cli import (
     TimelineImportCliConfig,
     decode_delimiter,
@@ -19,6 +21,24 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 SHA = "c" * 64
+
+
+def test_import_config_rejects_prod_apply_but_allows_dry_run(tmp_path: Path) -> None:
+    source = tmp_path / "source.json"
+    source.write_text("{}", encoding="utf-8")
+    prod = tmp_path / "customer_timeline_prod_20260722" / "customer_timeline.sqlite"
+    common = dict(
+        tenant_id="foton",
+        source_kind="amocrm_snapshot",
+        source_path=source,
+        allowed_root=tmp_path,
+        timeline_db=prod,
+        source_ref="test",
+    )
+
+    TimelineImportCliConfig(**common, apply=False)
+    with pytest.raises(ValueError, match="snapshot-only"):
+        TimelineImportCliConfig(**common, apply=True)
 
 
 def test_dry_run_cli_writes_report_without_creating_timeline_db(tmp_path: Path) -> None:
@@ -119,6 +139,8 @@ def test_apply_cli_imports_tallanto_csv_idempotently_and_records_conflict(tmp_pa
 
     assert main([*argv, "--out", str(report_one)]) == 0
     assert main([*argv, "--out", str(report_two)]) == 0
+    assert report_one.stat().st_mode & 0o777 == 0o600
+    assert report_two.stat().st_mode & 0o777 == 0o600
 
     report = json.loads(report_two.read_text(encoding="utf-8"))
     store = CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path)

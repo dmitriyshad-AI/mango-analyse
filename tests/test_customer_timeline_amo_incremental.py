@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
 import pytest
 
+import mango_mvp.customer_timeline.amo_incremental as amo_incremental_module
 from mango_mvp.customer_timeline.amo_incremental import (
     AmoIncrementalConfig,
     event_summary,
@@ -13,6 +15,7 @@ from mango_mvp.customer_timeline.amo_incremental import (
     fetch_events_source,
     run_amo_incremental,
 )
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpError
 from mango_mvp.customer_timeline.ingestion import TimelineSourceRecord
 from mango_mvp.customer_timeline.nightly_incremental import (
@@ -40,6 +43,92 @@ def test_run_amo_incremental_refuses_to_copy_over_explicit_timeline_db(tmp_path)
                 timeline_db=target,
             )
         )
+
+
+def test_run_amo_incremental_rejects_prod_target_before_network_or_output(tmp_path, monkeypatch) -> None:
+    out_root = tmp_path / "out"
+    prod = tmp_path / "customer_timeline_prod_20260722" / "customer_timeline.sqlite"
+    monkeypatch.setattr(
+        amo_incremental_module,
+        "read_mcp_env",
+        lambda _path: pytest.fail("prod guard must run before reading MCP config"),
+    )
+
+    with pytest.raises(ValueError, match="snapshot-only"):
+        run_amo_incremental(
+            AmoIncrementalConfig(
+                source_db=tmp_path / "source.sqlite",
+                out_root=out_root,
+                mcp_env=tmp_path / "amo.env",
+                timeline_db=prod,
+                allowed_root=tmp_path,
+                copy_db=False,
+            )
+        )
+
+    assert not out_root.exists()
+
+
+@pytest.mark.parametrize("cap_source", ["leads", "events"])
+def test_run_amo_incremental_page_cap_writes_nothing_and_keeps_cursors(
+    tmp_path, monkeypatch, cap_source
+) -> None:
+    db_path = tmp_path / "staging.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO ingestion_cursors (tenant_id, source_system, last_cursor_ts, updated_at, metadata_json)
+            VALUES ('foton', 'amo_leads_updated_at', '2026-07-01T00:00:00+00:00',
+                    '2026-07-01T00:00:00+00:00', '{}')
+            """
+        )
+        con.commit()
+
+    monkeypatch.setattr(amo_incremental_module, "read_mcp_env", lambda _path: object())
+    monkeypatch.setattr(amo_incremental_module, "AmoMcpClient", lambda _config: object())
+
+    def fake_cards(_client, **kwargs):
+        is_capped = cap_source == kwargs["path"]
+        return [], {
+            "endpoint": f"/api/v4/{kwargs['path']}",
+            "page_cap_hit": is_capped,
+            "fetched": 0,
+            "_fetched_entity_ids": (),
+        }
+
+    monkeypatch.setattr(amo_incremental_module, "fetch_cards_source", fake_cards)
+    monkeypatch.setattr(
+        amo_incremental_module,
+        "fetch_events_collection",
+        lambda *_args, **_kwargs: ([], 1, cap_source == "events"),
+    )
+    monkeypatch.setattr(
+        amo_incremental_module,
+        "run_nightly_incremental",
+        lambda _config: pytest.fail("page-cap preflight must block before DB import"),
+    )
+
+    report = run_amo_incremental(
+        AmoIncrementalConfig(
+            source_db=db_path,
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_root=tmp_path / "out",
+            mcp_env=tmp_path / "amo.env",
+            copy_db=False,
+        )
+    )
+
+    assert report["validation_ok"] is False
+    assert report["apply_blocked"] is True
+    assert report["cursor_after"] == report["cursor_before"]
+    assert report["safety"]["staging_db_write"] is False
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+        assert con.execute(
+            "SELECT last_cursor_ts FROM ingestion_cursors WHERE source_system='amo_leads_updated_at'"
+        ).fetchone()[0] == "2026-07-01T00:00:00+00:00"
 
 
 class FakeAmoClient:
@@ -244,6 +333,144 @@ def test_fetch_cards_source_reports_page_cap_hit() -> None:
     assert stats["pages"] == 1
     assert stats["max_pages"] == 1
     assert stats["page_cap_hit"] is True
+
+
+def test_fetch_cards_source_extracts_unique_contact_email_and_phone() -> None:
+    payload = {
+        "_embedded": {
+            "contacts": [
+                {
+                    "id": 30,
+                    "updated_at": 1782250001,
+                    "custom_fields_values": [
+                        {"field_code": "PHONE", "values": [{"value": "8 (916) 123-45-67"}]},
+                        {"field_code": "EMAIL", "values": [{"value": " Parent@Example.COM "}]},
+                    ],
+                }
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="contacts"),
+        path="contacts",
+        embedded_key="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        from_ts=NOW,
+        link_index={},
+        config=config,
+    )
+
+    assert rows[0]["phone"] == "+79161234567"
+    assert rows[0]["email"] == "parent@example.com"
+    assert stats["contact_identity_diagnostics"] == {"phone_selected": 1, "email_selected": 1}
+
+
+def test_fetch_cards_source_blocks_contact_values_shared_by_different_customers() -> None:
+    shared_fields = [
+        {"field_code": "PHONE", "values": [{"value": "8 (916) 123-45-67"}]},
+        {"field_code": "EMAIL", "values": [{"value": "parent@example.com"}]},
+    ]
+    payload = {
+        "_embedded": {
+            "contacts": [
+                {"id": 30, "updated_at": 1782250001, "custom_fields_values": shared_fields},
+                {"id": 31, "updated_at": 1782250002, "custom_fields_values": shared_fields},
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="contacts"),
+        path="contacts",
+        embedded_key="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        from_ts=NOW,
+        link_index={
+            ("amo_contact_id", "30"): ("customer:first",),
+            ("amo_contact_id", "31"): ("customer:second",),
+        },
+        config=config,
+    )
+
+    assert len(rows) == 2
+    assert all("phone" not in row and "email" not in row for row in rows)
+    assert stats["contact_identity_diagnostics"]["phone_cross_customer_ambiguous"] == 2
+    assert stats["contact_identity_diagnostics"]["email_cross_customer_ambiguous"] == 2
+
+
+def test_fetch_cards_source_does_not_select_ambiguous_contact_email() -> None:
+    payload = {
+        "_embedded": {
+            "contacts": [
+                {
+                    "id": 31,
+                    "updated_at": 1782250001,
+                    "custom_fields_values": [
+                        {
+                            "field_code": "EMAIL",
+                            "values": [{"value": "first@example.com"}, {"value": "second@example.com"}],
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="contacts"),
+        path="contacts",
+        embedded_key="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        from_ts=NOW,
+        link_index={},
+        config=config,
+    )
+
+    assert "email" not in rows[0]
+    assert stats["contact_identity_diagnostics"]["email_ambiguous_contacts"] == 1
+
+
+def test_fetch_cards_source_contact_report_contains_no_raw_identity_values() -> None:
+    raw_phone = "8 (916) 000-11-22"
+    raw_email = "not-an-email-secret"
+    payload = {
+        "_embedded": {
+            "contacts": [
+                {
+                    "id": 32,
+                    "updated_at": 1782250001,
+                    "custom_fields_values": [
+                        {"field_code": "PHONE", "values": [{"value": raw_phone}]},
+                        {"field_code": "EMAIL", "values": [{"value": raw_email}]},
+                    ],
+                }
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    _rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="contacts"),
+        path="contacts",
+        embedded_key="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        from_ts=NOW,
+        link_index={},
+        config=config,
+    )
+
+    report_text = json.dumps(stats, sort_keys=True)
+    assert raw_phone not in report_text
+    assert raw_email not in report_text
+    assert stats["contact_identity_diagnostics"]["email_invalid_values_skipped"] == 1
 
 
 def test_fetch_events_source_marks_mapping_after_card_import() -> None:

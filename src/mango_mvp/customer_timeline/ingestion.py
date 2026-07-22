@@ -412,8 +412,12 @@ class AmoSnapshotNormalizer:
         phone = safe_phone(first_value(payload, ("phone", "primary_phone", "Телефон", "Телефон клиента")))
         email = safe_email(first_value(payload, ("email", "primary_email", "Email", "E-mail")))
         match_class = identity_match_class_from_payload(payload)
-        display_name = optional_text(first_value(payload, ("name", "display_name", "title", "contact_name", "lead_name")))
-        event_at = parse_source_datetime(first_value(payload, ("updated_at", "created_at", "event_at")), record.observed_at)
+        entity_name = optional_text(first_value(payload, ("name", "display_name", "title", "contact_name", "lead_name")))
+        display_name = None if entity_type in {"lead", "deal", "amo_deal"} else entity_name
+        event_at = parse_source_datetime(
+            first_value(payload, ("snapshot_at", "captured_at", "updated_at", "created_at", "event_at")),
+            record.observed_at,
+        )
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
             customer_id=optional_text(first_value(payload, ("customer_id",))),
@@ -462,7 +466,7 @@ class AmoSnapshotNormalizer:
                 opportunity_type=OpportunityType.AMO_DEAL,
                 source_system=self.source_system,
                 source_id=entity_id,
-                title=display_name or f"amoCRM {entity_type} {entity_id}",
+                title=entity_name or f"amoCRM {entity_type} {entity_id}",
                 status=optional_text(first_value(payload, ("status", "stage", "pipeline_status"))),
                 product_context={"pipeline": first_value(payload, ("pipeline", "pipeline_name"))},
                 opened_at=event_at,
@@ -481,7 +485,7 @@ class AmoSnapshotNormalizer:
             source_id=source_id,
             source_ref=source_ref,
             direction=TimelineDirection.SYSTEM,
-            subject=display_name or f"amoCRM {entity_type}",
+            subject=entity_name or f"amoCRM {entity_type}",
             text_preview=compact_text(first_value(payload, ("text_preview", "note", "summary"))),
             summary=compact_text(first_value(payload, ("summary", "status", "stage"))),
             match_status=IdentityMatchClass.STRONG_UNIQUE if phone or email else IdentityMatchClass.INFERRED,
@@ -517,7 +521,10 @@ class TallantoSnapshotNormalizer:
         email = safe_email(first_value(payload, ("email", "primary_email", "Email", "E-mail")))
         match_class = identity_match_class_from_payload(payload)
         display_name = optional_text(first_value(payload, ("name", "display_name", "student_name", "ФИО", "Name")))
-        event_at = parse_source_datetime(first_value(payload, ("updated_at", "created_at", "event_at")), record.observed_at)
+        event_at = parse_source_datetime(
+            first_value(payload, ("snapshot_at", "captured_at", "updated_at", "created_at", "event_at")),
+            record.observed_at,
+        )
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
             identity_status=identity_status_from_match(phone=phone, email=email, match_class=match_class),
@@ -999,6 +1006,7 @@ def load_local_source_records(
     csv_encoding: str = "utf-8-sig",
     csv_delimiter: Optional[str] = None,
     observed_at: Optional[datetime] = None,
+    limit: Optional[int] = None,
 ) -> tuple[TimelineSourceRecord, ...]:
     source_path = guard_customer_timeline_source_path(path, allowed_root)
     suffix = source_path.suffix.casefold()
@@ -1010,6 +1018,10 @@ def load_local_source_records(
         rows = rows_from_csv(source_path, encoding=csv_encoding, delimiter=csv_delimiter)
     else:
         raise ValueError("timeline source path must be .json, .jsonl, or .csv")
+    if limit is not None:
+        if int(limit) <= 0:
+            raise ValueError("limit must be positive")
+        rows = rows[: int(limit)]
     prefix = source_ref_prefix or source_path.name
     normalized_source = normalize_key(source_system, "source_system")
     return tuple(
@@ -1300,8 +1312,10 @@ def resolve_customer_identity_batches(
     links_by_customer: dict[str, list[IdentityLink]] = {}
     source_refs_by_customer: dict[str, set[str]] = {}
     phone_to_customers: dict[tuple[str, str], set[str]] = {}
-    phone_to_tallanto_students: dict[tuple[str, str], set[str]] = {}
+    contact_identity_to_tallanto_students: dict[tuple[str, str, str], set[str]] = {}
     existing_customer_ids: set[str] = set()
+    incoming_tallanto_by_value: dict[tuple[str, str], set[str]] = {}
+    incoming_ambiguous_tallanto_keys: set[tuple[str, str]] = set()
 
     for batch in normalized_batches:
         for customer in batch.customers:
@@ -1316,6 +1330,11 @@ def resolve_customer_identity_batches(
             source_refs_by_customer.setdefault(link.customer_id, set()).add(link.source_ref)
             if link.link_type.value in {"phone", "mango_client_phone"}:
                 phone_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(link.customer_id)
+            if link.link_type.value == "tallanto_student_id":
+                tallanto_key = (link.tenant_id, link.link_value)
+                incoming_tallanto_by_value.setdefault(tallanto_key, set()).add(link.customer_id)
+                if link.match_class == IdentityMatchClass.AMBIGUOUS:
+                    incoming_ambiguous_tallanto_keys.add(tallanto_key)
     if store is not None:
         existing_customer_ids = _load_existing_identity_context(
             store=store,
@@ -1330,17 +1349,33 @@ def resolve_customer_identity_batches(
         for link in links:
             if link.link_type.value == "tallanto_student_id":
                 tallanto_by_customer.setdefault(customer_id, set()).add(link.link_value)
+    for customer_id, links in links_by_customer.items():
+        student_ids = tallanto_by_customer.get(customer_id, set())
+        if not student_ids:
+            continue
+        for link in links:
+            if link.link_type.value not in {"phone", "mango_client_phone", "email"}:
+                continue
+            kind = "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value
+            contact_identity_to_tallanto_students.setdefault(
+                (link.tenant_id, kind, link.link_value),
+                set(),
+            ).update(student_ids)
+    family_contact_keys = {
+        identity_key
+        for identity_key, student_ids in contact_identity_to_tallanto_students.items()
+        if len(student_ids) > 1
+    }
     for phone_key, customer_ids in phone_to_customers.items():
         students: set[str] = set()
         for customer_id in customer_ids:
             students.update(tallanto_by_customer.get(customer_id, set()))
-        if students:
-            phone_to_tallanto_students[phone_key] = students
-
+        if len(students) > 1:
+            family_contact_keys.add((phone_key[0], "phone", phone_key[1]))
     family_phone_keys = {
-        phone_key
-        for phone_key, student_ids in phone_to_tallanto_students.items()
-        if len(student_ids) > 1
+        (tenant_id, value)
+        for tenant_id, kind, value in family_contact_keys
+        if kind == "phone"
     }
 
     parent = {customer_id: customer_id for customer_id in customers_by_id}
@@ -1359,6 +1394,65 @@ def resolve_customer_identity_batches(
         keep, move = sorted((root_left, root_right))
         parent[move] = keep
 
+    tallanto_id_to_customers: dict[tuple[str, str], set[str]] = {}
+    for customer_id, links in links_by_customer.items():
+        for link in links:
+            if link.link_type.value == "tallanto_student_id":
+                tallanto_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
+    tallanto_union_members: set[str] = set()
+    conflicting_tallanto_ids: set[tuple[str, str]] = set()
+    for tallanto_key, customer_ids in tallanto_id_to_customers.items():
+        ordered_ids = sorted(customer_ids)
+        if tallanto_key in incoming_ambiguous_tallanto_keys:
+            continue
+        incoming_ids = incoming_tallanto_by_value.get(tallanto_key, set())
+        existing_holders = customer_ids - incoming_ids
+        if len(existing_holders) > 1 or (
+            existing_holders and any(customer_id in existing_customer_ids for customer_id in incoming_ids)
+        ):
+            conflicting_tallanto_ids.add(tallanto_key)
+            continue
+        if len(ordered_ids) > 1:
+            tallanto_union_members.update(ordered_ids)
+        for customer_id in ordered_ids[1:]:
+            union(ordered_ids[0], customer_id)
+
+    contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
+    for customer_id, links in links_by_customer.items():
+        for link in links:
+            if link.link_type.value not in {"phone", "mango_client_phone", "email"}:
+                continue
+            kind = "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value
+            contact_identity_to_customers.setdefault((link.tenant_id, kind, link.link_value), set()).add(customer_id)
+
+    for batch in normalized_batches:
+        tallanto_links = [link for link in batch.identity_links if link.link_type.value == "tallanto_student_id"]
+        contact_links = [
+            link
+            for link in batch.identity_links
+            if link.link_type.value in {"phone", "mango_client_phone", "email"}
+        ]
+        for tallanto_link in tallanto_links:
+            tallanto_key = (tallanto_link.tenant_id, tallanto_link.link_value)
+            existing_tallanto_holders = tallanto_id_to_customers.get(tallanto_key, set()) & existing_customer_ids
+            existing_contact_holders: set[str] = set()
+            for contact_link in contact_links:
+                kind = "phone" if contact_link.link_type.value == "mango_client_phone" else contact_link.link_type.value
+                if (contact_link.tenant_id, kind, contact_link.link_value) in family_contact_keys:
+                    continue
+                existing_contact_holders.update(
+                    contact_identity_to_customers.get(
+                        (contact_link.tenant_id, kind, contact_link.link_value),
+                        set(),
+                    )
+                    & existing_customer_ids
+                )
+            if len(existing_contact_holders) > 1 or (
+                existing_tallanto_holders
+                and existing_contact_holders - existing_tallanto_holders
+            ):
+                conflicting_tallanto_ids.add(tallanto_key)
+
     for phone_key, customer_ids in sorted(phone_to_customers.items()):
         if phone_key in family_phone_keys or len(customer_ids) < 2:
             continue
@@ -1376,12 +1470,16 @@ def resolve_customer_identity_batches(
     for members in groups.values():
         shared_phone = _single_shared_phone(members, phone_to_customers, family_phone_keys)
         tenant_id = customers_by_id[members[0]].tenant_id
-        if len(members) > 1 and shared_phone:
-            existing_members = sorted(customer_id for customer_id in members if customer_id in existing_customer_ids)
+        existing_members = sorted(customer_id for customer_id in members if customer_id in existing_customer_ids)
+        has_tallanto_union = sum(member in tallanto_union_members for member in members) > 1
+        if len(members) > 1 and has_tallanto_union:
+            new_customer_id = existing_members[0] if existing_members else members[0]
+            reason = "tallanto_identity_union"
+        elif len(members) > 1 and shared_phone:
             new_customer_id = existing_members[0] if existing_members else stable_customer_id(tenant_id=tenant_id, primary_phone=shared_phone)
             reason = "phone_identity_union"
         elif any(_customer_has_family_phone(member, phone_to_customers, family_phone_keys) for member in members):
-            new_customer_id = members[0]
+            new_customer_id = existing_members[0] if existing_members else members[0]
             reason = "family_phone_ambiguous"
         else:
             new_customer_id = members[0]
@@ -1400,6 +1498,32 @@ def resolve_customer_identity_batches(
     resolved_batches: list[TimelineNormalizedBatch] = []
     mappings: list[CustomerIdResolutionMapping] = []
     for batch in normalized_batches:
+        batch_tallanto_conflicts = [
+            (link.tenant_id, link.link_value)
+            for link in batch.identity_links
+            if link.link_type.value == "tallanto_student_id"
+            and (link.tenant_id, link.link_value) in conflicting_tallanto_ids
+        ]
+        if batch_tallanto_conflicts:
+            refs = tuple(f"tallanto_student_id:{value}" for _, value in batch_tallanto_conflicts)
+            resolved_batches.append(
+                TimelineNormalizedBatch(
+                    source_record=batch.source_record,
+                    conflicts=(
+                        *batch.conflicts,
+                        {
+                            "tenant_id": batch_tallanto_conflicts[0][0],
+                            "conflict_type": "tallanto_identity_conflict",
+                            "entity_refs": refs,
+                            "severity": "high",
+                            "status": "open",
+                            "summary": "Tallanto ID and current contact resolve to different existing customers.",
+                            "metadata": {"source_ref": batch.source_record.source_ref},
+                        },
+                    ),
+                )
+            )
+            continue
         opportunity_id_by_old: dict[str, str] = {}
         rewritten_customers: list[CustomerIdentity] = []
         seen_customer_ids: set[str] = set()
@@ -1423,17 +1547,60 @@ def resolve_customer_identity_batches(
             )
 
         rewritten_links = tuple(
-            replace(link, customer_id=new_id_by_old.get(link.customer_id, link.customer_id))
+            replace(
+                link,
+                customer_id=new_id_by_old.get(link.customer_id, link.customer_id),
+                match_class=(
+                    IdentityMatchClass.AMBIGUOUS
+                    if (
+                        link.link_type.value in {"phone", "mango_client_phone", "email"}
+                        and (
+                            link.tenant_id,
+                            "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value,
+                            link.link_value,
+                        )
+                        in family_contact_keys
+                    )
+                    else link.match_class
+                ),
+                confidence=(
+                    min(float(link.confidence or 1.0), 0.5)
+                    if (
+                        link.link_type.value in {"phone", "mango_client_phone", "email"}
+                        and (
+                            link.tenant_id,
+                            "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value,
+                            link.link_value,
+                        )
+                        in family_contact_keys
+                    )
+                    else link.confidence
+                ),
+            )
             for link in batch.identity_links
         )
         rewritten_opportunities: list[CustomerOpportunity] = []
         for opportunity in batch.opportunities:
             new_customer_id = new_id_by_old.get(opportunity.customer_id, opportunity.customer_id)
             changed = new_customer_id != opportunity.customer_id
+            existing_opportunity = (
+                store.get_opportunity_by_source(
+                    opportunity.tenant_id,
+                    source_system=opportunity.source_system,
+                    source_id=opportunity.source_id,
+                    opportunity_type=opportunity.opportunity_type.value,
+                )
+                if store is not None and changed
+                else None
+            )
             rewritten = replace(
                 opportunity,
                 customer_id=new_customer_id,
-                opportunity_id=None if changed else opportunity.opportunity_id,
+                opportunity_id=(
+                    str(existing_opportunity["opportunity_id"])
+                    if existing_opportunity is not None
+                    else None if changed else opportunity.opportunity_id
+                ),
             )
             opportunity_id_by_old[opportunity.opportunity_id] = rewritten.opportunity_id
             rewritten_opportunities.append(rewritten)
@@ -1510,27 +1677,86 @@ def _load_existing_identity_context(
             if link.link_type.value == "mango_client_phone":
                 identity_queries.add((link.tenant_id, "phone", link.link_value))
                 identity_queries.add((link.tenant_id, "mango_client_phone", link.link_value))
-            elif link.link_type.value in {"phone", "email"}:
+            elif link.link_type.value in {"phone", "email", "tallanto_student_id"}:
                 identity_queries.add((link.tenant_id, link.link_type.value, link.link_value))
-    for tenant_id, link_type, link_value in sorted(identity_queries):
-        for payload in store.list_identity_links(tenant_id, link_type=link_type, link_value=link_value, limit=500):
-            customer_id = optional_text(payload.get("customer_id"))
-            if not customer_id:
-                continue
+    loaded_link_keys = {
+        (link.tenant_id, link.customer_id, link.link_type.value, link.link_value, link.source_system, link.source_ref)
+        for links in links_by_customer.values()
+        for link in links
+    }
+    queries_by_kind: dict[tuple[str, str], set[str]] = {}
+    for tenant_id, link_type, link_value in identity_queries:
+        queries_by_kind.setdefault((tenant_id, link_type), set()).add(link_value)
+    matching_payloads: list[Mapping[str, Any]] = []
+    for (tenant_id, link_type), link_values in sorted(queries_by_kind.items()):
+        matching_payloads.extend(
+            store.list_identity_links_for_values(
+                tenant_id,
+                link_type=link_type,
+                link_values=tuple(link_values),
+            )
+        )
+    for payload in matching_payloads:
+        customer_id = optional_text(payload.get("customer_id"))
+        if customer_id:
             existing_customer_ids.add(customer_id)
-            if customer_id not in customers_by_id:
-                customer_payload = store.get_customer(tenant_id, customer_id)
-                if customer_payload:
-                    customers_by_id[customer_id] = customer_identity_from_json(customer_payload)
-            link = identity_link_from_json(payload)
-            links_by_customer.setdefault(customer_id, []).append(link)
-            source_refs_by_customer.setdefault(customer_id, set()).add(link.source_ref)
-            if link.link_type.value in {"phone", "mango_client_phone"}:
-                phone_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
-            for tallanto_payload in store.list_identity_links(tenant_id, customer_id=customer_id, link_type="tallanto_student_id", limit=500):
-                tallanto_link = identity_link_from_json(tallanto_payload)
-                links_by_customer.setdefault(customer_id, []).append(tallanto_link)
-                source_refs_by_customer.setdefault(customer_id, set()).add(tallanto_link.source_ref)
+
+    customers_by_tenant: dict[str, set[str]] = {}
+    for payload in matching_payloads:
+        tenant_id = optional_text(payload.get("tenant_id"))
+        customer_id = optional_text(payload.get("customer_id"))
+        if tenant_id and customer_id:
+            customers_by_tenant.setdefault(tenant_id, set()).add(customer_id)
+
+    related_payloads: list[Mapping[str, Any]] = []
+    for tenant_id, customer_ids in sorted(customers_by_tenant.items()):
+        related_payloads.extend(
+            store.list_identity_links_for_customers(
+                tenant_id,
+                customer_ids=tuple(customer_ids),
+            )
+        )
+
+    for payload in matching_payloads:
+        tenant_id = optional_text(payload.get("tenant_id"))
+        customer_id = optional_text(payload.get("customer_id"))
+        if not tenant_id or not customer_id:
+            continue
+        if customer_id not in customers_by_id:
+            customer_payload = store.get_customer(tenant_id, customer_id)
+            if customer_payload:
+                customers_by_id[customer_id] = customer_identity_from_json(customer_payload)
+
+    for related_payload in related_payloads:
+        customer_id = optional_text(related_payload.get("customer_id"))
+        if not customer_id:
+            continue
+        related_link = identity_link_from_json(related_payload)
+        if related_link.link_type.value not in {
+            "phone",
+            "mango_client_phone",
+            "email",
+            "tallanto_student_id",
+        }:
+            continue
+        key = (
+            related_link.tenant_id,
+            related_link.customer_id,
+            related_link.link_type.value,
+            related_link.link_value,
+            related_link.source_system,
+            related_link.source_ref,
+        )
+        if key in loaded_link_keys:
+            continue
+        loaded_link_keys.add(key)
+        links_by_customer.setdefault(customer_id, []).append(related_link)
+        source_refs_by_customer.setdefault(customer_id, set()).add(related_link.source_ref)
+        if related_link.link_type.value in {"phone", "mango_client_phone"}:
+            phone_to_customers.setdefault(
+                (related_link.tenant_id, related_link.link_value),
+                set(),
+            ).add(customer_id)
     return existing_customer_ids
 
 
@@ -1641,12 +1867,32 @@ def _merge_customers(
         source_ref=f"identity_resolution:{new_customer_id}",
         first_seen_at=first_seen,
         last_seen_at=last_seen,
-        touch_count=sum(item.touch_count for item in ordered),
+        touch_count=_merged_touch_count(ordered),
         summary=summary,
         metadata=metadata,
         created_at=min(item.created_at for item in ordered),
         updated_at=max(item.updated_at for item in ordered),
     )
+
+
+def _merged_touch_count(customers: Sequence[CustomerIdentity]) -> int:
+    total = 0
+    seen_refs: set[str] = set()
+    for customer in customers:
+        raw_refs = customer.metadata.get("source_refs")
+        refs = (
+            {str(value) for value in raw_refs if value}
+            if isinstance(raw_refs, Sequence) and not isinstance(raw_refs, (str, bytes))
+            else set()
+        )
+        if customer.source_ref and not customer.source_ref.startswith("identity_resolution:"):
+            refs.add(customer.source_ref)
+        if customer.source_ref and customer.source_ref.startswith("identity_resolution:"):
+            total = max(total, customer.touch_count)
+        elif not refs or refs - seen_refs:
+            total += customer.touch_count
+        seen_refs.update(refs)
+    return total
 
 
 def _merged_identity_status(

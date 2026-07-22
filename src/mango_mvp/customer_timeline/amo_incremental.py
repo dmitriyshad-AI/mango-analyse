@@ -16,12 +16,14 @@ from mango_mvp.existing_clients.amo_step1_snapshot import (
     embedded_items,
     read_mcp_env,
 )
-from mango_mvp.customer_timeline.ids import stable_digest
+from mango_mvp.customer_timeline.ids import normalize_email, stable_digest
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
     run_nightly_incremental,
 )
+from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
+from mango_mvp.utils.phone import normalize_phone
 
 
 AMO_INCREMENTAL_SCHEMA_VERSION = "customer_timeline_amo_incremental_v1"
@@ -60,14 +62,15 @@ class AmoIncrementalConfig:
 def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     out_root = config.out_root.expanduser().resolve(strict=False)
-    out_root.mkdir(parents=True, exist_ok=True)
     timeline_db = (
         config.timeline_db.expanduser().resolve(strict=False)
         if config.timeline_db is not None
         else out_root / "customer_timeline.sqlite"
     )
+    guard_customer_timeline_writable_path(timeline_db)
     if config.timeline_db is not None and config.copy_db:
         raise ValueError("explicit timeline_db requires copy_db=False; refusing to overwrite target DB")
+    out_root.mkdir(parents=True, exist_ok=True)
     if config.copy_db:
         backup_sqlite(config.source_db, timeline_db)
     if not timeline_db.exists():
@@ -116,6 +119,50 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     )
     lead_fetched_ids = set(lead_stats.pop("_fetched_entity_ids", ()))
     contact_fetched_ids = set(contact_stats.pop("_fetched_entity_ids", ()))
+    fetch_report["amo_leads_updated_at"] = lead_stats
+    fetch_report["amo_contacts_updated_at"] = contact_stats
+    event_prefetch: tuple[list[Mapping[str, Any]], int, bool] | None = None
+    if not any(stats.get("page_cap_hit") for stats in (lead_stats, contact_stats)):
+        event_prefetch = fetch_events_collection(
+            client,
+            from_ts=lower_bound["amo_events_created_at"],
+            config=config,
+        )
+        event_items, event_pages, event_page_cap_hit = event_prefetch
+        fetch_report["amo_events_created_at"] = {
+            "endpoint": "/api/v4/events",
+            "pages": event_pages,
+            "max_pages": max(1, int(config.max_pages)),
+            "page_cap_hit": event_page_cap_hit,
+            "fetched": len(event_items),
+        }
+    if any(stats.get("page_cap_hit") for stats in fetch_report.values()):
+        finished = datetime.now(timezone.utc)
+        report = {
+            "schema_version": AMO_INCREMENTAL_SCHEMA_VERSION,
+            "started_at": started.isoformat(),
+            "finished_at": finished.isoformat(),
+            "duration_seconds": round((finished - started).total_seconds(), 3),
+            "timeline_db": str(timeline_db),
+            "source_db": str(config.source_db),
+            "cursor_before": cursor_before,
+            "cursor_after": load_cursor_snapshot(timeline_db, config.tenant_id),
+            "lower_bound": {key: value.isoformat() for key, value in lower_bound.items()},
+            "fetch": fetch_report,
+            "validation_ok": False,
+            "apply_blocked": True,
+            "blocked_reason": "page_cap_hit",
+            "safety": {
+                "amo_write": False,
+                "tallanto_write": False,
+                "crm_write": False,
+                "staging_db_write": False,
+                "notes_endpoint_used": False,
+                "bot_safe_summary_created": False,
+            },
+        }
+        write_json(out_root / "amo_incremental_report.json", report)
+        return report
     write_jsonl(paths["amo_leads_updated_at"], lead_rows)
     write_jsonl(paths["amo_contacts_updated_at"], contact_rows)
     cards_config = nightly_config_for_sources(
@@ -139,9 +186,8 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         diagnostic_link_index_before=link_index_before,
         fetched_entity_ids={"lead": lead_fetched_ids, "contact": contact_fetched_ids},
         config=config,
+        prefetched=event_prefetch,
     )
-    fetch_report["amo_leads_updated_at"] = lead_stats
-    fetch_report["amo_contacts_updated_at"] = contact_stats
     fetch_report["amo_events_created_at"] = event_stats
 
     write_jsonl(paths["amo_events_created_at"], event_rows)
@@ -284,7 +330,7 @@ def load_amo_link_index(db_path: Path, *, tenant_id: str) -> Mapping[tuple[str, 
             SELECT link_type, link_value, customer_id
             FROM identity_links
             WHERE tenant_id = ?
-              AND link_type IN ('amo_lead_id', 'amo_contact_id')
+              AND link_type IN ('amo_lead_id', 'amo_contact_id', 'phone', 'email')
             """,
             (tenant_id,),
         ):
@@ -372,6 +418,13 @@ def fetch_cards_source(
     rows: list[Mapping[str, Any]] = []
     skipped = Counter()
     resolution_counts = Counter()
+    contact_identity_diagnostics = Counter()
+    contact_identity_by_entity: Mapping[str, Mapping[str, str]] = {}
+    if entity_type == "contact":
+        contact_identity_by_entity, contact_identity_diagnostics = safe_contact_identity_fields(
+            items,
+            link_index=link_index,
+        )
     fetched_entity_ids: set[str] = set()
     for item in items:
         entity_id = clean_id(item.get("id"))
@@ -387,6 +440,7 @@ def fetch_cards_source(
             continue
         updated_at = epoch_to_iso(item.get("updated_at") or item.get("created_at"))
         significant_hash = stable_digest(significant_card_payload(item))
+        contact_identity = contact_identity_by_entity.get(entity_id, {})
         row = {
             "entity_type": entity_type,
             "entity_id": entity_id,
@@ -400,6 +454,7 @@ def fetch_cards_source(
             "source_ref": f"amocrm:{entity_type}:{entity_id}",
             "record": scrub_item(item),
             "source_cursor": cursor_name,
+            **contact_identity,
         }
         if not row["customer_id"] and entity_type == "lead":
             skipped["unmatched"] += 1
@@ -414,9 +469,74 @@ def fetch_cards_source(
         "fetched_entity_count": len(fetched_entity_ids),
         "normalized": len(rows),
         "skipped": dict(skipped),
+        "contact_identity_diagnostics": dict(contact_identity_diagnostics),
         "resolution_counts": dict(resolution_counts),
         "_fetched_entity_ids": tuple(sorted(fetched_entity_ids)),
     }
+
+
+def contact_identity_fields(item: Mapping[str, Any]) -> tuple[dict[str, str], Counter[str]]:
+    normalized: dict[str, set[str]] = {"phone": set(), "email": set()}
+    diagnostics: Counter[str] = Counter()
+    for field in item.get("custom_fields_values") or ():
+        if not isinstance(field, Mapping):
+            continue
+        kind = str(field.get("field_code") or "").strip().lower()
+        if kind not in normalized:
+            continue
+        normalizer = normalize_phone if kind == "phone" else normalize_email
+        for value_item in field.get("values") or ():
+            raw = value_item.get("value") if isinstance(value_item, Mapping) else value_item
+            value = normalizer(raw)
+            if value:
+                normalized[kind].add(value)
+            elif str(raw or "").strip():
+                diagnostics[f"{kind}_invalid_values_skipped"] += 1
+
+    selected: dict[str, str] = {}
+    for kind, values in normalized.items():
+        if len(values) == 1:
+            selected[kind] = next(iter(values))
+        elif len(values) > 1:
+            diagnostics[f"{kind}_ambiguous_contacts"] += 1
+    return selected, diagnostics
+
+
+def safe_contact_identity_fields(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    link_index: Mapping[tuple[str, str], tuple[str, ...]],
+) -> tuple[Mapping[str, Mapping[str, str]], Counter[str]]:
+    candidates: dict[str, dict[str, str]] = {}
+    owners: dict[tuple[str, str], set[str]] = defaultdict(set)
+    diagnostics: Counter[str] = Counter()
+    for item in items:
+        entity_id = clean_id(item.get("id"))
+        if not entity_id:
+            continue
+        fields, item_diagnostics = contact_identity_fields(item)
+        diagnostics.update(item_diagnostics)
+        candidates[entity_id] = fields
+        customers, _ = resolve_card_customers(
+            item,
+            entity_type="contact",
+            entity_id=entity_id,
+            link_index=link_index,
+        )
+        owner_refs = set(customers) or {f"unresolved:{entity_id}"}
+        for kind, value in fields.items():
+            owners.setdefault((kind, value), set()).update(owner_refs)
+
+    selected: dict[str, dict[str, str]] = {}
+    for entity_id, fields in candidates.items():
+        for kind, value in fields.items():
+            value_owners = owners[(kind, value)] | set(link_index.get((kind, value), ()))
+            if len(value_owners) == 1:
+                selected.setdefault(entity_id, {})[kind] = value
+                diagnostics[f"{kind}_selected"] += 1
+            else:
+                diagnostics[f"{kind}_cross_customer_ambiguous"] += 1
+    return selected, diagnostics
 
 
 def resolve_card_customers(
@@ -467,16 +587,11 @@ def fetch_events_source(
     diagnostic_link_index_before: Optional[Mapping[tuple[str, str], tuple[str, ...]]] = None,
     fetched_entity_ids: Optional[Mapping[str, set[str]]] = None,
     config: AmoIncrementalConfig,
+    prefetched: tuple[list[Mapping[str, Any]], int, bool] | None = None,
 ) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
-    items, pages, page_cap_hit = fetch_collection(
+    items, pages, page_cap_hit = prefetched or fetch_events_collection(
         client,
-        path="events",
-        embedded_key="events",
-        params={
-            "filter[created_at][from]": int(from_ts.timestamp()),
-            "filter[type][]": sorted(AMO_EVENT_TYPES),
-            "order[created_at]": "asc",
-        },
+        from_ts=from_ts,
         config=config,
     )
     rows: list[Mapping[str, Any]] = []
@@ -593,6 +708,25 @@ def fetch_events_source(
         "diagnostic_samples": diagnostic_samples[:20],
         "source_body_status_counts": body_status_counts(rows),
     }
+
+
+def fetch_events_collection(
+    client: AmoMcpClient,
+    *,
+    from_ts: datetime,
+    config: AmoIncrementalConfig,
+) -> tuple[list[Mapping[str, Any]], int, bool]:
+    return fetch_collection(
+        client,
+        path="events",
+        embedded_key="events",
+        params={
+            "filter[created_at][from]": int(from_ts.timestamp()),
+            "filter[type][]": sorted(AMO_EVENT_TYPES),
+            "order[created_at]": "asc",
+        },
+        config=config,
+    )
 
 
 def resolve_event_opportunity_id(

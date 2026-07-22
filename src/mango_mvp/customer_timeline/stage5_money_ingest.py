@@ -29,7 +29,7 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, json_
 
 STAGE5_MONEY_INGEST_SCHEMA_VERSION = "stage5_money_ingest_v1"
 STAGE5_AMO_PRICE_SOURCE_SYSTEM = "amocrm_price_readonly"
-STAGE5_MONEY_CODE_VERSION = "customer_purchases_v1_primary_money_v1"
+STAGE5_MONEY_CODE_VERSION = "customer_purchases_v1_primary_money_v2"
 PAID_AMO_STATUSES = frozenset({"Оплата получена", "Успешно", "won", "success", "paid"})
 
 
@@ -314,14 +314,19 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tup
         item["money_kind"] = money_kind
         if direction == "out":
             item["total_out"] += amount
-        else:
+        elif direction == "in":
             item["total_in"] += amount
-        deal_or_payment_key = row["opportunity_id"] or (row["source_id"] if money_kind == PURCHASE_MONEY_KIND_FACT else None)
-        if deal_or_payment_key:
-            item["deals"].add(str(deal_or_payment_key))
-        current_at = str(row["event_at"] or "")
-        if current_at and (item["last_purchase_at"] is None or current_at > item["last_purchase_at"]):
-            item["last_purchase_at"] = current_at
+        # Tallanto `out` is normally a paired balance charge, not a refund or a
+        # second purchase. Only confirmed incoming money advances purchase facts.
+        if direction == "in":
+            deal_or_payment_key = row["opportunity_id"] or (
+                row["source_id"] if money_kind == PURCHASE_MONEY_KIND_FACT else None
+            )
+            if deal_or_payment_key:
+                item["deals"].add(str(deal_or_payment_key))
+            current_at = str(row["event_at"] or "")
+            if current_at and (item["last_purchase_at"] is None or current_at > item["last_purchase_at"]):
+                item["last_purchase_at"] = current_at
         item["sources"][str(row["source_system"])] += 1
     return aggregates
 
@@ -480,10 +485,12 @@ def _is_paid_status(value: str) -> bool:
 
 
 def _money_direction(record: Mapping[str, Any]) -> str:
-    direction = str(record.get("direction") or record.get("payment_direction") or "").casefold()
-    if any(marker in direction for marker in ("refund", "return", "out", "возврат", "списание")):
+    direction = str(record.get("direction") or record.get("payment_direction") or "").strip().casefold()
+    if direction in {"school_out", "refund", "return", "возврат", "расход"}:
         return "out"
-    return "in"
+    if direction in {"in", "поступление на баланс"}:
+        return "in"
+    return "neutral"
 
 
 def _tallanto_snapshot_skips(source: Mapping[str, Any]) -> Mapping[str, int]:

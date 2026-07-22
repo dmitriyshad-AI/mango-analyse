@@ -26,6 +26,8 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_ARCHIVE_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
 )
+from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
+from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
 MANGO_READY_PACKAGE_DB = (
@@ -130,10 +132,17 @@ def build_mail_increment(
     text_limit: int,
     timeline_db: Path | None = None,
     archive_db_paths: Sequence[Path] | None = None,
+    missing_only: bool = False,
+    tenant_id: str = "foton",
 ) -> Mapping[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    existing_state = load_existing_mail_link_state(timeline_db) if timeline_db else {}
+    existing_state = load_existing_mail_link_state(timeline_db, tenant_id=tenant_id) if timeline_db else {}
+    existing_source_ids = (
+        load_existing_mail_source_ids(timeline_db, tenant_id=tenant_id) if missing_only else set()
+    )
+    existing_skipped = 0
+    fallback_date_rows = 0
     stage2_paths = [
         source_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     ]
@@ -143,11 +152,20 @@ def build_mail_increment(
         count_before = len(rows)
         if path.exists():
             for row in read_jsonl(path):
-                event_at = parse_optional_dt(row.get("date_last") or row.get("date_first") or row.get("event_at"))
-                if event_at is None or event_at < since:
+                event_at = parse_optional_dt(
+                    row.get("date_last")
+                    or row.get("date_first")
+                    or row.get("event_at")
+                    or row.get("updated_at")
+                )
+                if event_at is None or (not missing_only and event_at < since):
                     continue
                 message_sha = str(row.get("message_sha256") or row.get("sha256") or "").strip()
                 if not message_sha or message_sha in seen:
+                    continue
+                if message_sha in existing_source_ids:
+                    seen.add(message_sha)
+                    existing_skipped += 1
                     continue
                 seen.add(message_sha)
                 text = str(row.get("thread_summary") or row.get("summary") or row.get("subject") or "").strip()
@@ -177,11 +195,21 @@ def build_mail_increment(
     for db_path in archive_dbs:
         count_before = len(rows)
         if db_path.exists():
-            for row in read_archive_messages(db_path, since=since, text_limit=text_limit):
+            for row in read_archive_messages(
+                db_path,
+                since=None if missing_only else since,
+                text_limit=text_limit,
+            ):
                 message_sha = str(row.get("message_sha256") or "").strip()
                 if not message_sha or message_sha in seen:
                     continue
+                if message_sha in existing_source_ids:
+                    seen.add(message_sha)
+                    existing_skipped += 1
+                    continue
                 seen.add(message_sha)
+                if row.pop("_fallback_date", False):
+                    fallback_date_rows += 1
                 rows.append(merge_existing_mail_state(row, existing_state.get(message_sha)))
         inputs.append({"path": str(db_path), "exists": db_path.exists(), "rows_selected": len(rows) - count_before})
     rows.sort(key=lambda item: str(item.get("event_at") or ""))
@@ -189,10 +217,14 @@ def build_mail_increment(
     max_event_at = max((str(row.get("event_at") or "") for row in rows), default=None)
     manifest = {
         "schema_version": "mail_archive_stage2_incremental_manifest_v1",
+        "tenant_id": tenant_id,
         "cursor_start": since.isoformat(),
         "inputs": inputs,
         "output_jsonl": str(out_jsonl),
         "rows_written": len(rows),
+        "missing_only": missing_only,
+        "existing_skipped": existing_skipped,
+        "fallback_date_rows": fallback_date_rows,
         "linked_rows": sum(1 for row in rows if row.get("customer_id")),
         "pending_rows": sum(1 for row in rows if not row.get("customer_id")),
         "preserved_mail_link_state_rows": sum(1 for row in rows if row.get("mail_link_enrich")),
@@ -203,20 +235,24 @@ def build_mail_increment(
     return manifest
 
 
-def load_existing_mail_link_state(timeline_db: Path | None) -> dict[str, Mapping[str, Any]]:
+def load_existing_mail_link_state(
+    timeline_db: Path | None,
+    *,
+    tenant_id: str = "foton",
+) -> dict[str, Mapping[str, Any]]:
     if not timeline_db or not timeline_db.exists():
         return {}
     result: dict[str, Mapping[str, Any]] = {}
-    with sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True) as con:
+    with _connect_timeline_ro(timeline_db) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         for row in con.execute(
             """
             SELECT source_id, customer_id, match_status, confidence, record_json
             FROM timeline_events
-            WHERE source_system = 'mail_archive_stage2'
-              AND json_extract(record_json, '$.metadata.mail_link_enrich.outcome') IS NOT NULL
-            """
+            WHERE tenant_id = ? AND source_system = 'mail_archive_stage2'
+            """,
+            (tenant_id,),
         ):
             try:
                 payload = json.loads(row["record_json"] or "{}")
@@ -238,6 +274,30 @@ def load_existing_mail_link_state(timeline_db: Path | None) -> dict[str, Mapping
     return result
 
 
+def load_existing_mail_source_ids(
+    timeline_db: Path | None,
+    *,
+    tenant_id: str = "foton",
+) -> set[str]:
+    if not timeline_db or not timeline_db.exists():
+        return set()
+    with _connect_timeline_ro(timeline_db) as con:
+        con.execute("PRAGMA query_only=ON")
+        return {
+            str(row[0])
+            for row in con.execute(
+                "SELECT source_id FROM timeline_events "
+                "WHERE tenant_id=? AND source_system='mail_archive_stage2'",
+                (tenant_id,),
+            )
+            if row[0]
+        }
+
+
+def _connect_timeline_ro(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(customer_timeline_readonly_uri(path), uri=True)
+
+
 def merge_existing_mail_state(row: dict[str, Any], state: Mapping[str, Any] | None) -> dict[str, Any]:
     if not state:
         return row
@@ -257,21 +317,22 @@ def merge_existing_mail_state(row: dict[str, Any], state: Mapping[str, Any] | No
     return row
 
 
-def read_archive_messages(db_path: Path, *, since: datetime, text_limit: int) -> list[dict[str, Any]]:
+def read_archive_messages(db_path: Path, *, since: datetime | None, text_limit: int) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         for row in con.execute(
             """
-            SELECT sha256, message_date_iso, subject, message_kind, mailbox, extracted_text_path, updated_at
+            SELECT sha256, message_date_iso, subject, message_kind, mailbox, extracted_text_path,
+                   updated_at, first_ingested_at
             FROM messages
-            WHERE message_date_iso IS NOT NULL AND message_date_iso != ''
-            ORDER BY message_date_iso, sha256
+            ORDER BY COALESCE(message_date_iso, updated_at, first_ingested_at), sha256
             """
         ):
-            event_at = parse_optional_dt(row["message_date_iso"])
-            if event_at is None or event_at < since:
+            primary_event_at = parse_optional_dt(row["message_date_iso"])
+            event_at = primary_event_at or parse_optional_dt(row["updated_at"]) or parse_optional_dt(row["first_ingested_at"])
+            if event_at is None or (since is not None and event_at < since):
                 continue
             text = read_text_preview(row["extracted_text_path"], text_limit) or str(row["subject"] or "").strip()
             sha = str(row["sha256"] or "").strip()
@@ -293,6 +354,7 @@ def read_archive_messages(db_path: Path, *, since: datetime, text_limit: int) ->
                     "summary_status": "needs_summary_later",
                     "needs_summary_later": True,
                     "source_db": str(db_path),
+                    "_fallback_date": primary_event_at is None,
                 }
             )
     return result
@@ -436,6 +498,25 @@ def build_service_config(
     if not mango_source_found:
         raise RuntimeError("calls_and_amo_incremental misses mango_processed_summary source")
     steps.append(normalized)
+    steps.append(
+        {
+            "name": "amo_incremental_shadow",
+            "kind": "amo_incremental",
+            "enabled": True,
+            "required": False,
+            "config": {
+                "source_db": str(timeline_db),
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "out_root": str(out_root / "amo_incremental_shadow"),
+                "mcp_env": str(DEFAULT_AMO_MCP_ENV),
+                "safety_overlap_seconds": 300,
+                "page_limit": 250,
+                "max_pages": 20,
+                "sleep_sec": 1.05,
+            },
+        }
+    )
     steps.append(
         {
             "name": "mail_archive_incremental",

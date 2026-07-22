@@ -11,11 +11,11 @@ from typing import Any, Mapping, Optional, Sequence
 from mango_mvp.customer_timeline.contracts import DerivedSignal, SignalSeverity, SignalStatus
 from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_text, require_timezone, stable_signal_id
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_entity_ref_values
 
 
 DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION = "customer_timeline_derived_signals_v1"
-SIGNAL_RULES_VERSION = "sg_v1"
+SIGNAL_RULES_VERSION = "sg_v1_money_guard_v2"
 PAID_NO_ACCESS_SIGNAL = "paid_no_access"
 HOT_LEAD_SILENT_SIGNAL = "hot_lead_silent_7d"
 DUPLICATE_CONTACT_SIGNAL = "duplicate_contact"
@@ -77,6 +77,7 @@ CALLBACK_PROMISE_MARKERS = (
     "свяжемся",
     "созвонимся",
 )
+CALLBACK_CONDITIONAL_MARKERS = ("если появ", "если будет", "при появлен")
 ACTIVE_DEAL_STATUSES = ("актив", "observed", "open", "new", "в работе", "первичный контакт", "переговор")
 PAYMENT_IN_MARKERS = ("in", "поступ", "оплат", "приход", "зачисл")
 PAYMENT_OUT_MARKERS = ("out", "refund", "возврат", "отмен", "cancel")
@@ -135,7 +136,12 @@ class CustomerSignalRecomputeResult:
 
 
 def derive_active_signals(inputs: DerivedSignalInputs) -> tuple[DerivedSignal, ...]:
-    events = tuple(sorted(inputs.events, key=lambda item: (_event_at(item).isoformat(), str(item.get("event_id") or ""))))
+    events = tuple(
+        sorted(
+            (event for event in inputs.events if inputs.as_of is None or _event_at(event) <= inputs.as_of),
+            key=lambda item: (_event_at(item).isoformat(), str(item.get("event_id") or "")),
+        )
+    )
     signals: list[DerivedSignal] = []
     signals.extend(_derive_paid_no_access(inputs.tenant_id, inputs.customer_id, events))
     hot_lead = _derive_hot_lead_silent(inputs.tenant_id, inputs.customer_id, events, inputs.as_of, inputs.hot_lead_silence_days)
@@ -154,12 +160,17 @@ def recompute_customer_signals(
     apply: bool = False,
     hot_lead_silence_days: int = DEFAULT_HOT_LEAD_SILENCE_DAYS,
     actor: str = "derived_signal_recompute",
+    preloaded_conflicts: Sequence[Mapping[str, Any]] | None = None,
 ) -> CustomerSignalRecomputeResult:
     require_timezone(as_of, "as_of")
     tenant = normalize_key(tenant_id, "tenant_id")
     customer = require_text(customer_id, "customer_id")
     events = _list_all_customer_events(store, tenant, customer)
-    conflicts = store.list_conflicts_by_customer(tenant, customer, limit=500)
+    conflicts = (
+        store.list_conflicts_by_customer(tenant, customer, limit=500)
+        if preloaded_conflicts is None
+        else tuple(preloaded_conflicts)
+    )
     current = store.list_signals_by_customer(tenant, customer, signal_types=MANAGED_SIGNAL_TYPES, limit=500)
     current_by_id = {require_text(item.get("signal_id"), "signal_id"): item for item in current}
     active_candidates = derive_active_signals(
@@ -395,7 +406,12 @@ def _event_text(event: Mapping[str, Any], *, include_thread_context: bool = True
 def _callback_promise_text(event: Mapping[str, Any]) -> str:
     if _direction(event) != "outbound":
         return ""
-    return _event_text(event, include_thread_context=False)
+    text = _event_text(event, include_thread_context=False)
+    if any(f"не {marker}" in text for marker in CALLBACK_PROMISE_MARKERS):
+        return ""
+    if any(marker in text for marker in CALLBACK_CONDITIONAL_MARKERS):
+        return ""
+    return text
 
 
 def _is_active_deal(opportunity: Mapping[str, Any]) -> bool:
@@ -468,7 +484,8 @@ def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         money_kind_filter = "AND money_kind = 'fact'" if _has_column(con, "customer_purchases_v1", "money_kind") else ""
         for row in con.execute(
             f"""
-            SELECT tenant_id, customer_id, period, deals_cnt, last_purchase_at, computability
+            SELECT tenant_id, customer_id, period, total_in, total_out,
+                   deals_cnt, last_purchase_at, computability
             FROM customer_purchases_v1
             WHERE tenant_id = ?
               {money_kind_filter}
@@ -477,6 +494,8 @@ def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         ):
             grouped[str(row["customer_id"])]["purchases"] = {
                 "period": row["period"],
+                "total_in": float(row["total_in"] or 0),
+                "total_out": float(row["total_out"] or 0),
                 "deals_cnt": int(row["deals_cnt"] or 0),
                 "last_purchase_at": row["last_purchase_at"],
                 "computability": row["computability"],
@@ -554,7 +573,13 @@ def _derive_callback_due(
     candidate_at = _event_at(candidate)
     if as_of < candidate_at + timedelta(days=DEFAULT_CALLBACK_DUE_DAYS):
         return None
-    if any(_event_at(event) > candidate_at and _direction(event) in {"inbound", "outbound"} for event in events):
+    candidate_id = str(candidate.get("event_id") or "")
+    if any(
+        str(event.get("event_id") or "") != candidate_id
+        and _event_at(event) >= candidate_at
+        and _direction(event) in {"inbound", "outbound"}
+        for event in events
+    ):
         return None
     event_id = require_text(candidate.get("event_id"), "event_id")
     return DerivedSignal(
@@ -644,7 +669,15 @@ def _derive_season_return(
     purchases: Mapping[str, Any],
     as_of: datetime,
 ) -> Optional[DerivedSignal]:
-    if int(purchases.get("deals_cnt") or 0) <= 0 or not purchases.get("last_purchase_at"):
+    # ponytail: any confirmed outflow blocks proactive outreach until Tallanto
+    # exposes a reliable refund/expense distinction.
+    if (
+        purchases.get("computability") != "computed"
+        or float(purchases.get("total_in") or 0) <= 0
+        or float(purchases.get("total_out") or 0) > 0
+        or int(purchases.get("deals_cnt") or 0) <= 0
+        or not purchases.get("last_purchase_at")
+    ):
         return None
     last_purchase_at = _parse_datetime(purchases["last_purchase_at"], "last_purchase_at")
     if as_of < last_purchase_at + timedelta(days=DEFAULT_SEASON_RETURN_DAYS):
@@ -936,7 +969,7 @@ def _is_duplicate_contact_conflict(conflict_type: str) -> bool:
 
 def _conflict_mentions_customer(conflict: Mapping[str, Any], customer_id: str) -> bool:
     refs = tuple(str(item) for item in conflict.get("entity_refs") or ())
-    return any(customer_id == ref or customer_id in ref for ref in refs)
+    return bool(set(refs) & set(customer_entity_ref_values(customer_id)))
 
 
 def _record(event: Mapping[str, Any]) -> Mapping[str, Any]:

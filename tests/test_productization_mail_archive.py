@@ -58,6 +58,7 @@ from mango_mvp.productization.mail_archive import (
     extract_email_addresses,
     extract_phone_numbers,
     git_check_ignored,
+    guard_git_ignored_output,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
     load_tallanto_customer_address_book,
@@ -229,6 +230,27 @@ def test_git_check_ignored_uses_repository_that_owns_output_path(tmp_path: Path)
 
     assert git_check_ignored(repo / "_external_handoffs/mail/inbox") is True
     assert git_check_ignored(repo / "tracked_output/mail") is False
+
+
+def test_external_mail_handoff_outside_git_is_commit_safe(tmp_path: Path) -> None:
+    out_dir = tmp_path / "_external_handoffs" / "mail" / "inbox"
+    report = build_mail_archive_preflight(
+        MailArchivePreflightConfig(
+            out_dir=out_dir,
+            email_address="school@kmipt.ru",
+            password_env_present=True,
+            since_days=3,
+            max_messages=1,
+        )
+    )
+
+    assert report["preflight_pass"] is True
+    assert report["checks"]["out_dir_git_ignored"] is False
+    assert report["checks"]["out_dir_outside_git"] is True
+    assert report["checks"]["out_dir_commit_safe"] is True
+    guard_git_ignored_output(out_dir, "mail archive output directory")
+    with pytest.raises(ValueError, match="git-ignored"):
+        guard_git_ignored_output(tmp_path / "mail", "mail archive output directory")
 
 
 def test_mail_archive_identity_map_duplicate_handling(tmp_path: Path) -> None:

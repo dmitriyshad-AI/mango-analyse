@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from mango_mvp.customer_timeline.derived_signals import backfill_sg_v1_signals
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SOURCE_SYSTEM
+from mango_mvp.customer_timeline.mail_stage2_visibility import harden_mail_stage2_bot_visibility
 from mango_mvp.customer_timeline.objections import backfill_customer_objections_v1
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import (
@@ -70,6 +71,14 @@ def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]
             "none_customer_groups_actioned": 0,
         },
     }
+
+    report["mail_stage2_visibility_hardening"] = harden_mail_stage2_bot_visibility(
+        db_path,
+        allowed_root=config.allowed_root,
+        apply=config.apply,
+        # Stage 3 already rejects production paths; tests use temporary staging roots.
+        allow_test_paths=True,
+    )
 
     with CustomerTimelineSQLiteStore(db_path, allowed_root=config.allowed_root) as store:
         con = store._con  # noqa: SLF001 - staging maintenance uses store-owned connection and FTS helpers.

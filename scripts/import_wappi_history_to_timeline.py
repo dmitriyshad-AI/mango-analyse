@@ -11,6 +11,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiFetchLimits,
     WappiHistoryImportConfig,
     run_wappi_history_import,
+    safe_wappi_exception,
     write_json_report,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import AMO_WAPPI_ENV_FILE, DEFAULT_AMO_WAPPI_CONFIG_PATH
@@ -26,8 +27,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             write_json_report(config.out_path, report)
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if report["validation_ok"] else 1
-    except Exception as exc:  # noqa: BLE001 - compact CLI error without secrets.
-        print(f"wappi history import failed: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - fail closed without echoing source data.
+        print(json.dumps(safe_wappi_exception(exc), ensure_ascii=False, sort_keys=True), file=sys.stderr)
         return 2
 
 
@@ -56,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
     parser.add_argument("--show-all-chats", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--require-nonempty-profile",
+        action="store_true",
+        help="Block apply when any configured profile yields zero non-empty records.",
+    )
     parser.add_argument("--actor", default="wappi_history_timeline_import")
     parser.add_argument("--idempotency-key")
     parser.add_argument("--out", type=Path)
@@ -75,6 +81,7 @@ def config_from_args(args: argparse.Namespace) -> WappiHistoryImportConfig:
         amo_mcp_env_file=args.amo_mcp_env_file,
         shared_phone_stoplist=args.shared_phone_stoplist,
         apply=bool(args.apply),
+        require_nonempty_profiles=bool(args.require_nonempty_profile),
         actor=args.actor,
         idempotency_key=args.idempotency_key,
         out_path=args.out,

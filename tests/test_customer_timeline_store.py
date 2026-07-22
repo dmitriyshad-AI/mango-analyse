@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import mango_mvp.customer_timeline.store as store_module
+from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri
 from mango_mvp.customer_timeline import (
     CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,
     CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
@@ -34,6 +36,12 @@ from mango_mvp.customer_timeline import (
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
 SHA = "a" * 64
+
+
+def test_customer_timeline_readonly_uri_never_uses_immutable(tmp_path: Path) -> None:
+    db_path = tmp_path / "timeline with spaces.sqlite"
+    assert customer_timeline_readonly_uri(db_path) == db_path.resolve().as_uri() + "?mode=ro"
+    assert "immutable" not in customer_timeline_readonly_uri(db_path)
 
 
 class StepClock:
@@ -205,6 +213,19 @@ def chunk(ev: TimelineEvent) -> BotContextChunk:
 
 def open_store(tmp_path: Path) -> CustomerTimelineSQLiteStore:
     return CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
+
+
+def test_store_restricts_writable_db_and_lock_permissions(tmp_path: Path) -> None:
+    private_root = tmp_path / ".codex_local" / "staging"
+    db_path = private_root / "customer_timeline.sqlite"
+
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    try:
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(private_root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(db_path.with_suffix(".sqlite.writer.lock").stat().st_mode) == 0o600
+    finally:
+        store.close()
 
 
 def table_names(db_path: Path) -> set[str]:
@@ -579,6 +600,59 @@ def test_path_guard_rejects_runtime_outside_and_stable_runtime_paths(tmp_path: P
         CustomerTimelineSQLiteStore(tmp_path.parent / "outside_customer_timeline.sqlite", allowed_root=tmp_path)
 
 
+def test_store_rejects_prod_writes_but_allows_read_only_and_resolved_symlink(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "customer_timeline_prod_20260722"
+    prod_dir.mkdir()
+    prod_db = prod_dir / "customer_timeline.sqlite"
+    sqlite3.connect(prod_db).close()
+
+    with CustomerTimelineSQLiteStore.open_read_only(prod_db, allowed_root=tmp_path):
+        pass
+    with pytest.raises(ValueError, match="snapshot-only"):
+        CustomerTimelineSQLiteStore(prod_db, allowed_root=tmp_path)
+    assert not prod_db.with_suffix(".sqlite.writer.lock").exists()
+
+    alias = tmp_path / "timeline_alias"
+    alias.symlink_to(prod_dir, target_is_directory=True)
+    with pytest.raises(ValueError, match="snapshot-only"):
+        CustomerTimelineSQLiteStore(alias / prod_db.name, allowed_root=tmp_path)
+
+
+def test_conflict_lookup_matches_exact_customer_ref_not_prefix(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    with sqlite3.connect(db_path) as con:
+        for suffix, ref in (("one", "customer:1"), ("ten", "customer:10"), ("double", "customer:customer:1")):
+            con.execute(
+                "INSERT INTO timeline_conflicts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"conflict:{suffix}",
+                    "foton",
+                    "ambiguous_identity",
+                    "medium",
+                    "open",
+                    NOW.isoformat(),
+                    None,
+                    f"hash:{suffix}",
+                    json.dumps({"conflict_id": f"conflict:{suffix}", "status": "open", "entity_refs": [ref]}),
+                ),
+            )
+        con.commit()
+
+    with CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path) as store:
+        conflicts = store.list_conflicts_by_customer("foton", "customer:1", statuses=("open",))
+        first_page = store.list_conflicts("foton", statuses=("open",), limit=2)
+        second_page = store.list_conflicts(
+            "foton", statuses=("open",), limit=2, cursor=first_page["next_cursor"]
+        )
+
+    assert {item["conflict_id"] for item in conflicts} == {"conflict:one", "conflict:double"}
+    assert len(first_page["items"]) == 2
+    assert len(second_page["items"]) == 1
+    assert first_page["next_cursor"] == "2"
+    assert second_page["next_cursor"] is None
+
+
 def test_upserts_core_records_idempotently_after_reopen(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer = identity()
@@ -680,6 +754,7 @@ def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path
         reason="phone_identity_union",
         source_refs=("amocrm:contact:1", "mango:call:1"),
         actor="identity_resolver",
+        ingestion_run_id="run:first",
     )
     second = store.record_customer_id_mapping(
         "foton",
@@ -689,6 +764,7 @@ def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path
         reason="phone_identity_union",
         source_refs=("amocrm:contact:1", "mango:call:1"),
         actor="identity_resolver",
+        ingestion_run_id="run:repeat",
     )
     store.record_customer_id_mapping(
         "foton",
@@ -710,7 +786,7 @@ def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path
     assert {item["old_customer_id"] for item in mappings} == {"customer:legacy-a", "customer:legacy-b"}
     assert reverse == {target.customer_id: {"customer:legacy-a", "customer:legacy-b"}}
     assert mappings[0]["resolution_status"] == "active"
-    assert mappings[0]["ingestion_run_id"] is None
+    assert mappings[0]["ingestion_run_id"] == "run:first"
     split = store.record_customer_id_mapping(
         "foton",
         old_customer_id="customer:legacy-a",

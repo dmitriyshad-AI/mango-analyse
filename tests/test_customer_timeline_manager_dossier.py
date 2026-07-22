@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,17 +11,22 @@ from openpyxl import load_workbook
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     CustomerOpportunity,
+    DerivedSignal,
     IdentityStatus,
     OpportunityType,
+    SignalSeverity,
     TimelineDirection,
     TimelineEvent,
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.manager_dossier import (
+    _season_purchase_matches,
     build_customer_dossier,
     build_manager_dossier_workbook,
     load_canonical_call_client_texts,
+    manager_outreach_eligibility,
 )
+from mango_mvp.customer_timeline.freshness import manager_freshness_gate
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -50,6 +55,7 @@ def test_manager_dossier_extracts_interests_and_pains_from_client_text_only(tmp_
 
     interest_text = "\n".join(item.text for item in dossier.interests)
     pain_text = "\n".join(item.text for item in dossier.pains)
+    assert dossier.brand == "foton"
     assert "Из данных: Летняя школа по математике" in interest_text
     assert "Служебная акция из title" not in interest_text
     assert "Нас интересует летняя школа" in interest_text
@@ -59,6 +65,289 @@ def test_manager_dossier_extracts_interests_and_pains_from_client_text_only(tmp_
     assert "переживаем" in pain_text.casefold()
     assert "не успеваем" in pain_text.casefold()
     assert "сложно оплатить" not in pain_text
+
+
+def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW + timedelta(minutes=1),
+                source_system="mango_processed_summary",
+                source_id="ambiguous-call",
+                direction=TimelineDirection.INBOUND,
+                summary="Неоднозначный звонок не должен попасть в досье.",
+                record={"next_step": "Позвонить по неоднозначному звонку"},
+                match_status="ambiguous",
+                created_at=NOW,
+            )
+        )
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:ambiguous-only",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Ambiguous only",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        for event_type, source_id, match_status in (
+            (TimelineEventType.MANGO_CALL, "ambiguous-only-call", "ambiguous"),
+            (TimelineEventType.EMAIL_MESSAGE, "ambiguous-only-mail", "strong_unique"),
+        ):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:ambiguous-only",
+                    event_type=event_type,
+                    event_at=NOW,
+                    source_system="mango_processed_summary" if event_type == TimelineEventType.MANGO_CALL else "mail_archive_stage2",
+                    source_id=source_id,
+                    direction=TimelineDirection.INBOUND,
+                    summary="Тестовая запись.",
+                    match_status=match_status,
+                    created_at=NOW,
+                )
+            )
+    finally:
+        store.close()
+    canonical_db = _canonical_calls_db(tmp_path, {"ambiguous-call": "Нас интересует ошибочный курс."})
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            canonical_calls=load_canonical_call_client_texts(canonical_db),
+        )
+
+    assert all("ошибочный курс" not in item.text for item in dossier.interests)
+    assert all("Неоднозначный звонок" not in item.text for item in dossier.chronology)
+    assert "неоднозначному" not in dossier.next_step.casefold()
+    summary = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=tmp_path / ".codex_local" / "ambiguous_segment.xlsx",
+        enforce_freshness=False,
+    )
+    assert summary["full_dossier_segment_total"] == 1
+    assert summary["customers"] == 1
+
+
+def test_manager_outreach_eligibility_blocks_safety_risks(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            CREATE TABLE family_links_v1 (
+              tenant_id TEXT, customer_id TEXT, status TEXT, confidence TEXT
+            )
+            """
+        )
+        event_id = str(con.execute("SELECT event_id FROM timeline_events WHERE source_id='call-client'").fetchone()[0])
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_signal(
+            DerivedSignal(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_id=event_id,
+                signal_type="client_returned",
+                severity=SignalSeverity.MEDIUM,
+                evidence_text="Клиент вернулся после паузы.",
+                expires_at=NOW + timedelta(days=30),
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW + timedelta(hours=1),
+                source_system="mail_archive_stage2",
+                source_id="service-notification",
+                direction=TimelineDirection.OUTBOUND,
+                summary="Служебное уведомление.",
+                record={"service_notification": True},
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:10",),
+            summary="Prefix collision must not affect customer:1.",
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        eligible = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+        assert eligible["eligible"] is True
+        con.execute("UPDATE timeline_events SET superseded_by='replacement' WHERE event_id=?", (event_id,))
+        superseded = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+        assert "signal_evidence_superseded" in superseded["reasons"]
+        con.execute("UPDATE timeline_events SET superseded_by=NULL, match_status='ambiguous' WHERE event_id=?", (event_id,))
+        ambiguous = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+        assert "signal_evidence_ambiguous_call" in ambiguous["reasons"]
+        con.execute("UPDATE timeline_events SET match_status='strong_unique' WHERE event_id=?", (event_id,))
+        con.execute(
+            "INSERT INTO family_links_v1 VALUES (?,?,?,?)",
+            ("foton", "customer:1", "ambiguous", "low"),
+        )
+        blocked = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+        assert blocked["eligible"] is False
+        assert "family_ambiguous" in blocked["reasons"]
+
+
+def test_manager_outreach_eligibility_blocks_p0_optout_and_meaningful_outbound(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE family_links_v1 (tenant_id TEXT, customer_id TEXT, status TEXT, confidence TEXT)")
+        event_id = str(con.execute("SELECT event_id FROM timeline_events WHERE source_id='call-client'").fetchone()[0])
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_signal(
+            DerivedSignal(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_id=event_id,
+                signal_type="client_returned",
+                severity=SignalSeverity.MEDIUM,
+                evidence_text="Клиент вернулся после паузы.",
+                expires_at=NOW + timedelta(days=30),
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW + timedelta(hours=1),
+                source_system="mail_archive_stage2",
+                source_id="p0-refund",
+                direction=TimelineDirection.INBOUND,
+                summary="Требую возврат денег.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW - timedelta(days=90),
+                source_system="mail_archive_stage2",
+                source_id="old-optout",
+                direction=TimelineDirection.INBOUND,
+                summary="Прошу больше не пишите мне.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW + timedelta(hours=2),
+                source_system="mail_archive_stage2",
+                source_id="manager-followup",
+                direction=TimelineDirection.OUTBOUND,
+                summary="Менеджер уже отправил персональное предложение.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        blocked = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+
+    assert blocked["eligible"] is False
+    assert {"durable_p0_history", "durable_opt_out", "meaningful_outbound_after_evidence"}.issubset(
+        blocked["reasons"]
+    )
+
+
+def test_manager_outreach_eligibility_blocks_risk_signal_and_exact_conflict(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE family_links_v1 (tenant_id TEXT, customer_id TEXT, status TEXT, confidence TEXT)")
+        event_id = str(con.execute("SELECT event_id FROM timeline_events WHERE source_id='call-client'").fetchone()[0])
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        for signal_type in ("client_returned", "paid_no_access"):
+            store.upsert_signal(
+                DerivedSignal(
+                    tenant_id="foton",
+                    customer_id="customer:1",
+                    event_id=event_id,
+                    signal_type=signal_type,
+                    severity=SignalSeverity.HIGH if signal_type == "paid_no_access" else SignalSeverity.MEDIUM,
+                    evidence_text=f"Evidence for {signal_type}.",
+                    expires_at=NOW + timedelta(days=30),
+                    created_at=NOW,
+                )
+            )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:1",),
+            summary="Exact customer conflict.",
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        blocked = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+
+    assert blocked["eligible"] is False
+    assert {"active_risk_signal:paid_no_access", "open_identity_conflict"}.issubset(blocked["reasons"])
 
 
 def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tmp_path: Path) -> None:
@@ -73,6 +362,7 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
         out_xlsx=out,
         customer_ids=("customer:1",),
         canonical_calls_db=canonical_db,
+        enforce_freshness=False,
     )
 
     assert summary["customers"] == 1
@@ -134,6 +424,7 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
         customer_ids=("customer:1",),
         canonical_calls_db=tmp_path / "missing.sqlite",
         reconcile_json=reconcile,
+        enforce_freshness=False,
     )
 
     assert summary["canonical_calls_loaded"] == 0
@@ -143,6 +434,7 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert summary["signals_total"] == 1
     assert summary["objections_total"] == 1
     assert summary["next_step_rows_total"] == 1
+    assert summary["missing_next_step_rows_total"] == 0
     wb = load_workbook(out, read_only=True)
     values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
     joined = "\n".join(str(cell) for row in values for cell in row if cell)
@@ -150,6 +442,9 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert "Иван" in joined and "класс: 8" in joined and "предметы: математика" in joined
     assert "факт оплат" in joined and "120 000 руб." in joined
     assert "план сделок" in joined and "80 000 руб." in joined
+    assert "Бренд\nfoton" in joined
+    assert "списания/расход" in joined
+    assert "возвраты/исход" not in joined
     assert "сделка зависла" in joined
     assert ("Следующий шаг", "Позвонить в понедельник по оплате", "Сигнал Customer Timeline") in values
     assert values[0] == ("Раздел", "Значение", "Откуда")
@@ -158,6 +453,43 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert "price: Дорого, просит рассрочку." in joined
     assert "Письмо «Расписание»: полный текст в базе." in joined
     assert "Требуется ручная проверка модельной выжимки" not in joined
+
+
+def test_manager_season_evidence_rejects_money_reversal(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    evidence_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        assert _season_purchase_matches(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            evidence_at=evidence_at,
+        )
+        con.execute(
+            "UPDATE customer_purchases_v1 SET total_out=1000 WHERE customer_id='customer:1' AND money_kind='fact'"
+        )
+        assert not _season_purchase_matches(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            evidence_at=evidence_at,
+        )
+
+
+def test_manager_dossier_marks_cross_brand_family_as_historical(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE family_links_v1 SET brand='unpk' WHERE customer_id='customer:1'")
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.brand == "foton"
+    assert any("исторический другой бренд" in row.text for row in dossier.family)
 
 
 def test_manager_dossier_skips_missing_customer_ids(tmp_path: Path) -> None:
@@ -170,6 +502,7 @@ def test_manager_dossier_skips_missing_customer_ids(tmp_path: Path) -> None:
         allowed_root=tmp_path,
         out_xlsx=out,
         customer_ids=("customer:1", "customer:missing"),
+        enforce_freshness=False,
     )
 
     assert summary["requested_customers"] == 2
@@ -177,6 +510,16 @@ def test_manager_dossier_skips_missing_customer_ids(tmp_path: Path) -> None:
     assert summary["missing_customer_ids_count"] == 1
     assert summary["missing_customer_ids_sample"] == ["customer:missing"]
     assert out.exists()
+
+    empty = build_manager_dossier_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=tmp_path / ".codex_local" / "review" / "dossier_empty.xlsx",
+        customer_ids=(),
+        enforce_freshness=False,
+    )
+    assert empty["requested_customers"] == 0
+    assert empty["customers"] == 0
 
 
 def test_manager_dossier_omits_generic_history_next_step(tmp_path: Path) -> None:
@@ -190,15 +533,250 @@ def test_manager_dossier_omits_generic_history_next_step(tmp_path: Path) -> None
         allowed_root=tmp_path,
         out_xlsx=out,
         customer_ids=("customer:1",),
+        enforce_freshness=False,
     )
 
     assert summary["signals_total"] == 1
     assert summary["next_step_rows_total"] == 0
+    assert summary["missing_next_step_rows_total"] == 1
     wb = load_workbook(out, read_only=True)
     values = [row for row in wb["Клиент 1"].iter_rows(values_only=True)]
-    assert not any(row[0] == "Следующий шаг" for row in values)
+    assert (
+        "Следующий шаг",
+        "Не определён: менеджеру нужно выбрать действие после проверки истории.",
+        "Требует решения менеджера",
+    ) in values
     joined = "\n".join(str(cell) for row in values for cell in row if cell is not None)
     assert "Посмотреть историю" not in joined
+
+
+def test_manager_dossier_prefers_resolved_active_timeline_step(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW + timedelta(minutes=1),
+                source_system="mango_call",
+                source_id="call-next-step",
+                direction=TimelineDirection.INBOUND,
+                summary="Договорились отправить материалы клиенту.",
+                record={"next_step": "Отправить материалы клиенту"},
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:10",),
+            summary="Prefix collision must not affect customer:1.",
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.next_step.startswith("Отправить материалы клиенту (")
+    assert dossier.next_step_source == "timeline_events"
+
+
+def test_manager_dossier_does_not_fall_back_to_signal_after_step_closed(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW + timedelta(minutes=1),
+                source_system="mango_call",
+                source_id="call-next-step",
+                direction=TimelineDirection.INBOUND,
+                record={"next_step": "Отправить материалы клиенту"},
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW + timedelta(minutes=2),
+                source_system="mail_archive_stage2",
+                source_id="mail-materials-sent",
+                direction=TimelineDirection.OUTBOUND,
+                summary="Материалы отправлены клиенту.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.next_step == ""
+    assert dossier.next_step_source == ""
+
+
+def test_manager_dossier_does_not_show_step_with_open_ambiguous_identity(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=NOW + timedelta(minutes=1),
+                source_system="mango_call",
+                source_id="call-next-step",
+                direction=TimelineDirection.INBOUND,
+                record={"next_step": "Отправить материалы клиенту"},
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO timeline_conflicts VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "conflict:ambiguous",
+                "foton",
+                "ambiguous_identity",
+                "high",
+                "open",
+                NOW.isoformat(),
+                None,
+                "hash-conflict",
+                json.dumps({"entity_refs": ["customer:1"]}),
+            ),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.next_step == ""
+    assert dossier.next_step_source == ""
+
+
+def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
+    rows = [
+        {
+            "source_system": "amocrm_snapshot",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": False,
+            "imported_at": "2026-07-20T00:00:00+00:00",
+        },
+        {
+            "source_system": "mail_archive_stage2",
+            "expected": True,
+            "missing": True,
+            "cursor_complete": False,
+            "imported_at": None,
+        },
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is False
+    assert {item["reason"] for item in gate["blockers"]} == {
+        "cursor_incomplete",
+        "successful_import_stale",
+        "missing",
+    }
+
+
+def test_manager_freshness_gate_blocks_missing_and_future_import_times() -> None:
+    rows = [
+        {
+            "source_system": "wappi_max",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "imported_at": None,
+        },
+        {
+            "source_system": "wappi_telegram",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "imported_at": "2026-07-22T00:06:00+00:00",
+        },
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is False
+    assert {item["reason"] for item in gate["blockers"]} == {
+        "successful_import_missing",
+        "imported_at_in_future",
+    }
+
+
+def test_manager_freshness_gate_does_not_accept_local_amo_reindex() -> None:
+    rows = [
+        {
+            "source_system": "amocrm_snapshot",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "cursor_updated_at": "2026-07-18T00:00:00+00:00",
+            "imported_at": "2026-07-22T00:00:00+00:00",
+            "max_event_at": "2026-07-21T12:00:00+00:00",
+        }
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is False
+    assert gate["blockers"] == [
+        {"source_system": "amocrm_snapshot", "reason": "cursor_check_stale"}
+    ]
+
+
+def test_manager_freshness_gate_blocks_future_or_stale_data_boundary() -> None:
+    rows = [
+        {
+            "source_system": "wappi_max",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "imported_at": "2026-07-22T00:00:00+00:00",
+            "max_event_at": "2026-07-23T00:00:00+00:00",
+        },
+        {
+            "source_system": "tallanto_snapshot",
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "imported_at": "2026-07-22T00:00:00+00:00",
+            "max_event_at": "2026-05-01T00:00:00+00:00",
+        },
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert {item["reason"] for item in gate["blockers"]} == {
+        "max_event_at_in_future",
+        "data_boundary_stale",
+    }
 
 
 def test_manager_dossier_matches_canonical_call_id_and_prefixed_source_id(tmp_path: Path) -> None:
@@ -389,6 +967,7 @@ def _seed_customer_with_call_and_opportunity(db: Path, tmp_path: Path) -> None:
                 primary_phone="+79000000000",
                 primary_email="parent@example.com",
                 summary={"products_of_interest": ["ОГЭ по физике"]},
+                metadata={"brands": ["foton"]},
             )
         )
         store.upsert_opportunity(
@@ -568,7 +1147,7 @@ def _seed_full_dossier_tables(db: Path, *, signal_action: str = "Позвони�
                 "deal_stalling",
                 "high",
                 "active",
-                "2026-07-10T00:00:00+00:00",
+                "2026-12-31T00:00:00+00:00",
                 0.9,
                 1,
                 NOW.isoformat(),

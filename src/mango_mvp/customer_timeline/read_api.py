@@ -407,24 +407,32 @@ class CustomerTimelineReadApi:
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        clauses = ["tenant_id = ?"]
-        params: list[Any] = [tenant]
-        if status:
-            clauses.append("status = ?")
-            params.append(normalize_key(status, "status"))
-        if conflict_type:
-            clauses.append("conflict_type = ?")
-            params.append(normalize_key(conflict_type, "conflict_type"))
-        items = self._records(
-            "timeline_conflicts",
-            " AND ".join(clauses),
-            tuple(params),
-            order_by="created_at DESC, conflict_id",
-            limit=bounded_limit(limit, default=50, max_limit=200),
-        )
         if customer_id:
-            needle = require_text(customer_id, "customer_id")
-            items = [item for item in items if needle in json.dumps(item.get("entity_refs", []), ensure_ascii=False)]
+            items = list(
+                self.store.list_conflicts_by_customer(
+                    tenant,
+                    require_text(customer_id, "customer_id"),
+                    statuses=(status,) if status else (),
+                    conflict_types=(conflict_type,) if conflict_type else (),
+                    limit=bounded_limit(limit, default=50, max_limit=200),
+                )
+            )
+        else:
+            clauses = ["tenant_id = ?"]
+            params: list[Any] = [tenant]
+            if status:
+                clauses.append("status = ?")
+                params.append(normalize_key(status, "status"))
+            if conflict_type:
+                clauses.append("conflict_type = ?")
+                params.append(normalize_key(conflict_type, "conflict_type"))
+            items = self._records(
+                "timeline_conflicts",
+                " AND ".join(clauses),
+                tuple(params),
+                order_by="created_at DESC, conflict_id",
+                limit=bounded_limit(limit, default=50, max_limit=200),
+            )
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /conflicts",

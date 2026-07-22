@@ -44,7 +44,9 @@ def read_mail_cursor_state(timeline_db: Path) -> Mapping[str, Any] | None:
     if not timeline_db.is_file():
         return None
     try:
-        with sqlite3.connect(timeline_db.as_uri() + "?mode=ro", uri=True) as con:
+        immutable = not Path(f"{timeline_db.resolve()}-wal").exists()
+        suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+        with sqlite3.connect(timeline_db.resolve().as_uri() + suffix, uri=True) as con:
             con.row_factory = sqlite3.Row
             row = con.execute(
                 """
@@ -186,6 +188,8 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             if cursor_before_state and cursor_before_state.get("last_cursor_ts")
             else None
         )
+        backfill_missing_only = bool(process_manifest.get("backfill_missing_only"))
+        skip_link_enrich = backfill_missing_only or bool(args.skip_link_enrich)
         completed = run_incremental(code_root, config_path)
         try:
             result = json.loads(completed.stdout)
@@ -199,9 +203,14 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             and not failed_required
             and result.get("overall_status") != "partial"
         )
+        cursor_preserved = read_mail_cursor_state(timeline_db) == cursor_before_state
+        if backfill_missing_only and not cursor_preserved:
+            restore_mail_cursor(timeline_db, cursor_before_state)
+            incremental_ok = False
+            failed_required = [*failed_required, "mail_archive_stage2:cursor_changed"]
         enrich_report: Mapping[str, Any] = {}
         enrich_error = ""
-        if incremental_ok:
+        if incremental_ok and not skip_link_enrich:
             try:
                 enrich_report = enrich_mail_links(
                     timeline_db=timeline_db,
@@ -217,7 +226,9 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             enrich_safety.get("allowed_for_bot_changed")
             or enrich_safety.get("mail_stage2_allowed_for_bot_changed")
         )
-        enrich_ok = incremental_ok and not enrich_error and not visibility_changed
+        enrich_ok = incremental_ok and (
+            skip_link_enrich or (not enrich_error and not visibility_changed)
+        )
         counts = enrich_report.get("counts") if isinstance(enrich_report, Mapping) else {}
         apply_counts = enrich_report.get("apply") if isinstance(enrich_report, Mapping) else {}
         if not isinstance(counts, Mapping):
@@ -242,7 +253,7 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             "gate_passed": result.get("gate_passed"),
             "failed_required_sources": failed_required,
             "mail_link_enrich": {
-                "status": "ok" if enrich_ok else "failed",
+                "status": "skipped" if skip_link_enrich and incremental_ok else ("ok" if enrich_ok else "failed"),
                 "error": enrich_error or None,
                 "target_events": int(enrich_report.get("target_events") or 0),
                 "planned": {
@@ -257,6 +268,8 @@ def execute(args: argparse.Namespace) -> Mapping[str, Any]:
             },
             "cursor_before": cursor_before,
             "cursor_after": read_mail_cursor(timeline_db),
+            "cursor_preserved": read_mail_cursor_state(timeline_db) == cursor_before_state,
+            "backfill_missing_only": backfill_missing_only,
             "writes_prod_db": False,
             "write_external_systems": False,
             "timeline_db": str(timeline_db),
@@ -271,6 +284,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--code-root", default=str(ROOT))
     parser.add_argument("--state-dir", default=str(ROOT / ".codex_local/staging/mail_pipeline"))
     parser.add_argument("--max-process-age-hours", type=float, default=4.0)
+    parser.add_argument("--skip-link-enrich", action="store_true")
     return parser.parse_args(argv)
 
 

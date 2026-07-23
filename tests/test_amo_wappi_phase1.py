@@ -117,6 +117,96 @@ def test_wappi_max_chat_reads_use_max_token_and_readonly_endpoints() -> None:
     )
 
 
+def test_wappi_amocrm_contact_find_uses_exact_endpoint_headers_and_body() -> None:
+    calls: list[dict] = []
+
+    def transport(**kwargs):
+        calls.append(kwargs)
+        return {"contact": {"id": 123}, "leads": [{"id": 456}]}
+
+    client = WappiPhase1Client(
+        WappiClientConfig(base_url="https://wappi.pro", telegram_token="tg-token", max_token="max-token"),
+        transport=transport,
+    )
+
+    response = client.find_amocrm_contact(
+        channel="telegram",
+        chat_id="chat-1",
+        phone="+79991234567",
+        username="client_name",
+        platform="tg",
+        crm_id="amojo-crm-uuid",
+        profile_uuid="profile-uuid",
+        manager="manager-42",
+    )
+
+    assert response == {"contact": {"id": 123}, "leads": [{"id": 456}]}
+    assert calls == [
+        {
+            "method": "POST",
+            "url": "https://wappi.pro/messanger/proxy/amocrm/contact/find",
+            "headers": {
+                "Authorization": "tg-token",
+                "X-CRM-Type": "amo",
+                "X-CRM-ID": "amojo-crm-uuid",
+                "X-Manager-ID": "manager-42",
+            },
+            "json_body": {
+                "chat_id": "chat-1",
+                "phone": "+79991234567",
+                "username": "client_name",
+                "platform": "tg",
+                "crm_id": "amojo-crm-uuid",
+                "profile_uuid": "profile-uuid",
+            },
+            "timeout_seconds": 25,
+        }
+    ]
+
+
+def test_wappi_amocrm_contact_find_omits_optional_manager_and_other_secrets() -> None:
+    calls: list[dict] = []
+    client = WappiPhase1Client(
+        WappiClientConfig(base_url="https://wappi.pro", max_token="max-token"),
+        transport=lambda **kwargs: calls.append(kwargs) or {"contact": None, "leads": []},
+    )
+
+    client.find_amocrm_contact(
+        channel="max",
+        chat_id="chat-2",
+        phone="",
+        username="",
+        platform="max",
+        crm_id="amojo-crm-uuid",
+        profile_uuid="profile-uuid",
+    )
+
+    assert calls[0]["headers"] == {
+        "Authorization": "max-token",
+        "X-CRM-Type": "amo",
+        "X-CRM-ID": "amojo-crm-uuid",
+    }
+    assert set(calls[0]["headers"]) == {"Authorization", "X-CRM-Type", "X-CRM-ID"}
+
+
+def test_wappi_amocrm_contact_find_rejects_incomplete_or_non_https_request() -> None:
+    client = WappiPhase1Client(
+        WappiClientConfig(base_url="http://wappi.pro", telegram_token="tg-token"),
+        transport=lambda **kwargs: {"should": "not happen"},
+    )
+
+    with pytest.raises(AmoWappiConfigError):
+        client.find_amocrm_contact(
+            channel="telegram",
+            chat_id="chat-1",
+            phone="",
+            username="",
+            platform="tg",
+            crm_id="amojo-crm-uuid",
+            profile_uuid="profile-uuid",
+        )
+
+
 def test_amo_client_reads_pipelines_leads_and_contacts() -> None:
     calls: list[dict] = []
 

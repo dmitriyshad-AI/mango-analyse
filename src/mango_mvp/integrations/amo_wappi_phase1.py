@@ -406,6 +406,62 @@ class WappiPhase1Client:
             profiles.extend(self.list_profiles("max"))
         return profiles
 
+    def find_amocrm_contact(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        phone: str,
+        username: str,
+        platform: str,
+        crm_id: str,
+        profile_uuid: str,
+        manager: str = "",
+    ) -> Mapping[str, Any]:
+        token = self._token_for_channel(channel)
+        normalized_crm_id = str(crm_id or "").strip()
+        if not normalized_crm_id:
+            raise AmoWappiConfigError("Wappi AMO crm_id is required.")
+        headers = {
+            "Authorization": token,
+            "X-CRM-Type": "amo",
+            "X-CRM-ID": normalized_crm_id,
+        }
+        if str(manager or "").strip():
+            headers["X-Manager-ID"] = str(manager).strip()
+        body = {
+            "chat_id": str(chat_id or "").strip(),
+            "phone": str(phone or "").strip(),
+            "username": str(username or "").strip(),
+            "platform": str(platform or "").strip(),
+            "crm_id": normalized_crm_id,
+            "profile_uuid": str(profile_uuid or "").strip(),
+        }
+        if not body["chat_id"] or not body["platform"] or not body["profile_uuid"]:
+            raise AmoWappiConfigError("Wappi chat_id, platform and profile_uuid are required.")
+        url = url_parse.urljoin(
+            f"{self.config.base_url.rstrip('/')}/",
+            "messanger/proxy/amocrm/contact/find",
+        )
+        parsed_url = url_parse.urlparse(url)
+        if parsed_url.scheme != "https" or parsed_url.netloc.casefold() != "wappi.pro":
+            raise AmoWappiConfigError("Wappi AMO contact lookup requires https://wappi.pro.")
+        if self.transport is not None:
+            return self.transport(
+                method="POST",
+                url=url,
+                headers=headers,
+                json_body=body,
+                timeout_seconds=self.config.timeout_seconds,
+            )
+        return _json_http_request(
+            method="POST",
+            url=url,
+            headers=headers,
+            json_body=body,
+            timeout_seconds=self.config.timeout_seconds,
+        )
+
     def list_telegram_chats(
         self,
         *,

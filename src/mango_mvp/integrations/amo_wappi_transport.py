@@ -37,14 +37,23 @@ class SafeTransportPolicy:
         path = parsed.path or "/"
         query = url_parse.parse_qs(parsed.query, keep_blank_values=True)
         if host in self.wappi_hosts:
-            self._assert_wappi_allowed(method=normalized_method, path=path, query=query)
+            self._assert_wappi_allowed(method=normalized_method, scheme=parsed.scheme, path=path, query=query)
             return
         if host in self.amo_read_hosts:
             self._assert_amo_read_allowed(method=normalized_method, path=path)
             return
         self._assert_ai_office_allowed(method=normalized_method, path=path, query=query)
 
-    def _assert_wappi_allowed(self, *, method: str, path: str, query: Mapping[str, list[str]]) -> None:
+    def _assert_wappi_allowed(
+        self,
+        *,
+        method: str,
+        scheme: str,
+        path: str,
+        query: Mapping[str, list[str]],
+    ) -> None:
+        if method == "POST" and scheme == "https" and path == "/messanger/proxy/amocrm/contact/find" and not query:
+            return
         if method != "GET":
             raise TransportDenied(f"Wappi HTTP denied: method {method} is not read-only.")
         if path in {

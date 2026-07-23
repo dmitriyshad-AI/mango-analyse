@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     safe_wappi_exception,
     sanitize_wappi_import_error,
     timeline_db_identity,
+    wappi_dialog_identity_keys,
     wappi_message_to_record,
     write_json_report,
 )
@@ -96,6 +97,57 @@ def test_wappi_history_import_resolves_by_amo_pair_and_is_idempotent(tmp_path: P
     assert link["link_value"] == "wappi_telegram:p-tg:123456"
 
 
+def test_wappi_history_timeline_identity_apply_is_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:timeline",
+        link_type="telegram_user_id",
+        link_value="123456",
+        brand="foton",
+    )
+    client = FakeWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {
+                    "id": "timeline-message-1",
+                    "chat_id": "123456",
+                    "type": "text",
+                    "body": "Здравствуйте",
+                    "time": 1_753_000_000,
+                }
+            ]
+        },
+    )
+    config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=write_phase1_config(tmp_path),
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+        limits=WappiFetchLimits(
+            chat_limit_per_profile=5,
+            messages_per_chat=5,
+            message_limit_total=20,
+            request_limit_total=20,
+            sleep_seconds=0,
+        ),
+    )
+
+    first = run_wappi_history_import(config, client=client)
+    second = run_wappi_history_import(config, client=client)
+
+    assert first["validation_ok"] is True
+    assert first["summary"]["linked_by_timeline"] == 1
+    assert first["writes"]["status_counts"]["created"] > 0
+    assert second["writes"]["status_counts"].get("created", 0) == 0
+    assert second["writes"]["status_counts"].get("updated", 0) == 0
+    assert second["summary"]["blocked_customer_relink_conflicts"] == 0
+
+
 @pytest.mark.parametrize("timestamp", (0, -1, float("inf"), -(10**100)))
 def test_wappi_invalid_timestamp_is_deterministic_epoch(timestamp: object) -> None:
     profile = WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram")
@@ -140,6 +192,98 @@ def test_wappi_valid_timestamp_is_preserved() -> None:
     )
     assert record.payload["event_at"] == "2025-07-20T08:26:40+00:00"
     assert record.payload["event_time_status"] == "source_valid"
+
+
+def test_wappi_timeline_identity_preserves_evidence_and_is_not_manual() -> None:
+    profile_spec = WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram")
+    message = WappiHistoryMessage(
+        profile_id="p-tg",
+        chat_id="123456",
+        message_id="message-1",
+        text="Тест",
+        message_type="text",
+        timestamp=1_753_000_000,
+        from_me=False,
+    )
+    record = wappi_message_to_record(
+        profile=profile_spec,
+        message=message,
+        resolution=WappiChatResolution(
+            status="resolved",
+            customer_id="customer:1",
+            resolution_source="timeline_identity",
+            evidence={"brand_context_authorized": False, "customer_brand": "unpk"},
+        ),
+    )
+    batch = WappiHistoryTimelineNormalizer(tenant_id="foton", source_system="wappi_telegram").normalize(record)
+
+    assert batch.events[0].match_status == IdentityMatchClass.STRONG_UNIQUE
+    assert batch.events[0].metadata["brand_context_authorized"] is False
+    assert batch.identity_links[0].match_class == IdentityMatchClass.STRONG_UNIQUE
+    assert batch.identity_links[0].evidence["brand_context_authorized"] is False
+    assert batch.bot_context_chunks[0].metadata["brand_context_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    ("resolution_status", "identity_authority", "error"),
+    (
+        ("pending_attribution", "timeline_identity", "resolution_status=resolved"),
+        ("resolved", "", "requires identity_authority"),
+        ("resolved", "unknown_resolver", "unsupported resolved Wappi identity_authority"),
+    ),
+)
+def test_wappi_normalizer_rejects_untrusted_resolved_identity(
+    resolution_status: str,
+    identity_authority: str,
+    error: str,
+) -> None:
+    record = wappi_message_to_record(
+        profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
+        message=WappiHistoryMessage(
+            profile_id="p-tg",
+            chat_id="123456",
+            message_id="message-1",
+            text="Тест",
+            message_type="text",
+            timestamp=1_753_000_000,
+            from_me=False,
+        ),
+        resolution=WappiChatResolution(
+            status="resolved",
+            customer_id="customer:1",
+            resolution_source="timeline_identity",
+        ),
+    )
+    payload = dict(record.payload)
+    payload["resolution_status"] = resolution_status
+    payload["identity_authority"] = identity_authority
+
+    with pytest.raises(ValueError, match=error):
+        WappiHistoryTimelineNormalizer(tenant_id="foton", source_system="wappi_telegram").normalize(
+            type(record)(
+                source_system=record.source_system,
+                source_ref=record.source_ref,
+                payload=payload,
+                observed_at=record.observed_at,
+            )
+        )
+
+
+def test_max_username_is_not_used_as_telegram_identity() -> None:
+    strong, weak, reason = wappi_dialog_identity_keys(
+        WappiProfileSpec(profile_id="p-max", brand="foton", channel="max"),
+        "max-chat",
+        {
+            "phone": "+7 999 000-00-01",
+            "participants": [
+                {"phone": "+7 999 000-00-01", "user_id": "max-1", "username": "same_name"}
+            ],
+        },
+    )
+
+    assert reason == ""
+    assert ("max_user_id", "max-1") in strong
+    assert weak == ()
 
 
 def test_wappi_require_nonempty_profile_blocks_all_apply(tmp_path: Path) -> None:
@@ -860,6 +1004,140 @@ def test_wappi_resolver_uses_unique_timeline_identity_with_matching_brand(tmp_pa
     assert resolution.resolution_source == "timeline_identity"
 
 
+def test_wappi_resolver_rejects_noncanonical_telegram_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:telegram",
+        link_type="telegram_user_id",
+        link_value="1234",
+        brand="foton",
+    )
+    resolution = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={}).resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "user-12x34", "type": "user"},
+        messages=(),
+    )
+
+    assert resolution.resolved is False
+    assert resolution.reason == "draft_loop_pair_missing"
+
+
+def test_wappi_resolver_uses_max_id_only_for_matching_phone_participant(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:max",
+        link_type="max_user_id",
+        link_value="max-user-1",
+        brand="unpk",
+    )
+    resolver = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={})
+
+    unresolved = resolver.resolve_chat(
+        profile=profile("p-max", "unpk", "max"),
+        dialog={"id": "chat", "phone": "+7 999 000-00-01", "participants": [{"user_id": "max-user-1"}]},
+        messages=(),
+    )
+    resolved = resolver.resolve_chat(
+        profile=profile("p-max", "unpk", "max"),
+        dialog={
+            "id": "chat",
+            "phone": "+7 999 000-00-01",
+            "participants": [{"user_id": "max-user-1", "phone": "+7 999 000-00-01"}],
+        },
+        messages=(),
+    )
+
+    assert unresolved.resolved is False
+    assert resolved.customer_id == "customer:max"
+
+
+def test_wappi_resolver_uses_exact_telegram_user_phone(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:phone",
+        link_type="phone",
+        link_value="+79990000001",
+        brand="foton",
+    )
+    resolver = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={})
+
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={
+            "id": "123456",
+            "type": "user",
+            "user": {"ID": 123456, "Phone": "+7 999 000-00-01"},
+        },
+        messages=(),
+    )
+
+    assert resolution.resolved is True
+    assert resolution.customer_id == "customer:phone"
+    assert resolution.match_key == "phone"
+
+
+def test_wappi_resolver_does_not_link_by_username_alone(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:username",
+        link_type="telegram_username",
+        link_value="parent_name",
+        brand="foton",
+    )
+    resolver = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={})
+
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user", "user": {"Username": "@Parent_Name"}},
+        messages=(),
+    )
+
+    assert resolution.resolved is False
+    assert resolution.reason == "draft_loop_pair_missing"
+
+
+def test_wappi_resolver_blocks_conflicting_exact_dialog_signals(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:telegram",
+        link_type="telegram_user_id",
+        link_value="123456",
+        brand="foton",
+    )
+    seed_local_identity(
+        db_path,
+        tmp_path,
+        customer_id="customer:phone",
+        link_type="phone",
+        link_value="+79990000001",
+        brand="foton",
+    )
+    resolver = WappiPairCustomerResolver.from_store(db_path, tenant_id="foton", pairs={})
+
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={
+            "id": "123456",
+            "type": "user",
+            "user": {"ID": 123456, "Phone": "+7 999 000-00-01"},
+        },
+        messages=(),
+    )
+
+    assert resolution.resolved is False
+    assert resolution.reason == "timeline_identity_signal_conflict"
+
+
 def test_wappi_resolver_vetoes_ambiguous_link_even_with_one_strong_owner(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_local_identity(
@@ -907,12 +1185,15 @@ def test_wappi_resolver_vetoes_ambiguous_link_even_with_one_strong_owner(tmp_pat
 
 def test_wappi_resolver_keeps_shared_phone_pending(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
-    for customer_id in ("customer:first", "customer:second"):
+    for customer_id, link_type in (
+        ("customer:first", "phone"),
+        ("customer:second", "whatsapp_phone"),
+    ):
         seed_local_identity(
             db_path,
             tmp_path,
             customer_id=customer_id,
-            link_type="phone",
+            link_type=link_type,
             link_value="+79990000001",
             brand="unpk",
         )
@@ -928,7 +1209,7 @@ def test_wappi_resolver_keeps_shared_phone_pending(tmp_path: Path) -> None:
     assert resolution.reason == "timeline_identity_ambiguous_value"
 
 
-def test_wappi_resolver_keeps_cross_brand_identity_pending(tmp_path: Path) -> None:
+def test_wappi_resolver_keeps_person_identity_but_not_brand_authority(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_local_identity(
         db_path,
@@ -946,8 +1227,10 @@ def test_wappi_resolver_keeps_cross_brand_identity_pending(tmp_path: Path) -> No
         messages=(),
     )
 
-    assert resolution.resolved is False
-    assert resolution.reason == "timeline_identity_brand_mismatch"
+    assert resolution.resolved is True
+    assert resolution.customer_id == "customer:unpk"
+    assert resolution.reason == "timeline_identity_unique_cross_brand_person_match"
+    assert resolution.evidence["brand_context_authorized"] is False
 
 
 def test_wappi_resolver_uses_all_non_wappi_brand_history(tmp_path: Path) -> None:
@@ -983,8 +1266,10 @@ def test_wappi_resolver_uses_all_non_wappi_brand_history(tmp_path: Path) -> None
         messages=(),
     )
 
-    assert resolution.resolved is False
-    assert resolution.reason == "timeline_identity_brand_unknown"
+    assert resolution.resolved is True
+    assert resolution.customer_id == "customer:mixed-history"
+    assert resolution.reason == "timeline_identity_unique_brand_unverified"
+    assert resolution.evidence["brand_context_authorized"] is False
 
 
 def test_wappi_resolver_ignores_missing_stored_brand_row(tmp_path: Path) -> None:

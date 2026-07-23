@@ -1355,6 +1355,48 @@ class CustomerTimelineSQLiteStore:
             "audit_id": audit.audit_id,
         }
 
+    def revoke_bot_context_chunks_for_event(
+        self,
+        tenant_id: str,
+        *,
+        event_id: str,
+        source_system: str,
+        reason: str,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> int:
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        event = require_text(event_id, "event_id")
+        source = normalize_key(source_system, "source_system")
+        normalized_reason = normalize_key(reason, "reason")
+        cursor = self._con.execute(
+            """
+            UPDATE bot_context_chunks
+            SET superseded_by = ?
+            WHERE tenant_id = ? AND event_id = ? AND source_system = ?
+              AND superseded_by IS NULL
+            """,
+            (event, tenant, event, source),
+        )
+        revoked = int(cursor.rowcount)
+        if revoked:
+            self._delete_bot_context_fts_for_event_ids((event,))
+            self._append_audit_log(
+                tenant_id=tenant,
+                action="bot_context_chunks_revoked",
+                entity_type="timeline_event",
+                entity_id=event,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=None,
+                after_hash=stable_digest({"event_id": event, "reason": normalized_reason}),
+                metadata={"reason": normalized_reason, "revoked_chunks": revoked},
+                now=self._now(),
+            )
+            self._commit()
+        return revoked
+
     def start_ingestion_run(
         self,
         *,
@@ -1810,6 +1852,43 @@ class CustomerTimelineSQLiteStore:
                     (tenant, normalized_type, *batch),
                 ).fetchall()
             )
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_shared_identity_links(
+        self,
+        tenant_id: str,
+        *,
+        link_types: Sequence[str],
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        normalized_types = tuple(sorted({normalize_key(value, "link_type") for value in link_types}))
+        if not normalized_types:
+            return ()
+        placeholders = ",".join("?" for _ in normalized_types)
+        rows = self._con.execute(
+            f"""
+            WITH canonical AS (
+              SELECT record_json, link_id, link_type, link_value, customer_id,
+                     CASE
+                       WHEN link_type IN ('phone', 'primary_phone', 'mango_client_phone', 'whatsapp_phone') THEN 'phone'
+                       WHEN link_type IN ('email', 'primary_email') THEN 'email'
+                       ELSE link_type
+                     END AS link_family
+              FROM identity_links
+              WHERE tenant_id = ? AND link_type IN ({placeholders})
+            ), shared AS (
+              SELECT link_family, link_value
+              FROM canonical
+              GROUP BY link_family, link_value
+              HAVING COUNT(DISTINCT customer_id) > 1
+            )
+            SELECT canonical.record_json
+            FROM canonical
+            JOIN shared USING (link_family, link_value)
+            ORDER BY canonical.link_type, canonical.link_value, canonical.link_id
+            """,
+            (tenant, *normalized_types),
+        ).fetchall()
         return tuple(json_loads(row["record_json"]) for row in rows)
 
     def list_identity_links_for_customers(
@@ -2986,16 +3065,23 @@ class CustomerTimelineSQLiteStore:
             self._con.execute(f"DELETE FROM timeline_event_fts WHERE event_id IN ({placeholders})", tuple(event_ids))
         if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts_keys'") is not None:
             self._con.execute(f"DELETE FROM timeline_event_fts_keys WHERE event_id IN ({placeholders})", tuple(event_ids))
-        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is not None:
-            self._con.execute(
-                f"""
-                DELETE FROM bot_context_chunk_fts
-                WHERE chunk_id IN (
-                  SELECT chunk_id FROM bot_context_chunks WHERE event_id IN ({placeholders})
-                )
-                """,
-                tuple(event_ids),
+        self._delete_bot_context_fts_for_event_ids(event_ids)
+
+    def _delete_bot_context_fts_for_event_ids(self, event_ids: Sequence[str]) -> None:
+        if not event_ids:
+            return
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is None:
+            return
+        placeholders = ", ".join("?" for _ in event_ids)
+        self._con.execute(
+            f"""
+            DELETE FROM bot_context_chunk_fts
+            WHERE chunk_id IN (
+              SELECT chunk_id FROM bot_context_chunks WHERE event_id IN ({placeholders})
             )
+            """,
+            tuple(event_ids),
+        )
 
     def _table_count(self, table_name: str) -> int:
         if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)) is None:

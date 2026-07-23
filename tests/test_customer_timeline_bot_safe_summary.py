@@ -250,6 +250,118 @@ def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_pat
     assert "<email_masked>" not in dumped
 
 
+def test_bot_safe_summary_ignores_event_without_brand_context_authorization(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    blocked = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.TELEGRAM_MESSAGE,
+        event_at=NOW,
+        source_system="wappi_telegram",
+        source_id="cross-brand-message",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        summary="Ученик 9 класса интересуется физикой.",
+        record={"brand": "foton"},
+        metadata={"brand": "foton", "brand_context_authorized": False},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(blocked)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            event_id=blocked.event_id,
+            source_system="wappi_telegram",
+            source_ref="wappi:cross-brand-message",
+            chunk_type="channel_message",
+            text="Ученик 9 класса интересуется физикой.",
+            allowed_for_bot=False,
+            requires_manager_review=True,
+            metadata={"brand": "foton"},
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.created == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_ignores_revoked_source_chunk(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.EMAIL_MESSAGE,
+        event_at=NOW,
+        source_system="mail_archive_stage2",
+        source_id="revoked-mail",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        record={"brand": "foton"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(event)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            event_id=event.event_id,
+            source_system="mail_archive_stage2",
+            source_ref="mail:revoked-mail",
+            chunk_type="email_message",
+            text="Ученик 9 класса интересуется математикой.",
+            allowed_for_bot=False,
+            requires_manager_review=True,
+            metadata={"brand": "foton", "brand_context_authorized": True},
+            created_at=NOW,
+        )
+    )
+    assert store.revoke_bot_context_chunks_for_event(
+        customer.tenant_id,
+        event_id=event.event_id,
+        source_system="mail_archive_stage2",
+        reason="identity_revalidated",
+    ) == 1
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.created == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
+
+
 def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()

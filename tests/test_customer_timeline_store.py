@@ -989,6 +989,43 @@ def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path:
     store.close()
 
 
+def test_revoking_event_chunks_keeps_active_event_in_fts(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    ev = replace(
+        event(customer),
+        summary="уникальноесобытие остаётся доступным",
+        text_preview="уникальноесобытие",
+    )
+    context = replace(
+        chunk(ev),
+        text="уникальныйконтекст должен исчезнуть",
+        summary="уникальныйконтекст",
+        source_system="mail_archive_stage2",
+        allowed_for_bot=False,
+        requires_manager_review=True,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(ev)
+    store.upsert_bot_context_chunk(context)
+
+    assert store.search_timeline("foton", "уникальноесобытие", mode="fts")["items"]
+    assert store.search_timeline("foton", "уникальныйконтекст", mode="fts")["items"]
+    with store.bulk_write():
+        assert store.revoke_bot_context_chunks_for_event(
+            "foton",
+            event_id=ev.event_id,
+            source_system="mail_archive_stage2",
+            reason="identity_revalidated",
+        ) == 1
+
+    event_result = store.search_timeline("foton", "уникальноесобытие", mode="fts")
+    chunk_result = store.search_timeline("foton", "уникальныйконтекст", mode="fts")
+    assert {item["scope"] for item in event_result["items"]} == {"event"}
+    assert chunk_result["items"] == []
+    store.close()
+
+
 def test_soft_delete_hides_events_and_chunks_from_store_read_api_and_rebuilt_fts(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())

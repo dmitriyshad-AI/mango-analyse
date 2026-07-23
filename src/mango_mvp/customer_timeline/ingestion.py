@@ -52,6 +52,8 @@ from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTE
 
 
 CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION = "customer_timeline_ingestion_v1"
+PHONE_IDENTITY_LINK_TYPES = frozenset({"phone", "mango_client_phone", "whatsapp_phone"})
+CONTACT_IDENTITY_LINK_TYPES = PHONE_IDENTITY_LINK_TYPES | {"email"}
 FORBIDDEN_IMPORT_HINTS = (
     "requests",
     "urllib",
@@ -442,6 +444,43 @@ class AmoSnapshotNormalizer:
             email=email,
             match_class=match_class,
         )
+        if entity_type not in {"lead", "deal", "amo_deal"}:
+            channel_values = {
+                "telegram_user_id": {
+                    cleaned
+                    for value in _amo_custom_field_values(payload, "Telegram ID", "TelegramId_WZ")
+                    if (cleaned := _canonical_numeric_id(value))
+                },
+                "telegram_username": {
+                    cleaned
+                    for value in _amo_custom_field_values(payload, "Telegram username", "TelegramUsername_WZ")
+                    if (cleaned := value.strip().lstrip("@").casefold())
+                },
+                "max_user_id": {
+                    cleaned
+                    for value in _amo_custom_field_values(payload, "Max User ID")
+                    if (cleaned := value.strip())
+                },
+            }
+            for link_type, values in channel_values.items():
+                channel_match_class = (
+                    IdentityMatchClass.STRONG_UNIQUE if len(values) == 1 else IdentityMatchClass.AMBIGUOUS
+                )
+                for value in sorted(values):
+                    links.append(
+                        IdentityLink(
+                            tenant_id=customer.tenant_id,
+                            customer_id=customer.customer_id,
+                            link_type=link_type,
+                            link_value=value,
+                            source_system=self.source_system,
+                            source_ref=source_ref,
+                            match_class=channel_match_class,
+                            confidence=0.95 if len(values) == 1 else 0.5,
+                            first_seen_at=event_at,
+                            last_seen_at=event_at,
+                        )
+                    )
         link_type = "amo_lead_id" if entity_type in {"lead", "deal", "amo_deal"} else "amo_contact_id"
         links.append(
             IdentityLink(
@@ -548,6 +587,30 @@ class TallantoSnapshotNormalizer:
             email=email,
             match_class=match_class,
         )
+        for raw_value in str(payload.get("phone_extra") or "").split("|"):
+            extra_phone = safe_phone(raw_value)
+            if extra_phone and extra_phone != phone:
+                links.extend(
+                    identity_links_for_customer(
+                        customer,
+                        source_system=self.source_system,
+                        source_ref=source_ref,
+                        phone=extra_phone,
+                        match_class=match_class,
+                    )
+                )
+        for raw_value in str(payload.get("email_extra") or "").split("|"):
+            extra_email = safe_email(raw_value)
+            if extra_email and extra_email != email:
+                links.extend(
+                    identity_links_for_customer(
+                        customer,
+                        source_system=self.source_system,
+                        source_ref=source_ref,
+                        email=extra_email,
+                        match_class=match_class,
+                    )
+                )
         links.append(
             IdentityLink(
                 tenant_id=self.tenant_id,
@@ -1328,7 +1391,7 @@ def resolve_customer_identity_batches(
                 continue
             links_by_customer.setdefault(link.customer_id, []).append(link)
             source_refs_by_customer.setdefault(link.customer_id, set()).add(link.source_ref)
-            if link.link_type.value in {"phone", "mango_client_phone"}:
+            if link.link_type.value in PHONE_IDENTITY_LINK_TYPES:
                 phone_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(link.customer_id)
             if link.link_type.value == "tallanto_student_id":
                 tallanto_key = (link.tenant_id, link.link_value)
@@ -1354,9 +1417,9 @@ def resolve_customer_identity_batches(
         if not student_ids:
             continue
         for link in links:
-            if link.link_type.value not in {"phone", "mango_client_phone", "email"}:
+            if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
                 continue
-            kind = "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value
+            kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
             contact_identity_to_tallanto_students.setdefault(
                 (link.tenant_id, kind, link.link_value),
                 set(),
@@ -1377,7 +1440,6 @@ def resolve_customer_identity_batches(
         for tenant_id, kind, value in family_contact_keys
         if kind == "phone"
     }
-
     parent = {customer_id: customer_id for customer_id in customers_by_id}
 
     def find(customer_id: str) -> str:
@@ -1420,9 +1482,9 @@ def resolve_customer_identity_batches(
     contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
     for customer_id, links in links_by_customer.items():
         for link in links:
-            if link.link_type.value not in {"phone", "mango_client_phone", "email"}:
+            if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
                 continue
-            kind = "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value
+            kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
             contact_identity_to_customers.setdefault((link.tenant_id, kind, link.link_value), set()).add(customer_id)
 
     for batch in normalized_batches:
@@ -1430,14 +1492,14 @@ def resolve_customer_identity_batches(
         contact_links = [
             link
             for link in batch.identity_links
-            if link.link_type.value in {"phone", "mango_client_phone", "email"}
+            if link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
         ]
         for tallanto_link in tallanto_links:
             tallanto_key = (tallanto_link.tenant_id, tallanto_link.link_value)
             existing_tallanto_holders = tallanto_id_to_customers.get(tallanto_key, set()) & existing_customer_ids
             existing_contact_holders: set[str] = set()
             for contact_link in contact_links:
-                kind = "phone" if contact_link.link_type.value == "mango_client_phone" else contact_link.link_type.value
+                kind = "phone" if contact_link.link_type.value in PHONE_IDENTITY_LINK_TYPES else contact_link.link_type.value
                 if (contact_link.tenant_id, kind, contact_link.link_value) in family_contact_keys:
                     continue
                 existing_contact_holders.update(
@@ -1494,6 +1556,25 @@ def resolve_customer_identity_batches(
             source_refs=tuple(sorted(set().union(*(source_refs_by_customer.get(customer_id, set()) for customer_id in members)))),
             links=tuple(link for customer_id in members for link in links_by_customer.get(customer_id, ())),
         )
+
+    resolved_contact_owners: dict[tuple[str, str, str], set[str]] = {}
+    for customer_id, links in links_by_customer.items():
+        resolved_customer_id = new_id_by_old.get(customer_id, customer_id)
+        for link in links:
+            if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
+                continue
+            kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
+            resolved_contact_owners.setdefault((link.tenant_id, kind, link.link_value), set()).add(
+                resolved_customer_id
+            )
+    family_contact_keys.update(
+        key for key, customer_ids in resolved_contact_owners.items() if len(customer_ids) > 1
+    )
+    existing_family_link_updates = _existing_family_link_updates(
+        store,
+        tenant_ids={customer.tenant_id for customer in customers_by_id.values()},
+        family_contact_keys=family_contact_keys,
+    )
 
     resolved_batches: list[TimelineNormalizedBatch] = []
     mappings: list[CustomerIdResolutionMapping] = []
@@ -1553,10 +1634,10 @@ def resolve_customer_identity_batches(
                 match_class=(
                     IdentityMatchClass.AMBIGUOUS
                     if (
-                        link.link_type.value in {"phone", "mango_client_phone", "email"}
+                        link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
                         and (
                             link.tenant_id,
-                            "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value,
+                            "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value,
                             link.link_value,
                         )
                         in family_contact_keys
@@ -1566,10 +1647,10 @@ def resolve_customer_identity_batches(
                 confidence=(
                     min(float(link.confidence or 1.0), 0.5)
                     if (
-                        link.link_type.value in {"phone", "mango_client_phone", "email"}
+                        link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
                         and (
                             link.tenant_id,
-                            "phone" if link.link_type.value == "mango_client_phone" else link.link_type.value,
+                            "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value,
                             link.link_value,
                         )
                         in family_contact_keys
@@ -1659,7 +1740,56 @@ def resolve_customer_identity_batches(
                 conflicts=batch.conflicts,
             )
         )
+    if existing_family_link_updates and resolved_batches:
+        first = resolved_batches[0]
+        resolved_batches[0] = replace(
+            first,
+            identity_links=(*first.identity_links, *existing_family_link_updates),
+        )
     return CustomerIdResolutionResult(batches=tuple(resolved_batches), mappings=tuple(mappings))
+
+
+def _existing_family_link_updates(
+    store: CustomerTimelineSQLiteStore | None,
+    *,
+    tenant_ids: set[str],
+    family_contact_keys: set[tuple[str, str, str]],
+) -> tuple[IdentityLink, ...]:
+    if store is None:
+        return ()
+    grouped: dict[tuple[str, str], set[str]] = {}
+    for tenant_id, kind, value in family_contact_keys:
+        grouped.setdefault((tenant_id, kind), set()).add(value)
+    updates: dict[str, IdentityLink] = {}
+    for tenant_id in sorted(tenant_ids):
+        for payload in store.list_shared_identity_links(
+            tenant_id,
+            link_types=(*sorted(PHONE_IDENTITY_LINK_TYPES), "email"),
+        ):
+            link = identity_link_from_json(payload)
+            if link.match_class != IdentityMatchClass.AMBIGUOUS:
+                updates[link.link_id] = replace(
+                    link,
+                    match_class=IdentityMatchClass.AMBIGUOUS,
+                    confidence=min(float(link.confidence or 1.0), 0.5),
+                )
+    for (tenant_id, kind), values in sorted(grouped.items()):
+        link_types = tuple(sorted(PHONE_IDENTITY_LINK_TYPES)) if kind == "phone" else (kind,)
+        for link_type in link_types:
+            for payload in store.list_identity_links_for_values(
+                tenant_id,
+                link_type=link_type,
+                link_values=tuple(sorted(values)),
+            ):
+                link = identity_link_from_json(payload)
+                if link.match_class == IdentityMatchClass.AMBIGUOUS:
+                    continue
+                updates[link.link_id] = replace(
+                    link,
+                    match_class=IdentityMatchClass.AMBIGUOUS,
+                    confidence=min(float(link.confidence or 1.0), 0.5),
+                )
+    return tuple(updates[key] for key in sorted(updates))
 
 
 def _load_existing_identity_context(
@@ -1674,9 +1804,9 @@ def _load_existing_identity_context(
     identity_queries: set[tuple[str, str, str]] = set()
     for links in links_by_customer.values():
         for link in links:
-            if link.link_type.value == "mango_client_phone":
-                identity_queries.add((link.tenant_id, "phone", link.link_value))
-                identity_queries.add((link.tenant_id, "mango_client_phone", link.link_value))
+            if link.link_type.value in PHONE_IDENTITY_LINK_TYPES:
+                for link_type in PHONE_IDENTITY_LINK_TYPES:
+                    identity_queries.add((link.tenant_id, link_type, link.link_value))
             elif link.link_type.value in {"phone", "email", "tallanto_student_id"}:
                 identity_queries.add((link.tenant_id, link.link_type.value, link.link_value))
     loaded_link_keys = {
@@ -1752,7 +1882,7 @@ def _load_existing_identity_context(
         loaded_link_keys.add(key)
         links_by_customer.setdefault(customer_id, []).append(related_link)
         source_refs_by_customer.setdefault(customer_id, set()).add(related_link.source_ref)
-        if related_link.link_type.value in {"phone", "mango_client_phone"}:
+        if related_link.link_type.value in PHONE_IDENTITY_LINK_TYPES:
             phone_to_customers.setdefault(
                 (related_link.tenant_id, related_link.link_value),
                 set(),
@@ -1830,7 +1960,7 @@ def _merge_customers(
 ) -> CustomerIdentity:
     ordered = tuple(sorted(customers, key=lambda item: (item.first_seen_at or item.created_at, item.customer_id)))
     first = ordered[0]
-    phones = sorted({link.link_value for link in links if link.link_type.value in {"phone", "mango_client_phone"}})
+    phones = sorted({link.link_value for link in links if link.link_type.value in PHONE_IDENTITY_LINK_TYPES})
     emails = sorted({link.link_value for link in links if link.link_type.value == "email"})
     first_seen = min((item.first_seen_at for item in ordered if item.first_seen_at), default=None)
     last_seen = max((item.last_seen_at for item in ordered if item.last_seen_at), default=None)
@@ -2216,6 +2346,32 @@ def safe_email(value: Any) -> Optional[str]:
         return None
     normalized = normalize_email(text)
     return normalized or None
+
+
+def _canonical_numeric_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"[0-9]+", text) else ""
+
+
+def _amo_custom_field_values(payload: Mapping[str, Any], *field_names: str) -> tuple[str, ...]:
+    record = payload.get("record") if isinstance(payload.get("record"), Mapping) else payload
+    wanted = {re.sub(r"[\W_]+", "", name.casefold()) for name in field_names}
+    values: list[str] = []
+    for field in record.get("custom_fields_values") or ():
+        if not isinstance(field, Mapping):
+            continue
+        name = re.sub(
+            r"[\W_]+",
+            "",
+            str(field.get("field_name") or field.get("name") or field.get("field_code") or "").casefold(),
+        )
+        if name not in wanted:
+            continue
+        for item in field.get("values") or ():
+            raw = item.get("value") if isinstance(item, Mapping) else item
+            if str(raw or "").strip():
+                values.append(str(raw).strip())
+    return tuple(values)
 
 
 def compact_text(value: Any, *, limit: int = 500) -> Optional[str]:

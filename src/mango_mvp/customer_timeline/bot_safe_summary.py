@@ -928,12 +928,18 @@ def _customers_with_history(
     sql += """
           AND (
             EXISTS (SELECT 1 FROM customer_opportunities o WHERE o.tenant_id = customer_identities.tenant_id AND o.customer_id = customer_identities.customer_id)
-            OR EXISTS (SELECT 1 FROM timeline_events e WHERE e.tenant_id = customer_identities.tenant_id AND e.customer_id = customer_identities.customer_id)
+            OR EXISTS (
+                SELECT 1 FROM timeline_events e
+                WHERE e.tenant_id = customer_identities.tenant_id
+                  AND e.customer_id = customer_identities.customer_id
+                  AND e.superseded_by IS NULL
+            )
             OR EXISTS (
                 SELECT 1 FROM bot_context_chunks c
                 WHERE c.tenant_id = customer_identities.tenant_id
                   AND c.customer_id = customer_identities.customer_id
                   AND c.chunk_type != ?
+                  AND c.superseded_by IS NULL
             )
           )
         ORDER BY customer_id
@@ -973,14 +979,23 @@ def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mappin
             """
             SELECT customer_id, record_json
             FROM timeline_events
-            WHERE tenant_id = ? AND customer_id IS NOT NULL AND customer_id != ''
+            WHERE tenant_id = ?
+              AND customer_id IS NOT NULL
+              AND customer_id != ''
+              AND superseded_by IS NULL
             ORDER BY event_at ASC, event_id ASC
             """,
             (tenant_id,),
         )
         for row in rows:
-            grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
+            event = _json_mapping(row["record_json"])
+            if _event_authorized_for_bot_safe_summary(event):
+                grouped.setdefault(str(row["customer_id"]), []).append(event)
     return {customer_id: tuple(items[-500:]) for customer_id, items in grouped.items()}
+
+
+def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
+    return _mapping(event.get("metadata")).get("brand_context_authorized") is not False
 
 
 def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
@@ -990,18 +1005,25 @@ def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple
         con.row_factory = sqlite3.Row
         rows = con.execute(
             f"""
-            SELECT customer_id, record_json
-            FROM bot_context_chunks
-            WHERE tenant_id = ?
-              AND customer_id IS NOT NULL
-              AND customer_id != ''
-              AND chunk_type IN ({placeholders})
-            ORDER BY event_at ASC, created_at ASC, chunk_id ASC
+            SELECT c.customer_id, c.record_json, e.record_json AS event_record_json
+            FROM bot_context_chunks c
+            LEFT JOIN timeline_events e
+              ON e.tenant_id = c.tenant_id AND e.event_id = c.event_id
+            WHERE c.tenant_id = ?
+              AND c.customer_id IS NOT NULL
+              AND c.customer_id != ''
+              AND c.chunk_type IN ({placeholders})
+              AND c.superseded_by IS NULL
+              AND (c.event_id IS NULL OR (e.event_id IS NOT NULL AND e.superseded_by IS NULL))
+            ORDER BY c.event_at ASC, c.created_at ASC, c.chunk_id ASC
             """,
             (tenant_id, *sorted(BOT_SAFE_SOURCE_CHUNK_TYPES)),
         )
         for row in rows:
-            grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
+            chunk = _json_mapping(row["record_json"])
+            linked_event = _json_mapping(row["event_record_json"])
+            if _event_authorized_for_bot_safe_summary(chunk) and _event_authorized_for_bot_safe_summary(linked_event):
+                grouped.setdefault(str(row["customer_id"]), []).append(chunk)
     return {customer_id: tuple(items[-700:]) for customer_id, items in grouped.items()}
 
 

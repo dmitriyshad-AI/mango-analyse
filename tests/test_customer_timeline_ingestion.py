@@ -104,6 +104,310 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
     store.close()
 
 
+def test_tallanto_normalizer_keeps_additional_contact_links() -> None:
+    batch = TallantoSnapshotNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref="contacts.jsonl:1",
+            observed_at=NOW,
+            payload={
+                "tallanto_id": "s-extra",
+                "display_name": "Ученик",
+                "primary_phone": "+7 916 111-22-33",
+                "phone_extra": "+7 916 444-55-66",
+                "primary_email": "primary@example.com",
+                "email_extra": "parent@example.com | second@example.com",
+            },
+        )
+    )
+
+    contact_links = {
+        (link.link_type.value, link.link_value)
+        for link in batch.identity_links
+        if link.link_type.value in {"phone", "email"}
+    }
+    assert contact_links == {
+        ("phone", "+79161112233"),
+        ("phone", "+79164445566"),
+        ("email", "primary@example.com"),
+        ("email", "parent@example.com"),
+        ("email", "second@example.com"),
+    }
+
+
+def test_tallanto_sequential_shared_contact_demotes_prior_links(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+
+    def record(student_id: str) -> TimelineSourceRecord:
+        return TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref=f"contacts:{student_id}",
+            observed_at=NOW,
+            payload={
+                "tallanto_id": student_id,
+                "display_name": student_id,
+                "email_extra": "family@example.com",
+            },
+        )
+
+    service.import_records(
+        (record("student-1"),),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="first",
+        idempotency_key="first",
+    )
+    second = service.import_records(
+        (record("student-2"),),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="second",
+        idempotency_key="second",
+    )
+    repeat = service.import_records(
+        (record("student-2"),),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="second",
+        idempotency_key="second",
+    )
+
+    links = store.list_identity_links("foton", link_type="email", link_value="family@example.com")
+    assert len({item["customer_id"] for item in links}) == 2
+    assert {item["match_class"] for item in links} == {"ambiguous"}
+    assert second.write_status_counts["updated"] >= 1
+    assert repeat.write_status_counts.get("updated", 0) == 0
+    store.close()
+
+
+def test_tallanto_shared_phone_demotes_phone_aliases_across_sources(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    existing = CustomerIdentity(
+        tenant_id="foton",
+        customer_id="customer:master",
+        identity_status=IdentityStatus.STRONG,
+        display_name="Master customer",
+    )
+    store.upsert_customer(existing)
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=existing.customer_id,
+            link_type="mango_client_phone",
+            link_value="+79160000000",
+            source_system="master_contacts_snapshot",
+            source_ref="master:1",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=0.95,
+        )
+    )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=existing.customer_id,
+            link_type="tallanto_student_id",
+            link_value="student-existing",
+            source_system="tallanto_snapshot",
+            source_ref="tallanto:student:student-existing",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=1.0,
+        )
+    )
+
+    TimelineImportService(store).import_records(
+        (
+            TimelineSourceRecord(
+                source_system="tallanto_snapshot",
+                source_ref="contacts:student-1",
+                observed_at=NOW,
+                payload={
+                    "tallanto_id": "student-1",
+                    "display_name": "Student 1",
+                    "phone": "+7 916 000-00-00",
+                },
+            ),
+        ),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="tallanto",
+        idempotency_key="tallanto",
+    )
+
+    links = [
+        *store.list_identity_links("foton", link_type="phone", link_value="+79160000000"),
+        *store.list_identity_links("foton", link_type="mango_client_phone", link_value="+79160000000"),
+    ]
+    assert len({item["customer_id"] for item in links}) == 2
+    assert {item["match_class"] for item in links} == {"ambiguous"}
+    store.close()
+
+
+def test_tallanto_conflict_still_demotes_reused_family_contact(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    for customer_id in ("customer:student-1", "customer:student-2"):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id=customer_id,
+                identity_status=IdentityStatus.STRONG,
+                display_name=customer_id,
+            )
+        )
+    for customer_id, student_id in (
+        ("customer:student-1", "student-1"),
+        ("customer:student-2", "student-2"),
+    ):
+        source_ref = f"tallanto:student:{student_id}"
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type="tallanto_student_id",
+                link_value=student_id,
+                source_system="tallanto_snapshot",
+                source_ref=source_ref,
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                confidence=1.0,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type="email",
+                link_value="family@example.com",
+                source_system="tallanto_snapshot",
+                source_ref=source_ref,
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                confidence=0.95,
+            )
+        )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id="customer:student-2",
+            link_type="phone",
+            link_value="+79160000000",
+            source_system="amocrm_snapshot",
+            source_ref="amo:contact:2",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=0.95,
+        )
+    )
+    conflicting = TimelineSourceRecord(
+        source_system="tallanto_snapshot",
+        source_ref="contacts:student-1",
+        observed_at=NOW,
+        payload={
+            "tallanto_id": "student-1",
+            "display_name": "Student 2",
+            "phone": "+79160000000",
+            "email_extra": "family@example.com",
+        },
+    )
+    result = service.import_records(
+        (conflicting,),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="conflict",
+        idempotency_key="conflict",
+    )
+
+    links = store.list_identity_links("foton", link_type="email", link_value="family@example.com")
+    assert {item["match_class"] for item in links} == {"ambiguous"}
+    assert result.normalized_counts["conflicts"] == 1
+    assert result.write_status_counts["updated"] >= 1
+    store.close()
+
+
+def test_tallanto_import_demotes_shared_email_from_other_sources(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    for customer_id, source_system in (
+        ("customer:master", "master_contacts_snapshot"),
+        ("customer:mail", "mail_archive_stage2"),
+    ):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id=customer_id,
+                identity_status=IdentityStatus.STRONG,
+                display_name=customer_id,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type="email",
+                link_value="shared@example.com",
+                source_system=source_system,
+                source_ref=f"{source_system}:1",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                confidence=0.95,
+            )
+        )
+
+    result = service.import_records(
+        (
+            TimelineSourceRecord(
+                source_system="tallanto_snapshot",
+                source_ref="contacts:student-1",
+                observed_at=NOW,
+                payload={
+                    "tallanto_id": "student-1",
+                    "display_name": "Student 1",
+                    "email_extra": "shared@example.com",
+                },
+            ),
+        ),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="tallanto",
+        idempotency_key="tallanto",
+    )
+
+    links = store.list_identity_links("foton", link_type="email", link_value="shared@example.com")
+    assert {item["match_class"] for item in links} == {"ambiguous"}
+    assert result.write_status_counts["updated"] == 2
+    store.close()
+
+
+def test_amo_normalizer_keeps_exact_messenger_identities() -> None:
+    batch = AmoSnapshotNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="amocrm_snapshot",
+            source_ref="amo.jsonl:1",
+            observed_at=NOW,
+            payload={
+                "entity_id": "101",
+                "entity_type": "contact",
+                "customer_id": "customer:amo",
+                "record": {
+                    "custom_fields_values": [
+                        {"field_name": "Telegram ID", "values": [{"value": "123456"}, {"value": "user-12x34"}]},
+                        {"field_name": "Telegram username", "values": [{"value": "@Parent_Name"}]},
+                        {"field_name": "Max User ID", "values": [{"value": "max-user-1"}]},
+                    ]
+                },
+            },
+        )
+    )
+
+    channel_links = {
+        (link.link_type.value, link.link_value, link.match_class.value)
+        for link in batch.identity_links
+        if link.link_type.value in {"telegram_user_id", "telegram_username", "max_user_id"}
+    }
+    assert channel_links == {
+        ("telegram_user_id", "123456", "strong_unique"),
+        ("telegram_username", "parent_name", "strong_unique"),
+        ("max_user_id", "max-user-1", "strong_unique"),
+    }
+
+
 def test_local_source_loader_honors_limit(tmp_path: Path) -> None:
     source = tmp_path / "rows.jsonl"
     source.write_text("".join(json.dumps({"id": index}) + "\n" for index in range(5)), encoding="utf-8")

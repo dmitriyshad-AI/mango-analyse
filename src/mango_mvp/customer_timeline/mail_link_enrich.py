@@ -6,6 +6,9 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from email import policy
+from email.parser import BytesHeaderParser
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -42,6 +45,7 @@ MAIL_LINK_ENRICH_SOURCE_REF = "mail_link_enrich:stage2_pending"
 PHONE_LINK_TYPES = ("phone", "primary_phone", "mango_client_phone", "whatsapp_phone")
 EMAIL_LINK_TYPES = ("email", "primary_email")
 MAIL_IDENTITY_SOURCE_SYSTEMS = {"mail_archive", A2V3_MAIL_SOURCE_SYSTEM}
+TRUSTED_EMAIL_IDENTITY_SOURCES = {"tallanto_snapshot", "amocrm_snapshot", "master_contacts_snapshot"}
 OWN_DOMAINS = {"kmipt.ru", "cdpofoton.ru", "foton.school", "amocrm.ru", "amocrm.com"}
 OWN_EMAILS = {"edu@kmipt.ru"}
 HOTLINE_PHONE_DIGITS = {"88000000000", "88005553535", "74951234567"}
@@ -115,6 +119,7 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
     )
     archive_cache: dict[Path, sqlite3.Connection] = {}
     participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]] = {}
+    message_id_cache: dict[Path, Mapping[str, tuple[str, ...]]] = {}
     decisions: list[dict[str, Any]] = []
     counters: Counter[str] = Counter(target_events=len(targets))
     try:
@@ -130,8 +135,10 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
                     archive_cache,
                     participant_cache,
                     identity_index,
+                    message_id_cache,
                     fallback_archive_dbs=config.fallback_archive_dbs,
                 )
+                decision = _block_existing_customer_conflict(row, decision)
                 decision = _block_cross_brand_decision(row, decision, customer_brands)
                 decisions.append(_decision_report(row, decision))
                 counters[f"planned.{decision.outcome}"] += 1
@@ -212,19 +219,35 @@ def _load_target_events(
         FROM timeline_events
         WHERE tenant_id = ?
           AND source_system = ?
-          AND match_status = 'unmatched'
-          AND (customer_id IS NULL OR customer_id = '')
-          AND json_extract(record_json, '$.metadata.pending_attribution') = 1
           AND (
-            json_extract(record_json, '$.metadata.pending_reason') IS NULL
+            (
+              (match_status = 'unmatched' OR (? = 1 AND match_status = 'ambiguous'))
+              AND (customer_id IS NULL OR customer_id = '')
+              AND json_extract(record_json, '$.metadata.pending_attribution') = 1
+              AND (
+                json_extract(record_json, '$.metadata.pending_reason') IS NULL
+                OR (
+                  ? = 1
+                  AND json_extract(record_json, '$.metadata.pending_reason') != 'cross_brand_signal'
+                )
+              )
+            )
             OR (
               ? = 1
-              AND json_extract(record_json, '$.metadata.pending_reason') != 'cross_brand_signal'
+              AND match_status = 'strong_unique'
+              AND customer_id IS NOT NULL AND customer_id != ''
+              AND json_extract(record_json, '$.metadata.mail_link_enrich.outcome') = 'strong'
             )
           )
         ORDER BY event_at, event_id
     """
-    params: list[Any] = [tenant_id, A2V3_MAIL_SOURCE_SYSTEM, int(reconsider_pending)]
+    params: list[Any] = [
+        tenant_id,
+        A2V3_MAIL_SOURCE_SYSTEM,
+        int(reconsider_pending),
+        int(reconsider_pending),
+        int(reconsider_pending),
+    ]
     if max_events is not None:
         sql += " LIMIT ?"
         params.append(max_events)
@@ -240,6 +263,7 @@ def _plan_event(
     archive_cache: dict[Path, sqlite3.Connection],
     participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]],
     identity_index: Mapping[tuple[str, str], Sequence[Mapping[str, Any]]],
+    message_id_cache: dict[Path, Mapping[str, tuple[str, ...]]],
     *,
     fallback_archive_dbs: Sequence[Path] = (),
 ) -> LinkDecision:
@@ -341,6 +365,34 @@ def _plan_event(
                 candidate_customer_ids=candidates,
             )
     if email:
+        external_strong_ids = set(email_resolution.get("external_strong_customer_ids", ()))
+        external_strong_sources = set(email_resolution.get("external_strong_source_systems", ()))
+        if email_resolution["status"] == "strong" and external_strong_ids == {
+            email_resolution["customer_id"]
+        } and external_strong_sources & TRUSTED_EMAIL_IDENTITY_SOURCES:
+            return LinkDecision(
+                "strong",
+                "strong_external_email_identity_link",
+                customer_id=email_resolution["customer_id"],
+                method="external_email_identity_link",
+                contact_email=email,
+                contact_phone=phone or None,
+                contact_source=contact.contact_source,
+                candidate_customer_ids=tuple(email_resolution["candidate_customer_ids"]),
+            )
+        if email_resolution["status"] in {"strong", "weak", "ambiguous", "blocked"}:
+            thread_decision = _compatible_thread_decision(
+                _thread_anchor_decision(
+                    row,
+                    raw_message,
+                    timeline_ro,
+                    message_id_cache,
+                ),
+                candidate_customer_ids=candidates,
+                contact=contact,
+            )
+            if thread_decision is not None:
+                return thread_decision
         if email_resolution["status"] != "unmatched":
             return LinkDecision(
                 "weak_email",
@@ -352,6 +404,18 @@ def _plan_event(
                 contact_source=contact.contact_source,
                 candidate_customer_ids=tuple(email_resolution["candidate_customer_ids"]),
             )
+    thread_decision = _compatible_thread_decision(
+        _thread_anchor_decision(
+            row,
+            raw_message,
+            timeline_ro,
+            message_id_cache,
+        ),
+        candidate_customer_ids=candidates,
+        contact=contact,
+    )
+    if thread_decision is not None:
+        return thread_decision
     if phone_resolution["status"] == "weak":
         return LinkDecision(
             "unmatched",
@@ -372,6 +436,187 @@ def _plan_event(
         contact_phone=phone or None,
         contact_source=contact.contact_source,
     )
+
+
+def _thread_anchor_decision(
+    row: sqlite3.Row,
+    raw_message: Mapping[str, Any],
+    timeline_ro: sqlite3.Connection,
+    message_id_cache: dict[Path, Mapping[str, tuple[str, ...]]],
+) -> LinkDecision | None:
+    archive_db_raw = raw_message.get("archive_db")
+    message = raw_message.get("message")
+    if not archive_db_raw or not isinstance(message, Mapping):
+        return None
+    archive_db = Path(str(archive_db_raw)).resolve(strict=False)
+    reference_ids = _message_reference_ids(archive_db, message)
+    if not reference_ids:
+        return None
+    message_ids = message_id_cache.get(archive_db)
+    if message_ids is None:
+        message_ids = _load_message_id_index(archive_db)
+        message_id_cache[archive_db] = message_ids
+    source_ids = sorted(
+        {
+            source_id
+            for reference_id in reference_ids
+            for source_id in message_ids.get(reference_id, ())
+            if source_id != str(row["source_id"])
+        }
+    )
+    if not source_ids:
+        return None
+    placeholders = ",".join("?" for _ in source_ids)
+    anchors = timeline_ro.execute(
+        f"""
+        SELECT e.customer_id
+        FROM timeline_events e
+        JOIN customer_identities c
+          ON c.tenant_id = e.tenant_id AND c.customer_id = e.customer_id
+        WHERE e.tenant_id = ?
+          AND e.source_system = ?
+          AND e.source_id IN ({placeholders})
+          AND e.match_status = 'strong_unique'
+          AND c.identity_status = 'strong'
+          AND COALESCE(json_extract(e.record_json, '$.metadata.mail_link_enrich.method'), '') != 'thread_header_identity_link'
+        """,
+        (str(row["tenant_id"]), A2V3_MAIL_SOURCE_SYSTEM, *source_ids),
+    ).fetchall()
+    customer_ids = sorted({str(anchor["customer_id"]) for anchor in anchors if anchor["customer_id"]})
+    if not customer_ids:
+        return None
+    if len(customer_ids) > 1:
+        return LinkDecision(
+            "blocked",
+            "thread_customer_conflict",
+            candidate_customer_ids=tuple(customer_ids),
+        )
+    return LinkDecision(
+        "strong",
+        "strong_thread_header_identity_link",
+        customer_id=customer_ids[0],
+        method="thread_header_identity_link",
+        contact_source="rfc_message_thread",
+        candidate_customer_ids=tuple(customer_ids),
+    )
+
+
+def _compatible_thread_decision(
+    decision: LinkDecision | None,
+    *,
+    candidate_customer_ids: Sequence[str],
+    contact: ContactResult,
+) -> LinkDecision | None:
+    if decision is None:
+        return None
+    if decision.outcome == "strong" and not candidate_customer_ids:
+        return None
+    if decision.outcome == "strong" and len(set(candidate_customer_ids)) > 1:
+        return LinkDecision(
+            "blocked",
+            "thread_contact_ambiguous",
+            contact_email=contact.contact_email,
+            contact_phone=contact.contact_phone,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=tuple(sorted({*candidate_customer_ids, *decision.candidate_customer_ids})),
+        )
+    if decision.outcome == "strong" and candidate_customer_ids and decision.customer_id not in candidate_customer_ids:
+        return LinkDecision(
+            "blocked",
+            "thread_contact_customer_conflict",
+            contact_email=contact.contact_email,
+            contact_phone=contact.contact_phone,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=tuple(sorted({*candidate_customer_ids, *decision.candidate_customer_ids})),
+        )
+    return replace(
+        decision,
+        contact_email=contact.contact_email,
+        contact_phone=contact.contact_phone,
+        contact_source=decision.contact_source or contact.contact_source,
+    )
+
+
+def _block_existing_customer_conflict(row: sqlite3.Row, decision: LinkDecision) -> LinkDecision:
+    existing_customer_id = str(row["customer_id"] or "")
+    if decision.outcome == "strong" and existing_customer_id and decision.customer_id != existing_customer_id:
+        return LinkDecision(
+            "blocked",
+            "existing_customer_identity_conflict",
+            contact_email=decision.contact_email,
+            contact_phone=decision.contact_phone,
+            contact_source=decision.contact_source,
+            candidate_customer_ids=tuple(
+                sorted({existing_customer_id, *(decision.candidate_customer_ids or ())})
+            ),
+        )
+    return decision
+
+
+def _load_message_id_index(archive_db: Path) -> Mapping[str, tuple[str, ...]]:
+    with sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        columns = {str(row[1]) for row in con.execute("PRAGMA table_info(messages)")}
+        if "message_id" not in columns:
+            return {}
+        by_message_id: dict[str, set[str]] = {}
+        for row in con.execute("SELECT sha256, message_id FROM messages WHERE message_id IS NOT NULL"):
+            normalized = _normalize_message_id(row["message_id"])
+            if normalized:
+                by_message_id.setdefault(normalized, set()).add(str(row["sha256"]))
+        return {key: tuple(sorted(values)) for key, values in by_message_id.items()}
+
+
+def _message_reference_ids(archive_db: Path, message: Mapping[str, Any]) -> tuple[str, ...]:
+    sha = str(message.get("sha256") or "")
+    candidates: list[Path] = []
+    raw_path = str(message.get("raw_eml_path") or "").strip()
+    if raw_path:
+        candidate = Path(raw_path).expanduser()
+        candidates.append(candidate if candidate.is_absolute() else archive_db.parent / candidate)
+    if sha:
+        candidates.append(archive_db.parent / "raw_eml" / sha[:2] / f"{sha}.eml")
+    source = next((path for path in candidates if path.is_file()), None)
+    if source is None:
+        return ()
+    return _message_reference_ids_from_file(source)
+
+
+@lru_cache(maxsize=131072)
+def _message_reference_ids_from_file(source: Path) -> tuple[str, ...]:
+    lines: list[bytes] = []
+    remaining = 65536
+    try:
+        with source.open("rb") as handle:
+            while remaining > 0:
+                line = handle.readline(min(remaining, 8192))
+                if not line:
+                    break
+                lines.append(line)
+                remaining -= len(line)
+                if line in {b"\n", b"\r\n"}:
+                    break
+    except OSError:
+        return ()
+    header_bytes = b"".join(lines)
+    parsed = BytesHeaderParser(policy=policy.default).parsebytes(header_bytes)
+    values = [
+        *parsed.get_all("In-Reply-To", []),
+        *parsed.get_all("References", []),
+    ]
+    return tuple(
+        dict.fromkeys(
+            normalized
+            for value in values
+            for token in (re.findall(r"<([^<>]+)>", str(value)) or str(value).split())
+            if (normalized := _normalize_message_id(token))
+        )
+    )
+
+
+def _normalize_message_id(value: Any) -> str:
+    return str(value or "").strip().strip("<>").casefold()
 
 
 def _load_trusted_customer_brands(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, str]:
@@ -484,13 +729,22 @@ def _load_archive_message(
         participant_cache[db] = grouped
         by_message = grouped
     participants = by_message.get(message_sha, [])
+    message = dict(msg)
     text = ""
-    extracted = Path(str(msg["extracted_text_path"] or ""))
-    if not extracted.is_absolute():
+    extracted_raw = str(message.get("extracted_text_path") or "")
+    extracted = Path(extracted_raw).expanduser() if extracted_raw else Path()
+    if extracted_raw and not extracted.is_absolute():
         extracted = db.parent / extracted
-    if extracted.exists() and extracted.is_file():
+    if not extracted_raw or not extracted.is_file():
+        extracted = db.parent / "extracted_text" / f"{message_sha}.txt"
+    if extracted.is_file():
         text = extracted.read_text(encoding="utf-8", errors="ignore")[:65536]
-    return {"message": dict(msg), "participants": participants, "text": text}
+    return {
+        "archive_db": str(db),
+        "message": message,
+        "participants": participants,
+        "text": text,
+    }
 
 
 def _contact_from_archive_row(direction: str, raw_message: Mapping[str, Any]) -> ContactResult:
@@ -516,8 +770,15 @@ def _contact_from_archive_row(direction: str, raw_message: Mapping[str, Any]) ->
             to_participants.append(tup(item))
         elif header == "cc":
             cc_participants.append(tup(item))
+    effective_direction = str(direction or "")
+    if _is_external_participant(from_participant):
+        effective_direction = "inbound"
+    elif from_participant and any(
+        _is_external_participant(item) for item in (*to_participants, *cc_participants)
+    ):
+        effective_direction = "outbound"
     return _resolve_customer_contact(
-        direction=str(direction or ""),
+        direction=effective_direction,
         from_participant=from_participant,
         to_participants=to_participants,
         cc_participants=cc_participants,
@@ -738,12 +999,19 @@ def _resolve_identity_value(
         if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
         and str(row["source_system"]) not in MAIL_IDENTITY_SOURCE_SYSTEMS
     }
+    external_strong_source_systems = {
+        str(row["source_system"])
+        for row in rows
+        if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
+        and str(row["source_system"]) not in MAIL_IDENTITY_SOURCE_SYSTEMS
+    }
     if not strong_customer_ids:
         return {
             "status": "weak",
             "reason": "non_authoritative_identity_link",
             "candidate_customer_ids": tuple(customer_ids),
             "external_strong_customer_ids": tuple(external_strong_customer_ids),
+            "external_strong_source_systems": tuple(external_strong_source_systems),
         }
     return {
         "status": "strong",
@@ -751,6 +1019,7 @@ def _resolve_identity_value(
         "customer_id": customer_ids[0],
         "candidate_customer_ids": tuple(customer_ids),
         "external_strong_customer_ids": tuple(external_strong_customer_ids),
+        "external_strong_source_systems": tuple(external_strong_source_systems),
     }
 
 
@@ -783,6 +1052,7 @@ def _empty_identity_resolution() -> Mapping[str, Any]:
         "reason": "missing_value",
         "candidate_customer_ids": (),
         "external_strong_customer_ids": (),
+        "external_strong_source_systems": (),
     }
 
 
@@ -815,31 +1085,38 @@ def _apply_decisions(
     counters: Counter[str] = Counter()
     changed_event_ids: list[str] = []
     with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
-        run = store.start_ingestion_run(
-            tenant_id=tenant_id,
-            source_system=A2V3_MAIL_SOURCE_SYSTEM,
-            source_ref=MAIL_LINK_ENRICH_SOURCE_REF,
-            run_kind="mail_link_enrich",
-            idempotency_key=stable_digest(
-                {
-                    "schema_version": MAIL_LINK_ENRICH_SCHEMA_VERSION,
-                    "events": [item["event_id"] for item in decisions],
-                    "decisions": [
-                        {
-                            "event_id": item["event_id"],
-                            "outcome": item["outcome"],
-                            "reason": item["reason"],
-                            "customer_id": item.get("customer_id"),
-                        }
-                        for item in decisions
-                    ],
-                }
-            ),
-            input_hash=stable_digest({"target_event_ids": [str(row["event_id"]) for row in targets]}),
-            metadata={"target_events": len(targets)},
-            actor="mail_link_enrich",
-        )
+        events_with_chunks = {
+            str(row[0])
+            for row in store._con.execute(
+                "SELECT event_id FROM bot_context_chunks WHERE source_system = ? AND event_id IS NOT NULL AND superseded_by IS NULL",
+                (A2V3_MAIL_SOURCE_SYSTEM,),
+            )
+        }
         with store.bulk_write():
+            run = store.start_ingestion_run(
+                tenant_id=tenant_id,
+                source_system=A2V3_MAIL_SOURCE_SYSTEM,
+                source_ref=MAIL_LINK_ENRICH_SOURCE_REF,
+                run_kind="mail_link_enrich",
+                idempotency_key=stable_digest(
+                    {
+                        "schema_version": MAIL_LINK_ENRICH_SCHEMA_VERSION,
+                        "events": [item["event_id"] for item in decisions],
+                        "decisions": [
+                            {
+                                "event_id": item["event_id"],
+                                "outcome": item["outcome"],
+                                "reason": item["reason"],
+                                "customer_id": item.get("customer_id"),
+                            }
+                            for item in decisions
+                        ],
+                    }
+                ),
+                input_hash=stable_digest({"target_event_ids": [str(row["event_id"]) for row in targets]}),
+                metadata={"target_events": len(targets)},
+                actor="mail_link_enrich",
+            )
             for decision in decisions:
                 row = by_event[str(decision["event_id"])]
                 event = _updated_event_from_decision(row, decision)
@@ -850,7 +1127,7 @@ def _apply_decisions(
                     changed_event_ids.append(event.event_id)
                 else:
                     counters["unchanged_events"] += 1
-                if decision["outcome"] == "strong" and not _event_has_chunk(store._con, event.event_id):
+                if decision["outcome"] == "strong" and event.event_id not in events_with_chunks:
                     chunk = _chunk_for_event(row, event, decision)
                     if chunk is not None:
                         chunk_result = store.upsert_bot_context_chunk(
@@ -860,20 +1137,31 @@ def _apply_decisions(
                         )
                         if chunk_result.created:
                             counters["created_chunks"] += 1
+                        events_with_chunks.add(event.event_id)
+                elif decision["outcome"] != "strong" and event.event_id in events_with_chunks:
+                    counters["revoked_chunks"] += store.revoke_bot_context_chunks_for_event(
+                        event.tenant_id,
+                        event_id=event.event_id,
+                        source_system=A2V3_MAIL_SOURCE_SYSTEM,
+                        reason="identity_revalidation",
+                        actor="mail_link_enrich",
+                        ingestion_run_id=run.run_id,
+                    )
+                    events_with_chunks.discard(event.event_id)
                 _upsert_fact_for_decision(store._con, event, decision)
-        store.finish_ingestion_run(
-            run.run_id,
-            status="completed",
-            accepted_count=int(counters["updated_events"] + counters["created_chunks"]),
-            rejected_count=0,
-            output_ref=str(out_dir / "mail_link_enrich_apply_report.json"),
-            metadata=(
-                {"counts": dict(counters)}
-                if aggregate_only
-                else {"counts": dict(counters), "changed_event_ids": changed_event_ids[:100]}
-            ),
-            actor="mail_link_enrich",
-        )
+            store.finish_ingestion_run(
+                run.run_id,
+                status="completed",
+                accepted_count=int(counters["updated_events"] + counters["created_chunks"]),
+                rejected_count=0,
+                output_ref=str(out_dir / "mail_link_enrich_apply_report.json"),
+                metadata=(
+                    {"counts": dict(counters)}
+                    if aggregate_only
+                    else {"counts": dict(counters), "changed_event_ids": changed_event_ids[:100]}
+                ),
+                actor="mail_link_enrich",
+            )
     report: dict[str, Any] = {"counts": dict(counters)}
     if not aggregate_only:
         report["changed_event_ids_sample"] = changed_event_ids[:20]
@@ -970,15 +1258,6 @@ def _normalize_brand(value: Any) -> str:
     if text in {"unpk", "унпк", "мфти"}:
         return "unpk"
     return "unknown"
-
-
-def _event_has_chunk(con: sqlite3.Connection, event_id: str) -> bool:
-    return bool(
-        con.execute(
-            "SELECT 1 FROM bot_context_chunks WHERE event_id = ? AND source_system = ? LIMIT 1",
-            (event_id, A2V3_MAIL_SOURCE_SYSTEM),
-        ).fetchone()
-    )
 
 
 def _chunk_for_event(row: sqlite3.Row, event: TimelineEvent, decision: Mapping[str, Any]) -> Optional[BotContextChunk]:

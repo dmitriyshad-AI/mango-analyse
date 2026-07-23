@@ -4,6 +4,7 @@ import json
 import hashlib
 import math
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -27,6 +28,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_text, stable_digest
 from mango_mvp.customer_timeline.import_cli import safety_ok, timeline_import_cli_safety_contract
 from mango_mvp.customer_timeline.ingestion import (
+    PHONE_IDENTITY_LINK_TYPES,
     TimelineImportReport,
     TimelineImportService,
     TimelineNormalizedBatch,
@@ -83,6 +85,11 @@ SOURCE_SYSTEM_BY_CHANNEL = {"telegram": "wappi_telegram", "max": "wappi_max"}
 EVENT_TYPE_BY_CHANNEL = {
     "telegram": TimelineEventType.TELEGRAM_MESSAGE,
     "max": TimelineEventType.MAX_MESSAGE,
+}
+RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY = {
+    "draft_loop_pair": IdentityMatchClass.MANUAL,
+    "timeline_identity": IdentityMatchClass.STRONG_UNIQUE,
+    "amo_auto_resolver": IdentityMatchClass.STRONG_UNIQUE,
 }
 
 
@@ -309,7 +316,22 @@ class WappiHistoryTimelineNormalizer:
         event_time_status = str(payload.get("event_time_status") or "source_valid")
         resolution_status = str(payload.get("resolution_status") or "pending_attribution")
         resolved_customer_id = optional_text(payload.get("resolved_customer_id"))
-        identity_authority = str(payload.get("identity_authority") or "draft_loop_pair")
+        identity_authority = str(payload.get("identity_authority") or "")
+        resolution_evidence = (
+            dict(payload.get("resolution_evidence") or {})
+            if isinstance(payload.get("resolution_evidence"), Mapping)
+            else {}
+        )
+        if resolved_customer_id and resolution_status != "resolved":
+            raise ValueError("resolved Wappi customer requires resolution_status=resolved")
+        if resolved_customer_id and not identity_authority:
+            raise ValueError("resolved Wappi customer requires identity_authority")
+        if resolved_customer_id and identity_authority not in RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY:
+            raise ValueError(f"unsupported resolved Wappi identity_authority: {identity_authority!r}")
+        resolved_match_class = RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY.get(
+            identity_authority,
+            IdentityMatchClass.UNMATCHED,
+        )
         direction = TimelineDirection.OUTBOUND if truthy(payload.get("from_me")) else TimelineDirection.INBOUND
         participant_role = "manager" if direction == TimelineDirection.OUTBOUND else "client"
         source_id = require_text(payload.get("timeline_source_id") or f"{payload.get('profile_id')}:{chat_id}:{message_id}", "source_id")
@@ -329,7 +351,7 @@ class WappiHistoryTimelineNormalizer:
             subject=f"Wappi {channel} message",
             text_preview=compact_text(text, limit=240),
             summary=compact_text(text, limit=240),
-            match_status=IdentityMatchClass.MANUAL if resolved_customer_id else IdentityMatchClass.UNMATCHED,
+            match_status=resolved_match_class if resolved_customer_id else IdentityMatchClass.UNMATCHED,
             confidence=0.9 if resolved_customer_id else 0.0,
             record={
                 "message": scrub_timeline_persisted_json(
@@ -362,6 +384,8 @@ class WappiHistoryTimelineNormalizer:
                 "requires_manager_review": True,
                 "pending_attribution": not bool(resolved_customer_id),
                 "resolution_reason": str(payload.get("resolution_reason") or ""),
+                "resolution_evidence": scrub_timeline_persisted_json(resolution_evidence),
+                "brand_context_authorized": payload.get("brand_context_authorized"),
                 "event_time_status": event_time_status,
             },
             created_at=event_at,
@@ -401,13 +425,15 @@ class WappiHistoryTimelineNormalizer:
             link_value=link_value,
             source_system=self.source_system,
             source_ref=f"{self.source_system}:chat:{payload.get('profile_id')}:{chat_id}",
-            match_class=IdentityMatchClass.MANUAL,
+            match_class=resolved_match_class,
             confidence=0.9,
             evidence={
                 "identity_authority": identity_authority,
                 "lead_id": str(payload.get("lead_id") or ""),
                 "contact_id": str(payload.get("contact_id") or ""),
                 "match_key": str(payload.get("match_key") or ""),
+                "brand_context_authorized": payload.get("brand_context_authorized"),
+                "resolution_evidence": scrub_timeline_persisted_json(resolution_evidence),
             },
             first_seen_at=event_at if event_time_status == "source_valid" else None,
             last_seen_at=event_at if event_time_status == "source_valid" else None,
@@ -434,6 +460,7 @@ class WappiHistoryTimelineNormalizer:
                         "brand": brand,
                         "channel": f"wappi_{channel}",
                         "allowed_for_bot_reason": "wappi_history_manager_only",
+                        "brand_context_authorized": payload.get("brand_context_authorized"),
                         "event_time_status": event_time_status,
                     },
                     created_at=event_at,
@@ -894,14 +921,18 @@ class WappiPairCustomerResolver:
                 SELECT link_type, link_value, customer_id, match_class
                 FROM identity_links
                 WHERE tenant_id = ?
-                  AND link_type IN ('telegram_user_id', 'phone', 'mango_client_phone')
+                  AND link_type IN (
+                    'telegram_user_id', 'telegram_username', 'max_user_id',
+                    'phone', 'mango_client_phone', 'whatsapp_phone'
+                  )
                 """,
                 (tenant,),
             ).fetchall()
             identity_owners: dict[tuple[str, str], set[str]] = {}
             identity_classes: dict[tuple[str, str], set[str]] = {}
             for row in identity_rows:
-                link_type = "phone" if str(row["link_type"]) == "mango_client_phone" else str(row["link_type"])
+                raw_link_type = str(row["link_type"])
+                link_type = "phone" if raw_link_type in PHONE_IDENTITY_LINK_TYPES else raw_link_type
                 key = (link_type, str(row["link_value"]))
                 customer_id = str(row["customer_id"] or "")
                 if customer_id:
@@ -916,7 +947,8 @@ class WappiPairCustomerResolver:
                 or (key[0] == "phone" and bool(identity_owners.get(key, set()) & family_customer_ids))
             )
             for row in identity_rows:
-                link_type = "phone" if str(row["link_type"]) == "mango_client_phone" else str(row["link_type"])
+                raw_link_type = str(row["link_type"])
+                link_type = "phone" if raw_link_type in PHONE_IDENTITY_LINK_TYPES else raw_link_type
                 key = (link_type, str(row["link_value"]))
                 customer_id = str(row["customer_id"])
                 if (
@@ -1211,60 +1243,68 @@ class WappiPairCustomerResolver:
         chat_id: str,
         dialog: Mapping[str, Any],
     ) -> WappiChatResolution | None:
-        if profile.channel == "telegram" and chat_id.isdigit():
-            if str(dialog.get("type") or "").casefold() not in {"user", "private", "personal"}:
+        strong_keys, weak_keys, key_error = wappi_dialog_identity_keys(profile, chat_id, dialog)
+        if key_error:
+            return WappiChatResolution(
+                status="pending_attribution",
+                expected_brand=profile.brand,
+                reason=key_error,
+                resolution_source="timeline_identity",
+            )
+        matched: list[tuple[str, str, tuple[str, ...]]] = []
+        for identity_kind, identity_value in strong_keys:
+            if (identity_kind, identity_value) in self._ambiguous_identity_values:
                 return WappiChatResolution(
                     status="pending_attribution",
                     expected_brand=profile.brand,
-                    reason="timeline_identity_non_personal_chat",
+                    reason="timeline_identity_ambiguous_value",
                     resolution_source="timeline_identity",
-                    match_key="telegram_user_id",
+                    match_key=identity_kind,
                 )
-            identity_kind, identity_value = "telegram_user_id", chat_id
-        elif profile.channel == "max":
-            phone, _source = consistent_max_dialog_phone(dialog)
-            if not phone:
-                return None
-            identity_kind, identity_value = "phone", phone
-        else:
+            if identity_kind == "phone" and self._shared_phone_stoplist_error:
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason=self._shared_phone_stoplist_error,
+                    resolution_source="timeline_identity",
+                    match_key=identity_kind,
+                )
+            if identity_kind == "phone" and identity_value in self._shared_phone_stoplist:
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason="shared_phone",
+                    resolution_source="timeline_identity",
+                    match_key=identity_kind,
+                )
+            owners = self._local_identity_customers.get((identity_kind, identity_value), ())
+            if owners:
+                matched.append((identity_kind, identity_value, owners))
+        if not matched:
             return None
-        if (identity_kind, identity_value) in self._ambiguous_identity_values:
-            return WappiChatResolution(
-                status="pending_attribution",
-                expected_brand=profile.brand,
-                reason="timeline_identity_ambiguous_value",
-                resolution_source="timeline_identity",
-                match_key=identity_kind,
-            )
-        customer_ids = self._local_identity_customers.get((identity_kind, identity_value), ())
-        if not customer_ids:
-            return None
-        if identity_kind == "phone" and self._shared_phone_stoplist_error:
-            return WappiChatResolution(
-                status="pending_attribution",
-                expected_brand=profile.brand,
-                reason=self._shared_phone_stoplist_error,
-                resolution_source="timeline_identity",
-                match_key=identity_kind,
-            )
-        if identity_kind == "phone" and identity_value in self._shared_phone_stoplist:
-            return WappiChatResolution(
-                status="pending_attribution",
-                expected_brand=profile.brand,
-                reason="shared_phone",
-                resolution_source="timeline_identity",
-                match_key=identity_kind,
-            )
+        customer_ids = tuple(sorted({customer_id for _, _, owners in matched for customer_id in owners}))
         if len(customer_ids) != 1:
             return WappiChatResolution(
                 status="pending_attribution",
                 expected_brand=profile.brand,
-                reason="timeline_identity_multiple_customers",
+                reason="timeline_identity_signal_conflict",
                 candidate_customer_ids=customer_ids,
                 resolution_source="timeline_identity",
-                match_key=identity_kind,
+                match_key="+".join(sorted({kind for kind, _, _ in matched})),
             )
         customer_id = customer_ids[0]
+        for identity_kind, identity_value in weak_keys:
+            weak_owners = self._local_identity_customers.get((identity_kind, identity_value), ())
+            if weak_owners and weak_owners != (customer_id,):
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason="timeline_identity_weak_signal_conflict",
+                    candidate_customer_ids=tuple(sorted({customer_id, *weak_owners})),
+                    resolution_source="timeline_identity",
+                    match_key=identity_kind,
+                )
+        match_key = "+".join(sorted({kind for kind, _, _ in matched}))
         if customer_id not in self._supported_customer_ids:
             return WappiChatResolution(
                 status="pending_attribution",
@@ -1272,29 +1312,26 @@ class WappiPairCustomerResolver:
                 reason="timeline_identity_support_missing",
                 candidate_customer_ids=(customer_id,),
                 resolution_source="timeline_identity",
-                match_key=identity_kind,
+                match_key=match_key,
             )
         customer_brand = self._customer_brands.get(customer_id, "unknown")
-        if customer_brand != profile.brand:
-            return WappiChatResolution(
-                status="pending_attribution",
-                expected_brand=profile.brand,
-                reason=(
-                    "timeline_identity_brand_unknown"
-                    if customer_brand == "unknown"
-                    else "timeline_identity_brand_mismatch"
-                ),
-                candidate_customer_ids=(customer_id,),
-                resolution_source="timeline_identity",
-                match_key=identity_kind,
-            )
+        reason = "timeline_identity_unique_brand_match"
+        if customer_brand == "unknown":
+            reason = "timeline_identity_unique_brand_unverified"
+        elif customer_brand != profile.brand:
+            reason = "timeline_identity_unique_cross_brand_person_match"
         return WappiChatResolution(
             status="resolved",
             customer_id=customer_id,
             expected_brand=profile.brand,
-            reason="timeline_identity_unique_brand_match",
+            reason=reason,
             resolution_source="timeline_identity",
-            match_key=identity_kind,
+            match_key=match_key,
+            evidence={
+                "customer_brand": customer_brand,
+                "profile_brand": profile.brand,
+                "brand_context_authorized": customer_brand == profile.brand,
+            },
         )
 
     def _resolve_with_amo_auto(
@@ -1757,6 +1794,8 @@ def wappi_message_to_record(
         "identity_authority": resolution.resolution_source,
         "match_key": resolution.match_key,
         "candidate_customer_ids": tuple(resolution.candidate_customer_ids),
+        "resolution_evidence": dict(resolution.evidence),
+        "brand_context_authorized": resolution.evidence.get("brand_context_authorized"),
     }
     return TimelineSourceRecord(
         source_system=source_system,
@@ -1806,6 +1845,60 @@ def consistent_max_dialog_phone(dialog: Mapping[str, Any]) -> tuple[str, str]:
     if len(phones) == 1:
         return next(iter(phones)), "max_consistent_phone"
     return ("", "max_multi_phone" if phones else "max_phone_missing")
+
+
+def wappi_dialog_identity_keys(
+    profile: WappiProfileSpec,
+    chat_id: str,
+    dialog: Mapping[str, Any],
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...], str]:
+    strong: list[tuple[str, str]] = []
+    weak: list[tuple[str, str]] = []
+    if profile.channel == "telegram":
+        if str(dialog.get("type") or "").casefold() not in {"user", "private", "personal"}:
+            return (), (), "timeline_identity_non_personal_chat"
+        user = dialog.get("user") if isinstance(dialog.get("user"), Mapping) else {}
+        telegram_ids = {
+            cleaned
+            for value in (chat_id, user.get("ID"), user.get("id"))
+            if (cleaned := _canonical_telegram_id(value))
+        }
+        if len(telegram_ids) > 1:
+            return (), (), "timeline_identity_telegram_id_conflict"
+        strong.extend(("telegram_user_id", value) for value in telegram_ids)
+        phone = normalize_phone(user.get("Phone") or user.get("phone") or "")
+        if phone:
+            strong.append(("phone", phone))
+        username = str(user.get("Username") or user.get("username") or "").strip().lstrip("@").casefold()
+        if username:
+            weak.append(("telegram_username", username))
+    elif profile.channel == "max":
+        phone, phone_status = consistent_max_dialog_phone(dialog)
+        if phone_status == "max_multi_phone":
+            return (), (), "timeline_identity_max_phone_conflict"
+        if phone:
+            strong.append(("phone", phone))
+        participants = tuple(item for item in (dialog.get("participants") or ()) if isinstance(item, Mapping))
+        client_participants = tuple(
+            item
+            for item in participants
+            if phone and normalize_phone(item.get("phone") or item.get("number") or "") == phone
+        )
+        max_ids = {
+            str(item.get("user_id") or "").strip()
+            for item in client_participants
+            if str(item.get("user_id") or "").strip()
+        }
+        if len(max_ids) == 1:
+            strong.append(("max_user_id", next(iter(max_ids))))
+        # MAX username has its own identity namespace, which the Timeline contract
+        # does not model yet. Phone and max_user_id remain the trusted keys.
+    return tuple(dict.fromkeys(strong)), tuple(dict.fromkeys(weak)), ""
+
+
+def _canonical_telegram_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"[0-9]+", text) else ""
 
 
 def build_wappi_readonly_transport(

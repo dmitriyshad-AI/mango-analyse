@@ -96,46 +96,57 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         "amo_events_created_at": source_dir / "amo_events_created_at.jsonl",
     }
 
-    fetch_report: dict[str, Any] = {}
-    lead_rows, lead_stats = fetch_cards_source(
+    lead_items, lead_pages, lead_page_cap_hit = fetch_collection(
         client,
         path="leads",
         embedded_key="leads",
-        entity_type="lead",
-        cursor_name="amo_leads_updated_at",
-        from_ts=lower_bound["amo_leads_updated_at"],
-        link_index=link_index_before,
+        params={
+            "filter[updated_at][from]": int(lower_bound["amo_leads_updated_at"].timestamp()),
+            "order[updated_at]": "asc",
+            "with": "contacts",
+        },
         config=config,
     )
-    contact_rows, contact_stats = fetch_cards_source(
+    contact_items, contact_pages, contact_page_cap_hit = fetch_collection(
         client,
         path="contacts",
         embedded_key="contacts",
-        entity_type="contact",
-        cursor_name="amo_contacts_updated_at",
-        from_ts=lower_bound["amo_contacts_updated_at"],
-        link_index=link_index_before,
+        params={
+            "filter[updated_at][from]": int(lower_bound["amo_contacts_updated_at"].timestamp()),
+            "order[updated_at]": "asc",
+            "with": "leads",
+        },
         config=config,
     )
-    lead_fetched_ids = set(lead_stats.pop("_fetched_entity_ids", ()))
-    contact_fetched_ids = set(contact_stats.pop("_fetched_entity_ids", ()))
-    fetch_report["amo_leads_updated_at"] = lead_stats
-    fetch_report["amo_contacts_updated_at"] = contact_stats
-    event_prefetch: tuple[list[Mapping[str, Any]], int, bool] | None = None
-    if not any(stats.get("page_cap_hit") for stats in (lead_stats, contact_stats)):
-        event_prefetch = fetch_events_collection(
-            client,
-            from_ts=lower_bound["amo_events_created_at"],
-            config=config,
-        )
-        event_items, event_pages, event_page_cap_hit = event_prefetch
-        fetch_report["amo_events_created_at"] = {
+    event_prefetch = fetch_events_collection(
+        client,
+        from_ts=lower_bound["amo_events_created_at"],
+        config=config,
+    )
+    event_items, event_pages, event_page_cap_hit = event_prefetch
+    fetch_report: dict[str, Any] = {
+        "amo_leads_updated_at": {
+            "endpoint": "/api/v4/leads",
+            "pages": lead_pages,
+            "max_pages": max(1, int(config.max_pages)),
+            "page_cap_hit": lead_page_cap_hit,
+            "fetched": len(lead_items),
+        },
+        "amo_contacts_updated_at": {
+            "endpoint": "/api/v4/contacts",
+            "pages": contact_pages,
+            "max_pages": max(1, int(config.max_pages)),
+            "page_cap_hit": contact_page_cap_hit,
+            "fetched": len(contact_items),
+        },
+        "amo_events_created_at": {
             "endpoint": "/api/v4/events",
             "pages": event_pages,
             "max_pages": max(1, int(config.max_pages)),
             "page_cap_hit": event_page_cap_hit,
             "fetched": len(event_items),
-        }
+        },
+    }
     if any(stats.get("page_cap_hit") for stats in fetch_report.values()):
         finished = datetime.now(timezone.utc)
         report = {
@@ -163,8 +174,47 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         }
         write_json(out_root / "amo_incremental_report.json", report)
         return report
-    write_jsonl(paths["amo_leads_updated_at"], lead_rows)
+    contact_rows, contact_stats = normalize_cards_source(
+        contact_items,
+        pages=contact_pages,
+        page_cap_hit=contact_page_cap_hit,
+        path="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        link_index=link_index_before,
+        config=config,
+    )
+    contact_fetched_ids = set(contact_stats.pop("_fetched_entity_ids", ()))
+    fetch_report["amo_contacts_updated_at"] = contact_stats
     write_jsonl(paths["amo_contacts_updated_at"], contact_rows)
+    contacts_config = nightly_config_for_sources(
+        timeline_db=timeline_db,
+        out_root=out_root,
+        allowed_root=allowed_root,
+        tenant_id=config.tenant_id,
+        overlap_seconds=config.safety_overlap_seconds,
+        paths=paths,
+        source_names=("amo_contacts_updated_at",),
+    )
+    contacts_first = run_nightly_incremental(contacts_config)
+    link_index_after_contacts = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
+
+    lead_rows, lead_stats = normalize_cards_source(
+        lead_items,
+        pages=lead_pages,
+        page_cap_hit=lead_page_cap_hit,
+        path="leads",
+        entity_type="lead",
+        cursor_name="amo_leads_updated_at",
+        link_index=link_index_after_contacts,
+        config=config,
+    )
+    lead_fetched_ids = set(lead_stats.pop("_fetched_entity_ids", ()))
+    fetch_report["amo_leads_updated_at"] = lead_stats
+    write_jsonl(paths["amo_leads_updated_at"], lead_rows)
+    skipped_leads = lead_stats.get("skipped") if isinstance(lead_stats.get("skipped"), Mapping) else {}
+    preserve_lead_cursor = any(int(count or 0) > 0 for count in skipped_leads.values())
+    preserve_cursor_sources = ("amo_leads_updated_at",) if preserve_lead_cursor else ()
     cards_config = nightly_config_for_sources(
         timeline_db=timeline_db,
         out_root=out_root,
@@ -173,6 +223,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
         source_names=("amo_leads_updated_at", "amo_contacts_updated_at"),
+        preserve_cursor_sources=preserve_cursor_sources,
     )
     cards_first = run_nightly_incremental(cards_config)
     link_index_after_cards = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
@@ -209,6 +260,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
         source_names=("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at"),
+        preserve_cursor_sources=preserve_cursor_sources,
     )
     second = run_nightly_incremental(all_config)
     cursor_after = load_cursor_snapshot(timeline_db, config.tenant_id)
@@ -237,6 +289,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         },
         "source_files": {key: str(path) for key, path in paths.items()},
         "first_run": {
+            "contacts_bootstrap": compact_nightly_report(contacts_first),
             "cards": compact_nightly_report(cards_first),
             "events": compact_nightly_report(events_first),
             "affected_customer_count": int(cards_first.get("affected_customer_count") or 0)
@@ -270,6 +323,7 @@ def nightly_config_for_sources(
     overlap_seconds: int,
     paths: Mapping[str, Path],
     source_names: Sequence[str],
+    preserve_cursor_sources: Sequence[str] = (),
 ) -> NightlyIncrementalConfig:
     source_templates = {
         "amo_leads_updated_at": {
@@ -296,6 +350,7 @@ def nightly_config_for_sources(
                 tenant_id=tenant_id,
                 source_ref=template["source_ref"],
                 normalizer=template["normalizer"],
+                preserve_cursor=name in preserve_cursor_sources,
             )
         )
     return NightlyIncrementalConfig(
@@ -330,11 +385,16 @@ def load_amo_link_index(db_path: Path, *, tenant_id: str) -> Mapping[tuple[str, 
             SELECT link_type, link_value, customer_id
             FROM identity_links
             WHERE tenant_id = ?
-              AND link_type IN ('amo_lead_id', 'amo_contact_id', 'phone', 'email')
+              AND link_type IN (
+                'amo_lead_id', 'amo_contact_id', 'phone', 'mango_client_phone',
+                'whatsapp_phone', 'email'
+              )
             """,
             (tenant_id,),
         ):
-            result.setdefault((str(row["link_type"]), str(row["link_value"])), set()).add(str(row["customer_id"]))
+            link_type = str(row["link_type"])
+            canonical_type = "phone" if link_type in {"phone", "mango_client_phone", "whatsapp_phone"} else link_type
+            result.setdefault((canonical_type, str(row["link_value"])), set()).add(str(row["customer_id"]))
     return {key: tuple(sorted(values)) for key, values in result.items()}
 
 
@@ -415,6 +475,29 @@ def fetch_cards_source(
         },
         config=config,
     )
+    return normalize_cards_source(
+        items,
+        pages=pages,
+        page_cap_hit=page_cap_hit,
+        path=path,
+        entity_type=entity_type,
+        cursor_name=cursor_name,
+        link_index=link_index,
+        config=config,
+    )
+
+
+def normalize_cards_source(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    pages: int,
+    page_cap_hit: bool,
+    path: str,
+    entity_type: str,
+    cursor_name: str,
+    link_index: Mapping[tuple[str, str], tuple[str, ...]],
+    config: AmoIncrementalConfig,
+) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
     rows: list[Mapping[str, Any]] = []
     skipped = Counter()
     resolution_counts = Counter()

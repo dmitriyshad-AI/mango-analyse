@@ -13,8 +13,10 @@ from mango_mvp.customer_timeline.amo_incremental import (
     fetch_cards_source,
     fetch_collection,
     fetch_events_source,
+    load_amo_link_index,
     run_amo_incremental,
 )
+from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpError
 from mango_mvp.customer_timeline.ingestion import TimelineSourceRecord
@@ -69,7 +71,7 @@ def test_run_amo_incremental_rejects_prod_target_before_network_or_output(tmp_pa
     assert not out_root.exists()
 
 
-@pytest.mark.parametrize("cap_source", ["leads", "events"])
+@pytest.mark.parametrize("cap_source", ["leads", "contacts", "events"])
 def test_run_amo_incremental_page_cap_writes_nothing_and_keeps_cursors(
     tmp_path, monkeypatch, cap_source
 ) -> None:
@@ -88,16 +90,10 @@ def test_run_amo_incremental_page_cap_writes_nothing_and_keeps_cursors(
     monkeypatch.setattr(amo_incremental_module, "read_mcp_env", lambda _path: object())
     monkeypatch.setattr(amo_incremental_module, "AmoMcpClient", lambda _config: object())
 
-    def fake_cards(_client, **kwargs):
-        is_capped = cap_source == kwargs["path"]
-        return [], {
-            "endpoint": f"/api/v4/{kwargs['path']}",
-            "page_cap_hit": is_capped,
-            "fetched": 0,
-            "_fetched_entity_ids": (),
-        }
+    def fake_collection(_client, **kwargs):
+        return [], 1, cap_source == kwargs["path"]
 
-    monkeypatch.setattr(amo_incremental_module, "fetch_cards_source", fake_cards)
+    monkeypatch.setattr(amo_incremental_module, "fetch_collection", fake_collection)
     monkeypatch.setattr(
         amo_incremental_module,
         "fetch_events_collection",
@@ -129,6 +125,134 @@ def test_run_amo_incremental_page_cap_writes_nothing_and_keeps_cursors(
         assert con.execute(
             "SELECT last_cursor_ts FROM ingestion_cursors WHERE source_system='amo_leads_updated_at'"
         ).fetchone()[0] == "2026-07-01T00:00:00+00:00"
+
+
+def test_run_amo_incremental_imports_new_contact_before_linked_lead(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "staging.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    original_lead_cursor = "2026-06-23T20:00:00+00:00"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO ingestion_cursors (tenant_id, source_system, last_cursor_ts, updated_at, metadata_json)
+            VALUES ('foton', 'amo_leads_updated_at', ?, ?, '{}')
+            """,
+            (original_lead_cursor, original_lead_cursor),
+        )
+        con.commit()
+    payloads = {
+        "contacts": {
+            "_embedded": {
+                "contacts": [
+                    {
+                        "id": 30,
+                        "name": "New parent",
+                        "created_at": 1782250000,
+                        "updated_at": 1782250001,
+                        "custom_fields_values": [
+                            {"field_code": "PHONE", "values": [{"value": "8 (916) 123-45-67"}]},
+                        ],
+                    }
+                ]
+            }
+        },
+        "leads": {
+            "_embedded": {
+                "leads": [
+                    {
+                        "id": 42,
+                        "name": "New linked lead",
+                        "created_at": 1782250000,
+                        "updated_at": 1782250002,
+                        "_embedded": {"contacts": [{"id": 30}]},
+                    },
+                    {
+                        "id": 43,
+                        "name": "Still unresolved lead",
+                        "created_at": 1782250000,
+                        "updated_at": 1782250003,
+                        "_embedded": {"contacts": []},
+                    },
+                ]
+            }
+        },
+        "events": {"_embedded": {"events": []}},
+    }
+
+    class MultiPathAmoClient:
+        def amo_api_get(self, *, path, params=None, limit=50):
+            return payloads[path]
+
+    monkeypatch.setattr(amo_incremental_module, "read_mcp_env", lambda _path: object())
+    monkeypatch.setattr(amo_incremental_module, "AmoMcpClient", lambda _config: MultiPathAmoClient())
+
+    report = run_amo_incremental(
+        AmoIncrementalConfig(
+            source_db=db_path,
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_root=tmp_path / "out",
+            mcp_env=tmp_path / "amo.env",
+            copy_db=False,
+            max_pages=1,
+            sleep_sec=0.0,
+            since=NOW,
+        )
+    )
+
+    assert report["fetch"]["amo_leads_updated_at"]["normalized"] == 1
+    assert report["fetch"]["amo_leads_updated_at"]["skipped"]["unmatched"] == 1
+    assert report["cursor_after"]["amo_leads_updated_at"] == original_lead_cursor
+    with sqlite3.connect(db_path) as con:
+        contact_owner = con.execute(
+            "SELECT customer_id FROM identity_links WHERE link_type='amo_contact_id' AND link_value='30'"
+        ).fetchone()[0]
+        assert con.execute(
+            "SELECT customer_id FROM identity_links WHERE link_type='amo_lead_id' AND link_value='42'"
+        ).fetchone()[0] == contact_owner
+        assert con.execute(
+            "SELECT customer_id FROM customer_opportunities WHERE source_system='amocrm_snapshot' AND source_id='42'"
+        ).fetchone()[0] == contact_owner
+
+
+def test_load_amo_link_index_groups_all_phone_aliases(tmp_path) -> None:
+    db_path = tmp_path / "staging.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    try:
+        for customer_id, link_type in (
+            ("customer:first", "phone"),
+            ("customer:second", "mango_client_phone"),
+            ("customer:third", "whatsapp_phone"),
+        ):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.STRONG,
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type=link_type,
+                    link_value="+79161234567",
+                    source_system="test",
+                    source_ref=f"test:{customer_id}",
+                )
+            )
+    finally:
+        store.close()
+
+    index = load_amo_link_index(db_path, tenant_id="foton")
+
+    assert index[("phone", "+79161234567")] == (
+        "customer:first",
+        "customer:second",
+        "customer:third",
+    )
+    assert ("mango_client_phone", "+79161234567") not in index
+    assert ("whatsapp_phone", "+79161234567") not in index
 
 
 class FakeAmoClient:

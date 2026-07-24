@@ -515,6 +515,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     amo = steps["amo_incremental_shadow"]
     assert amo["kind"] == "amo_incremental"
     assert amo["required"] is True
+    assert amo["config"]["page_limit"] == 50
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
     attendance_api = steps["tallanto_attendance_api_incremental"]
     assert attendance_api["kind"] == "tallanto_attendance_api"

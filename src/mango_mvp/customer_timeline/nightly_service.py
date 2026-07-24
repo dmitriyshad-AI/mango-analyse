@@ -750,7 +750,7 @@ def service_step_from_json(
             allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
             tenant_id=str(raw_config.get("tenant_id") or tenant_id),
             safety_overlap_seconds=int(raw_config.get("safety_overlap_seconds", 300)),
-            page_limit=int(raw_config.get("page_limit", 250)),
+            page_limit=int(raw_config.get("page_limit", 50)),
             max_pages=int(raw_config.get("max_pages", 20)),
             sleep_sec=float(raw_config.get("sleep_sec", 1.05)),
             copy_db=False,

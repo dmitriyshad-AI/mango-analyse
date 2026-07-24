@@ -533,7 +533,7 @@ def build_service_config(
                 "out_root": str(out_root / "amo_incremental_shadow"),
                 "mcp_env": str(DEFAULT_AMO_MCP_ENV),
                 "safety_overlap_seconds": 300,
-                "page_limit": 250,
+                "page_limit": 50,
                 "max_pages": 20,
                 "sleep_sec": 1.05,
             },

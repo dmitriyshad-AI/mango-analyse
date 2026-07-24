@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline import CustomerIdentity, IdentityLink, IdentityMatchClass, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
@@ -250,7 +252,7 @@ def test_producer_uses_existing_identity_links_and_mango_processed_summary(tmp_p
     assert "+79161112233" not in json.dumps(report, ensure_ascii=False)
 
 
-def test_producer_reads_only_done_rows_with_valid_analysis_json(tmp_path: Path) -> None:
+def test_producer_fails_loudly_on_done_row_with_invalid_analysis_json(tmp_path: Path) -> None:
     timeline_db = tmp_path / "customer_timeline.sqlite"
     seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
     package_db = tmp_path / "calls.sqlite"
@@ -305,11 +307,8 @@ def test_producer_reads_only_done_rows_with_valid_analysis_json(tmp_path: Path) 
         ],
     )
 
-    events, report = run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)
-
-    assert [event["original_call_id"] for event in events] == ["done-valid"]
-    assert report["rows_read"] == 1
-    assert report["events_written"] == 1
+    with pytest.raises(ValueError, match="invalid done analysis_json"):
+        run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)
 
 
 def test_canonical_source_id_uses_canonical_call_id_for_existing_timeline_compatibility(tmp_path: Path) -> None:

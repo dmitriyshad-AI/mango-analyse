@@ -16,6 +16,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineDirection,
     TimelineEvent,
 )
+from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
 from mango_mvp.customer_timeline.mail_link_enrich import (
     MailLinkEnrichConfig,
     _contact_from_archive_row,
@@ -203,6 +204,40 @@ def _write_archive(tmp_path: Path, *, sha: str, email: str, text: str) -> tuple[
     return source_file, archive_db
 
 
+def _write_tallanto_identity_db(
+    path: Path,
+    *,
+    email: str,
+    tallanto_id: str,
+    candidate_key: str,
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        con.executescript(
+            """
+            CREATE TABLE identity_values (
+              kind TEXT,
+              value TEXT,
+              match_class TEXT,
+              candidate_count INTEGER
+            );
+            CREATE TABLE identity_candidates (
+              candidate_key TEXT,
+              tallanto_id TEXT
+            );
+            CREATE TABLE identity_links (
+              kind TEXT,
+              value TEXT,
+              candidate_key TEXT
+            );
+            """
+        )
+        con.execute("INSERT INTO identity_values VALUES ('email', ?, 'strong_unique', 1)", (email,))
+        con.execute("INSERT INTO identity_candidates VALUES (?, ?)", (candidate_key, tallanto_id))
+        con.execute("INSERT INTO identity_links VALUES ('email', ?, ?)", (email, candidate_key))
+    return path
+
+
 def _write_thread_archive(
     tmp_path: Path,
     *,
@@ -307,11 +342,11 @@ def _seed_trusted_customer_brand(db_path: Path, *, customer_id: str, brand: str)
         )
 
 
-@pytest.mark.parametrize(("customer_brand", "expected_outcome"), (("foton", "strong"), ("unpk", "blocked")))
-def test_mail_link_enrich_blocks_trusted_cross_brand_phone_match(
+@pytest.mark.parametrize(("customer_brand", "expected_authorized"), (("foton", True), ("unpk", False)))
+def test_mail_link_enrich_keeps_identity_but_separates_cross_brand_context(
     tmp_path: Path,
     customer_brand: str,
-    expected_outcome: str,
+    expected_authorized: bool,
 ) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     _seed_customer_with_links(db_path, tmp_path)
@@ -329,18 +364,16 @@ def test_mail_link_enrich_blocks_trusted_cross_brand_phone_match(
         MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out", apply=True)
     )
 
-    assert report["counts"][f"planned.{expected_outcome}"] == 1
+    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["transition.unmatched.strong"] == 1
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
         event = con.execute(
             "SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?",
             (sha,),
         ).fetchone()
-    if expected_outcome == "strong":
-        assert event[0] == "customer:phone"
-    else:
-        assert event[0] is None
-        assert event[1] == "ambiguous"
-        assert json.loads(event[2])["metadata"]["pending_reason"] == "cross_brand_signal"
+    assert event[0] == "customer:phone"
+    assert event[1] == "strong_unique"
+    assert json.loads(event[2])["metadata"]["brand_context_authorized"] is expected_authorized
 
 
 def test_mail_link_enrich_blocks_phone_email_customer_contradiction(tmp_path: Path) -> None:
@@ -380,7 +413,7 @@ def test_mail_link_enrich_blocks_phone_email_customer_contradiction(tmp_path: Pa
 
 @pytest.mark.parametrize(
     ("email_source_system", "expected_outcome"),
-    (("test", "strong"), ("mail_archive_stage2", "blocked")),
+    (("tallanto_snapshot", "strong"), ("mail_archive_stage2", "blocked")),
 )
 def test_mail_link_enrich_resolves_shared_family_phone_only_with_external_strong_email(
     tmp_path: Path,
@@ -548,7 +581,8 @@ def test_mail_link_enrich_reads_stage2_archive_db_without_legacy_payload(tmp_pat
 
 
 def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_path: Path) -> None:
-    db_path = tmp_path / "customer_timeline.sqlite"
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
     _seed_customer_with_links(db_path, tmp_path)
     sha = "f" * 64
     source_file, _ = _write_archive(
@@ -558,6 +592,7 @@ def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_pat
         text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
     )
     _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
     with sqlite3.connect(db_path) as con:
         row = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
         payload = json.loads(row[0])
@@ -584,8 +619,10 @@ def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_pat
     assert reconsidered["counts"]["planned.strong"] == 1
 
 
-def test_mail_link_enrich_never_reconsiders_cross_brand_pending(tmp_path: Path) -> None:
+def test_mail_link_enrich_reconsiders_cross_brand_identity_but_keeps_context_blocked(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    _seed_trusted_customer_brand(db_path, customer_id="customer:email", brand="unpk")
     sha = "9" * 64
     source_file, _ = _write_archive(
         tmp_path,
@@ -593,7 +630,7 @@ def test_mail_link_enrich_never_reconsiders_cross_brand_pending(tmp_path: Path) 
         email="parent@example.com",
         text="Здравствуйте.",
     )
-    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Другой бренд")
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
     with sqlite3.connect(db_path) as con:
         row = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
         payload = json.loads(row[0])
@@ -609,10 +646,20 @@ def test_mail_link_enrich_never_reconsiders_cross_brand_pending(tmp_path: Path) 
             allowed_root=tmp_path,
             out_dir=tmp_path / "out",
             reconsider_pending=True,
+            apply=True,
         )
     )
 
-    assert report["target_events"] == 0
+    assert report["target_events"] == 1
+    assert report["counts"]["planned.strong"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute(
+            "SELECT customer_id, match_status, record_json FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()
+    assert event[0] == "customer:email"
+    assert event[1] == "strong_unique"
+    assert json.loads(event[2])["metadata"]["brand_context_authorized"] is False
 
 
 def test_mail_link_enrich_reconsiders_ambiguous_after_identity_refresh(tmp_path: Path) -> None:
@@ -691,11 +738,444 @@ def test_mail_link_enrich_promotes_unique_tallanto_email_without_phone(tmp_path:
     _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
 
     report = run_mail_link_enrich(
-        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out")
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
     )
 
     assert report["counts"]["planned.strong"] == 1
     assert report["counts"]["reason.strong_external_email_identity_link"] == 1
+
+
+def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_path: Path) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index, customer_id in enumerate(("customer:child-a", "customer:child-b"), start=1):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.STRONG,
+                    display_name=f"Child {index}",
+                    primary_email="parent@example.com",
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="tallanto_student_id",
+                    link_value=f"tallanto-{index}",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    confidence=1.0,
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="email",
+                    link_value="parent@example.com",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    confidence=0.8,
+                    match_class="ambiguous",
+                )
+            )
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=f"tallanto-{index}",
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"parent_fio": "Ирина Иванова"}},
+                )
+            )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:child-b",
+                link_type="email",
+                link_value="parent@example.com",
+                source_system="amocrm_snapshot",
+                source_ref="amo:parent",
+                confidence=1.0,
+            )
+        )
+    sha = "b" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение для детей.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["planned.family_strong"] == 1
+    assert report["counts"]["reason.strong_tallanto_family_identity_link"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["customer_id"] is None
+    assert event["metadata"]["family_id"].startswith("family:")
+
+
+def test_mail_link_enrich_uses_historical_tallanto_email_for_same_student(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:historical",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Historical Parent",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:historical",
+                link_type="tallanto_student_id",
+                link_value="tallanto-old-1",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:current",
+                confidence=1.0,
+            )
+        )
+    identity_db = _write_tallanto_identity_db(
+        tmp_path / "identity.sqlite",
+        email="old-parent@example.com",
+        tallanto_id="tallanto-old-1",
+        candidate_key="candidate-old-1",
+    )
+    sha = "c" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="old-parent@example.com",
+        text="Здравствуйте, хотим вернуться к занятиям.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            tallanto_identity_dbs=(identity_db,),
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["reason.strong_historical_tallanto_email_identity_link"] == 1
+    assert report["historical_tallanto_identity"]["usable_email_values"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["customer_id"] == "customer:historical"
+
+
+def test_mail_link_enrich_blocks_conflicting_historical_tallanto_email(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index in (1, 2):
+            customer_id = f"customer:historical-{index}"
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.STRONG,
+                    display_name=f"Historical Parent {index}",
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="tallanto_student_id",
+                    link_value=f"tallanto-old-{index}",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    confidence=1.0,
+                )
+            )
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=f"family-student-{index}",
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"parent_fio": "Ирина Иванова"}},
+                )
+            )
+    identity_dbs = tuple(
+        _write_tallanto_identity_db(
+            tmp_path / f"identity-{index}.sqlite",
+            email="old-parent@example.com",
+            tallanto_id=f"tallanto-old-{index}",
+            candidate_key=f"candidate-old-{index}",
+        )
+        for index in (1, 2)
+    )
+    sha = "d" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="old-parent@example.com",
+        text="Здравствуйте, интересует обучение.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            tallanto_identity_dbs=identity_dbs,
+            apply=True,
+        )
+    )
+
+    assert report["counts"].get("planned.strong", 0) == 0
+    assert report["counts"]["reason.historical_tallanto_email_cross_family"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["customer_id"] is None
+
+
+def test_mail_link_enrich_accepts_historical_email_for_one_tallanto_family(tmp_path: Path) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index in (1, 2):
+            customer_id = f"customer:family-child-{index}"
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.STRONG,
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="tallanto_student_id",
+                    link_value=f"family-student-{index}",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    confidence=1.0,
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="phone",
+                    link_value="+79990000001",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    confidence=1.0,
+                )
+            )
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=f"family-student-{index}",
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"parent_fio": "Ирина Иванова"}},
+                )
+            )
+    identity_dbs = tuple(
+        _write_tallanto_identity_db(
+            tmp_path / f"family-identity-{index}.sqlite",
+            email="family-parent@example.com",
+            tallanto_id=f"family-student-{index}",
+            candidate_key=f"family-candidate-{index}",
+        )
+        for index in (1, 2)
+    )
+    sha = "e" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="family-parent@example.com",
+        text="Здравствуйте, вопрос по занятиям детей.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            tallanto_identity_dbs=identity_dbs,
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["planned.family_strong"] == 1
+    assert report["counts"]["reason.strong_tallanto_family_identity_link"] == 1
+    assert report["historical_tallanto_identity"]["same_family_values"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["customer_id"] is None
+    assert event["metadata"]["family_id"].startswith("family:")
+
+
+def test_mail_link_enrich_ignores_historical_id_from_non_tallanto_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:mail-derived",
+                identity_status=IdentityStatus.STRONG,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:mail-derived",
+                link_type="tallanto_student_id",
+                link_value="not-current-tallanto",
+                source_system="mail_archive_stage2",
+                source_ref="mail:derived",
+                confidence=1.0,
+            )
+        )
+    identity_db = _write_tallanto_identity_db(
+        tmp_path / "identity.sqlite",
+        email="historical-only@example.com",
+        tallanto_id="not-current-tallanto",
+        candidate_key="mail-derived-candidate",
+    )
+    sha = "f" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="historical-only@example.com",
+        text="Здравствуйте, вопрос по обучению.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            tallanto_identity_dbs=(identity_db,),
+            apply=True,
+        )
+    )
+
+    assert report["historical_tallanto_identity"]["usable_email_values"] == 0
+    assert report["counts"].get("planned.strong", 0) == 0
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["customer_id"] is None
+
+
+def test_mail_link_enrich_rechecks_old_strong_link_without_enrich_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    sha = "9" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение.",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:old-wrong-link",
+                identity_status=IdentityStatus.STRONG,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:old-wrong-link",
+                event_type="email_message",
+                event_at=NOW,
+                source_system=A2V3_MAIL_SOURCE_SYSTEM,
+                source_id=sha,
+                source_ref=f"mail_stage2:test:{sha[:16]}",
+                direction=TimelineDirection.INBOUND,
+                match_status="strong_unique",
+                subject="Фотон",
+                text_preview="Входящее письмо.",
+                summary="Родитель спрашивает про обучение.",
+                record={
+                    "payload": {
+                        "source_file": str(source_file),
+                        "full_clean_text": "Родитель спрашивает про обучение.",
+                        "brand": "foton",
+                    }
+                },
+                metadata={},
+                created_at=NOW,
+            ),
+            actor="test",
+        )
+
+    pending_only = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "pending_only",
+            reconsider_pending=True,
+        )
+    )
+    assert pending_only["target_events"] == 0
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            revalidate_existing_strong=True,
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["reason.existing_customer_identity_conflict"] == 1
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()
+    assert row == (None, "ambiguous")
 
 
 def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path: Path) -> None:
@@ -739,11 +1219,14 @@ def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path
             allowed_root=tmp_path,
             out_dir=tmp_path / "second",
             apply=True,
-            reconsider_pending=True,
+            revalidate_existing_strong=True,
         )
     )
 
+    assert second["counts"]["planned.weak_email"] == 1
+    assert second["counts"]["reason.email_ambiguous_identity_link"] == 1
     assert second["apply"]["counts"]["revoked_chunks"] == 1
+    assert second["apply"]["counts"].get("not_revalidated_events", 0) == 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
         event = con.execute(
             "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?",
@@ -760,6 +1243,47 @@ def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path
         ).fetchone()[0]
     assert event == (None, "unmatched")
     assert active_chunks == 0
+
+
+def test_mail_link_enrich_does_not_lower_existing_strong_when_archive_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "2" * 64
+    source_file, archive_db = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    first = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "first",
+            fallback_archive_dbs=(archive_db,),
+            apply=True,
+        )
+    )
+    assert first["counts"]["planned.strong"] == 1
+    archive_db.unlink()
+
+    second = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "second",
+            revalidate_existing_strong=True,
+            apply=True,
+        )
+    )
+
+    assert second["counts"]["planned.not_revalidated_archive_missing"] == 1
+    assert second["apply"]["counts"]["not_revalidated_events"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        assert con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?", (sha,)
+        ).fetchone() == ("customer:phone", "strong_unique")
 
 
 def test_mail_link_enrich_keeps_mail_derived_email_weak(tmp_path: Path) -> None:
@@ -978,6 +1502,66 @@ def test_mail_link_enrich_blocks_links_to_partial_customer(tmp_path: Path) -> No
     assert report["counts"]["reason.phone_customer_identity_not_strong"] == 1
     assert not (tmp_path / "out" / "mail_link_enrich_decisions.jsonl").exists()
     assert (tmp_path / "out").stat().st_mode & 0o777 == 0o700
+
+
+def test_mail_link_enrich_accepts_exact_tallanto_email_for_partial_family(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer:email'")
+    sha = "6" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
+    )
+
+    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["reason.strong_external_email_identity_link"] == 1
+    assert not (tmp_path / "out" / "mail_link_enrich_decisions.jsonl").exists()
+    assert (tmp_path / "out").stat().st_mode & 0o777 == 0o700
+
+
+def test_mail_link_enrich_uses_exact_tallanto_email_when_same_phone_customer_is_partial(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE identity_links SET customer_id='customer:phone' "
+            "WHERE customer_id='customer:email' AND link_type='email'"
+        )
+        con.execute("UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer:phone'")
+    sha = "7" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
+    )
+
+    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["reason.shared_phone_strong_email_intersection"] == 1
 
 
 def test_mail_link_enrich_apply_aggregate_only_exposes_no_row_ids(tmp_path: Path) -> None:

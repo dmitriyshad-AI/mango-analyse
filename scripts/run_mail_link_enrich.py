@@ -32,13 +32,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reconsider-pending",
         action="store_true",
-        help="Recheck prior unmatched mail after identity sources were refreshed; cross-brand rows stay excluded.",
+        help="Recheck prior unmatched mail after identity sources were refreshed; brand still gates context, not identity.",
+    )
+    parser.add_argument(
+        "--revalidate-existing-strong",
+        action="store_true",
+        help="Separately revalidate existing strong mail links; only explicit conflicts may lower them.",
     )
     parser.add_argument(
         "--archive-db",
         action="append",
         default=[],
         help="Read-only canonical mail archive fallback; may be provided more than once.",
+    )
+    parser.add_argument(
+        "--tallanto-identity-db",
+        action="append",
+        default=[],
+        help="Read-only historical Tallanto identity map; may be provided more than once.",
     )
     parser.add_argument(
         "--aggregate-only",
@@ -61,7 +72,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         apply=bool(args.apply),
         max_events=args.max_events,
         reconsider_pending=bool(args.reconsider_pending),
+        revalidate_existing_strong=bool(args.revalidate_existing_strong),
         fallback_archive_dbs=tuple(Path(path) for path in args.archive_db),
+        tallanto_identity_dbs=tuple(Path(path) for path in args.tallanto_identity_db),
         aggregate_only=bool(args.aggregate_only),
     )
     report = run_mail_link_enrich(config)

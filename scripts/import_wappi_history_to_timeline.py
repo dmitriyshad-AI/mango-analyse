@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shared-phone-stoplist", type=Path, default=Path.home() / ".mango_secrets" / "shared_phones_stoplist.json")
     parser.add_argument("--chat-limit-per-profile", type=int, default=50)
     parser.add_argument("--messages-per-chat", type=int, default=100)
+    parser.add_argument(
+        "--complete-message-history",
+        action="store_true",
+        help="Read every message page; retain only the physical request budget as the hard cap.",
+    )
     parser.add_argument("--message-limit-total", type=int, default=2000)
     parser.add_argument("--request-limit-total", type=int, default=500)
     parser.add_argument("--page-size", type=int, default=100)
@@ -61,6 +66,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-nonempty-profile",
         action="store_true",
         help="Block apply when any configured profile yields zero non-empty records.",
+    )
+    parser.add_argument(
+        "--require-widget-linkage",
+        action="store_true",
+        help="Block apply unless every configured personal chat uses the authoritative AMO Wappi widget link.",
+    )
+    parser.add_argument(
+        "--widget-link-db",
+        type=Path,
+        help="Private resumable SQLite map of Wappi chat IDs to AMO contact/deal IDs.",
+    )
+    parser.add_argument(
+        "--reuse-widget-link-db",
+        action="store_true",
+        help="Use the completed widget-link DB without refreshing Wappi lookups.",
+    )
+    parser.add_argument(
+        "--widget-coverage-only",
+        action="store_true",
+        help="Catalogue chats and check widget links without reading messages or writing Customer Timeline.",
     )
     parser.add_argument("--actor", default="wappi_history_timeline_import")
     parser.add_argument("--idempotency-key")
@@ -82,6 +107,10 @@ def config_from_args(args: argparse.Namespace) -> WappiHistoryImportConfig:
         shared_phone_stoplist=args.shared_phone_stoplist,
         apply=bool(args.apply),
         require_nonempty_profiles=bool(args.require_nonempty_profile),
+        require_widget_linkage=bool(args.require_widget_linkage),
+        widget_link_db=args.widget_link_db,
+        refresh_widget_links=not bool(args.reuse_widget_link_db),
+        widget_coverage_only=bool(args.widget_coverage_only),
         actor=args.actor,
         idempotency_key=args.idempotency_key,
         out_path=args.out,
@@ -93,6 +122,7 @@ def config_from_args(args: argparse.Namespace) -> WappiHistoryImportConfig:
             page_size=args.page_size,
             sleep_seconds=args.sleep_seconds,
             show_all_chats=bool(args.show_all_chats),
+            complete_message_history=bool(args.complete_message_history),
         ),
     )
 

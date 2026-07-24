@@ -15,7 +15,9 @@ class TransportDenied(RuntimeError):
 
 _AMO_LEAD_RE = re.compile(r"^/api/v4/leads/\d+$")
 _AMO_CONTACT_RE = re.compile(r"^/api/v4/contacts/\d+$")
+_AMO_ENTITY_NOTES_RE = re.compile(r"^/api/v4/(?:leads|contacts)/\d+/notes$")
 _AI_OFFICE_LEAD_NOTES_RE = re.compile(r"^/api/integrations/amocrm/leads/\d+/notes$")
+_AI_OFFICE_CONTACT_NOTES_RE = re.compile(r"^/api/integrations/amocrm/contacts/\d+/notes$")
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,7 @@ class SafeTransportPolicy:
         if host in self.amo_read_hosts:
             self._assert_amo_read_allowed(method=normalized_method, path=path)
             return
-        self._assert_ai_office_allowed(method=normalized_method, path=path, query=query)
+        self._assert_ai_office_allowed(method=normalized_method, scheme=parsed.scheme, path=path, query=query)
 
     def _assert_wappi_allowed(
         self,
@@ -52,7 +54,7 @@ class SafeTransportPolicy:
         path: str,
         query: Mapping[str, list[str]],
     ) -> None:
-        if method == "POST" and scheme == "https" and path == "/messanger/proxy/amocrm/contact/find" and not query:
+        if method == "POST" and scheme == "https" and path == "/amocrm/contact/find" and not query:
             return
         if method != "GET":
             raise TransportDenied(f"Wappi HTTP denied: method {method} is not read-only.")
@@ -65,9 +67,6 @@ class SafeTransportPolicy:
             "/tapi/sync/chats/get",
             "/maxapi/sync/chats/get",
         }:
-            show_all_values = [str(item).casefold() for item in query.get("show_all", []) if str(item).strip()]
-            if any(value not in {"0", "false", "no", "off"} for value in show_all_values):
-                raise TransportDenied("Wappi HTTP denied: show_all must be false or omitted.")
             return
         if path in {"/tapi/sync/messages/get", "/maxapi/sync/messages/get"}:
             mark_values = [str(item).casefold() for item in query.get("mark_all", []) if str(item).strip()]
@@ -83,12 +82,22 @@ class SafeTransportPolicy:
             or path == "/api/v4/contacts"
             or _AMO_LEAD_RE.match(path)
             or _AMO_CONTACT_RE.match(path)
+            or _AMO_ENTITY_NOTES_RE.match(path)
         ):
             return
         raise TransportDenied(f"AMO HTTP denied: {method} {path} is not allowlisted.")
 
-    def _assert_ai_office_allowed(self, *, method: str, path: str, query: Mapping[str, list[str]]) -> None:
-        if method == "POST" and _AI_OFFICE_LEAD_NOTES_RE.match(path) and not query:
+    def _assert_ai_office_allowed(
+        self,
+        *,
+        method: str,
+        scheme: str,
+        path: str,
+        query: Mapping[str, list[str]],
+    ) -> None:
+        if method == "POST" and scheme == "https" and (
+            _AI_OFFICE_LEAD_NOTES_RE.match(path) or _AI_OFFICE_CONTACT_NOTES_RE.match(path)
+        ) and not query:
             return
         raise TransportDenied(f"AI Office HTTP denied: {method} {path} is not allowlisted.")
 

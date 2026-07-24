@@ -34,6 +34,7 @@ from mango_mvp.customer_timeline import (
     timeline_ingestion_safety_contract,
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.ingestion import resolve_customer_identity_batches
 
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
@@ -635,6 +636,168 @@ def test_phone_identity_union_writes_complete_mapping_and_keeps_brand_history(tm
     store.close()
 
 
+def test_parent_and_single_tallanto_child_keep_separate_customer_ids_on_shared_phone() -> None:
+    shared_phone = "+79162223344"
+    child = CustomerIdentity(
+        tenant_id="foton", customer_id="customer:child", identity_status="strong",
+        display_name="Анна Иванова", primary_phone=shared_phone,
+    )
+    parent = CustomerIdentity(
+        tenant_id="foton", customer_id="customer:parent", identity_status="strong",
+        display_name="Ирина Иванова", primary_phone=shared_phone,
+    )
+    child_batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="tallanto_snapshot", source_ref="student:1", payload={}),
+        customers=(child,),
+        identity_links=(
+            IdentityLink(
+                tenant_id="foton", customer_id=child.customer_id, link_type="phone",
+                link_value=shared_phone, source_system="tallanto_snapshot", source_ref="student:1",
+            ),
+            IdentityLink(
+                tenant_id="foton", customer_id=child.customer_id, link_type="tallanto_student_id",
+                link_value="student-1", source_system="tallanto_snapshot", source_ref="student:1",
+            ),
+        ),
+    )
+    parent_batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="contact:1", payload={}),
+        customers=(parent,),
+        identity_links=(
+            IdentityLink(
+                tenant_id="foton", customer_id=parent.customer_id, link_type="phone",
+                link_value=shared_phone, source_system="amocrm_snapshot", source_ref="contact:1",
+            ),
+            IdentityLink(
+                tenant_id="foton", customer_id=parent.customer_id, link_type="amo_contact_id",
+                link_value="1001", source_system="amocrm_snapshot", source_ref="contact:1",
+            ),
+        ),
+    )
+
+    result = resolve_customer_identity_batches((child_batch, parent_batch))
+
+    assert {item.new_customer_id for item in result.mappings} == {"customer:child", "customer:parent"}
+    phone_links = [link for batch in result.batches for link in batch.identity_links if link.link_type.value == "phone"]
+    assert {link.customer_id for link in phone_links} == {"customer:child", "customer:parent"}
+    assert {link.match_class for link in phone_links} == {IdentityMatchClass.AMBIGUOUS}
+
+
+@pytest.mark.parametrize("order", [("amo", "tallanto"), ("tallanto", "amo")])
+def test_parent_child_identity_is_order_independent_and_repeat_safe(
+    tmp_path: Path,
+    order: tuple[str, str],
+) -> None:
+    shared_phone = "+79162223344"
+    shared_email = "parent@example.com"
+    records = {
+        "amo": TimelineSourceRecord(
+            source_system="amocrm_snapshot",
+            source_ref="contact:1001",
+            payload={
+                "entity_id": "1001",
+                "entity_type": "contact",
+                "name": "Ирина Иванова",
+                "phone": shared_phone,
+                "email": shared_email,
+                "updated_at": NOW.isoformat(),
+            },
+            observed_at=NOW,
+        ),
+        "tallanto": TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref="student:2001",
+            payload={
+                "entity_id": "2001",
+                "name": "Анна Иванова",
+                "parent_fio": "Ирина Иванова",
+                "phone": shared_phone,
+                "email": shared_email,
+                "updated_at": NOW.isoformat(),
+            },
+            observed_at=NOW,
+        ),
+    }
+    normalizers = {
+        "amo": AmoSnapshotNormalizer(tenant_id="foton"),
+        "tallanto": TallantoSnapshotNormalizer(tenant_id="foton"),
+    }
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    try:
+        for index, kind in enumerate(order, 1):
+            service.import_records(
+                (records[kind],),
+                normalizer=normalizers[kind],
+                tenant_id="foton",
+                source_ref=f"{kind}-run-{index}",
+                idempotency_key=f"{kind}-run-{index}",
+                actor="test",
+            )
+        service.import_records(
+            (records["tallanto"],),
+            normalizer=normalizers["tallanto"],
+            tenant_id="foton",
+            source_ref="tallanto-repeat",
+            idempotency_key="tallanto-repeat",
+            actor="test",
+        )
+
+        assert store.summary()["counts"]["customer_identities"] == 2
+        assert not [
+            row
+            for row in store.list_conflicts("foton", statuses=("open",))["items"]
+            if row["conflict_type"] == "tallanto_identity_conflict"
+        ]
+        for link_type, value in (("phone", shared_phone), ("email", shared_email)):
+            links = store.list_identity_links("foton", link_type=link_type, link_value=value)
+            assert len({row["customer_id"] for row in links}) == 2
+            assert {row["match_class"] for row in links} == {"ambiguous"}
+        assert len(store.list_identity_links("foton", link_type="amo_contact_id", link_value="1001")) == 1
+        assert len(store.list_identity_links("foton", link_type="tallanto_student_id", link_value="2001")) == 1
+    finally:
+        store.close()
+
+
+def test_amo_contact_identity_survives_changed_phone_and_email(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    normalizer = AmoSnapshotNormalizer(tenant_id="foton")
+    try:
+        for index, (phone, email) in enumerate(
+            (("+79161112233", "old@example.com"), ("+79164445566", "new@example.com")),
+            start=1,
+        ):
+            service.import_records(
+                (
+                    TimelineSourceRecord(
+                        source_system="amocrm_snapshot",
+                        source_ref="contact:1001",
+                        payload={
+                            "entity_id": "1001",
+                            "entity_type": "contact",
+                            "name": "Ирина Иванова",
+                            "phone": phone,
+                            "email": email,
+                            "updated_at": NOW.isoformat(),
+                        },
+                        observed_at=NOW,
+                    ),
+                ),
+                normalizer=normalizer,
+                tenant_id="foton",
+                source_ref=f"amo-run-{index}",
+                idempotency_key=f"amo-run-{index}",
+                actor="test",
+            )
+
+        assert store.summary()["counts"]["customer_identities"] == 1
+        links = store.list_identity_links("foton", link_type="amo_contact_id", link_value="1001")
+        assert len({row["customer_id"] for row in links}) == 1
+    finally:
+        store.close()
+
+
 def test_phone_identity_union_uses_existing_store_customer_across_import_runs(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
     service = TimelineImportService(store)
@@ -941,6 +1104,7 @@ def test_mail_normalizer_uses_fresh_relink_customer_id_and_ignores_inline_custom
     assert batch.events[0].customer_id == "customer:fresh-relink-42"
     assert batch.events[0].source_id == SHA
     assert {link.link_type.value for link in batch.identity_links} == {"email", "tallanto_student_id"}
+    assert next(link for link in batch.identity_links if link.link_type.value == "email").match_class == IdentityMatchClass.INFERRED
     assert "interim-inline-id-must-not-be-used" != batch.customers[0].customer_id
 
 
@@ -991,6 +1155,28 @@ def test_mail_normalizer_without_fresh_relink_goes_to_pending_attribution_only()
     assert batch.events == ()
     assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
     assert batch.conflicts[0]["metadata"]["relink_decision"] == "unmatched"
+
+
+def test_mail_normalizer_does_not_trust_customer_id_derived_only_from_email() -> None:
+    batch = MailMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#email-only",
+            payload={
+                "message_sha256": SHA,
+                "resolved_customer_id": "customer:email-only",
+                "from_email": "client@example.com",
+                "to_email": "edu@kmipt.ru",
+                "date_last": "2026-05-03T09:00:00+00:00",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert batch.customers == ()
+    assert batch.identity_links == ()
+    assert batch.events == ()
+    assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
 
 
 def test_mail_thread_opportunity_source_id_includes_customer_to_avoid_cross_customer_collision() -> None:

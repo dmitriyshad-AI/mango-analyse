@@ -46,6 +46,31 @@ def test_telegram_resolver_requires_exact_telegram_id_not_phone() -> None:
     assert result["reason"] == "telegram_id_no_contact"
 
 
+def test_identity_only_resolver_stops_after_unique_exact_contact() -> None:
+    client = FakeMcp(
+        contacts=[_contact("2002", telegram_id="123456", leads=("1001",))],
+        leads=[_lead("1001", org="Фотон")],
+    )
+    resolver = AmoAutoResolver(client=client, shared_phone_stoplist=set())
+
+    result = resolver(
+        key=DraftLoopKey("p-tg", "123456"),
+        profile=DraftLoopProfile("p-tg", "foton", "telegram"),
+        dialog={},
+        messages=[],
+        message=None,
+        identity_only=True,
+    )
+
+    assert result == {
+        "status": "matched_identity",
+        "contact_id": "2002",
+        "match_key": "Telegram ID",
+        "match_value": "123456",
+    }
+    assert [call["path"] for call in client.calls] == ["contacts"]
+
+
 def test_strict_brand_resolver_fails_closed_on_unknown_organization_brand() -> None:
     resolver = AmoAutoResolver(
         client=FakeMcp(contacts=[_contact("2002", telegram_id="123456", leads=("1001",))], leads=[_lead("1001", org="")]),

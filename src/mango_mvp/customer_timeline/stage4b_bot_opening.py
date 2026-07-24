@@ -168,6 +168,13 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         JOIN customer_identities ci ON ci.tenant_id = c.tenant_id AND ci.customer_id = c.customer_id
         WHERE c.tenant_id = ?
           AND c.source_system IN ({source_placeholders})
+          AND (
+            c.source_system = ?
+            OR (
+              json_type(e.record_json, '$.metadata.brand_context_authorized') = 'true'
+              AND json_type(c.record_json, '$.metadata.brand_context_authorized') = 'true'
+            )
+          )
           AND c.superseded_by IS NULL
           AND e.superseded_by IS NULL
           AND (
@@ -211,6 +218,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         (
             tenant_id,
             *OPENABLE_SOURCE_SYSTEMS,
+            MANGO_PROCESSED_SOURCE_SYSTEM,
             MANGO_PROCESSED_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -8,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
@@ -26,6 +27,17 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 MAX_DRAFT_NOTE_TEXT_CHARS = 6000
 
 JsonTransport = Callable[..., Mapping[str, Any]]
+
+
+class AmoNoteReadClient(Protocol):
+    def amo_api_get(
+        self,
+        *,
+        path: str,
+        params: Optional[Mapping[str, Any]] = None,
+        limit: int = 50,
+    ) -> Mapping[str, Any]:
+        ...
 
 
 class AmoWappiPhase1Error(RuntimeError):
@@ -260,11 +272,14 @@ class AmoPhase1Client:
         draft_text: str,
         brand: str,
         profile_id: str = "",
+        chat_id: str = "",
+        message_id: str = "",
         route: str = "",
         safety_flags: Sequence[str] = (),
         outgoing_visibility_note: str = "",
         created_at: datetime | None = None,
     ) -> Mapping[str, Any]:
+        del chat_id, message_id
         allowed_lead_id = config.require_note_allowed(lead_id)
         note_text = build_draft_note_text(
             draft_text=draft_text,
@@ -298,9 +313,16 @@ class AiOfficeClientConfig:
 
 
 class AiOfficeAmoNoteClient:
-    def __init__(self, config: AiOfficeClientConfig, *, transport: JsonTransport | None = None) -> None:
+    def __init__(
+        self,
+        config: AiOfficeClientConfig,
+        *,
+        transport: JsonTransport | None = None,
+        read_client: AmoNoteReadClient | None = None,
+    ) -> None:
         self.config = config
         self.transport = transport
+        self.read_client = read_client
 
     def _request(self, method: str, path: str, *, json_body: Any = None) -> Mapping[str, Any]:
         url = url_parse.urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))
@@ -329,26 +351,193 @@ class AiOfficeAmoNoteClient:
         draft_text: str,
         brand: str,
         profile_id: str = "",
+        chat_id: str = "",
+        message_id: str = "",
         route: str = "",
         safety_flags: Sequence[str] = (),
         outgoing_visibility_note: str = "",
         created_at: datetime | None = None,
     ) -> Mapping[str, Any]:
-        allowed_lead_id = config.require_note_allowed(lead_id)
-        note_text = build_draft_note_text(
+        del config
+        return self._add_draft_note(
+            entity_type="lead",
+            entity_id=lead_id,
             draft_text=draft_text,
             brand=brand,
             profile_id=profile_id,
+            chat_id=chat_id,
+            message_id=message_id,
             route=route,
             safety_flags=safety_flags,
             outgoing_visibility_note=outgoing_visibility_note,
             created_at=created_at,
         )
-        return self._request(
+
+    def add_draft_note_to_contact(
+        self,
+        contact_id: int | str,
+        *,
+        config: AmoWappiPhase1Config,
+        draft_text: str,
+        brand: str,
+        profile_id: str = "",
+        chat_id: str = "",
+        message_id: str = "",
+        route: str = "",
+        safety_flags: Sequence[str] = (),
+        outgoing_visibility_note: str = "",
+        created_at: datetime | None = None,
+    ) -> Mapping[str, Any]:
+        del config
+        return self._add_draft_note(
+            entity_type="contact",
+            entity_id=contact_id,
+            draft_text=draft_text,
+            brand=brand,
+            profile_id=profile_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            route=route,
+            safety_flags=safety_flags,
+            outgoing_visibility_note=outgoing_visibility_note,
+            created_at=created_at,
+        )
+
+    def _add_draft_note(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int | str,
+        draft_text: str,
+        brand: str,
+        profile_id: str,
+        chat_id: str,
+        message_id: str,
+        route: str,
+        safety_flags: Sequence[str],
+        outgoing_visibility_note: str,
+        created_at: datetime | None,
+    ) -> Mapping[str, Any]:
+        if entity_type not in {"lead", "contact"}:
+            raise AmoWappiWriteBlocked("AMO draft-note entity must be lead or contact.")
+        try:
+            allowed_entity_id = str(int(str(entity_id).strip()))
+        except (TypeError, ValueError) as exc:
+            raise AmoWappiWriteBlocked(f"AMO draft-note write requires a positive numeric {entity_type}_id.") from exc
+        if int(allowed_entity_id) <= 0:
+            raise AmoWappiWriteBlocked(f"AMO draft-note write requires a positive numeric {entity_type}_id.")
+        marker = draft_note_idempotency_marker(
+            profile_id=profile_id,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        existing_note_id = self._existing_note_id(entity_type, allowed_entity_id, marker)
+        if existing_note_id:
+            return {
+                "status": "ok",
+                f"{entity_type}_id": int(allowed_entity_id),
+                "note_id": existing_note_id,
+                "deduplicated": True,
+                "idempotency_marker": marker,
+            }
+        note_text = build_draft_note_text(
+            draft_text=draft_text,
+            brand=brand,
+            profile_id=profile_id,
+            idempotency_marker=marker,
+            route=route,
+            safety_flags=safety_flags,
+            outgoing_visibility_note=outgoing_visibility_note,
+            created_at=created_at,
+        )
+        response = self._request(
             "POST",
-            f"/api/integrations/amocrm/leads/{int(allowed_lead_id)}/notes",
+            f"/api/integrations/amocrm/{entity_type}s/{int(allowed_entity_id)}/notes",
             json_body={"text": note_text},
         )
+        try:
+            response_note_id = int(response.get("note_id"))
+        except (TypeError, ValueError) as exc:
+            raise AmoWappiWriteBlocked("AI Office draft-note response has no valid note_id.") from exc
+        if response_note_id <= 0:
+            raise AmoWappiWriteBlocked("AI Office draft-note response has no valid note_id.")
+        confirmed_note_id = self._existing_note_id(entity_type, allowed_entity_id, marker)
+        if confirmed_note_id is None:
+            raise AmoWappiWriteBlocked("AMO draft-note POST succeeded but readback did not confirm the note.")
+        if confirmed_note_id != response_note_id:
+            raise AmoWappiWriteBlocked("AMO draft-note readback note_id differs from the POST response.")
+        return {
+            **dict(response),
+            "status": "ok",
+            f"{entity_type}_id": int(allowed_entity_id),
+            "note_id": confirmed_note_id,
+            "deduplicated": False,
+            "idempotency_marker": marker,
+        }
+
+    def find_existing_draft_note(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int | str,
+        profile_id: str,
+        chat_id: str,
+        message_id: str,
+    ) -> Mapping[str, Any]:
+        if entity_type not in {"lead", "contact"}:
+            raise AmoWappiWriteBlocked("AMO draft-note entity must be lead or contact.")
+        try:
+            allowed_entity_id = str(int(str(entity_id).strip()))
+        except (TypeError, ValueError) as exc:
+            raise AmoWappiWriteBlocked(f"AMO draft-note readback requires a positive numeric {entity_type}_id.") from exc
+        if int(allowed_entity_id) <= 0:
+            raise AmoWappiWriteBlocked(f"AMO draft-note readback requires a positive numeric {entity_type}_id.")
+        marker = draft_note_idempotency_marker(
+            profile_id=profile_id,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        note_id = self._existing_note_id(entity_type, allowed_entity_id, marker)
+        return {
+            "status": "found" if note_id else "missing",
+            "note_id": note_id,
+            "idempotency_marker": marker,
+        }
+
+    def _existing_note_id(self, entity_type: str, entity_id: str, marker: str) -> int | None:
+        if self.read_client is None:
+            raise AmoWappiWriteBlocked("AMO draft-note readback is required before write.")
+        page_limit = 50
+        for page in range(1, 21):
+            query: dict[str, Any] = {"order[id]": "desc"}
+            if page > 1:
+                query["page"] = page
+            payload = self.read_client.amo_api_get(
+                path=f"{entity_type}s/{int(entity_id)}/notes",
+                params=query,
+                limit=page_limit,
+            )
+            embedded = payload.get("_embedded") if isinstance(payload, Mapping) else None
+            notes = embedded.get("notes") if isinstance(embedded, Mapping) else payload.get("notes")
+            if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes, bytearray)):
+                return None
+            for item in notes:
+                if not isinstance(item, Mapping):
+                    continue
+                params = item.get("params") if isinstance(item.get("params"), Mapping) else {}
+                if marker not in str(params.get("text") or item.get("text") or ""):
+                    continue
+                try:
+                    return int(item.get("id"))
+                except (TypeError, ValueError):
+                    return None
+            links = payload.get("_links") if isinstance(payload, Mapping) else None
+            if isinstance(links, Mapping):
+                if not isinstance(links.get("next"), Mapping):
+                    return None
+            elif len(notes) < page_limit:
+                return None
+        return None
 
 
 @dataclass(frozen=True)
@@ -417,31 +606,31 @@ class WappiPhase1Client:
         crm_id: str,
         profile_uuid: str,
         manager: str = "",
+        avito_user_id: str = "",
+        avito_user_hash: str = "",
     ) -> Mapping[str, Any]:
+        del manager
         token = self._token_for_channel(channel)
         normalized_crm_id = str(crm_id or "").strip()
         if not normalized_crm_id:
             raise AmoWappiConfigError("Wappi AMO crm_id is required.")
-        headers = {
-            "Authorization": token,
-            "X-CRM-Type": "amo",
-            "X-CRM-ID": normalized_crm_id,
-        }
-        if str(manager or "").strip():
-            headers["X-Manager-ID"] = str(manager).strip()
+        headers = {"Authorization": token}
         body = {
             "chat_id": str(chat_id or "").strip(),
             "phone": str(phone or "").strip(),
             "username": str(username or "").strip(),
+            "avito_user_id": str(avito_user_id or "").strip(),
+            "avito_user_hash": str(avito_user_hash or "").strip(),
             "platform": str(platform or "").strip(),
             "crm_id": normalized_crm_id,
             "profile_uuid": str(profile_uuid or "").strip(),
+            "token": token,
         }
         if not body["chat_id"] or not body["platform"] or not body["profile_uuid"]:
             raise AmoWappiConfigError("Wappi chat_id, platform and profile_uuid are required.")
         url = url_parse.urljoin(
             f"{self.config.base_url.rstrip('/')}/",
-            "messanger/proxy/amocrm/contact/find",
+            "amocrm/contact/find",
         )
         parsed_url = url_parse.urlparse(url)
         if parsed_url.scheme != "https" or parsed_url.netloc.casefold() != "wappi.pro":
@@ -460,6 +649,30 @@ class WappiPhase1Client:
             headers=headers,
             json_body=body,
             timeout_seconds=self.config.timeout_seconds,
+        )
+
+    def find_amocrm_contact_for_dialog(
+        self,
+        *,
+        channel: str,
+        dialog: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        crm_id: str,
+    ) -> Mapping[str, Any]:
+        lookup = wappi_amocrm_lookup_fields(channel, dialog)
+        if not lookup["chat_id"]:
+            raise AmoWappiConfigError("Wappi dialog does not contain one authoritative peer id")
+        return self.find_amocrm_contact(
+            channel=channel,
+            chat_id=lookup["chat_id"],
+            phone=lookup["phone"],
+            username=lookup["username"],
+            platform=str(profile.get("platform") or channel).strip(),
+            crm_id=crm_id,
+            profile_uuid=str(profile.get("uuid") or profile.get("profile_id") or "").strip(),
+            manager=lookup["manager_id"],
+            avito_user_id=str(dialog.get("avito_user_id") or "").strip(),
+            avito_user_hash=str(dialog.get("avito_user_hash") or "").strip(),
         )
 
     def list_telegram_chats(
@@ -589,11 +802,39 @@ def _extract_wappi_profiles(payload: Mapping[str, Any], *, channel: str) -> list
     return result
 
 
+def wappi_amocrm_lookup_fields(channel: str, dialog: Mapping[str, Any]) -> Mapping[str, str]:
+    normalized = str(channel or "").strip().casefold()
+    user = dialog.get("user") if isinstance(dialog.get("user"), Mapping) else {}
+    chat_id = str(dialog.get("id") or dialog.get("chat_id") or dialog.get("chatId") or "").strip()
+    phone = str(dialog.get("phone") or user.get("Phone") or user.get("phone") or "").strip()
+    username = str(user.get("Username") or user.get("username") or dialog.get("username") or "").strip()
+    if normalized == "max" and str(dialog.get("type") or "").strip().upper() == "DIALOG":
+        max_user_id = str(dialog.get("max_user_id") or "").strip()
+        peers = tuple(
+            item
+            for item in (dialog.get("participants") or ())
+            if isinstance(item, Mapping) and not item.get("is_me")
+        )
+        if max_user_id:
+            chat_id = max_user_id
+        elif len(peers) == 1 and str(peers[0].get("user_id") or "").strip():
+            chat_id = str(peers[0]["user_id"]).strip()
+        # The widget falls back to the room id when MAX has no separate peer id.
+    manager = dialog.get("manager") if isinstance(dialog.get("manager"), Mapping) else {}
+    return {
+        "chat_id": chat_id,
+        "phone": phone,
+        "username": username,
+        "manager_id": str(manager.get("id") or dialog.get("manager_id") or "").strip(),
+    }
+
+
 def build_draft_note_text(
     *,
     draft_text: str,
     brand: str,
     profile_id: str = "",
+    idempotency_marker: str = "",
     route: str = "",
     safety_flags: Sequence[str] = (),
     outgoing_visibility_note: str = "",
@@ -620,6 +861,8 @@ def build_draft_note_text(
     ]
     if str(profile_id or "").strip():
         meta_parts.append(f"Wappi profile_id: {str(profile_id).strip()}")
+    if str(idempotency_marker or "").strip():
+        meta_parts.append(f"Mango draft id: {str(idempotency_marker).strip()}")
     if route_line:
         meta_parts.append(route_line)
     if flags:
@@ -637,6 +880,14 @@ def build_draft_note_text(
     if draft_limit <= 0:
         return text[: MAX_DRAFT_NOTE_TEXT_CHARS - len(marker)].rstrip() + marker
     return draft_value[:draft_limit].rstrip() + marker + suffix
+
+
+def draft_note_idempotency_marker(*, profile_id: str, chat_id: str, message_id: str) -> str:
+    parts = tuple(str(item or "").strip() for item in (profile_id, chat_id, message_id))
+    if not all(parts):
+        raise AmoWappiWriteBlocked("AMO draft-note idempotency requires profile_id, chat_id and message_id.")
+    digest = hashlib.sha256("\t".join(parts).encode("utf-8")).hexdigest()[:24]
+    return f"mango-draft:{digest}"
 
 
 @dataclass(frozen=True)

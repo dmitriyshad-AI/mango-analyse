@@ -17,6 +17,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 settings = get_settings()
+_APPROVED_TALLANTO_HOSTS = frozenset({"kmipt.tallanto.com"})
 
 
 class TallantoApiError(ValueError):
@@ -51,8 +52,19 @@ def _normalize_base_url(raw_value: str) -> str:
         parsed = url_parse.urlparse(f"https://{parsed.path}")
     if not parsed.netloc:
         raise TallantoApiError("Tallanto base URL is invalid.", status_code=503)
-    scheme = parsed.scheme or "https"
-    return f"{scheme}://{parsed.netloc}"
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise TallantoApiError("Tallanto base URL is invalid.", status_code=503) from exc
+    if (
+        parsed.scheme.casefold() != "https"
+        or parsed.hostname not in _APPROVED_TALLANTO_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise TallantoApiError("Tallanto base URL is not an approved HTTPS endpoint.", status_code=503)
+    return f"https://{parsed.hostname}"
 
 
 def build_tallanto_api_config() -> TallantoApiConfig:
@@ -82,6 +94,13 @@ def _http_json_request(
         payload = url_parse.urlencode(form_items, doseq=True).encode("utf-8")
         request_headers["Content-Type"] = "application/x-www-form-urlencoded"
 
+    def safe_error_text(value: object) -> str:
+        text = str(value or "")
+        for name, secret in request_headers.items():
+            if secret and ("token" in name.casefold() or "authorization" in name.casefold()):
+                text = text.replace(secret, "[REDACTED]")
+        return text
+
     request = url_request.Request(
         url,
         data=payload,
@@ -101,18 +120,19 @@ def _http_json_request(
                     return decoded
                 return {"data": decoded}
         except url_error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
+            details = safe_error_text(exc.read().decode("utf-8", errors="replace"))
+            reason = safe_error_text(exc.reason)
             should_retry = exc.code in {429, 500, 502, 503, 504}
             if should_retry and attempt < attempts:
                 time.sleep(retry_delay_seconds * attempt)
                 continue
             raise TallantoApiError(
-                f"HTTP {exc.code} from Tallanto: {details or exc.reason}",
+                f"HTTP {exc.code} from Tallanto: {details or reason}",
                 status_code=502,
             ) from exc
         except (url_error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
             if attempt >= attempts:
-                reason = getattr(exc, "reason", exc)
+                reason = safe_error_text(getattr(exc, "reason", exc))
                 raise TallantoApiError(
                     f"Failed to reach Tallanto: {reason}",
                     status_code=502,
@@ -132,6 +152,9 @@ def _append_query_items(url: str, query_items: Iterable[tuple[str, str]]) -> str
 
 
 def _build_url(base_url: str, path: str) -> str:
+    parsed_path = url_parse.urlsplit(str(path or ""))
+    if parsed_path.scheme or parsed_path.netloc or parsed_path.query or parsed_path.fragment:
+        raise TallantoApiError("Tallanto REST path must be relative.")
     normalized_base = base_url.rstrip("/") + "/"
     normalized_path = path.lstrip("/")
     return url_parse.urljoin(normalized_base, normalized_path)

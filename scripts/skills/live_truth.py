@@ -164,7 +164,10 @@ def _wappi_loaded_head(
 
     manifest_head = str(manifest.get("head") or "").strip()
     manifest_started = _parse_timestamp(manifest.get("started_at"))
-    manifest_valid = bool(manifest_head and manifest_started and process_started_at)
+    manifest_ready = str(manifest.get("status") or "").strip().casefold() == "ready"
+    manifest_valid = bool(manifest_ready and manifest_head and manifest_started and process_started_at)
+    if manifest and not manifest_ready:
+        warnings.append(f"startup_manifest_not_ready status={manifest.get('status', '')}")
     if manifest_valid:
         delta = abs((manifest_started - process_started_at).total_seconds())
         manifest_valid = delta <= START_TIME_TOLERANCE_SECONDS

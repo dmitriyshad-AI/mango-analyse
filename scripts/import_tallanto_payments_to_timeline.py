@@ -500,7 +500,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = config_from_args(args)
-        report = run_tallanto_payments_import(config, stdin_text=sys.stdin.read() if args.source == "-" else None)
+        if args.tallanto_api_env:
+            report = run_tallanto_money_api_increment(
+                config,
+                env_file=Path(args.tallanto_api_env),
+            )
+        else:
+            report = run_tallanto_payments_import(
+                config,
+                stdin_text=sys.stdin.read() if args.source == "-" else None,
+            )
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if report["validation_ok"] else 1
     except Exception as exc:  # noqa: BLE001 - compact CLI error for operators.
@@ -515,10 +524,14 @@ def build_parser() -> argparse.ArgumentParser:
             "customer_timeline.sqlite. Defaults to dry-run; use --apply to write local DB."
         )
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--source",
-        required=True,
         help="Path to JSON snapshot produced by crm_call.sh, or '-' to read the snapshot from stdin.",
+    )
+    source_group.add_argument(
+        "--tallanto-api-env",
+        help="Read-only CRM_TALLANTO_* env file; API rows stay in memory and are not persisted raw.",
     )
     parser.add_argument("--timeline-db", required=True, help="Target local customer timeline SQLite DB")
     parser.add_argument("--allowed-root", required=True, help="Root that must contain source and timeline DB")
@@ -531,14 +544,116 @@ def build_parser() -> argparse.ArgumentParser:
 
 def config_from_args(args: argparse.Namespace) -> TallantoPaymentsImportConfig:
     return TallantoPaymentsImportConfig(
-        source=None if args.source == "-" else Path(args.source),
+        source=None if args.source in (None, "-") else Path(args.source),
         timeline_db=Path(args.timeline_db),
         allowed_root=Path(args.allowed_root),
         tenant_id=args.tenant_id,
         apply=bool(args.apply),
         actor=args.actor,
-        source_label=args.source_label,
+        source_label=("tallanto_api:get_entry_list" if args.tallanto_api_env else args.source_label),
     )
+
+
+def run_tallanto_money_api_increment(
+    config: TallantoPaymentsImportConfig,
+    *,
+    env_file: Path,
+    client: Any = None,
+) -> Mapping[str, Any]:
+    if client is None:
+        from mango_mvp.integrations.amo_wappi_phase1 import load_env_file
+
+        load_env_file(env_file, override=True)
+        from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiClient, build_tallanto_api_config
+
+        client = TallantoApiClient(build_tallanto_api_config())
+    snapshot: dict[str, list[Mapping[str, Any]]] = {}
+    api_stats: dict[str, Mapping[str, int]] = {}
+    for module in (PAYMENT_MODULE, ABONEMENT_MODULE):
+        rows, stats = fetch_tallanto_module_strict(client, module=module)
+        snapshot[module] = list(rows)
+        api_stats[module] = stats
+    report = dict(
+        run_tallanto_payments_import(
+            config,
+            stdin_text=json.dumps(snapshot, ensure_ascii=False),
+        )
+    )
+    report["api"] = {
+        "modules": api_stats,
+        "raw_payload_persisted": False,
+        "full_rescan": True,
+    }
+    report["source"] = {
+        **dict(report.get("source") or {}),
+        "label": "tallanto_api:get_entry_list",
+        "path": None,
+        "crm_call_sh_expected": False,
+    }
+    report["safety"] = {
+        **dict(report.get("safety") or {}),
+        "network_calls": True,
+        "write_tallanto": False,
+        "raw_source_payload_in_report": False,
+    }
+    return report
+
+
+def fetch_tallanto_module_strict(
+    client: Any,
+    *,
+    module: str,
+) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, int]]:
+    rows: list[Mapping[str, Any]] = []
+    seen_ids: set[str] = set()
+    offset = 0
+    pages = 0
+    expected_total: Optional[int] = None
+    while True:
+        pages += 1
+        if pages > 10_000:
+            raise ValueError(f"Tallanto pagination exceeded limit for {module}")
+        payload = client.get_entry_list(
+            module=module,
+            order_by="date_modified ASC,id ASC",
+            offset=offset,
+        )
+        raw_rows = payload.get("entry_list")
+        if not isinstance(raw_rows, list):
+            raise ValueError(f"Tallanto {module} response misses entry_list")
+        total_raw = payload.get("total_count")
+        if total_raw in (None, ""):
+            raise ValueError(f"Tallanto {module} response misses total_count")
+        total = int(total_raw)
+        if total < 0:
+            raise ValueError(f"Tallanto {module} returned negative total_count")
+        if expected_total is None:
+            expected_total = total
+        elif expected_total != total:
+            raise ValueError(f"Tallanto {module} total_count changed during pagination")
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, Mapping):
+                raise ValueError(f"Tallanto {module} returned a non-object row")
+            row = sanitize_source_row(raw_row)
+            row_id = clean_text(
+                first_value(row, ("id", "finance_id", "payment_id", "abonement_id", "most_abonements_id"))
+            )
+            if not row_id or row_id in seen_ids:
+                raise ValueError(f"Tallanto {module} pagination returned missing or duplicate id")
+            seen_ids.add(row_id)
+            rows.append(row)
+        next_raw = payload.get("next_offset")
+        if next_raw in (None, ""):
+            break
+        next_offset = int(next_raw)
+        if next_offset <= offset:
+            raise ValueError(f"Tallanto {module} pagination did not advance")
+        offset = next_offset
+    if expected_total is not None and len(rows) != expected_total:
+        raise ValueError(
+            f"Tallanto {module} pagination incomplete: expected {expected_total}, got {len(rows)}"
+        )
+    return tuple(rows), {"pages": pages, "records": len(rows)}
 
 
 def assert_tallanto_import_apply_staging_path(path: Path, allowed_root: Path, *, allow_test_paths: bool = False) -> None:

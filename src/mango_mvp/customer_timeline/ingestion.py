@@ -820,7 +820,8 @@ class MailMessageNormalizer:
             first_value(payload, ("resolved_tallanto_id", "tallanto_id", "fresh_relink_tallanto_id", "_resolved_tallanto_id"))
         )
         resolved_customer_exists = truthy_flag(first_value(payload, ("resolved_customer_exists", "_resolved_customer_exists")))
-        if not resolved_customer_id:
+        trusted_customer_resolution = bool(resolved_tallanto_id or resolved_customer_exists)
+        if not resolved_customer_id or not trusted_customer_resolution:
             return TimelineNormalizedBatch(
                 source_record=record,
                 conflicts=(
@@ -835,7 +836,7 @@ class MailMessageNormalizer:
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
             customer_id=resolved_customer_id,
-            identity_status=IdentityStatus.STRONG if resolved_tallanto_id or customer_email else IdentityStatus.PARTIAL,
+            identity_status=IdentityStatus.STRONG,
             display_name=optional_text(first_value(payload, ("name", "display_name", "from_name", "to_name"))),
             primary_email=customer_email,
             source_ref=f"tallanto:student:{resolved_tallanto_id}" if resolved_tallanto_id else source_ref,
@@ -857,6 +858,7 @@ class MailMessageNormalizer:
             source_system=self.source_system,
             source_ref=source_ref,
             email=customer_email,
+            match_class=IdentityMatchClass.INFERRED,
         )
         if resolved_tallanto_id:
             links.append(
@@ -1412,6 +1414,13 @@ def resolve_customer_identity_batches(
         for link in links:
             if link.link_type.value == "tallanto_student_id":
                 tallanto_by_customer.setdefault(customer_id, set()).add(link.link_value)
+    contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
+    for customer_id, links in links_by_customer.items():
+        for link in links:
+            if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
+                continue
+            kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
+            contact_identity_to_customers.setdefault((link.tenant_id, kind, link.link_value), set()).add(customer_id)
     for customer_id, links in links_by_customer.items():
         student_ids = tallanto_by_customer.get(customer_id, set())
         if not student_ids:
@@ -1429,12 +1438,26 @@ def resolve_customer_identity_batches(
         for identity_key, student_ids in contact_identity_to_tallanto_students.items()
         if len(student_ids) > 1
     }
-    for phone_key, customer_ids in phone_to_customers.items():
+    authoritative_amo_contacts = {
+        customer_id
+        for customer_id, links in links_by_customer.items()
+        if any(
+            link.link_type.value == "amo_contact_id"
+            and link.source_system == "amocrm_snapshot"
+            and link.match_class == IdentityMatchClass.STRONG_UNIQUE
+            for link in links
+        )
+    }
+    for contact_key, customer_ids in contact_identity_to_customers.items():
         students: set[str] = set()
         for customer_id in customer_ids:
             students.update(tallanto_by_customer.get(customer_id, set()))
-        if len(students) > 1:
-            family_contact_keys.add((phone_key[0], "phone", phone_key[1]))
+        has_parent_only_owner = any(
+            customer_id in authoritative_amo_contacts and not tallanto_by_customer.get(customer_id)
+            for customer_id in customer_ids
+        )
+        if len(students) > 1 or (students and has_parent_only_owner):
+            family_contact_keys.add(contact_key)
     family_phone_keys = {
         (tenant_id, value)
         for tenant_id, kind, value in family_contact_keys
@@ -1457,10 +1480,13 @@ def resolve_customer_identity_batches(
         parent[move] = keep
 
     tallanto_id_to_customers: dict[tuple[str, str], set[str]] = {}
+    amo_contact_id_to_customers: dict[tuple[str, str], set[str]] = {}
     for customer_id, links in links_by_customer.items():
         for link in links:
             if link.link_type.value == "tallanto_student_id":
                 tallanto_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
+            elif link.link_type.value == "amo_contact_id" and link.match_class == IdentityMatchClass.STRONG_UNIQUE:
+                amo_contact_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
     tallanto_union_members: set[str] = set()
     conflicting_tallanto_ids: set[tuple[str, str]] = set()
     for tallanto_key, customer_ids in tallanto_id_to_customers.items():
@@ -1479,13 +1505,13 @@ def resolve_customer_identity_batches(
         for customer_id in ordered_ids[1:]:
             union(ordered_ids[0], customer_id)
 
-    contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
-    for customer_id, links in links_by_customer.items():
-        for link in links:
-            if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
-                continue
-            kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
-            contact_identity_to_customers.setdefault((link.tenant_id, kind, link.link_value), set()).add(customer_id)
+    amo_contact_union_members: set[str] = set()
+    for customer_ids in amo_contact_id_to_customers.values():
+        ordered_ids = sorted(customer_ids)
+        if len(ordered_ids) > 1:
+            amo_contact_union_members.update(ordered_ids)
+        for customer_id in ordered_ids[1:]:
+            union(ordered_ids[0], customer_id)
 
     for batch in normalized_batches:
         tallanto_links = [link for link in batch.identity_links if link.link_type.value == "tallanto_student_id"]
@@ -1534,9 +1560,13 @@ def resolve_customer_identity_batches(
         tenant_id = customers_by_id[members[0]].tenant_id
         existing_members = sorted(customer_id for customer_id in members if customer_id in existing_customer_ids)
         has_tallanto_union = sum(member in tallanto_union_members for member in members) > 1
+        has_amo_contact_union = sum(member in amo_contact_union_members for member in members) > 1
         if len(members) > 1 and has_tallanto_union:
             new_customer_id = existing_members[0] if existing_members else members[0]
             reason = "tallanto_identity_union"
+        elif len(members) > 1 and has_amo_contact_union:
+            new_customer_id = existing_members[0] if existing_members else members[0]
+            reason = "amo_contact_identity_union"
         elif len(members) > 1 and shared_phone:
             new_customer_id = existing_members[0] if existing_members else stable_customer_id(tenant_id=tenant_id, primary_phone=shared_phone)
             reason = "phone_identity_union"
@@ -1807,7 +1837,7 @@ def _load_existing_identity_context(
             if link.link_type.value in PHONE_IDENTITY_LINK_TYPES:
                 for link_type in PHONE_IDENTITY_LINK_TYPES:
                     identity_queries.add((link.tenant_id, link_type, link.link_value))
-            elif link.link_type.value in {"phone", "email", "tallanto_student_id"}:
+            elif link.link_type.value in {"phone", "email", "tallanto_student_id", "amo_contact_id"}:
                 identity_queries.add((link.tenant_id, link.link_type.value, link.link_value))
     loaded_link_keys = {
         (link.tenant_id, link.customer_id, link.link_type.value, link.link_value, link.source_system, link.source_ref)
@@ -1862,11 +1892,10 @@ def _load_existing_identity_context(
         if not customer_id:
             continue
         related_link = identity_link_from_json(related_payload)
-        if related_link.link_type.value not in {
-            "phone",
-            "mango_client_phone",
+        if related_link.link_type.value not in PHONE_IDENTITY_LINK_TYPES | {
             "email",
             "tallanto_student_id",
+            "amo_contact_id",
         }:
             continue
         key = (

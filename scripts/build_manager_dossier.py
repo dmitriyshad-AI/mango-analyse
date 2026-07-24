@@ -11,7 +11,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from mango_mvp.customer_timeline.manager_dossier import build_manager_dossier_workbook  # noqa: E402
+from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
+    build_manager_dossier_workbook,
+    build_owner50_family_workbook,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--canonical-calls-db", type=Path)
     parser.add_argument("--reconcile-json", type=Path)
     parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument("--owner50", action="store_true", help="Build one actionable row per family.")
     args = parser.parse_args(argv)
 
     customer_ids = list(args.customer_id or [])
@@ -34,7 +38,16 @@ def main(argv: list[str] | None = None) -> int:
             for line in args.customer_ids_file.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         )
-    summary = build_manager_dossier_workbook(
+    if args.owner50:
+        summary = build_owner50_family_workbook(
+            timeline_db=args.timeline_db,
+            allowed_root=args.allowed_root,
+            out_xlsx=args.out_xlsx,
+            tenant_id=args.tenant_id,
+            limit=args.limit,
+        )
+    else:
+        summary = build_manager_dossier_workbook(
         timeline_db=args.timeline_db,
         allowed_root=args.allowed_root,
         out_xlsx=args.out_xlsx,
@@ -48,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         reconcile_json=args.reconcile_json,
         limit=args.limit,
         enforce_outreach_eligibility=True,
-    )
+        )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

@@ -48,6 +48,35 @@ def test_wappi_launchers_prefer_dedicated_runtime_python() -> None:
         assert '"$PYTHON_BIN"' in text
 
 
+def test_startup_manifest_reports_actual_all_personal_runtime(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "startup.json"
+    timeline_db = tmp_path / "timeline.sqlite"
+    monkeypatch.setenv("DRAFT_LOOP_RUNTIME_HEAD", "abc123")
+    monkeypatch.setenv("DRAFT_LOOP_WRAPPER_SHA256", "wrapper-sha")
+    fake_runner = SimpleNamespace(
+        config=SimpleNamespace(
+            profiles={"one": object(), "two": object()},
+            all_personal_mode=True,
+            chat_limit=0,
+        )
+    )
+    args = SimpleNamespace(customer_timeline_db=timeline_db, live_write=True)
+
+    runner.write_startup_manifest(target, runner=fake_runner, args=args)
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["status"] == "ready"
+    assert payload["head"] == "abc123"
+    assert payload["pair_mode"] == "authoritative_widget_then_exact_amo"
+    assert payload["profile_count"] == 2
+    assert payload["all_personal_mode"] is True
+    assert payload["chat_limit"] == 0
+    assert payload["amo_note_write_enabled"] is True
+    assert payload["client_send_enabled"] is False
+    assert payload["customer_timeline_db"] == str(timeline_db.resolve())
+    assert payload["writer_lock_path"] == str(runner.DEFAULT_WRITER_LOCK_PATH)
+
+
 def test_wappi_launchd_installer_restores_previous_plist_when_bootstrap_fails(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     target = tmp_path / "loaded.plist"
@@ -302,6 +331,21 @@ def test_safe_transport_blocks_unlisted_wappi_get() -> None:
         raise AssertionError("direct amoCRM note writes must be denied")
 
 
+def test_safe_transport_rejects_noncanonical_ai_office_url() -> None:
+    wappi_config = runner.WappiClientConfig(base_url="https://wappi.pro", telegram_token="token")
+
+    with pytest.raises(runner.DraftLoopConfigError):
+        runner.build_safe_transport(
+            runner.AiOfficeClientConfig(base_url="https://example.com", api_key="key"),
+            wappi_config,
+        )
+    with pytest.raises(runner.DraftLoopConfigError):
+        runner.build_safe_transport(
+            runner.AiOfficeClientConfig(base_url="http://api.fotonai.online", api_key="key"),
+            wappi_config,
+        )
+
+
 def test_safe_transport_allows_amo_events_get_only() -> None:
     calls = []
     transport = runner.DefaultDenyTransport(
@@ -327,16 +371,23 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
     monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
     monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
-    monkeypatch.setattr(runner, "build_config", lambda _args: SimpleNamespace(state_path=tmp_path / "state.json"))
+    profiles = {"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")}
+    monkeypatch.setattr(runner, "build_config", lambda _args: SimpleNamespace(state_path=tmp_path / "state.json", profiles=profiles))
     monkeypatch.setattr(runner.AiOfficeClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://api.fotonai.online")))
     monkeypatch.setattr(runner.WappiClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://wappi.pro")))
     monkeypatch.setattr(runner, "build_safe_transport", lambda _ai, _wappi: object())
     monkeypatch.setattr(runner, "SubscriptionLlmDraftProvider", lambda **_kwargs: object())
-    monkeypatch.setattr(runner, "WappiPhase1Client", lambda *_args, **_kwargs: object())
+    wappi_client = object()
+    monkeypatch.setattr(runner, "WappiPhase1Client", lambda *_args, **_kwargs: wappi_client)
     monkeypatch.setattr(runner, "AiOfficeAmoNoteClient", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(runner, "build_context_builder", lambda _snapshot, **_kwargs: object())
     monkeypatch.setattr(runner, "DraftLoopState", lambda _path: object())
-    monkeypatch.setattr(runner, "build_auto_resolver", lambda _args: None)
+    monkeypatch.setattr(runner, "build_amo_read_client", lambda _args: object())
+    monkeypatch.setattr(
+        runner,
+        "build_authoritative_resolver",
+        lambda **kwargs: None if kwargs["wappi_client"] is wappi_client and kwargs["configured_profiles"] is profiles else "wrong",
+    )
     monkeypatch.setattr(runner, "AmoWappiDraftLoop", lambda **kwargs: kwargs)
     args = argparse.Namespace(
         env_file=tmp_path / ".env",
@@ -348,6 +399,7 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
         customer_timeline_db=None,
         customer_timeline_allowed_root=None,
         customer_timeline_tenant="mango",
+        shared_phone_stoplist=tmp_path / "stoplist.json",
     )
 
     runner.build_runner(args)
@@ -357,6 +409,200 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
     runner.build_runner(args)
     assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == "pilot_gold_v1"
     os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
+
+
+def test_widget_resolver_accepts_one_contact_with_multiple_leads(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {
+                "contact": {"id": 2002},
+                "leads": [
+                    {"id": 1001, "status_id": 142},
+                    {"id": 1002, "status_id": 123},
+                    {"id": 1003, "status_id": 123},
+                ],
+            }
+
+    class AmoReadClient:
+        def amo_api_get(self, *, path, **_kwargs):
+            lead_id = path.rsplit("/", 1)[-1]
+            return {
+                "1001": _lead("1001", status_id=142, org="Фотон", contacts=("2002",)),
+                "1002": _lead("1002", org="Фотон", contacts=("2002",)),
+                "1003": _lead("1003", org="Фотон", contacts=("2002",)),
+            }[lead_id]
+
+    resolver = runner.build_widget_resolver(WappiClient(), AmoReadClient())
+    result = resolver(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result["status"] == "matched"
+    assert result["source"] == "wappi_amo_widget"
+    assert result["contact_id"] == "2002"
+    assert result["lead_id"] == ""
+    assert result["lead_ids"] == ("1001", "1002", "1003")
+    assert result["lead_snapshot"]["note_entity_type"] == "contact"
+    assert result["lead_snapshot"]["active_brand_lead_count"] == 2
+
+
+def test_runtime_profiles_must_exactly_match_configured_profiles() -> None:
+    configured = {"p1": DraftLoopProfile("p1", "foton", "telegram")}
+
+    runner.validate_runtime_profiles(configured, [{"profile_id": "p1", "platform": "tg"}])
+    with pytest.raises(RuntimeError, match="profile configuration mismatch"):
+        runner.validate_runtime_profiles(
+            configured,
+            [
+                {"profile_id": "p1", "platform": "tg"},
+                {"profile_id": "p2", "platform": "max"},
+            ],
+        )
+
+
+def test_authoritative_resolver_falls_back_to_exact_amo_identity(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+    stoplist = tmp_path / "shared_phones_stoplist.json"
+    stoplist.write_text(json.dumps({"phones": ["+79999999999"]}), encoding="utf-8")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {}, "leads": []}
+
+    amo = FakeMcp(
+        contacts=[_contact(telegram_id="123456", leads=("1",))],
+        leads=[_lead("1", contacts=("111",), org="Фотон")],
+    )
+    resolver = runner.build_authoritative_resolver(
+        wappi_client=WappiClient(),
+        amo_read_client=amo,
+        configured_profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")},
+        shared_phone_stoplist=stoplist,
+    )
+
+    result = resolver(
+        key=DraftLoopKey("profile-foton", "123456"),
+        profile=DraftLoopProfile("profile-foton", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+        message=_wappi_message(profile_id="profile-foton", chat_id="123456"),
+    )
+
+    assert result["status"] == "matched"
+    assert result["match_key"] == "Telegram ID"
+
+
+def test_widget_resolver_targets_the_only_active_lead_of_the_profile_brand(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {
+                "contact": {"id": 2002},
+                "leads": [
+                    {"id": 1001, "status_id": 142},
+                    {"id": 1002, "status_id": 123},
+                    {"id": 1003, "status_id": 123},
+                ],
+            }
+
+    class AmoReadClient:
+        def amo_api_get(self, *, path, **_kwargs):
+            lead_id = path.rsplit("/", 1)[-1]
+            return {
+                "1001": _lead("1001", status_id=142, org="Фотон", contacts=("2002",)),
+                "1002": _lead("1002", org="Фотон", contacts=("2002",)),
+                "1003": _lead("1003", org="УНПК МФТИ", contacts=("2002",)),
+            }[lead_id]
+
+    result = runner.build_widget_resolver(WappiClient(), AmoReadClient())(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result["status"] == "matched"
+    assert result["contact_id"] == "2002"
+    assert result["lead_id"] == "1002"
+    assert result["lead_snapshot"]["note_entity_type"] == "lead"
+    assert result["lead_snapshot"]["active_brand_lead_count"] == 1
+
+
+def test_widget_resolver_rejects_lead_not_linked_to_widget_contact(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {"id": 2002}, "leads": [{"id": 1001, "status_id": 123}]}
+
+    class AmoReadClient:
+        def amo_api_get(self, **_kwargs):
+            return _lead("1001", org="Фотон", contacts=("9999",))
+
+    result = runner.build_widget_resolver(WappiClient(), AmoReadClient())(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "wappi_widget_lead_contact_conflict"
+
+
+def test_widget_resolver_keeps_contact_without_lead_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton", "platform": "tg", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {"id": 2002}, "leads": []}
+
+    resolver = runner.build_widget_resolver(WappiClient(), SimpleNamespace())
+    result = resolver(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="telegram", profile_id="profile-foton", brand="foton"),
+        dialog={"id": "chat-1", "type": "user"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result == {
+        "status": "matched",
+        "source": "wappi_amo_widget",
+        "lead_id": "",
+        "lead_ids": (),
+        "contact_id": "2002",
+        "match_key": "wappi_widget_contact",
+        "lead_snapshot": {
+            "lead_count": 0,
+            "active_brand_lead_count": 0,
+            "note_entity_type": "contact",
+        },
+    }
 
 
 def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
@@ -392,6 +638,17 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     assert first["note_written"] == 0
     assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
     assert sleeps == [5, 5]
+
+
+def test_process_lock_allows_only_one_writer(tmp_path: Path) -> None:
+    first = runner.acquire_process_lock(tmp_path / "writer.lock")
+    try:
+        with pytest.raises(RuntimeError, match="Another Wappi draft-loop writer"):
+            runner.acquire_process_lock(tmp_path / "writer.lock")
+    finally:
+        first.close()
+
+    runner.acquire_process_lock(tmp_path / "writer.lock").close()
 
 
 class FakeMcp:
@@ -549,7 +806,7 @@ def test_auto_resolver_rejects_ambiguous_amo_chat_event_without_fallback() -> No
     assert not any(call["path"] == "contacts" for call in resolver.client.calls)
 
 
-def test_auto_resolver_rejects_single_unconfirmed_amo_chat_event_without_fallback() -> None:
+def test_auto_resolver_falls_back_to_exact_contact_when_event_sequence_is_unconfirmed() -> None:
     profile = DraftLoopProfile("profile-foton", "foton", "telegram")
     key = DraftLoopKey("profile-foton", "123456")
     current = _wappi_message(profile_id=profile.profile_id, chat_id="123456")
@@ -561,10 +818,9 @@ def test_auto_resolver_rejects_single_unconfirmed_amo_chat_event_without_fallbac
 
     result = resolver(key=key, profile=profile, dialog={}, messages=[current], message=current)
 
-    assert result["status"] == "rejected"
-    assert result["reason"] == "amo_chat_event_sequence_unconfirmed"
-    assert result["sequence_points_count"] == 1
-    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+    assert result["status"] == "matched"
+    assert result["match_key"] == "Telegram ID"
+    assert any(call["path"] == "contacts" for call in resolver.client.calls)
 
 
 def test_auto_resolver_rejects_event_contact_not_linked_to_lead() -> None:
@@ -605,7 +861,7 @@ def test_auto_resolver_rejects_event_lead_without_contact_readback() -> None:
     assert result["reason"] == "event_lead_contacts_missing"
 
 
-def test_auto_resolver_rejects_when_amo_events_unavailable_without_fallback() -> None:
+def test_auto_resolver_falls_back_to_exact_contact_when_amo_events_unavailable() -> None:
     profile = DraftLoopProfile("profile-foton", "foton", "telegram")
     key = DraftLoopKey("profile-foton", "123456")
     resolver = runner.AmoAutoResolver(
@@ -621,9 +877,9 @@ def test_auto_resolver_rejects_when_amo_events_unavailable_without_fallback() ->
         message=_wappi_message(profile_id=profile.profile_id, chat_id="123456"),
     )
 
-    assert result["status"] == "rejected"
-    assert result["reason"] == "amo_chat_event_unavailable"
-    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+    assert result["status"] == "matched"
+    assert result["match_key"] == "Telegram ID"
+    assert any(call["path"] == "contacts" for call in resolver.client.calls)
 
 
 def test_auto_resolver_falls_back_to_exact_telegram_when_event_is_absent() -> None:
@@ -643,24 +899,24 @@ def test_auto_resolver_falls_back_to_exact_telegram_when_event_is_absent() -> No
     assert [call["path"] for call in resolver.client.calls[:2]] == ["events", "contacts"]
 
 
-def test_auto_resolver_rejects_closed_deleted_zero_and_multi_active_leads() -> None:
+def test_auto_resolver_uses_contact_note_when_no_unique_active_lead() -> None:
     profile = DraftLoopProfile("profile-foton", "foton", "telegram")
     key = DraftLoopKey("profile-foton", "123456")
 
     closed = _resolver(contacts=[_contact(telegram_id="123456", leads=("49804475",))], leads=[_lead("49804475", status_id=143, closed_at=1)])
-    assert closed(key=key, profile=profile, dialog={}, messages=[], message=None)["reason"] == "closed_lead"
+    assert closed(key=key, profile=profile, dialog={}, messages=[], message=None)["lead_id"] == ""
 
     deleted = _resolver(contacts=[_contact(telegram_id="123456", leads=("111",))], leads=[_lead("111", deleted=True)])
-    assert deleted(key=key, profile=profile, dialog={}, messages=[], message=None)["reason"] == "deleted_lead"
+    assert deleted(key=key, profile=profile, dialog={}, messages=[], message=None)["lead_id"] == ""
 
     zero = _resolver(contacts=[_contact(telegram_id="123456", leads=())], leads=[])
-    assert zero(key=key, profile=profile, dialog={}, messages=[], message=None)["reason"] == "no_active_lead"
+    assert zero(key=key, profile=profile, dialog={}, messages=[], message=None)["lead_id"] == ""
 
     multi = _resolver(
         contacts=[_contact(telegram_id="123456", leads=("1", "2"))],
         leads=[_lead("1"), _lead("2")],
     )
-    assert multi(key=key, profile=profile, dialog={}, messages=[], message=None)["reason"] == "multi_active_lead"
+    assert multi(key=key, profile=profile, dialog={}, messages=[], message=None)["lead_id"] == ""
 
 
 def test_auto_resolver_rejects_username_only_and_duplicate_telegram_contacts() -> None:
@@ -696,7 +952,7 @@ def test_auto_resolver_rejects_max_numeric_id_shared_phone_text_phone_and_multi_
     assert resolver(key=key, profile=profile, dialog={"phone": "+7 999 000-00-01"}, messages=[], message=None)["reason"] == "multi_contact"
 
 
-def test_auto_resolver_rejects_brand_mismatch_and_empty_organization() -> None:
+def test_auto_resolver_rejects_brand_mismatch_and_uses_contact_for_unknown_brand() -> None:
     profile = DraftLoopProfile("profile-foton", "foton", "telegram")
     key = DraftLoopKey("profile-foton", "123456")
     mismatch = _resolver(
@@ -710,8 +966,9 @@ def test_auto_resolver_rejects_brand_mismatch_and_empty_organization() -> None:
         leads=[_lead("1", org="")],
     )
     result = ok(key=key, profile=profile, dialog={}, messages=[], message=None)
-    assert result["status"] == "rejected"
-    assert result["reason"] == "organization_missing"
+    assert result["status"] == "matched"
+    assert result["lead_id"] == ""
+    assert result["contact_id"]
 
 
 def test_auto_resolver_includes_organization_snapshot_for_review() -> None:

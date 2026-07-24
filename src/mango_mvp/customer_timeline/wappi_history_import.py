@@ -8,24 +8,36 @@ import re
 import sqlite3
 import subprocess
 import time
-from collections import Counter
+from bisect import bisect_left, bisect_right
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Any, Mapping, Optional, Protocol, Sequence
 from urllib import parse as url_parse
 
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
+    CustomerIdentity,
     IdentityLink,
     IdentityMatchClass,
+    IdentityStatus,
     TimelineDirection,
     TimelineEvent,
     TimelineEventType,
     TimelineParticipant,
 )
-from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_text, stable_digest
+from mango_mvp.customer_timeline.ids import (
+    normalize_email,
+    normalize_key,
+    optional_text,
+    require_text,
+    stable_customer_id,
+    stable_digest,
+)
 from mango_mvp.customer_timeline.import_cli import safety_ok, timeline_import_cli_safety_contract
 from mango_mvp.customer_timeline.ingestion import (
     PHONE_IDENTITY_LINK_TYPES,
@@ -90,7 +102,13 @@ RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY = {
     "draft_loop_pair": IdentityMatchClass.MANUAL,
     "timeline_identity": IdentityMatchClass.STRONG_UNIQUE,
     "amo_auto_resolver": IdentityMatchClass.STRONG_UNIQUE,
+    "wappi_amo_widget": IdentityMatchClass.STRONG_UNIQUE,
+    "wappi_provisional": IdentityMatchClass.INFERRED,
 }
+WAPPI_EXACT_AMO_AUTHORITIES = {"wappi_amo_widget"}
+
+WAPPI_MESSAGE_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
+WAPPI_MESSAGE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?7|8)(?:[\s()\-]*\d){10}(?!\d)")
 
 
 class WappiPhysicalRequestBudgetExceeded(RuntimeError):
@@ -101,11 +119,13 @@ class WappiPhysicalRequestBudgetExceeded(RuntimeError):
 class WappiPhysicalRequestBudget:
     limit: int
     used: int = 0
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def take(self) -> None:
-        if self.used >= self.limit:
-            raise WappiPhysicalRequestBudgetExceeded("Wappi physical request budget exhausted")
-        self.used += 1
+        with self._lock:
+            if self.used >= self.limit:
+                raise WappiPhysicalRequestBudgetExceeded("Wappi physical request budget exhausted")
+            self.used += 1
 
 
 class WappiHistoryClient(Protocol):
@@ -169,6 +189,7 @@ class WappiFetchLimits:
     page_size: int = 100
     sleep_seconds: float = 0.2
     show_all_chats: bool = False
+    complete_message_history: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "chat_limit_per_profile", max(0, int(self.chat_limit_per_profile)))
@@ -177,6 +198,7 @@ class WappiFetchLimits:
         object.__setattr__(self, "request_limit_total", max(1, int(self.request_limit_total)))
         object.__setattr__(self, "page_size", max(1, min(int(self.page_size), 100)))
         object.__setattr__(self, "sleep_seconds", max(0.0, float(self.sleep_seconds)))
+        object.__setattr__(self, "complete_message_history", bool(self.complete_message_history))
 
 
 @dataclass(frozen=True)
@@ -193,6 +215,10 @@ class WappiHistoryImportConfig:
     shared_phone_stoplist: Optional[Path] = DEFAULT_STOPLIST_PATH
     apply: bool = False
     require_nonempty_profiles: bool = False
+    require_widget_linkage: bool = False
+    widget_link_db: Optional[Path] = None
+    refresh_widget_links: bool = True
+    widget_coverage_only: bool = False
     actor: str = "wappi_history_timeline_import"
     idempotency_key: Optional[str] = None
     out_path: Optional[Path] = None
@@ -204,6 +230,11 @@ class WappiHistoryImportConfig:
         if self.apply and is_customer_timeline_prod_path(timeline_db):
             raise ValueError("Wappi history apply must not target a production Customer Timeline")
         out_path = guard_customer_timeline_output_path(self.out_path, root) if self.out_path else None
+        widget_link_db = (
+            guard_customer_timeline_output_path(self.widget_link_db, root)
+            if self.widget_link_db
+            else None
+        )
         object.__setattr__(self, "allowed_root", root)
         object.__setattr__(self, "timeline_db", timeline_db)
         object.__setattr__(self, "env_file", Path(self.env_file).expanduser())
@@ -215,6 +246,871 @@ class WappiHistoryImportConfig:
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         object.__setattr__(self, "actor", require_text(self.actor, "actor"))
         object.__setattr__(self, "out_path", out_path)
+        object.__setattr__(self, "widget_link_db", widget_link_db)
+        object.__setattr__(self, "require_widget_linkage", bool(self.require_widget_linkage))
+        object.__setattr__(self, "widget_coverage_only", bool(self.widget_coverage_only))
+        if self.widget_coverage_only and self.apply:
+            raise ValueError("Widget coverage-only mode cannot apply Timeline writes")
+        if self.widget_coverage_only and self.widget_link_db is None:
+            raise ValueError("Widget coverage-only mode requires widget_link_db")
+        if self.widget_coverage_only and not self.refresh_widget_links:
+            raise ValueError("Widget coverage-only mode must refresh the chat catalogue")
+
+
+WAPPI_WIDGET_LINK_SCHEMA = "wappi_amo_link_map_v3"
+WAPPI_AMO_EVENT_ORIGIN = {
+    "wappi_telegram": "pro.wappi.tg",
+    "wappi_max": "pro.wappi.3",
+}
+WAPPI_AMO_EVENT_MATCH_WINDOW_SEC = 15
+WAPPI_AMO_EVENT_MIN_MATCHES = 2
+WAPPI_CATALOG_MAX_PASSES = 5
+WAPPI_RESOLVED_LINK_STATUSES = {
+    "resolved_contact_only",
+    "resolved_one_lead",
+    "resolved_multiple_leads",
+}
+WAPPI_TECHNICAL_LINK_STATUSES = {
+    "auth_error",
+    "rate_limit",
+    "timeout",
+    "http_5xx",
+    "invalid_response",
+    "lookup_error",
+    "request_limit",
+}
+
+
+def _ensure_wappi_widget_link_schema(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wappi_amo_links (
+          channel TEXT NOT NULL,
+          profile_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          contact_id TEXT,
+          lead_ids_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          checked_at TEXT NOT NULL,
+          response_sha256 TEXT NOT NULL,
+          resolution_source TEXT NOT NULL DEFAULT 'wappi_widget',
+          last_timestamp INTEGER NOT NULL DEFAULT 0,
+          matched_points INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (channel, profile_id, chat_id)
+        )
+        """
+    )
+    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(wappi_amo_links)")}
+    migrations = {
+        "resolution_source": "TEXT NOT NULL DEFAULT 'wappi_widget'",
+        "last_timestamp": "INTEGER NOT NULL DEFAULT 0",
+        "matched_points": "INTEGER NOT NULL DEFAULT 0",
+        "amo_talk_id": "TEXT NOT NULL DEFAULT ''",
+        "amo_chat_id": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, declaration in migrations.items():
+        if name not in columns:
+            con.execute(f"ALTER TABLE wappi_amo_links ADD COLUMN {name} {declaration}")
+    con.execute(
+        """
+        UPDATE wappi_amo_links
+        SET status = 'candidate', resolution_source = 'amo_event_sequence_candidate'
+        WHERE resolution_source = 'amo_event_sequence'
+        """
+    )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wappi_link_check_is_stale(value: Any, *, now: datetime | None = None) -> bool:
+    try:
+        checked_at = datetime.fromisoformat(str(value or ""))
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return True
+    current = now or datetime.now(timezone.utc)
+    return current.timestamp() - checked_at.timestamp() >= 24 * 60 * 60
+
+
+def _extract_wappi_total_count(payload: Mapping[str, Any]) -> tuple[bool, int | None]:
+    pending: list[Mapping[str, Any]] = [payload]
+    visited: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if id(item) in visited:
+            continue
+        visited.add(id(item))
+        for key in ("total_count", "totalCount"):
+            if key in item:
+                raw_total = item.get(key)
+                if isinstance(raw_total, bool) or not re.fullmatch(r"[0-9]+", str(raw_total).strip()):
+                    return True, None
+                return True, int(raw_total)
+        pending.extend(
+            value
+            for key in ("data", "meta", "pagination")
+            if isinstance((value := item.get(key)), Mapping)
+        )
+    return False, None
+
+
+def _find_wappi_widget_contact(
+    client: WappiPhase1Client,
+    *,
+    profile: WappiProfileSpec,
+    runtime_profile: Mapping[str, Any],
+    dialog: Mapping[str, Any],
+    crm_id: str,
+) -> Mapping[str, Any]:
+    user = dialog.get("user") if isinstance(dialog.get("user"), Mapping) else {}
+    chat_id = extract_chat_id(dialog)
+    if profile.channel == "max" and str(dialog.get("type") or "").strip().upper() == "DIALOG":
+        peers = tuple(
+            item for item in (dialog.get("participants") or ())
+            if isinstance(item, Mapping) and not item.get("is_me")
+        )
+        chat_id = str(dialog.get("max_user_id") or "").strip() or (
+            str(peers[0].get("user_id") or "").strip() if len(peers) == 1 else chat_id
+        )
+    if not chat_id:
+        raise AmoWappiConfigError("Wappi dialog does not contain one authoritative peer id")
+    manager = dialog.get("manager") if isinstance(dialog.get("manager"), Mapping) else {}
+    return client.find_amocrm_contact(
+        channel=profile.channel,
+        chat_id=chat_id,
+        phone=str(dialog.get("phone") or user.get("Phone") or user.get("phone") or "").strip(),
+        username=str(user.get("Username") or user.get("username") or dialog.get("username") or "").strip(),
+        platform=str(runtime_profile.get("platform") or profile.channel).strip(),
+        crm_id=crm_id,
+        profile_uuid=str(runtime_profile.get("uuid") or runtime_profile.get("profile_id") or "").strip(),
+        manager=str(manager.get("id") or dialog.get("manager_id") or "").strip(),
+    )
+
+
+def _widget_lookup_error_status(exc: Exception) -> str:
+    message = str(exc).casefold()
+    if "401" in message or "403" in message:
+        return "auth_error"
+    if "429" in message or "rate limit" in message:
+        return "rate_limit"
+    if re.search(r"http\s+5\d\d", message):
+        return "http_5xx"
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "invalid json" in message or "invalid response" in message:
+        return "invalid_response"
+    return "lookup_error"
+
+
+def _widget_linkage_status(status: str, lead_ids: Sequence[str]) -> str:
+    if status == "resolved":
+        if not lead_ids:
+            return "resolved_contact_only"
+        if len(lead_ids) == 1:
+            return "resolved_one_lead"
+        return "resolved_multiple_leads"
+    if status == "missing":
+        return "widget_no_contact"
+    if status == "conflict":
+        return "relation_conflict"
+    return status
+
+
+def collect_wappi_widget_links(
+    *,
+    client: WappiPhase1Client,
+    profiles: Sequence[WappiProfileSpec],
+    runtime_profiles: Mapping[tuple[str, str], Mapping[str, Any]],
+    crm_id: str,
+    db_path: Path,
+    limits: WappiFetchLimits,
+    workers: int = 4,
+    force_recheck: bool = False,
+) -> Mapping[str, Any]:
+    """Persist the widget's authoritative IDs without storing chat text or credentials."""
+    target = Path(db_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError("Wappi AMO link DB must not be a symlink")
+    if not target.exists():
+        descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+    os.chmod(target, 0o600)
+    counts: Counter[str] = Counter()
+    operations: Counter[str] = Counter()
+    profile_reports: dict[str, Mapping[str, Any]] = {}
+    requests = 0
+    limit_hit = False
+
+    def lookup(
+        profile: WappiProfileSpec,
+        runtime_profile: Mapping[str, Any],
+        chat_id: str,
+        dialog: Mapping[str, Any],
+        previous: Mapping[str, Any] | None,
+    ) -> tuple[str, str, tuple[str, ...], str, int, Mapping[str, Any] | None]:
+        try:
+            result = _find_wappi_widget_contact(
+                client,
+                profile=profile,
+                runtime_profile=runtime_profile,
+                dialog=dialog,
+                crm_id=crm_id,
+            )
+        except WappiPhysicalRequestBudgetExceeded:
+            return chat_id, "", (), "request_limit", _safe_int(dialog.get("last_timestamp")), previous
+        except Exception as exc:  # noqa: BLE001 - only a safe error class is persisted.
+            return chat_id, "", (), _widget_lookup_error_status(exc), _safe_int(dialog.get("last_timestamp")), previous
+        if not isinstance(result, Mapping):
+            return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+        contact = result.get("contact") if isinstance(result.get("contact"), Mapping) else {}
+        contact_id = str(contact.get("id") or "").strip()
+        if contact_id and (not contact_id.isdigit() or int(contact_id) <= 0):
+            return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+        embedded = contact.get("_embedded")
+        if embedded is not None and not isinstance(embedded, Mapping):
+            return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+        raw_leads: list[Mapping[str, Any]] = []
+        for candidate in (
+            result.get("leads"),
+            embedded.get("leads") if isinstance(embedded, Mapping) else None,
+        ):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes, bytearray)):
+                return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+            if any(not isinstance(item, Mapping) for item in candidate):
+                return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+            raw_leads.extend(candidate)
+        lead_ids = tuple(sorted({str(item.get("id") or "").strip() for item in raw_leads}))
+        if any(not lead_id.isdigit() or int(lead_id) <= 0 for lead_id in lead_ids):
+            return chat_id, "", (), "invalid_response", _safe_int(dialog.get("last_timestamp")), previous
+        status = "resolved" if contact_id else "missing"
+        return chat_id, contact_id, lead_ids, status, _safe_int(dialog.get("last_timestamp")), previous
+
+    with sqlite3.connect(target, timeout=60.0) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=60000")
+        _ensure_wappi_widget_link_schema(con)
+        con.commit()
+        for profile in profiles:
+            profile_key = f"{profile.channel}:{profile.profile_id}"
+            runtime_profile = runtime_profiles.get((profile.channel, profile.profile_id))
+            if runtime_profile is None:
+                counts["profile_missing"] += 1
+                profile_reports[profile_key] = {
+                    "accounting_complete": False,
+                    "linkage_complete": False,
+                    "error": "profile_missing",
+                }
+                continue
+            catalog: dict[str, Mapping[str, Any]] = {}
+            missing_chat_ids: set[str] = set()
+            total_count: int | None = None
+            passes = 0
+            catalog_error = ""
+            for pass_index in range(WAPPI_CATALOG_MAX_PASSES):
+                if requests >= limits.request_limit_total:
+                    catalog_error = "request_limit"
+                    limit_hit = True
+                    break
+                passes = pass_index + 1
+                offset = 0
+                while (
+                    (limits.complete_message_history or offset < limits.chat_limit_per_profile)
+                    and requests < limits.request_limit_total
+                ):
+                    page_limit = (
+                        limits.page_size
+                        if limits.complete_message_history
+                        else min(limits.page_size, limits.chat_limit_per_profile - offset)
+                    )
+                    try:
+                        payload = client.list_chats(
+                            channel=profile.channel,
+                            profile_id=profile.profile_id,
+                            limit=page_limit,
+                            offset=offset,
+                            order="asc",
+                            show_all=limits.show_all_chats,
+                        )
+                    except WappiPhysicalRequestBudgetExceeded:
+                        catalog_error = "request_limit"
+                        limit_hit = True
+                        break
+                    except Exception as exc:  # noqa: BLE001 - only a safe error class is reported.
+                        catalog_error = _widget_lookup_error_status(exc)
+                        break
+                    requests += 1
+                    if not isinstance(payload, Mapping):
+                        catalog_error = "invalid_response"
+                        break
+                    total_present, observed_total = _extract_wappi_total_count(payload)
+                    if total_present and observed_total is None:
+                        catalog_error = "invalid_response"
+                        break
+                    if observed_total is not None:
+                        total_count = max(total_count or 0, observed_total)
+                    dialogs = extract_wappi_items(payload, "dialogs", "chats", "items", "data")
+                    if not dialogs:
+                        break
+                    for dialog in dialogs:
+                        chat_id = extract_chat_id(dialog)
+                        if chat_id:
+                            catalog[chat_id] = dialog
+                        else:
+                            missing_chat_ids.add(stable_digest(dict(dialog)))
+                    if total_count is not None and len(catalog) == total_count:
+                        break
+                    if len(dialogs) < page_limit:
+                        break
+                    offset += page_limit
+                    if total_count is not None and offset >= total_count:
+                        break
+                if total_count is not None and len(catalog) == total_count:
+                    break
+                if total_count is None or catalog_error:
+                    break
+            if catalog_error:
+                counts[catalog_error] += 1
+            accounting_complete = bool(
+                total_count is not None
+                and (limits.complete_message_history or total_count <= limits.chat_limit_per_profile)
+                and len(catalog) == total_count
+                and not missing_chat_ids
+            )
+            if total_count is None:
+                counts["total_count_missing"] += 1
+            if (
+                not limits.complete_message_history
+                and total_count is not None
+                and total_count > limits.chat_limit_per_profile
+            ):
+                counts["chat_limit_hit"] += 1
+            if not accounting_complete and passes >= WAPPI_CATALOG_MAX_PASSES:
+                counts["catalog_unstable"] += 1
+            personal_dialogs = {
+                chat_id: dialog
+                for chat_id, dialog in catalog.items()
+                if is_personal_wappi_dialog(profile, dialog)
+            }
+            non_personal = len(catalog) - len(personal_dialogs)
+            if non_personal:
+                counts["non_personal"] += non_personal
+            if missing_chat_ids:
+                counts["chat_id_missing"] += len(missing_chat_ids)
+            pending: list[tuple[str, Mapping[str, Any], Mapping[str, Any] | None]] = []
+            status_by_chat: dict[str, str] = {}
+            for chat_id, dialog in personal_dialogs.items():
+                    cached = con.execute(
+                        """
+                        SELECT status, checked_at, last_timestamp, contact_id, lead_ids_json
+                        FROM wappi_amo_links
+                        WHERE channel = ? AND profile_id = ? AND chat_id = ?
+                        """,
+                        (profile.channel, profile.profile_id, chat_id),
+                    ).fetchone()
+                    if cached is not None:
+                        dialog_last_timestamp = _safe_int(dialog.get("last_timestamp"))
+                        cached_last_timestamp = _safe_int(cached[2])
+                        should_recheck = (
+                            force_recheck
+                            or str(cached[0]) in WAPPI_TECHNICAL_LINK_STATUSES
+                            or (str(cached[0]) == "missing" and cached_last_timestamp == 0)
+                            or (
+                                str(cached[0]) in {"missing", "candidate"}
+                                and _wappi_link_check_is_stale(cached[1])
+                            )
+                            or (
+                                str(cached[0]) in {"missing", "resolved"}
+                                and cached_last_timestamp > 0
+                                and dialog_last_timestamp > cached_last_timestamp
+                            )
+                        )
+                        if should_recheck:
+                            pending.append(
+                                (
+                                    chat_id,
+                                    dialog,
+                                    {
+                                        "status": str(cached[0]),
+                                        "last_timestamp": cached_last_timestamp,
+                                        "contact_id": str(cached[3] or ""),
+                                        "lead_ids": tuple(json.loads(str(cached[4] or "[]"))),
+                                    },
+                                )
+                            )
+                            operations[f"recheck_{str(cached[0])}"] += 1
+                            continue
+                        con.execute(
+                            """
+                            UPDATE wappi_amo_links
+                            SET last_timestamp = MAX(last_timestamp, ?)
+                            WHERE channel = ? AND profile_id = ? AND chat_id = ?
+                            """,
+                            (
+                                _safe_int(dialog.get("last_timestamp")),
+                                profile.channel,
+                                profile.profile_id,
+                                chat_id,
+                            ),
+                        )
+                        cached_status = str(cached[0])
+                        cached_leads = tuple(json.loads(str(cached[4] or "[]")))
+                        status_by_chat[chat_id] = _widget_linkage_status(cached_status, cached_leads)
+                        operations[f"cached_{cached_status}"] += 1
+                        continue
+                    pending.append((chat_id, dialog, None))
+            remaining = max(0, limits.request_limit_total - requests)
+            skipped_pending = pending[remaining:]
+            if skipped_pending:
+                limit_hit = True
+                for chat_id, _dialog, _previous in skipped_pending:
+                    status_by_chat[chat_id] = "request_limit"
+            pending = pending[:remaining]
+            requests += len(pending)
+            with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+                resolved_rows = pool.map(
+                    lambda item: lookup(profile, runtime_profile, item[0], item[1], item[2]),
+                    pending,
+                )
+                for chat_id, contact_id, lead_ids, status, last_timestamp, previous in resolved_rows:
+                        if previous is not None:
+                            previous_contact_id = str(previous.get("contact_id") or "")
+                            relation_changed = bool(
+                                str(previous.get("status") or "") == "resolved"
+                                and status not in WAPPI_TECHNICAL_LINK_STATUSES
+                                and (status != "resolved" or contact_id != previous_contact_id)
+                            )
+                            if relation_changed:
+                                contact_id = previous_contact_id
+                                lead_ids = tuple(previous.get("lead_ids") or ())
+                                status = "conflict"
+                            elif status in WAPPI_TECHNICAL_LINK_STATUSES:
+                                contact_id = previous_contact_id
+                                lead_ids = tuple(previous.get("lead_ids") or ())
+                        status_by_chat[chat_id] = _widget_linkage_status(status, lead_ids)
+                        safe_result = {"status": status, "contact_id": contact_id, "lead_ids": lead_ids}
+                        con.execute(
+                            """
+                            INSERT INTO wappi_amo_links
+                              (channel, profile_id, chat_id, contact_id, lead_ids_json, status, checked_at,
+                               response_sha256, resolution_source, last_timestamp, matched_points)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                            ON CONFLICT(channel, profile_id, chat_id) DO UPDATE SET
+                              contact_id = excluded.contact_id,
+                              lead_ids_json = excluded.lead_ids_json,
+                              status = excluded.status,
+                              checked_at = excluded.checked_at,
+                              response_sha256 = excluded.response_sha256,
+                              resolution_source = excluded.resolution_source,
+                              last_timestamp = MAX(wappi_amo_links.last_timestamp, excluded.last_timestamp),
+                              matched_points = excluded.matched_points
+                            """,
+                            (
+                                profile.channel,
+                                profile.profile_id,
+                                chat_id,
+                                contact_id or None,
+                                json.dumps(lead_ids, separators=(",", ":")),
+                                status,
+                                datetime.now(timezone.utc).isoformat(),
+                                stable_digest(safe_result),
+                                "wappi_widget_conflict" if status == "conflict" else "wappi_widget",
+                                last_timestamp,
+                            ),
+                        )
+                        con.commit()
+                        operations[status] += 1
+            profile_status_counts = Counter(status_by_chat.values())
+            counts.update(profile_status_counts)
+            resolved_count = sum(profile_status_counts[name] for name in WAPPI_RESOLVED_LINK_STATUSES)
+            linkage_complete = bool(accounting_complete and resolved_count == len(personal_dialogs))
+            if profile_status_counts["request_limit"]:
+                limit_hit = True
+            profile_reports[profile_key] = {
+                "total_count": total_count,
+                "unique_catalogued": len(catalog),
+                "personal_catalogued": len(personal_dialogs),
+                "non_personal": len(catalog) - len(personal_dialogs),
+                "chat_id_missing": len(missing_chat_ids),
+                "catalog_passes": passes,
+                "catalog_error": catalog_error or None,
+                "accounting_complete": accounting_complete,
+                "linkage_complete": linkage_complete,
+                "linkage_status_counts": dict(sorted(profile_status_counts.items())),
+            }
+    accounting_complete = len(profile_reports) == len(profiles) and bool(profile_reports) and all(
+        bool(report.get("accounting_complete")) for report in profile_reports.values()
+    )
+    linkage_complete = len(profile_reports) == len(profiles) and bool(profile_reports) and all(
+        bool(report.get("linkage_complete")) for report in profile_reports.values()
+    )
+    technical_failures = sum(counts[name] for name in WAPPI_TECHNICAL_LINK_STATUSES)
+    physical_requests = readonly_wappi_physical_request_count(client)
+    return {
+        "schema_version": WAPPI_WIDGET_LINK_SCHEMA,
+        "requests": requests,
+        "physical_requests": physical_requests,
+        "counts": dict(sorted(counts.items())),
+        "operations": dict(sorted(operations.items())),
+        "profiles": profile_reports,
+        "request_limit_hit": limit_hit,
+        "accounting_complete": accounting_complete,
+        "linkage_complete": linkage_complete,
+        "complete": accounting_complete and not limit_hit and technical_failures == 0,
+    }
+
+
+def load_wappi_widget_links(db_path: Path | None) -> Mapping[tuple[str, str, str], Mapping[str, Any]]:
+    if db_path is None or not Path(db_path).exists():
+        return {}
+    result: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    with sqlite3.connect(Path(db_path)) as con:
+        _ensure_wappi_widget_link_schema(con)
+        con.commit()
+        for channel, profile_id, chat_id, contact_id, lead_ids_json, status, source, last_timestamp, matched_points in con.execute(
+            """
+            SELECT channel, profile_id, chat_id, contact_id, lead_ids_json, status,
+                   resolution_source, last_timestamp, matched_points
+            FROM wappi_amo_links
+            """
+        ):
+            lead_ids = json.loads(str(lead_ids_json or "[]"))
+            result[(str(channel), str(profile_id), str(chat_id))] = {
+                "status": str(status),
+                "contact_id": str(contact_id or ""),
+                "lead_ids": tuple(str(item) for item in lead_ids),
+                "resolution_source": str(source or ""),
+                "last_timestamp": int(last_timestamp or 0),
+                "matched_points": int(matched_points or 0),
+            }
+    return result
+
+
+def enrich_wappi_widget_links_from_timeline_amo_events(
+    *,
+    timeline_db: Path,
+    widget_link_db: Path,
+    tenant_id: str = "foton",
+) -> Mapping[str, Any]:
+    """Record timing-based AMO candidates without promoting them to identity truth."""
+    tenant = normalize_key(tenant_id, "tenant_id")
+    with sqlite3.connect(widget_link_db) as link_con:
+        _ensure_wappi_widget_link_schema(link_con)
+        missing = {
+            (str(channel), str(profile_id), str(chat_id))
+            for channel, profile_id, chat_id in link_con.execute(
+                "SELECT channel, profile_id, chat_id FROM wappi_amo_links WHERE status = 'missing'"
+            )
+        }
+        if not missing:
+            return {
+                "missing_before": 0,
+                "candidates": 0,
+                "ambiguous": 0,
+                "cross_chat_ambiguous": 0,
+                "insufficient": 0,
+            }
+
+        points_by_chat: dict[tuple[str, str, str], list[tuple[int, str, str]]] = defaultdict(list)
+        amo_by_origin_direction: dict[tuple[str, str], list[tuple[int, str, str, str, str]]] = defaultdict(list)
+        with open_readonly_sqlite(timeline_db) as timeline_con:
+            for row in timeline_con.execute(
+                """
+                SELECT source_system,
+                       json_extract(record_json, '$.metadata.profile_id') AS profile_id,
+                       json_extract(record_json, '$.metadata.chat_id') AS chat_id,
+                       direction,
+                       CAST(strftime('%s', event_at) AS INTEGER) AS event_ts,
+                       COALESCE(json_extract(record_json, '$.metadata.message_id'), source_id) AS message_key
+                FROM timeline_events
+                WHERE tenant_id = ?
+                  AND source_system IN ('wappi_telegram', 'wappi_max')
+                  AND superseded_by IS NULL
+                  AND json_valid(record_json)
+                """,
+                (tenant,),
+            ):
+                channel = "telegram" if str(row[0]) == "wappi_telegram" else "max"
+                key = (channel, str(row[1] or ""), str(row[2] or ""))
+                event_ts = _safe_int(row[4])
+                message_key = str(row[5] or "").strip()
+                if key in missing and event_ts > 0 and message_key and str(row[3]) in {"inbound", "outbound"}:
+                    points_by_chat[key].append((event_ts, str(row[3]), message_key))
+
+            for row in timeline_con.execute(
+                """
+                SELECT json_extract(record_json, '$.record.payload.value_after[0].message.origin') AS origin,
+                       json_extract(record_json, '$.record.payload.type') AS event_type,
+                       json_extract(record_json, '$.record.payload.created_at') AS event_ts,
+                       json_extract(record_json, '$.record.payload.value_after[0].message.talk_id') AS talk_id,
+                       json_extract(record_json, '$.record.payload._embedded.entity.linked_talk_contact_id') AS contact_id,
+                       json_extract(record_json, '$.record.payload.entity_id') AS lead_id,
+                       json_extract(record_json, '$.record.payload.id') AS event_id,
+                       json_extract(record_json, '$.record.payload.entity_type') AS entity_type
+                FROM timeline_events
+                WHERE tenant_id = ?
+                  AND source_system = 'amocrm_event'
+                  AND superseded_by IS NULL
+                  AND json_valid(record_json)
+                  AND json_extract(record_json, '$.record.payload.type')
+                      IN ('incoming_chat_message', 'outgoing_chat_message')
+                  AND json_extract(record_json, '$.record.payload.entity_type') = 'lead'
+                """,
+                (tenant,),
+            ):
+                direction = "inbound" if str(row[1]) == "incoming_chat_message" else "outbound"
+                event_ts = _safe_int(row[2])
+                talk_id, contact_id, lead_id, event_id = (str(row[index] or "") for index in range(3, 7))
+                if str(row[0]) and event_ts > 0 and talk_id and contact_id and lead_id and event_id:
+                    amo_by_origin_direction[(str(row[0]), direction)].append(
+                        (event_ts, talk_id, contact_id, lead_id, event_id)
+                    )
+
+        event_timestamps: dict[tuple[str, str], list[int]] = {}
+        for key, rows in amo_by_origin_direction.items():
+            rows.sort(key=lambda item: item[0])
+            event_timestamps[key] = [item[0] for item in rows]
+
+        counts: Counter[str] = Counter()
+        now = datetime.now(timezone.utc).isoformat()
+        confirmed_by_chat: dict[tuple[str, str, str], tuple[str, str, tuple[str, ...], int]] = {}
+        for key in sorted(missing):
+            channel, _profile_id, _chat_id = key
+            source_system = SOURCE_SYSTEM_BY_CHANNEL[channel]
+            origin = WAPPI_AMO_EVENT_ORIGIN[source_system]
+            candidate_edges: dict[str, list[tuple[int, int, str, str, str]]] = defaultdict(list)
+            unique_points: dict[str, tuple[int, str]] = {}
+            conflicting_message_keys: set[str] = set()
+            for point_ts, direction, message_key in points_by_chat.get(key, ()):
+                previous_point = unique_points.get(message_key)
+                if previous_point is not None and previous_point != (point_ts, direction):
+                    conflicting_message_keys.add(message_key)
+                    continue
+                unique_points[message_key] = (point_ts, direction)
+            points = sorted(
+                point
+                for message_key, point in unique_points.items()
+                if message_key not in conflicting_message_keys
+            )
+            for point_index, (point_ts, direction) in enumerate(points):
+                event_key = (origin, direction)
+                rows = amo_by_origin_direction.get(event_key, ())
+                timestamps = event_timestamps.get(event_key, ())
+                left = bisect_left(timestamps, point_ts - WAPPI_AMO_EVENT_MATCH_WINDOW_SEC)
+                right = bisect_right(timestamps, point_ts + WAPPI_AMO_EVENT_MATCH_WINDOW_SEC)
+                for event_ts, talk_id, contact_id, lead_id, event_id in rows[left:right]:
+                    candidate_edges[talk_id].append(
+                        (abs(event_ts - point_ts), point_index, event_id, contact_id, lead_id)
+                    )
+
+            confirmed: list[tuple[str, str, tuple[str, ...], int]] = []
+            for talk_id, edges in candidate_edges.items():
+                used_points: set[int] = set()
+                used_events: set[str] = set()
+                selected: list[tuple[int, int, str, str, str]] = []
+                for edge in sorted(edges):
+                    if edge[1] in used_points or edge[2] in used_events:
+                        continue
+                    selected.append(edge)
+                    used_points.add(edge[1])
+                    used_events.add(edge[2])
+                contacts = {edge[3] for edge in selected}
+                lead_ids = tuple(sorted({edge[4] for edge in selected}))
+                if len(selected) >= WAPPI_AMO_EVENT_MIN_MATCHES and len(contacts) == 1 and lead_ids:
+                    confirmed.append((talk_id, next(iter(contacts)), lead_ids, len(selected)))
+
+            if len(confirmed) != 1:
+                counts["ambiguous" if len(confirmed) > 1 else "insufficient"] += 1
+                continue
+            confirmed_by_chat[key] = confirmed[0]
+
+        chats_by_talk: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+        for key, (talk_id, _contact_id, _lead_ids, _matched_points) in confirmed_by_chat.items():
+            chats_by_talk[talk_id].add(key)
+
+        for key, (talk_id, contact_id, lead_ids, matched_points) in sorted(confirmed_by_chat.items()):
+            if len(chats_by_talk[talk_id]) != 1:
+                counts["cross_chat_ambiguous"] += 1
+                continue
+            channel, profile_id, chat_id = key
+            safe_result = {
+                "status": "candidate",
+                "contact_id": contact_id,
+                "lead_ids": lead_ids,
+                "resolution_source": "amo_event_sequence_candidate",
+                "matched_points": matched_points,
+            }
+            link_con.execute(
+                """
+                UPDATE wappi_amo_links
+                SET contact_id = ?, lead_ids_json = ?, status = 'candidate', checked_at = ?,
+                    response_sha256 = ?, resolution_source = 'amo_event_sequence_candidate', matched_points = ?,
+                    amo_talk_id = ?, amo_chat_id = ''
+                WHERE channel = ? AND profile_id = ? AND chat_id = ? AND status = 'missing'
+                """,
+                (
+                    contact_id,
+                    json.dumps(lead_ids, separators=(",", ":")),
+                    now,
+                    stable_digest(safe_result),
+                    matched_points,
+                    talk_id,
+                    channel,
+                    profile_id,
+                    chat_id,
+                ),
+            )
+            counts["candidates"] += 1
+        link_con.commit()
+    return {
+        "missing_before": len(missing),
+        "candidates": counts["candidates"],
+        "ambiguous": counts["ambiguous"],
+        "cross_chat_ambiguous": counts["cross_chat_ambiguous"],
+        "insufficient": counts["insufficient"],
+    }
+
+
+def hydrate_wappi_widget_contacts(
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]],
+    amo_mcp_env_file: Path | None,
+    tenant_id: str = "foton",
+    workers: int = 4,
+    amo_client: Any = None,
+) -> Mapping[str, Any]:
+    """Fetch only widget-proven AMO contacts that are absent from Timeline."""
+    from types import SimpleNamespace
+
+    from mango_mvp.customer_timeline.amo_incremental import load_amo_link_index, normalize_cards_source
+    from mango_mvp.customer_timeline.ingestion import AmoSnapshotNormalizer
+    from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, embedded_items, read_mcp_env
+
+    db_path = guard_customer_timeline_output_path(timeline_db, Path(allowed_root))
+    wanted = {
+        str(item.get("contact_id") or "").strip()
+        for item in widget_links.values()
+        if str(item.get("status") or "") == "resolved" and str(item.get("contact_id") or "").strip()
+    }
+    existing: set[str] = set()
+    with open_readonly_sqlite(db_path) as con:
+        if sqlite_table_exists(con, "identity_links"):
+            existing.update(
+                str(row[0])
+                for row in con.execute(
+                    "SELECT DISTINCT link_value FROM identity_links WHERE tenant_id = ? AND link_type = 'amo_contact_id'",
+                    (tenant_id,),
+                )
+            )
+    missing = tuple(sorted(wanted - existing))
+    if not missing:
+        return {"requested": 0, "fetched": 0, "normalized": 0, "fetch_errors": 0, "write_status_counts": {}}
+    if amo_client is None:
+        if amo_mcp_env_file is None:
+            raise ValueError("AMO MCP env file is required to hydrate Wappi contacts")
+        amo_client = AmoMcpClient(read_mcp_env(amo_mcp_env_file))
+
+    batches = chunks(missing, 50)
+
+    def fetch_contacts(batch: Sequence[str]) -> tuple[Mapping[str, Any], ...]:
+        try:
+            payload = amo_client.amo_api_get(
+                path="contacts",
+                params={"filter[id][]": list(batch), "with": "leads"},
+                limit=len(batch),
+            )
+        except Exception:  # noqa: BLE001 - aggregate only; never expose raw AMO payloads.
+            return ()
+        requested = set(batch)
+        return tuple(
+            contact
+            for contact in embedded_items(payload, "contacts")
+            if str(contact.get("id") or "") in requested
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        fetched_batches = tuple(pool.map(fetch_contacts, batches))
+    fetched_by_id = {
+        str(contact.get("id")): contact
+        for batch in fetched_batches
+        for contact in batch
+    }
+    fallback_ids = tuple(contact_id for contact_id in missing if contact_id not in fetched_by_id)
+
+    def fetch_contact(contact_id: str) -> Mapping[str, Any] | None:
+        if not contact_id.isdigit():
+            return None
+        try:
+            contact = amo_client.amo_api_get(
+                path=f"contacts/{int(contact_id)}",
+                params={"with": "leads"},
+                limit=1,
+            )
+        except Exception:  # noqa: BLE001 - aggregate only; never expose raw AMO payloads.
+            return None
+        return contact if str(contact.get("id") or "") == contact_id else None
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        fallback_contacts = tuple(pool.map(fetch_contact, fallback_ids))
+    fetched_by_id.update(
+        (str(contact.get("id")), contact)
+        for contact in fallback_contacts
+        if contact is not None
+    )
+    fetched = tuple(fetched_by_id[contact_id] for contact_id in missing if contact_id in fetched_by_id)
+    link_index = load_amo_link_index(db_path, tenant_id=tenant_id)
+    rows, normalization = normalize_cards_source(
+        fetched,
+        pages=1,
+        page_cap_hit=False,
+        path="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_widget_hydrate",
+        link_index=link_index,
+        config=SimpleNamespace(max_pages=1),
+    )
+    observed_at = datetime.now(timezone.utc)
+    records = tuple(
+        TimelineSourceRecord(
+            source_system="amo_contacts_widget_hydrate",
+            source_ref=str(row["source_ref"]),
+            payload=row,
+            observed_at=observed_at,
+        )
+        for row in rows
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+        report = TimelineImportService(store).import_records(
+            records,
+            normalizer=AmoSnapshotNormalizer(tenant_id=tenant_id),
+            tenant_id=tenant_id,
+            source_ref="amocrm:contacts:wappi_widget_hydrate",
+            idempotency_key=stable_digest(sorted(missing)),
+            dry_run=False,
+            actor="wappi_widget_contact_hydrate",
+        )
+    return {
+        "requested": len(missing),
+        "batches": len(batches),
+        "fallback_requested": len(fallback_ids),
+        "fallback_fetched": sum(contact is not None for contact in fallback_contacts),
+        "fetched": len(fetched),
+        "normalized": len(rows),
+        "fetch_errors": len(missing) - len(fetched),
+        "normalization": {key: value for key, value in normalization.items() if not key.startswith("_")},
+        "write_status_counts": dict(report.write_status_counts),
+        "errors": len(report.errors),
+    }
 
 
 @dataclass(frozen=True)
@@ -223,6 +1119,7 @@ class WappiChatResolution:
     customer_id: Optional[str] = None
     opportunity_id: Optional[str] = None
     lead_id: str = ""
+    lead_ids: Sequence[str] = field(default_factory=tuple)
     contact_id: str = ""
     expected_brand: str = ""
     reason: str = ""
@@ -246,6 +1143,9 @@ class WappiFetchStats:
     linked_by_pair: int = 0
     linked_by_timeline: int = 0
     linked_by_amo_auto: int = 0
+    linked_by_amo_widget: int = 0
+    linked_by_amo_event_sequence: int = 0
+    linked_by_provisional: int = 0
     pending_attribution: int = 0
     skipped_empty: int = 0
     skipped_bad_message: int = 0
@@ -263,6 +1163,10 @@ class WappiFetchStats:
     coverage_counts: Counter[str] = field(default_factory=Counter)
     amo_auto_status_counts: Counter[str] = field(default_factory=Counter)
     amo_auto_calls: int = 0
+    personal_chats: int = 0
+    widget_calls: int = 0
+    widget_resolved_chats: int = 0
+    widget_pending_chats: int = 0
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {
@@ -273,6 +1177,9 @@ class WappiFetchStats:
             "linked_by_pair": self.linked_by_pair,
             "linked_by_timeline": self.linked_by_timeline,
             "linked_by_amo_auto": self.linked_by_amo_auto,
+            "linked_by_amo_widget": self.linked_by_amo_widget,
+            "linked_by_amo_event_sequence": self.linked_by_amo_event_sequence,
+            "linked_by_provisional": self.linked_by_provisional,
             "pending_attribution": self.pending_attribution,
             "skipped_empty": self.skipped_empty,
             "skipped_bad_message": self.skipped_bad_message,
@@ -290,6 +1197,10 @@ class WappiFetchStats:
             "coverage_counts": dict(self.coverage_counts),
             "amo_auto_status_counts": dict(self.amo_auto_status_counts),
             "amo_auto_calls": self.amo_auto_calls,
+            "personal_chats": self.personal_chats,
+            "widget_calls": self.widget_calls,
+            "widget_resolved_chats": self.widget_resolved_chats,
+            "widget_pending_chats": self.widget_pending_chats,
         }
 
 
@@ -332,6 +1243,8 @@ class WappiHistoryTimelineNormalizer:
             identity_authority,
             IdentityMatchClass.UNMATCHED,
         )
+        is_provisional = identity_authority == "wappi_provisional"
+        identity_confidence = 0.35 if is_provisional else 0.9
         direction = TimelineDirection.OUTBOUND if truthy(payload.get("from_me")) else TimelineDirection.INBOUND
         participant_role = "manager" if direction == TimelineDirection.OUTBOUND else "client"
         source_id = require_text(payload.get("timeline_source_id") or f"{payload.get('profile_id')}:{chat_id}:{message_id}", "source_id")
@@ -352,7 +1265,7 @@ class WappiHistoryTimelineNormalizer:
             text_preview=compact_text(text, limit=240),
             summary=compact_text(text, limit=240),
             match_status=resolved_match_class if resolved_customer_id else IdentityMatchClass.UNMATCHED,
-            confidence=0.9 if resolved_customer_id else 0.0,
+            confidence=identity_confidence if resolved_customer_id else 0.0,
             record={
                 "message": scrub_timeline_persisted_json(
                     {
@@ -377,12 +1290,13 @@ class WappiHistoryTimelineNormalizer:
                 "message_id": message_id,
                 "identity_authority": identity_authority,
                 "lead_id": str(payload.get("lead_id") or ""),
+                "lead_ids": tuple(str(item) for item in (payload.get("lead_ids") or ()) if str(item)),
                 "contact_id": str(payload.get("contact_id") or ""),
                 "match_key": str(payload.get("match_key") or ""),
                 "allowed_for_bot_reason": "wappi_history_manager_only",
                 "allowed_for_bot": False,
                 "requires_manager_review": True,
-                "pending_attribution": not bool(resolved_customer_id),
+                "pending_attribution": not bool(resolved_customer_id) or is_provisional,
                 "resolution_reason": str(payload.get("resolution_reason") or ""),
                 "resolution_evidence": scrub_timeline_persisted_json(resolution_evidence),
                 "brand_context_authorized": payload.get("brand_context_authorized"),
@@ -418,6 +1332,32 @@ class WappiHistoryTimelineNormalizer:
                 ),
             )
         link_value = f"wappi_{channel}:{payload.get('profile_id')}:{chat_id}"
+        customers: tuple[CustomerIdentity, ...] = ()
+        if is_provisional:
+            provisional_source_ref = f"wappi_provisional:{self.source_system}:{payload.get('profile_id')}:{chat_id}"
+            customers = (
+                CustomerIdentity(
+                    tenant_id=self.tenant_id,
+                    customer_id=resolved_customer_id,
+                    identity_status=IdentityStatus.PARTIAL,
+                    display_name=optional_text(payload.get("contact_name")),
+                    source_ref=provisional_source_ref,
+                    first_seen_at=event_at if event_time_status == "source_valid" else None,
+                    last_seen_at=event_at if event_time_status == "source_valid" else None,
+                    touch_count=1,
+                    summary={
+                        "source_system": self.source_system,
+                        "provisional_wappi_family": True,
+                    },
+                    metadata={
+                        "provisional_wappi_family": True,
+                        "brand": brand,
+                        "profile_id": payload.get("profile_id"),
+                    },
+                    created_at=event_at,
+                    updated_at=event_at,
+                ),
+            )
         link = IdentityLink(
             tenant_id=self.tenant_id,
             customer_id=resolved_customer_id,
@@ -426,10 +1366,11 @@ class WappiHistoryTimelineNormalizer:
             source_system=self.source_system,
             source_ref=f"{self.source_system}:chat:{payload.get('profile_id')}:{chat_id}",
             match_class=resolved_match_class,
-            confidence=0.9,
+            confidence=identity_confidence,
             evidence={
                 "identity_authority": identity_authority,
                 "lead_id": str(payload.get("lead_id") or ""),
+                "lead_ids": tuple(str(item) for item in (payload.get("lead_ids") or ()) if str(item)),
                 "contact_id": str(payload.get("contact_id") or ""),
                 "match_key": str(payload.get("match_key") or ""),
                 "brand_context_authorized": payload.get("brand_context_authorized"),
@@ -439,7 +1380,7 @@ class WappiHistoryTimelineNormalizer:
             last_seen_at=event_at if event_time_status == "source_valid" else None,
         )
         chunks: tuple[BotContextChunk, ...] = ()
-        if text:
+        if text and not is_provisional:
             chunks = (
                 BotContextChunk(
                     tenant_id=self.tenant_id,
@@ -468,9 +1409,21 @@ class WappiHistoryTimelineNormalizer:
             )
         return TimelineNormalizedBatch(
             source_record=record,
+            customers=customers,
             identity_links=(link,),
             events=(event,),
             bot_context_chunks=chunks,
+            conflicts=(
+                pending_wappi_attribution_conflict(
+                    self.tenant_id,
+                    payload,
+                    source_ref,
+                    message_id=message_id,
+                    resolution_status="provisional_wappi_family",
+                ),
+            )
+            if is_provisional
+            else (),
         )
 
 
@@ -491,14 +1444,131 @@ def run_wappi_history_import(
     }
     worktree_start = git_worktree_provenance(code_root)
     db_identity_start = timeline_db_identity(config.timeline_db)
+    db_identity_validation_base = db_identity_start
     phase1 = AmoWappiPhase1Config.from_file(config.phase1_config)
     profiles = profiles_from_phase1_config(phase1)
+    client_was_provided = client is not None
     if client is None:
         client = build_readonly_wappi_client(
             config.env_file,
             request_limit_total=config.limits.request_limit_total,
         )
     assert_readonly_wappi_client(client)
+    widget_crm_id = str(os.getenv("AMO_WAPPI_CRM_ID") or "").strip()
+    widget_profiles: dict[tuple[str, str], Mapping[str, Any]] = {}
+    if widget_crm_id and isinstance(client, WappiPhase1Client):
+        for item in client.list_all_profiles():
+            profile_id = str(item.get("profile_id") or "").strip()
+            platform = str(item.get("channel") or item.get("platform") or "").strip().casefold()
+            channel = "telegram" if platform in {"tg", "telegram"} else "max" if platform == "max" else ""
+            if profile_id and channel:
+                widget_profiles[(channel, profile_id)] = item
+    widget_setup_errors: list[str] = []
+    if config.require_widget_linkage:
+        if not widget_crm_id:
+            widget_setup_errors.append("wappi_amo_widget:crm_id_missing")
+        if not isinstance(client, WappiPhase1Client):
+            widget_setup_errors.append("wappi_amo_widget:unsupported_client")
+        missing_profiles = sorted(
+            (profile.channel, profile.profile_id)
+            for profile in profiles
+            if (profile.channel, profile.profile_id) not in widget_profiles
+        )
+        widget_setup_errors.extend(
+            f"wappi_amo_widget:profile_missing:{channel}:{profile_id}"
+            for channel, profile_id in missing_profiles
+        )
+    widget_link_report: Mapping[str, Any] = {}
+    widget_event_link_report: Mapping[str, Any] = {}
+    widget_contact_hydrate_report: Mapping[str, Any] = {}
+    if config.widget_link_db is not None:
+        if not config.refresh_widget_links and not config.widget_link_db.exists():
+            widget_setup_errors.append("wappi_amo_widget:reuse_link_db_missing")
+        elif not config.refresh_widget_links:
+            widget_link_report = {
+                "schema_version": WAPPI_WIDGET_LINK_SCHEMA,
+                "complete": True,
+                "reused": True,
+            }
+        elif not widget_crm_id or not isinstance(client, WappiPhase1Client):
+            widget_setup_errors.append("wappi_amo_widget:link_db_setup_unavailable")
+        else:
+            widget_link_report = collect_wappi_widget_links(
+                client=client,
+                profiles=profiles,
+                runtime_profiles=widget_profiles,
+                crm_id=widget_crm_id,
+                db_path=config.widget_link_db,
+                limits=config.limits,
+                force_recheck=config.widget_coverage_only,
+            )
+            if not widget_link_report.get("complete"):
+                widget_setup_errors.append("wappi_amo_widget:link_db_collection_incomplete")
+        if config.widget_coverage_only:
+            accounting_complete = bool(widget_link_report.get("accounting_complete"))
+            linkage_complete = bool(widget_link_report.get("linkage_complete"))
+            if not accounting_complete:
+                widget_setup_errors.append("wappi_amo_widget:accounting_incomplete")
+            if not linkage_complete:
+                widget_setup_errors.append("wappi_amo_widget:linkage_incomplete")
+            safety = {
+                "network_calls": True,
+                "wappi_transport": "DefaultDenyTransport",
+                "wappi_read_only_methods": ["GET", "POST Wappi AMO contact lookup"],
+                "read_messages": False,
+                "write_customer_timeline": False,
+                "send_messenger": False,
+                "write_crm": False,
+                "write_tallanto": False,
+                "blocked_live_actions": blocked_live_actions(),
+            }
+            validation_ok = not widget_setup_errors and accounting_complete and linkage_complete
+            return {
+                "schema_version": WAPPI_HISTORY_IMPORT_SCHEMA_VERSION,
+                "mode": "widget_coverage_only",
+                "dry_run": True,
+                "validation_ok": validation_ok,
+                "limit_hits": sorted(set(widget_setup_errors)),
+                "provenance": {
+                    "code_root": code_identity_start.get("code_root"),
+                    "git_sha": code_identity_start.get("git_sha"),
+                    "worktree": git_worktree_provenance(code_root),
+                    "input_hashes": input_hashes_start,
+                    "timeline_db": db_identity_start,
+                },
+                "summary": {
+                    "tenant_id": config.tenant_id,
+                    "profiles": len(profiles),
+                    "records_built": 0,
+                    "messages_read": 0,
+                    "writes_applied": 0,
+                    "amo_widget_link_map": widget_link_report,
+                },
+                "safety": safety,
+            }
+        if config.widget_link_db.exists():
+            widget_event_link_report = enrich_wappi_widget_links_from_timeline_amo_events(
+                timeline_db=config.timeline_db,
+                widget_link_db=config.widget_link_db,
+                tenant_id=config.tenant_id,
+            )
+    widget_links = load_wappi_widget_links(config.widget_link_db)
+    if config.apply and widget_links and not widget_setup_errors:
+        widget_contact_hydrate_report = hydrate_wappi_widget_contacts(
+            timeline_db=config.timeline_db,
+            allowed_root=config.allowed_root,
+            widget_links=widget_links,
+            amo_mcp_env_file=config.amo_mcp_env_file,
+            tenant_id=config.tenant_id,
+        )
+        # The hydrate step is our own audited staging write; detect drift only after it.
+        db_identity_validation_base = timeline_db_identity(config.timeline_db)
+    if not client_was_provided and config.widget_link_db is not None:
+        client = build_readonly_wappi_client(
+            config.env_file,
+            request_limit_total=config.limits.request_limit_total,
+        )
+        assert_readonly_wappi_client(client)
     pairs = load_wappi_pairs(config.pairs_file, config.auto_pairs_file)
     local_phone_stoplist, local_phone_stoplist_error = (
         load_phone_stoplist(config.shared_phone_stoplist)
@@ -519,9 +1589,17 @@ def run_wappi_history_import(
         tenant_id=config.tenant_id,
         pairs=pairs,
         amo_auto_resolver=amo_auto_resolver,
+        widget_client=client if widget_profiles else None,
+        widget_crm_id=widget_crm_id,
+        widget_profiles=widget_profiles,
+        widget_links=widget_links,
+        widget_required=config.require_widget_linkage,
         shared_phone_stoplist=local_phone_stoplist,
         shared_phone_stoplist_error=local_phone_stoplist_error,
     )
+    widget_prime_report = resolver.prime_widget_chat_resolutions(profiles)
+    message_identity_prime_report = resolver.prime_existing_message_identity_resolutions(profiles)
+    provisional_prime_report = resolver.prime_provisional_chat_resolutions(profiles)
     records, fetch_stats_by_profile = fetch_wappi_history_records(
         client=client,
         profiles=profiles,
@@ -529,18 +1607,36 @@ def run_wappi_history_import(
         limits=config.limits,
         tenant_id=config.tenant_id,
     )
+    network_source_ids = {
+        str(record.payload.get("timeline_source_id") or "")
+        for record in records
+        if str(record.payload.get("timeline_source_id") or "")
+    }
+    local_relink_records = load_existing_unmatched_wappi_records(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        chat_resolutions=resolver.chat_resolutions,
+        exclude_source_ids=network_source_ids,
+    )
+    records = (*records, *local_relink_records)
     existing_source_ids = load_existing_wappi_source_ids(
         config.timeline_db,
         tenant_id=config.tenant_id,
         source_systems=set(SOURCE_SYSTEM_BY_CHANNEL.values()),
         source_ids=[str(record.payload.get("timeline_source_id") or "") for record in records],
     )
-    existing_event_customers = load_existing_wappi_event_customers(
+    existing_event_assignments = load_existing_wappi_event_customers(
         config.timeline_db,
         tenant_id=config.tenant_id,
         source_systems=set(SOURCE_SYSTEM_BY_CHANNEL.values()),
         source_ids=[str(record.payload.get("timeline_source_id") or "") for record in records],
     )
+    provisional_customer_ids = load_provisional_customer_ids(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+    )
+    provisional_upgrades: dict[str, str] = {}
+    exact_authority_overrides = 0
     duplicate_count = 0
     blocked_customer_relink_conflicts = 0
     guarded_records: list[TimelineSourceRecord] = []
@@ -549,11 +1645,34 @@ def run_wappi_history_import(
         if source_id in existing_source_ids:
             duplicate_count += 1
             profile_id = str(record.payload.get("profile_id") or "")
-            if profile_id in fetch_stats_by_profile:
-                fetch_stats_by_profile[profile_id].duplicate_source_ids += 1
-        existing_customer = existing_event_customers.get((record.source_system, source_id))
+            stats_key = (record.source_system, profile_id)
+            if stats_key in fetch_stats_by_profile:
+                fetch_stats_by_profile[stats_key].duplicate_source_ids += 1
+        existing_customer, existing_authority = existing_event_assignments.get(
+            (record.source_system, source_id),
+            ("", ""),
+        )
         proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
-        if existing_customer and proposed_customer != existing_customer:
+        proposed_authority = str(record.payload.get("identity_authority") or "")
+        exact_override = bool(
+            existing_customer
+            and proposed_customer
+            and proposed_customer != existing_customer
+            and proposed_authority == "wappi_amo_widget"
+            and existing_authority != "wappi_amo_widget"
+        )
+        provisional_upgrade = bool(
+            existing_customer
+            and proposed_customer
+            and proposed_customer != existing_customer
+            and existing_customer in provisional_customer_ids
+            and str(record.payload.get("identity_authority") or "") != "wappi_provisional"
+        )
+        if provisional_upgrade:
+            provisional_upgrades[existing_customer] = proposed_customer
+        elif exact_override:
+            exact_authority_overrides += 1
+        elif existing_customer and proposed_customer != existing_customer:
             blocked_customer_relink_conflicts += 1
             existing_reason = str(record.payload.get("resolution_reason") or "")
             guarded_records.append(
@@ -568,25 +1687,40 @@ def run_wappi_history_import(
                 )
             )
             profile_id = str(record.payload.get("profile_id") or "")
-            if profile_id in fetch_stats_by_profile and proposed_customer:
-                fetch_stats_by_profile[profile_id].pending_attribution += 1
-                if fetch_stats_by_profile[profile_id].linked_by_amo_auto > 0 and record.payload.get("identity_authority") == "amo_auto_resolver":
-                    fetch_stats_by_profile[profile_id].linked_by_amo_auto -= 1
-                elif fetch_stats_by_profile[profile_id].linked_by_timeline > 0 and record.payload.get("identity_authority") == "timeline_identity":
-                    fetch_stats_by_profile[profile_id].linked_by_timeline -= 1
-                elif fetch_stats_by_profile[profile_id].linked_by_pair > 0:
-                    fetch_stats_by_profile[profile_id].linked_by_pair -= 1
-                fetch_stats_by_profile[profile_id].resolution_status_counts["existing_wappi_source_customer_conflict"] += 1
+            stats_key = (record.source_system, profile_id)
+            if stats_key in fetch_stats_by_profile and proposed_customer:
+                stats = fetch_stats_by_profile[stats_key]
+                stats.pending_attribution += 1
+                if stats.linked_by_amo_auto > 0 and record.payload.get("identity_authority") == "amo_auto_resolver":
+                    stats.linked_by_amo_auto -= 1
+                elif stats.linked_by_amo_widget > 0 and record.payload.get("identity_authority") == "wappi_amo_widget":
+                    stats.linked_by_amo_widget -= 1
+                elif stats.linked_by_timeline > 0 and record.payload.get("identity_authority") == "timeline_identity":
+                    stats.linked_by_timeline -= 1
+                elif stats.linked_by_provisional > 0 and record.payload.get("identity_authority") == "wappi_provisional":
+                    stats.linked_by_provisional -= 1
+                elif stats.linked_by_pair > 0:
+                    stats.linked_by_pair -= 1
+                stats.resolution_status_counts["existing_wappi_source_customer_conflict"] += 1
             continue
         guarded_records.append(record)
     records = tuple(guarded_records)
+    profile_id_counts = Counter(profile.profile_id for profile in profiles)
+    profile_report_keys = {
+        (profile.source_system, profile.profile_id): (
+            profile.profile_id
+            if profile_id_counts[profile.profile_id] == 1
+            else f"{profile.channel}:{profile.profile_id}"
+        )
+        for profile in profiles
+    }
     profile_reports = {
-        profile.profile_id: {
+        profile_report_keys[(profile.source_system, profile.profile_id)]: {
             "profile_id": profile.profile_id,
             "brand": profile.brand,
             "channel": profile.channel,
             "source_system": profile.source_system,
-            **fetch_stats_by_profile.get(profile.profile_id, WappiFetchStats()).to_json_dict(),
+            **fetch_stats_by_profile.get((profile.source_system, profile.profile_id), WappiFetchStats()).to_json_dict(),
         }
         for profile in profiles
     }
@@ -596,6 +1730,20 @@ def run_wappi_history_import(
         for field in ("chat_limit_hit", "message_limit_hit", "request_limit_hit", "pagination_drift_detected")
         if report.get(field)
     ]
+    limit_hits.extend(widget_setup_errors)
+    if config.require_widget_linkage and resolver.widget_missing_personal_chats:
+        limit_hits.append("wappi_amo_widget:personal_chat_without_contact")
+    if blocked_customer_relink_conflicts:
+        limit_hits.append("wappi_amo_widget:existing_customer_conflict")
+    if config.require_widget_linkage:
+        for (source_system, profile_id), stats in sorted(fetch_stats_by_profile.items()):
+            if (
+                stats.personal_chats != stats.widget_calls
+                or stats.personal_chats != stats.widget_resolved_chats
+                or stats.widget_pending_chats
+            ):
+                profile_key = profile_report_keys[(source_system, profile_id)]
+                limit_hits.append(f"{profile_key}:widget_personal_chat_coverage_incomplete")
     empty_profiles = sorted(
         profile_id for profile_id, report in profile_reports.items() if int(report.get("records_built") or 0) == 0
     )
@@ -613,7 +1761,7 @@ def run_wappi_history_import(
     if (
         input_hashes_pre_apply != input_hashes_start
         or worktree_pre_apply != worktree_start
-        or db_identity_pre_apply.get("identity_digest") != db_identity_start.get("identity_digest")
+        or db_identity_pre_apply.get("identity_digest") != db_identity_validation_base.get("identity_digest")
     ):
         limit_hits.append("provenance_drift")
 
@@ -622,6 +1770,7 @@ def run_wappi_history_import(
     normalized_counts: Counter[str] = Counter()
     errors: list[Mapping[str, Any]] = []
     stale_conflict_cleanup: dict[str, int] = {}
+    provisional_cleanup: Mapping[str, int] = {}
     store_summary_before: Optional[Mapping[str, Any]] = None
     store_summary_after: Optional[Mapping[str, Any]] = None
     grouped = group_records_by_source_system(records)
@@ -671,8 +1820,24 @@ def run_wappi_history_import(
                     import_reports[source_system] = sanitize_wappi_import_report(report.to_json_dict())
                     write_status_counts.update(report.write_status_counts)
                     normalized_counts.update({key: int(value) for key, value in report.normalized_counts.items()})
+                for old_customer_id, new_customer_id in sorted(provisional_upgrades.items()):
+                    store.record_customer_id_mapping(
+                        config.tenant_id,
+                        old_customer_id=old_customer_id,
+                        new_customer_id=new_customer_id,
+                        reason="wappi_provisional_exact_identity_upgrade",
+                        mapping_kind="alias",
+                        source_refs=("wappi_history_import",),
+                        actor=config.actor,
+                    )
+                    write_status_counts["customer_id_mapping_upserted"] += 1
         finally:
             store.close()
+        provisional_cleanup = remove_orphaned_provisional_customers(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            customer_ids=tuple(provisional_upgrades),
+        )
         stale_conflict_cleanup = close_resolved_wappi_pending_conflicts(
             config.timeline_db,
             tenant_id=config.tenant_id,
@@ -684,16 +1849,19 @@ def run_wappi_history_import(
             read_only=True,
         ) as store_ro:
             store_summary_after = store_ro.summary()
+    amo_read_active = bool(
+        amo_auto_resolver is not None or widget_contact_hydrate_report.get("requested")
+    )
     safety = {
         **timeline_import_cli_safety_contract(write_product_timeline_db=apply_effective),
         "read_local_files_only": False,
         "network_calls": True,
         "wappi_transport": "DefaultDenyTransport",
-        "wappi_read_only_methods": ["GET"],
+        "wappi_read_only_methods": ["GET", "POST Wappi AMO contact lookup"],
         "wappi_mark_all": False,
         "amo_auto_resolver_enabled": amo_auto_resolver is not None,
-        "amo_transport": "AmoMcpClient" if amo_auto_resolver is not None else "disabled",
-        "amo_read_only_methods": ["GET"] if amo_auto_resolver is not None else [],
+        "amo_transport": "AmoMcpClient" if amo_read_active else "disabled",
+        "amo_read_only_methods": ["GET"] if amo_read_active else [],
         "send_messenger": False,
         "write_crm": False,
         "write_tallanto": False,
@@ -716,6 +1884,7 @@ def run_wappi_history_import(
             "input_hashes_start": input_hashes_start,
             "timeline_db": db_identity_end,
             "timeline_db_start": db_identity_start,
+            "timeline_db_after_hydrate": db_identity_validation_base,
             "timeline_db_pre_apply": db_identity_pre_apply,
             "input_source_id_set_hash": stable_digest(
                 sorted(
@@ -727,11 +1896,13 @@ def run_wappi_history_import(
                 "chat_limit_per_profile": config.limits.chat_limit_per_profile,
                 "messages_per_chat": config.limits.messages_per_chat,
                 "message_limit_total": config.limits.message_limit_total,
+                "complete_message_history": config.limits.complete_message_history,
                 "request_limit_total": config.limits.request_limit_total,
                 "page_size": config.limits.page_size,
                 "sleep_seconds": config.limits.sleep_seconds,
                 "show_all_chats": config.limits.show_all_chats,
                 "require_nonempty_profiles": config.require_nonempty_profiles,
+                "require_widget_linkage": config.require_widget_linkage,
             },
         },
         "mode": "apply" if apply_effective else ("apply_blocked" if config.apply else "dry_run_preview"),
@@ -745,15 +1916,34 @@ def run_wappi_history_import(
             "linked_by_pair": sum(stats.linked_by_pair for stats in fetch_stats_by_profile.values()),
             "linked_by_timeline": sum(stats.linked_by_timeline for stats in fetch_stats_by_profile.values()),
             "linked_by_amo_auto": sum(stats.linked_by_amo_auto for stats in fetch_stats_by_profile.values()),
+            "linked_by_amo_widget": sum(stats.linked_by_amo_widget for stats in fetch_stats_by_profile.values()),
+            "linked_by_amo_event_sequence": sum(
+                stats.linked_by_amo_event_sequence for stats in fetch_stats_by_profile.values()
+            ),
+            "linked_by_provisional": sum(
+                stats.linked_by_provisional for stats in fetch_stats_by_profile.values()
+            ),
             "pending_attribution": sum(stats.pending_attribution for stats in fetch_stats_by_profile.values()),
             "requests": sum(stats.requests for stats in fetch_stats_by_profile.values()),
             "physical_requests": readonly_wappi_physical_request_count(client),
             "amo_auto_enabled": amo_auto_resolver is not None,
             "amo_auto_calls": sum(stats.amo_auto_calls for stats in fetch_stats_by_profile.values()),
+            "amo_widget_enabled": bool(widget_profiles),
+            "amo_widget_calls": resolver.widget_calls,
+            "amo_widget_missing_personal_chats": resolver.widget_missing_personal_chats,
+            "amo_widget_link_map": widget_link_report,
+            "amo_widget_contact_hydrate": widget_contact_hydrate_report,
+            "amo_event_sequence_link_map": widget_event_link_report,
+            "amo_widget_map_prime": widget_prime_report,
+            "message_identity_prime": message_identity_prime_report,
+            "provisional_wappi_prime": provisional_prime_report,
             "write_applied": apply_effective,
             "writes_applied": sum(write_status_counts.values()) if apply_effective else 0,
             "duplicate_source_ids_before_import": duplicate_count,
             "blocked_customer_relink_conflicts": blocked_customer_relink_conflicts,
+            "provisional_customer_upgrades": len(provisional_upgrades),
+            "exact_authority_overrides": exact_authority_overrides,
+            "local_unmatched_relink_records": len(local_relink_records),
             "blocked_chat_relink_conflicts": int(
                 records_by_resolution_reason.get("existing_wappi_chat_customer_conflict", 0)
             ),
@@ -783,6 +1973,7 @@ def run_wappi_history_import(
             "all_db_mutations_single_transaction": False if apply_effective else None,
         },
         "stale_conflict_cleanup": stale_conflict_cleanup,
+        "provisional_cleanup": provisional_cleanup,
         "import_reports": import_reports,
         "errors": errors,
         "store_summary_before": store_summary_before,
@@ -804,11 +1995,18 @@ class WappiPairCustomerResolver:
         db_path: Path,
         tenant_id: str,
         amo_auto_resolver: AmoAutoResolver | None = None,
+        widget_client: WappiPhase1Client | None = None,
+        widget_crm_id: str = "",
+        widget_profiles: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+        widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]] | None = None,
+        widget_required: bool = False,
         local_identity_customers: Mapping[tuple[str, str], Sequence[str]] | None = None,
         ambiguous_identity_values: Sequence[tuple[str, str]] = (),
         customer_brands: Mapping[str, str] | None = None,
         supported_customer_ids: Sequence[str] = (),
         chat_customer_ids: Mapping[tuple[str, str, str], Sequence[str]] | None = None,
+        exact_chat_customer_ids: Mapping[tuple[str, str, str], Sequence[str]] | None = None,
+        provisional_customer_ids: Sequence[str] = (),
         shared_phone_stoplist: Sequence[str] = (),
         shared_phone_stoplist_error: str = "",
     ) -> None:
@@ -816,6 +2014,23 @@ class WappiPairCustomerResolver:
         self._db_path = Path(db_path)
         self._tenant_id = normalize_key(tenant_id, "tenant_id")
         self._amo_auto_resolver = amo_auto_resolver
+        self._widget_client = widget_client
+        self._widget_crm_id = str(widget_crm_id or "").strip()
+        self._widget_profiles: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for key, item in (widget_profiles or {}).items():
+            if isinstance(key, tuple) and len(key) == 2:
+                self._widget_profiles[(str(key[0]), str(key[1]))] = item
+                continue
+            platform = str(item.get("channel") or item.get("platform") or "").strip().casefold()
+            channel = "telegram" if platform in {"tg", "telegram"} else "max" if platform == "max" else ""
+            if channel:
+                self._widget_profiles[(channel, str(key))] = item
+        self._widget_links = dict(widget_links or {})
+        self._widget_required = bool(widget_required)
+        self._widget_calls = 0
+        self._widget_missing_personal_chats = 0
+        self._widget_chat_resolutions: dict[tuple[str, str, str], WappiChatResolution] = {}
+        self._chat_resolutions: dict[tuple[str, str, str], WappiChatResolution] = {}
         self._local_identity_customers = {
             key: tuple(sorted(set(values))) for key, values in (local_identity_customers or {}).items()
         }
@@ -825,12 +2040,172 @@ class WappiPairCustomerResolver:
         self._chat_customer_ids = {
             key: tuple(sorted(set(values))) for key, values in (chat_customer_ids or {}).items()
         }
+        self._exact_chat_customer_ids = {
+            key: tuple(sorted(set(values))) for key, values in (exact_chat_customer_ids or {}).items()
+        }
+        self._provisional_customer_ids = frozenset(provisional_customer_ids)
         self._shared_phone_stoplist = frozenset(shared_phone_stoplist)
         self._shared_phone_stoplist_error = str(shared_phone_stoplist_error or "")
 
     @property
     def amo_auto_calls(self) -> int:
         return int(getattr(self._amo_auto_resolver, "calls", 0)) if self._amo_auto_resolver is not None else 0
+
+    @property
+    def widget_calls(self) -> int:
+        return self._widget_calls
+
+    @property
+    def widget_missing_personal_chats(self) -> int:
+        return self._widget_missing_personal_chats
+
+    @property
+    def widget_chat_resolutions(self) -> Mapping[tuple[str, str, str], WappiChatResolution]:
+        return dict(self._widget_chat_resolutions)
+
+    @property
+    def chat_resolutions(self) -> Mapping[tuple[str, str, str], WappiChatResolution]:
+        return dict(self._chat_resolutions)
+
+    def prime_widget_chat_resolutions(
+        self,
+        profiles: Sequence[WappiProfileSpec],
+    ) -> Mapping[str, int]:
+        """Resolve every proven row in the persistent map, including old chats."""
+        profile_index = {(item.channel, item.profile_id): item for item in profiles}
+        counts: Counter[str] = Counter()
+        for (channel, profile_id, chat_id), cached in sorted(self._widget_links.items()):
+            if str(cached.get("status") or "") != "resolved":
+                counts["skipped_unresolved"] += 1
+                continue
+            profile = profile_index.get((channel, profile_id))
+            if profile is None:
+                counts["profile_missing"] += 1
+                continue
+            contact_id = str(cached.get("contact_id") or "").strip()
+            lead_ids = tuple(
+                sorted({str(item).strip() for item in cached.get("lead_ids") or () if str(item).strip()})
+            )
+            resolution = self._resolve_widget_candidate_to_customer(
+                profile=profile,
+                contact_id=contact_id,
+                lead_ids=lead_ids,
+                resolution_source=str(cached.get("resolution_source") or "wappi_amo_widget"),
+            )
+            guarded = self._guard_chat_customer(profile, chat_id, resolution)
+            key = (profile.source_system, profile_id, chat_id)
+            self._widget_chat_resolutions[key] = guarded
+            self._chat_resolutions[key] = guarded
+            counts["resolved" if guarded.resolved else "pending_attribution"] += 1
+        return dict(sorted(counts.items()))
+
+    def prime_existing_message_identity_resolutions(
+        self,
+        profiles: Sequence[WappiProfileSpec],
+    ) -> Mapping[str, int]:
+        """Count message-body identifiers as candidates; never treat them as sender identity."""
+        profile_index = {(item.source_system, item.profile_id): item for item in profiles}
+        values_by_chat: dict[tuple[str, str, str], set[tuple[str, str]]] = defaultdict(set)
+        with open_readonly_sqlite(self._db_path) as con:
+            for row in con.execute(
+                """
+                SELECT source_system,
+                       json_extract(record_json, '$.metadata.profile_id') AS profile_id,
+                       json_extract(record_json, '$.metadata.chat_id') AS chat_id,
+                       COALESCE(json_extract(record_json, '$.record.message.text'), text_preview, summary, '') AS text
+                FROM timeline_events
+                WHERE tenant_id = ?
+                  AND source_system IN ('wappi_telegram', 'wappi_max')
+                  AND customer_id IS NULL
+                  AND direction = 'inbound'
+                  AND superseded_by IS NULL
+                  AND json_valid(record_json)
+                """,
+                (self._tenant_id,),
+            ):
+                source_system = str(row[0])
+                profile_id = str(row[1] or "").strip()
+                chat_id = str(row[2] or "").strip()
+                channel = "telegram" if source_system == "wappi_telegram" else "max"
+                if (channel, profile_id, chat_id) not in self._widget_links:
+                    continue
+                text = str(row[3] or "")
+                for candidate in WAPPI_MESSAGE_EMAIL_RE.findall(text):
+                    email = normalize_email(candidate)
+                    if email:
+                        values_by_chat[(source_system, profile_id, chat_id)].add(("email", email))
+                for candidate in WAPPI_MESSAGE_PHONE_RE.findall(text):
+                    phone = normalize_phone(candidate)
+                    if phone and not self._shared_phone_stoplist_error and phone not in self._shared_phone_stoplist:
+                        values_by_chat[(source_system, profile_id, chat_id)].add(("phone", phone))
+
+        counts: Counter[str] = Counter()
+        for key, identity_values in sorted(values_by_chat.items()):
+            current = self._chat_resolutions.get(key)
+            if current is not None and current.resolved:
+                counts["already_resolved"] += 1
+                continue
+            source_system, profile_id, _chat_id = key
+            if profile_index.get((source_system, profile_id)) is None:
+                counts["profile_missing"] += 1
+                continue
+            owner_sets: list[set[str]] = []
+            ambiguous = False
+            for identity_key in sorted(identity_values):
+                if identity_key in self._ambiguous_identity_values:
+                    ambiguous = True
+                    continue
+                owners = set(self._local_identity_customers.get(identity_key, ()))
+                if len(owners) == 1:
+                    owner_sets.append(owners)
+                elif len(owners) > 1:
+                    ambiguous = True
+            candidate_customers = set().union(*owner_sets) if owner_sets else set()
+            if ambiguous or len(candidate_customers) > 1:
+                counts["ambiguous"] += 1
+                continue
+            if len(candidate_customers) != 1:
+                counts["unmatched"] += 1
+                continue
+            counts["candidate_unique"] += 1
+        return dict(sorted(counts.items()))
+
+    def prime_provisional_chat_resolutions(
+        self,
+        profiles: Sequence[WappiProfileSpec],
+    ) -> Mapping[str, int]:
+        """Keep genuine personal Wappi history without pretending it has a CRM identity."""
+        profile_index = {(item.channel, item.profile_id): item for item in profiles}
+        counts: Counter[str] = Counter()
+        for (channel, profile_id, chat_id), cached in sorted(self._widget_links.items()):
+            if str(cached.get("status") or "") not in {"missing", "candidate"}:
+                continue
+            profile = profile_index.get((channel, profile_id))
+            if profile is None:
+                counts["profile_missing"] += 1
+                continue
+            key = (profile.source_system, profile_id, chat_id)
+            current = self._chat_resolutions.get(key)
+            if current is not None and current.resolved:
+                counts["already_resolved"] += 1
+                continue
+            source_ref = f"wappi_provisional:{profile.source_system}:{profile_id}:{chat_id}"
+            resolution = WappiChatResolution(
+                status="resolved",
+                customer_id=stable_customer_id(tenant_id=self._tenant_id, source_ref=source_ref),
+                expected_brand=profile.brand,
+                reason="provisional_wappi_family",
+                pair_source="wappi_provisional",
+                resolution_source="wappi_provisional",
+                match_key="channel_session_id",
+                evidence={
+                    "provisional_wappi_family": True,
+                    "brand_context_authorized": False,
+                },
+            )
+            self._chat_resolutions[key] = resolution
+            counts["created"] += 1
+        return dict(sorted(counts.items()))
 
     def record_coverage(self, *, profile: WappiProfileSpec, dialog: Mapping[str, Any], stats: WappiFetchStats) -> None:
         chat_id = extract_chat_id(dialog)
@@ -872,6 +2247,11 @@ class WappiPairCustomerResolver:
         tenant_id: str,
         pairs: Mapping[DraftLoopKey, DraftLoopPair],
         amo_auto_resolver: AmoAutoResolver | None = None,
+        widget_client: WappiPhase1Client | None = None,
+        widget_crm_id: str = "",
+        widget_profiles: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+        widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]] | None = None,
+        widget_required: bool = False,
         shared_phone_stoplist: Sequence[str] = (),
         shared_phone_stoplist_error: str = "",
     ) -> "WappiPairCustomerResolver":
@@ -882,6 +2262,11 @@ class WappiPairCustomerResolver:
                 db_path=db_path,
                 tenant_id=tenant,
                 amo_auto_resolver=amo_auto_resolver,
+                widget_client=widget_client,
+                widget_crm_id=widget_crm_id,
+                widget_profiles=widget_profiles,
+                widget_links=widget_links,
+                widget_required=widget_required,
                 shared_phone_stoplist=shared_phone_stoplist,
                 shared_phone_stoplist_error=shared_phone_stoplist_error,
             )
@@ -891,27 +2276,30 @@ class WappiPairCustomerResolver:
         customer_brands: dict[str, str] = {}
         supported_customer_ids: set[str] = set()
         chat_customer_ids: dict[tuple[str, str, str], set[str]] = {}
+        exact_chat_customer_ids: dict[tuple[str, str, str], set[str]] = {}
+        provisional_customer_ids: set[str] = set()
         with open_readonly_sqlite(db_path) as con:
-            family_customer_ids = {
+            provisional_customer_ids.update(
                 str(row["customer_id"])
                 for row in con.execute(
                     """
                     SELECT customer_id
-                    FROM identity_links
-                    WHERE tenant_id = ? AND link_type = 'tallanto_student_id'
-                    GROUP BY customer_id
-                    HAVING COUNT(DISTINCT link_value) > 1
+                    FROM customer_identities
+                    WHERE tenant_id = ?
+                      AND json_extract(record_json, '$.metadata.provisional_wappi_family') = 1
                     """,
                     (tenant,),
                 )
-            }
+            )
             safe_customer_ids = {
                 str(row["customer_id"])
                 for row in con.execute(
                     """
                     SELECT customer_id
                     FROM customer_identities
-                    WHERE tenant_id = ? AND identity_status IN ('strong', 'partial')
+                    WHERE tenant_id = ?
+                      AND identity_status IN ('strong', 'partial')
+                      AND COALESCE(json_extract(record_json, '$.metadata.provisional_wappi_family'), 0) != 1
                     """,
                     (tenant,),
                 )
@@ -923,7 +2311,8 @@ class WappiPairCustomerResolver:
                 WHERE tenant_id = ?
                   AND link_type IN (
                     'telegram_user_id', 'telegram_username', 'max_user_id',
-                    'phone', 'mango_client_phone', 'whatsapp_phone'
+                    'phone', 'mango_client_phone', 'whatsapp_phone', 'email',
+                    'amo_contact_id', 'amo_lead_id'
                   )
                 """,
                 (tenant,),
@@ -944,7 +2333,6 @@ class WappiPairCustomerResolver:
                 if len(identity_owners.get(key, ())) != 1
                 or not identity_classes[key].issubset({"strong_unique", "manual"})
                 or not identity_owners.get(key, set()).issubset(safe_customer_ids)
-                or (key[0] == "phone" and bool(identity_owners.get(key, set()) & family_customer_ids))
             )
             for row in identity_rows:
                 raw_link_type = str(row["link_type"])
@@ -956,9 +2344,6 @@ class WappiPairCustomerResolver:
                     or key in ambiguous_identity_values
                     or customer_id not in safe_customer_ids
                     or not customer_id
-                    or (
-                    link_type == "phone" and customer_id in family_customer_ids
-                    )
                 ):
                     continue
                 local_identity_customers.setdefault(key, set()).add(customer_id)
@@ -1031,26 +2416,29 @@ class WappiPairCustomerResolver:
             ):
                 parts = str(row["link_value"]).split(":", 2)
                 if len(parts) == 3 and parts[0] in SOURCE_SYSTEM_BY_CHANNEL.values():
-                    chat_customer_ids.setdefault((parts[0], parts[1], parts[2]), set()).add(str(row["customer_id"]))
+                    chat_key = (parts[0], parts[1], parts[2])
+                    chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
             if sqlite_table_exists(con, "timeline_events"):
                 for row in con.execute(
                     """
                     SELECT source_system,
                            json_extract(record_json, '$.metadata.profile_id') AS profile_id,
                            json_extract(record_json, '$.metadata.chat_id') AS chat_id,
-                           customer_id
+                           customer_id,
+                           COALESCE(json_extract(record_json, '$.metadata.identity_authority'), '') AS identity_authority
                     FROM timeline_events
                     WHERE tenant_id = ?
                       AND source_system IN ('wappi_telegram', 'wappi_max')
                       AND customer_id IS NOT NULL
+                      AND superseded_by IS NULL
                     """,
                     (tenant,),
                 ):
                     if row["profile_id"] and row["chat_id"]:
-                        chat_customer_ids.setdefault(
-                            (str(row["source_system"]), str(row["profile_id"]), str(row["chat_id"])),
-                            set(),
-                        ).add(str(row["customer_id"]))
+                        chat_key = (str(row["source_system"]), str(row["profile_id"]), str(row["chat_id"]))
+                        chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
+                        if str(row["identity_authority"] or "") in WAPPI_EXACT_AMO_AUTHORITIES:
+                            exact_chat_customer_ids.setdefault(chat_key, set()).add(str(row["customer_id"]))
             for key, pair in pairs.items():
                 lead_ids = lookup_amo_link_customers(
                     con,
@@ -1108,11 +2496,18 @@ class WappiPairCustomerResolver:
             db_path=db_path,
             tenant_id=tenant,
             amo_auto_resolver=amo_auto_resolver,
+            widget_client=widget_client,
+            widget_crm_id=widget_crm_id,
+            widget_profiles=widget_profiles,
+            widget_links=widget_links,
+            widget_required=widget_required,
             local_identity_customers=local_identity_customers,
             ambiguous_identity_values=tuple(ambiguous_identity_values),
             customer_brands=customer_brands,
             supported_customer_ids=tuple(supported_customer_ids),
             chat_customer_ids=chat_customer_ids,
+            exact_chat_customer_ids=exact_chat_customer_ids,
+            provisional_customer_ids=tuple(provisional_customer_ids),
             shared_phone_stoplist=shared_phone_stoplist,
             shared_phone_stoplist_error=shared_phone_stoplist_error,
         )
@@ -1142,26 +2537,245 @@ class WappiPairCustomerResolver:
         messages: Sequence[WappiHistoryMessage],
     ) -> WappiChatResolution:
         chat_id = extract_chat_id(dialog) or (messages[0].chat_id if messages else "")
+        widget_resolution = self._resolve_with_amo_widget(profile=profile, dialog=dialog)
+        if widget_resolution is not None:
+            guarded = self._guard_chat_customer(profile, chat_id, widget_resolution)
+            if is_personal_wappi_dialog(profile, dialog) and chat_id:
+                key = (profile.source_system, profile.profile_id, chat_id)
+                self._widget_chat_resolutions[key] = guarded
+                self._chat_resolutions[key] = guarded
+            return guarded
+        primed = self._chat_resolutions.get((profile.source_system, profile.profile_id, chat_id))
+        if (
+            primed is not None
+            and primed.resolution_source != "wappi_provisional"
+            and is_personal_wappi_dialog(profile, dialog)
+        ):
+            return primed
         pair_resolution = self.resolve(profile=profile, chat_id=chat_id)
         if pair_resolution.reason != "draft_loop_pair_missing":
-            return self._guard_chat_customer(
+            guarded = self._guard_chat_customer(
                 profile,
                 chat_id,
                 self._guard_pair_context(profile, chat_id, dialog, pair_resolution),
             )
+            self._remember_chat_resolution(profile, chat_id, dialog, guarded)
+            return guarded
         timeline_resolution = self._resolve_with_timeline_identity(
             profile=profile,
             chat_id=chat_id,
             dialog=dialog,
         )
         if timeline_resolution is not None:
-            return self._guard_chat_customer(profile, chat_id, timeline_resolution)
+            guarded = self._guard_chat_customer(profile, chat_id, timeline_resolution)
+            self._remember_chat_resolution(profile, chat_id, dialog, guarded)
+            return guarded
         if self._amo_auto_resolver is None:
-            return pair_resolution
-        return self._guard_chat_customer(
+            return primed if primed is not None else pair_resolution
+        guarded = self._guard_chat_customer(
             profile,
             chat_id,
             self._resolve_with_amo_auto(profile=profile, chat_id=chat_id, dialog=dialog, messages=messages),
+        )
+        if (
+            not guarded.resolved
+            and not guarded.candidate_customer_ids
+            and primed is not None
+            and primed.resolution_source == "wappi_provisional"
+        ):
+            guarded = primed
+        self._remember_chat_resolution(profile, chat_id, dialog, guarded)
+        return guarded
+
+    def _remember_chat_resolution(
+        self,
+        profile: WappiProfileSpec,
+        chat_id: str,
+        dialog: Mapping[str, Any],
+        resolution: WappiChatResolution,
+    ) -> None:
+        if chat_id and is_personal_wappi_dialog(profile, dialog):
+            self._chat_resolutions[(profile.source_system, profile.profile_id, chat_id)] = resolution
+
+    def _resolve_with_amo_widget(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        dialog: Mapping[str, Any],
+    ) -> WappiChatResolution | None:
+        chat_id = extract_chat_id(dialog)
+        cached = self._widget_links.get((profile.channel, profile.profile_id, chat_id))
+        if cached is not None:
+            self._widget_calls += 1
+            cached_status = str(cached.get("status") or "").strip()
+            if cached_status != "resolved":
+                self._widget_missing_personal_chats += 1
+                fail_closed = cached_status in {"conflict", "http_5xx", "timeout"}
+                if self._widget_required or fail_closed:
+                    return WappiChatResolution(
+                        status="pending_attribution",
+                        expected_brand=profile.brand,
+                        reason=(
+                            "wappi_widget_contact_unconfirmed"
+                            if cached_status == "candidate"
+                            else f"wappi_widget_{cached_status}"
+                            if fail_closed
+                            else "wappi_widget_contact_missing"
+                        ),
+                        resolution_source="wappi_amo_widget",
+                    )
+                return None
+            contact_id = str(cached.get("contact_id") or "").strip()
+            lead_ids = tuple(sorted({str(item).strip() for item in cached.get("lead_ids") or () if str(item).strip()}))
+            if contact_id:
+                return self._resolve_widget_candidate_to_customer(
+                    profile=profile,
+                    contact_id=contact_id,
+                    lead_ids=lead_ids,
+                    resolution_source=str(cached.get("resolution_source") or "wappi_amo_widget"),
+                )
+            self._widget_missing_personal_chats += 1
+            if self._widget_required:
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason="wappi_widget_contact_missing",
+                    resolution_source="wappi_amo_widget",
+                )
+            return None
+        runtime_profile = self._widget_profiles.get((profile.channel, profile.profile_id))
+        if self._widget_client is None or not self._widget_crm_id or runtime_profile is None:
+            if self._widget_required:
+                self._widget_missing_personal_chats += 1
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason="wappi_widget_unavailable",
+                    resolution_source="wappi_amo_widget",
+                )
+            return None
+        if not is_personal_wappi_dialog(profile, dialog):
+            return None
+        self._widget_calls += 1
+        try:
+            payload = _find_wappi_widget_contact(
+                self._widget_client,
+                profile=profile,
+                runtime_profile=runtime_profile,
+                dialog=dialog,
+                crm_id=self._widget_crm_id,
+            )
+        except AmoWappiConfigError:
+            self._widget_missing_personal_chats += 1
+            return WappiChatResolution(
+                status="pending_attribution",
+                expected_brand=profile.brand,
+                reason="wappi_widget_peer_id_missing_or_ambiguous",
+                resolution_source="wappi_amo_widget",
+            )
+        contact = payload.get("contact") if isinstance(payload.get("contact"), Mapping) else {}
+        contact_id = str(contact.get("id") or "").strip()
+        raw_leads: list[Mapping[str, Any]] = []
+        for candidate in (
+            payload.get("leads"),
+            contact.get("_embedded", {}).get("leads") if isinstance(contact.get("_embedded"), Mapping) else None,
+        ):
+            if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
+                raw_leads.extend(item for item in candidate if isinstance(item, Mapping))
+        lead_ids = tuple(sorted({str(item.get("id") or "").strip() for item in raw_leads if str(item.get("id") or "").strip()}))
+        if not contact_id:
+            self._widget_missing_personal_chats += 1
+            if self._widget_required:
+                return WappiChatResolution(
+                    status="pending_attribution",
+                    expected_brand=profile.brand,
+                    reason="wappi_widget_contact_missing",
+                    resolution_source="wappi_amo_widget",
+                )
+            return None
+        return self._resolve_widget_candidate_to_customer(
+            profile=profile,
+            contact_id=contact_id,
+            lead_ids=lead_ids,
+        )
+
+    def _resolve_widget_candidate_to_customer(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        contact_id: str,
+        lead_ids: Sequence[str],
+        resolution_source: str = "wappi_amo_widget",
+    ) -> WappiChatResolution:
+        source = "wappi_amo_widget"
+        match_key = "wappi_widget_contact"
+        contact_owners = set(self._local_identity_customers.get(("amo_contact_id", contact_id), ()))
+        lead_owner_sets = tuple(
+            set(self._local_identity_customers.get(("amo_lead_id", lead_id), ()))
+            for lead_id in lead_ids
+        )
+        all_owners = set(contact_owners)
+        for owners in lead_owner_sets:
+            all_owners.update(owners)
+        nonempty_lead_owners = tuple(owners for owners in lead_owner_sets if owners)
+        if not contact_owners and nonempty_lead_owners:
+            first_lead_owners = nonempty_lead_owners[0]
+            if len(first_lead_owners) == 1 and all(
+                owners == first_lead_owners for owners in nonempty_lead_owners
+            ):
+                contact_owners = set(first_lead_owners)
+                match_key = "wappi_widget_lead"
+        if len(contact_owners) != 1 or any(owners and owners != contact_owners for owners in lead_owner_sets):
+            self._widget_missing_personal_chats += 1
+            return WappiChatResolution(
+                status="pending_attribution",
+                lead_id=lead_ids[0] if lead_ids else "",
+                lead_ids=tuple(lead_ids),
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                reason="wappi_widget_timeline_identity_missing_or_conflicting",
+                candidate_customer_ids=tuple(sorted(all_owners)),
+                resolution_source=source,
+                match_key=match_key,
+            )
+        customer_id = next(iter(contact_owners))
+        customer_brand = self._customer_brands.get(customer_id, "unknown")
+        brand_authorized = customer_brand == profile.brand
+        if customer_brand != "unknown" and not brand_authorized:
+            self._widget_missing_personal_chats += 1
+            return WappiChatResolution(
+                status="pending_attribution",
+                lead_id=lead_ids[0] if lead_ids else "",
+                lead_ids=tuple(lead_ids),
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                reason="wappi_widget_brand_mismatch",
+                candidate_customer_ids=(customer_id,),
+                resolution_source=source,
+                match_key=match_key,
+                evidence={
+                    "lead_count": len(lead_ids),
+                    "customer_brand": customer_brand,
+                    "profile_brand": profile.brand,
+                    "brand_context_authorized": False,
+                },
+            )
+        return WappiChatResolution(
+            status="resolved",
+            customer_id=customer_id,
+            lead_id=lead_ids[0] if lead_ids else "",
+            lead_ids=tuple(lead_ids),
+            contact_id=contact_id,
+            expected_brand=profile.brand,
+            pair_source=source,
+            resolution_source=source,
+            match_key=match_key,
+            evidence={
+                "lead_count": len(lead_ids),
+                "customer_brand": customer_brand,
+                "profile_brand": profile.brand,
+                "brand_context_authorized": brand_authorized,
+            },
         )
 
     def _guard_pair_context(
@@ -1226,6 +2840,18 @@ class WappiPairCustomerResolver:
             return resolution
         owners = self._chat_customer_ids.get((profile.source_system, profile.profile_id, chat_id), ())
         if not owners or owners == (resolution.customer_id,):
+            return resolution
+        if resolution.resolution_source != "wappi_provisional" and set(owners).issubset(
+            self._provisional_customer_ids
+        ):
+            return resolution
+        exact_owners = self._exact_chat_customer_ids.get(
+            (profile.source_system, profile.profile_id, chat_id),
+            (),
+        )
+        if resolution.resolution_source == "wappi_amo_widget" and (
+            not exact_owners or exact_owners == (resolution.customer_id,)
+        ):
             return resolution
         return WappiChatResolution(
             status="pending_attribution",
@@ -1342,30 +2968,43 @@ class WappiPairCustomerResolver:
         dialog: Mapping[str, Any],
         messages: Sequence[WappiHistoryMessage],
     ) -> WappiChatResolution:
-        if not messages:
-            return WappiChatResolution(
-                status="pending_attribution",
-                expected_brand=profile.brand,
-                reason="chat_has_no_importable_messages",
-                resolution_source="amo_auto_resolver",
-            )
         if not chat_id:
             return WappiChatResolution(status="pending_attribution", expected_brand=profile.brand, reason="chat_id_missing", resolution_source="amo_auto_resolver")
         key = DraftLoopKey(profile.profile_id, chat_id)
         draft_profile = DraftLoopProfile(profile_id=profile.profile_id, brand=profile.brand, channel=profile.channel)
-        auto_result = self._amo_auto_resolver(
-            key=key,
-            profile=draft_profile,
-            dialog=dialog,
-            messages=messages,
-            message=messages[-1],
-        )
+        try:
+            auto_result = self._amo_auto_resolver(
+                key=key,
+                profile=draft_profile,
+                dialog=dialog,
+                messages=messages,
+                message=messages[-1] if messages else None,
+                identity_only=True,
+            )
+        except Exception:  # noqa: BLE001 - keep the batch moving without exposing AMO payloads.
+            return WappiChatResolution(
+                status="pending_attribution",
+                expected_brand=profile.brand,
+                reason="amo_auto_lookup_error",
+                resolution_source="amo_auto_resolver",
+            )
         status = str(auto_result.get("status") or "").strip()
         reason = str(auto_result.get("reason") or status or "amo_auto_unresolved").strip()
         lead_id = str(auto_result.get("lead_id") or "").strip()
         contact_id = str(auto_result.get("contact_id") or "").strip()
         match_key = str(auto_result.get("match_key") or "").strip()
         if status != "matched":
+            if contact_id and match_key:
+                identity_resolution = self._resolve_amo_candidate_to_customer(
+                    profile=profile,
+                    lead_id=lead_id,
+                    contact_id=contact_id,
+                    match_key=match_key,
+                    auto_result=auto_result,
+                    identity_only=True,
+                )
+                if identity_resolution.resolved or identity_resolution.candidate_customer_ids:
+                    return identity_resolution
             lead_snapshot = auto_result.get("lead_snapshot") if isinstance(auto_result.get("lead_snapshot"), Mapping) else {}
             organization_values = auto_result.get("organization_values") or lead_snapshot.get("organization_values") or ()
             return WappiChatResolution(
@@ -1397,6 +3036,7 @@ class WappiPairCustomerResolver:
         contact_id: str,
         match_key: str,
         auto_result: Mapping[str, Any],
+        identity_only: bool = False,
     ) -> WappiChatResolution:
         if not self._db_path.exists():
             return WappiChatResolution(
@@ -1408,31 +3048,27 @@ class WappiPairCustomerResolver:
                 resolution_source="amo_auto_resolver",
                 match_key=match_key,
             )
-        with open_readonly_sqlite(self._db_path) as con:
-            lead_ids = lookup_amo_link_customers(
-                con,
-                tenant_id=self._tenant_id,
-                link_type="amo_lead_id",
-                link_value=lead_id,
-            )
-            contact_ids = lookup_amo_link_customers(
-                con,
-                tenant_id=self._tenant_id,
-                link_type="amo_contact_id",
-                link_value=contact_id,
-            )
-            opportunity_ids, opportunity_id = lookup_amo_opportunity_customers(
-                con,
-                tenant_id=self._tenant_id,
-                lead_id=lead_id,
-            )
+        contact_ids = set(self._local_identity_customers.get(("amo_contact_id", contact_id), ()))
+        lead_ids = set(self._local_identity_customers.get(("amo_lead_id", lead_id), ()))
+        opportunity_ids: set[str] = set()
+        opportunity_id = ""
+        if lead_id and not identity_only:
+            with open_readonly_sqlite(self._db_path) as con:
+                opportunity_ids, opportunity_id = lookup_amo_opportunity_customers(
+                    con,
+                    tenant_id=self._tenant_id,
+                    lead_id=lead_id,
+                )
+        if identity_only:
+            lead_ids = set()
         candidate_sets = [items for items in (lead_ids, contact_ids, opportunity_ids) if items]
         candidate_union = set().union(*candidate_sets) if candidate_sets else set()
         lead_snapshot = auto_result.get("lead_snapshot") if isinstance(auto_result.get("lead_snapshot"), Mapping) else {}
         organization_values = lead_snapshot.get("organization_values") or ()
         evidence = {
             "exact_match_kind": match_key,
-            "single_active_lead": True,
+            "single_active_lead": not identity_only,
+            "identity_only": identity_only,
             "organization_brand": str(lead_snapshot.get("organization_brand") or ""),
             "organization_value_count": len(organization_values) if isinstance(organization_values, Sequence) and not isinstance(organization_values, (str, bytes, bytearray)) else 0,
             "timeline_identity_sources": tuple(
@@ -1453,6 +3089,7 @@ class WappiPairCustomerResolver:
                 lead_id=lead_id,
                 contact_id=contact_id,
                 expected_brand=profile.brand,
+                reason="amo_auto_exact_identity_without_opportunity" if identity_only else "",
                 pair_source="amo_auto_resolver",
                 resolution_source="amo_auto_resolver",
                 match_key=match_key,
@@ -1491,16 +3128,25 @@ def fetch_wappi_history_records(
     resolver: WappiPairCustomerResolver,
     limits: WappiFetchLimits,
     tenant_id: str,
-) -> tuple[tuple[TimelineSourceRecord, ...], dict[str, WappiFetchStats]]:
+) -> tuple[tuple[TimelineSourceRecord, ...], dict[tuple[str, str], WappiFetchStats]]:
     del tenant_id
     records: list[TimelineSourceRecord] = []
-    stats_by_profile: dict[str, WappiFetchStats] = {profile.profile_id: WappiFetchStats() for profile in profiles}
+    stats_by_profile: dict[tuple[str, str], WappiFetchStats] = {
+        (profile.source_system, profile.profile_id): WappiFetchStats()
+        for profile in profiles
+    }
     seen_source_ids: set[str] = set()
     total_messages = 0
     total_requests = 0
-    per_profile_message_limit = max(1, limits.message_limit_total // max(1, len(profiles))) if limits.message_limit_total else 0
+    per_profile_message_limit = (
+        0
+        if limits.complete_message_history
+        else max(1, limits.message_limit_total // max(1, len(profiles)))
+        if limits.message_limit_total
+        else 0
+    )
     for profile in profiles:
-        stats = stats_by_profile[profile.profile_id]
+        stats = stats_by_profile[(profile.source_system, profile.profile_id)]
         profile_amo_calls_start = resolver.amo_auto_calls
         offset = 0
         profile_messages = 0
@@ -1508,10 +3154,14 @@ def fetch_wappi_history_records(
         dialogs_snapshot: list[Mapping[str, Any]] = []
         chat_page_specs: list[tuple[int, int]] = []
         while (
-            len(dialogs_snapshot) < limits.chat_limit_per_profile
+            (limits.complete_message_history or len(dialogs_snapshot) < limits.chat_limit_per_profile)
             and total_requests < limits.request_limit_total
         ):
-            page_limit = min(limits.page_size, limits.chat_limit_per_profile - len(dialogs_snapshot))
+            page_limit = (
+                limits.page_size
+                if limits.complete_message_history
+                else min(limits.page_size, limits.chat_limit_per_profile - len(dialogs_snapshot))
+            )
             if page_limit <= 0:
                 break
             try:
@@ -1535,7 +3185,7 @@ def fetch_wappi_history_records(
                 break
             stats.chats_seen += len(dialogs)
             for dialog in dialogs:
-                if len(dialogs_snapshot) >= limits.chat_limit_per_profile:
+                if not limits.complete_message_history and len(dialogs_snapshot) >= limits.chat_limit_per_profile:
                     break
                 chat_id = extract_chat_id(dialog)
                 if not chat_id:
@@ -1589,15 +3239,18 @@ def fetch_wappi_history_records(
                             dialogs_snapshot.append(item)
                             stats.chats_loaded += 1
         stats.chat_snapshot_drift_detected = chat_ids_seen != verification_chat_ids
-        if len(dialogs_snapshot) >= limits.chat_limit_per_profile:
+        if not limits.complete_message_history and len(dialogs_snapshot) >= limits.chat_limit_per_profile:
             stats.chat_limit_hit = True
         if total_requests >= limits.request_limit_total:
             stats.request_limit_hit = True
             break
-        if total_messages >= limits.message_limit_total:
+        if not limits.complete_message_history and total_messages >= limits.message_limit_total:
             break
+        profile_widget_calls_start = resolver.widget_calls
         for dialog in dialogs_snapshot:
-            if total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit:
+            if not limits.complete_message_history and (
+                total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit
+            ):
                 stats.message_limit_hit = True
                 break
             chat_id = extract_chat_id(dialog)
@@ -1622,9 +3275,21 @@ def fetch_wappi_history_records(
                 break
             resolution = resolver.resolve_chat(profile=profile, dialog=dialog, messages=messages)
             stats.amo_auto_calls = resolver.amo_auto_calls - profile_amo_calls_start
+            stats.widget_calls = resolver.widget_calls - profile_widget_calls_start
+            if is_personal_wappi_dialog(profile, dialog):
+                stats.personal_chats += 1
+                if resolution.resolved and resolution.resolution_source in {
+                    "wappi_amo_widget",
+                    "amo_event_sequence",
+                }:
+                    stats.widget_resolved_chats += 1
+                else:
+                    stats.widget_pending_chats += 1
             stats.amo_auto_status_counts[f"{resolution.resolution_source}:{resolution.reason or resolution.status}"] += 1
             for message in messages:
-                if total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit:
+                if not limits.complete_message_history and (
+                    total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit
+                ):
                     stats.message_limit_hit = True
                     break
                 stats.messages_seen += 1
@@ -1644,8 +3309,15 @@ def fetch_wappi_history_records(
                 if resolution.resolved:
                     if resolution.resolution_source == "amo_auto_resolver":
                         stats.linked_by_amo_auto += 1
+                    elif resolution.resolution_source == "wappi_amo_widget":
+                        stats.linked_by_amo_widget += 1
+                    elif resolution.resolution_source == "amo_event_sequence":
+                        stats.linked_by_amo_event_sequence += 1
                     elif resolution.resolution_source == "timeline_identity":
                         stats.linked_by_timeline += 1
+                    elif resolution.resolution_source == "wappi_provisional":
+                        stats.linked_by_provisional += 1
+                        stats.pending_attribution += 1
                     else:
                         stats.linked_by_pair += 1
                 else:
@@ -1653,6 +3325,42 @@ def fetch_wappi_history_records(
             if stats.request_limit_hit:
                 break
     return tuple(records), stats_by_profile
+
+
+def is_personal_wappi_dialog(profile: WappiProfileSpec, dialog: Mapping[str, Any]) -> bool:
+    dialog_type = str(dialog.get("type") or "").strip()
+    if profile.channel == "telegram":
+        if dialog_type.casefold() not in {"user", "private", "personal"}:
+            return False
+        user = dialog.get("user") if isinstance(dialog.get("user"), Mapping) else {}
+        return not any(
+            _wappi_truthy_flag(user, *keys)
+            for keys in (
+                ("IsBot", "is_bot"),
+                ("IsDeleted", "is_deleted"),
+                ("IsFake", "is_fake"),
+                ("IsSelf", "is_self"),
+                ("IsSupport", "is_support"),
+            )
+        )
+    if profile.channel != "max" or dialog_type.upper() != "DIALOG":
+        return False
+    participants = tuple(item for item in (dialog.get("participants") or ()) if isinstance(item, Mapping))
+    peers = tuple(item for item in participants if not _wappi_truthy_flag(item, "is_me", "IsMe"))
+    if participants and len(peers) != 1:
+        return False
+    return not any(
+        _wappi_truthy_flag(item, "is_bot", "IsBot", "bot")
+        for item in (dialog, *peers)
+    )
+
+
+def _wappi_truthy_flag(payload: Mapping[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = payload.get(key)
+        if value is True or str(value or "").strip().casefold() in {"1", "true", "yes", "on"}:
+            return True
+    return False
 
 
 def fetch_chat_messages(
@@ -1671,8 +3379,15 @@ def fetch_chat_messages(
     request_limit_hit = request_budget <= 0
     pagination_drift_detected = False
     page_signatures: list[tuple[int, int, tuple[str, ...]]] = []
-    while len(messages) < limits.messages_per_chat and request_count < request_budget:
-        page_limit = min(limits.page_size, limits.messages_per_chat - len(messages))
+    while (
+        (limits.complete_message_history or len(messages) < limits.messages_per_chat)
+        and request_count < request_budget
+    ):
+        page_limit = (
+            limits.page_size
+            if limits.complete_message_history
+            else min(limits.page_size, limits.messages_per_chat - len(messages))
+        )
         if page_limit <= 0:
             break
         try:
@@ -1710,7 +3425,7 @@ def fetch_chat_messages(
         if len(raw_messages) < page_limit:
             break
         offset += page_limit
-        if len(messages) >= limits.messages_per_chat:
+        if not limits.complete_message_history and len(messages) >= limits.messages_per_chat:
             limit_hit = True
         elif request_count >= request_budget:
             request_limit_hit = True
@@ -1789,6 +3504,7 @@ def wappi_message_to_record(
         "resolved_customer_id": resolution.customer_id,
         "resolved_opportunity_id": resolution.opportunity_id,
         "lead_id": resolution.lead_id,
+        "lead_ids": tuple(resolution.lead_ids),
         "contact_id": resolution.contact_id,
         "pair_source": resolution.pair_source,
         "identity_authority": resolution.resolution_source,
@@ -1830,14 +3546,16 @@ def build_readonly_wappi_client(
 
 
 def consistent_max_dialog_phone(dialog: Mapping[str, Any]) -> tuple[str, str]:
+    participants = tuple(item for item in (dialog.get("participants") or ()) if isinstance(item, Mapping))
+    peers = tuple(item for item in participants if item.get("is_me") is False)
+    phone_participants = peers if len(peers) == 1 else participants
     phones = {
         phone
         for phone in (
             normalize_phone(dialog.get("phone") or dialog.get("number") or ""),
             *(
                 normalize_phone(item.get("phone") or item.get("number") or "")
-                for item in (dialog.get("participants") or ())
-                if isinstance(item, Mapping)
+                for item in phone_participants
             ),
         )
         if phone
@@ -1879,9 +3597,9 @@ def wappi_dialog_identity_keys(
         if phone:
             strong.append(("phone", phone))
         participants = tuple(item for item in (dialog.get("participants") or ()) if isinstance(item, Mapping))
-        client_participants = tuple(
-            item
-            for item in participants
+        peers = tuple(item for item in participants if item.get("is_me") is False)
+        client_participants = peers if len(peers) == 1 else tuple(
+            item for item in participants
             if phone and normalize_phone(item.get("phone") or item.get("number") or "") == phone
         )
         max_ids = {
@@ -2068,6 +3786,128 @@ def load_wappi_pairs(
     return pairs
 
 
+def load_existing_unmatched_wappi_records(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    chat_resolutions: Mapping[tuple[str, str, str], WappiChatResolution],
+    exclude_source_ids: Sequence[str] = (),
+) -> tuple[TimelineSourceRecord, ...]:
+    if not db_path.exists() or not chat_resolutions:
+        return ()
+    tenant = normalize_key(tenant_id, "tenant_id")
+    excluded = set(exclude_source_ids)
+    result: list[TimelineSourceRecord] = []
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "timeline_events"):
+            return ()
+        rows = con.execute(
+            """
+            SELECT event.source_system, event.source_id, event.source_ref, event.record_json,
+                   event.customer_id,
+                   COALESCE(json_extract(event.record_json, '$.metadata.identity_authority'), '') AS identity_authority,
+                   COALESCE(json_extract(customer.record_json, '$.metadata.provisional_wappi_family'), 0) AS provisional
+            FROM timeline_events AS event
+            LEFT JOIN customer_identities AS customer
+              ON customer.tenant_id = event.tenant_id AND customer.customer_id = event.customer_id
+            WHERE event.tenant_id = ?
+              AND event.source_system IN ('wappi_telegram', 'wappi_max')
+              AND event.superseded_by IS NULL
+            ORDER BY event.source_system, event.source_id
+            """,
+            (tenant,),
+        )
+        for row in rows:
+            source_id = str(row["source_id"] or "").strip()
+            if not source_id or source_id in excluded:
+                continue
+            event = json.loads(str(row["record_json"] or "{}"))
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
+            profile_id = str(metadata.get("profile_id") or "").strip()
+            chat_id = str(metadata.get("chat_id") or "").strip()
+            resolution = chat_resolutions.get((str(row["source_system"]), profile_id, chat_id))
+            if resolution is None or not resolution.resolved:
+                continue
+            existing_customer = str(row["customer_id"] or "").strip()
+            existing_authority = str(row["identity_authority"] or "").strip()
+            exact_override = (
+                resolution.resolution_source == "wappi_amo_widget"
+                and existing_authority != "wappi_amo_widget"
+            )
+            if existing_customer and not bool(row["provisional"]) and not exact_override:
+                continue
+            message = (
+                event.get("record", {}).get("message", {})
+                if isinstance(event.get("record"), Mapping)
+                else {}
+            )
+            if not isinstance(message, Mapping):
+                message = {}
+            message_id = str(metadata.get("message_id") or message.get("message_id") or "").strip()
+            text = str(message.get("text") or event.get("text_preview") or event.get("summary") or "").strip()
+            if not message_id or not text:
+                continue
+            event_at = parse_source_datetime(
+                event.get("event_at"),
+                datetime(1970, 1, 1, tzinfo=timezone.utc),
+            )
+            channel = str(message.get("channel") or "").strip().casefold()
+            if channel not in SOURCE_SYSTEM_BY_CHANNEL:
+                channel = "telegram" if str(row["source_system"]) == "wappi_telegram" else "max"
+            payload = {
+                "source_system": str(row["source_system"]),
+                "source_ref": str(row["source_ref"] or source_id),
+                "channel": channel,
+                "brand": str(message.get("brand") or metadata.get("brand") or "unknown"),
+                "profile_id": profile_id,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "message_sha256": stable_digest(
+                    {
+                        "source_system": str(row["source_system"]),
+                        "profile_id": profile_id,
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": text,
+                    }
+                ),
+                "timeline_source_id": source_id,
+                "event_at": event_at.isoformat(),
+                "event_time_status": "source_valid",
+                "timestamp": event_at.timestamp(),
+                "from_me": str(event.get("direction") or "") == TimelineDirection.OUTBOUND.value,
+                "direction": str(event.get("direction") or ""),
+                "message_type": str(message.get("message_type") or "text"),
+                "text": text,
+                "contact_name": str(event.get("actor_name") or ""),
+                "from_where": "",
+                "allowed_for_bot": False,
+                "resolution_status": "resolved",
+                "resolution_reason": resolution.reason,
+                "resolved_customer_id": resolution.customer_id,
+                "resolved_opportunity_id": resolution.opportunity_id,
+                "lead_id": resolution.lead_id,
+                "lead_ids": tuple(resolution.lead_ids),
+                "contact_id": resolution.contact_id,
+                "pair_source": resolution.pair_source,
+                "identity_authority": resolution.resolution_source,
+                "match_key": resolution.match_key,
+                "candidate_customer_ids": tuple(resolution.candidate_customer_ids),
+                "resolution_evidence": dict(resolution.evidence),
+                "brand_context_authorized": resolution.evidence.get("brand_context_authorized"),
+                "local_unmatched_relink": True,
+            }
+            result.append(
+                TimelineSourceRecord(
+                    source_system=str(row["source_system"]),
+                    source_ref=str(payload["source_ref"]),
+                    payload=payload,
+                    observed_at=event_at,
+                )
+            )
+    return tuple(result)
+
+
 def load_existing_wappi_source_ids(
     db_path: Path,
     *,
@@ -2108,11 +3948,11 @@ def load_existing_wappi_event_customers(
     tenant_id: str,
     source_systems: set[str],
     source_ids: Sequence[str],
-) -> dict[tuple[str, str], str]:
+) -> dict[tuple[str, str], tuple[str, str]]:
     if not source_ids or not db_path.exists():
         return {}
     tenant = normalize_key(tenant_id, "tenant_id")
-    found: dict[tuple[str, str], str] = {}
+    found: dict[tuple[str, str], tuple[str, str]] = {}
     with open_readonly_sqlite(db_path) as con:
         if not sqlite_table_exists(con, "timeline_events"):
             return {}
@@ -2122,19 +3962,112 @@ def load_existing_wappi_event_customers(
                 placeholders = ",".join("?" for _ in chunk)
                 for row in con.execute(
                     f"""
-                    SELECT source_system, source_id, customer_id
+                    SELECT source_system, source_id, customer_id,
+                           COALESCE(json_extract(record_json, '$.metadata.identity_authority'), '') AS identity_authority
                     FROM timeline_events
                     WHERE tenant_id = ?
                       AND source_system = ?
                       AND source_id IN ({placeholders})
+                      AND superseded_by IS NULL
                     """,
                     (tenant, source_system, *chunk),
                 ):
                     source_id = str(row["source_id"] or "").strip()
                     customer_id = str(row["customer_id"] or "").strip()
                     if source_id and customer_id:
-                        found[(str(row["source_system"]), source_id)] = customer_id
+                        found[(str(row["source_system"]), source_id)] = (
+                            customer_id,
+                            str(row["identity_authority"] or ""),
+                        )
     return found
+
+
+def load_provisional_customer_ids(db_path: Path, *, tenant_id: str) -> set[str]:
+    if not db_path.exists():
+        return set()
+    tenant = normalize_key(tenant_id, "tenant_id")
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "customer_identities"):
+            return set()
+        return {
+            str(row["customer_id"])
+            for row in con.execute(
+                """
+                SELECT customer_id
+                FROM customer_identities
+                WHERE tenant_id = ?
+                  AND json_extract(record_json, '$.metadata.provisional_wappi_family') = 1
+                """,
+                (tenant,),
+            )
+        }
+
+
+def remove_orphaned_provisional_customers(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    customer_ids: Sequence[str],
+) -> Mapping[str, int]:
+    """Remove only provisional shells after their events and links moved to an exact family."""
+    candidates = tuple(sorted({str(item) for item in customer_ids if str(item)}))
+    if not candidates:
+        return {"candidates": 0, "removed": 0, "retained_with_references": 0}
+    tenant = normalize_key(tenant_id, "tenant_id")
+    removed = 0
+    retained = 0
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("BEGIN IMMEDIATE")
+        tables_with_customer_id: list[str] = []
+        for table_row in con.execute("PRAGMA table_list"):
+            table_name = str(table_row[1])
+            if table_name.startswith("sqlite_") or table_name in {
+                "customer_identities",
+                "customer_id_mappings",
+            }:
+                continue
+            quoted = table_name.replace('"', '""')
+            if any(str(column[1]) == "customer_id" for column in con.execute(f'PRAGMA table_info("{quoted}")')):
+                tables_with_customer_id.append(table_name)
+        for customer_id in candidates:
+            row = con.execute(
+                """
+                SELECT record_json
+                FROM customer_identities
+                WHERE tenant_id = ? AND customer_id = ?
+                """,
+                (tenant, customer_id),
+            ).fetchone()
+            if row is None:
+                continue
+            payload = json.loads(str(row["record_json"] or "{}"))
+            if not bool((payload.get("metadata") or {}).get("provisional_wappi_family")):
+                retained += 1
+                continue
+            has_reference = False
+            for table_name in tables_with_customer_id:
+                quoted = table_name.replace('"', '""')
+                if con.execute(
+                    f'SELECT 1 FROM "{quoted}" WHERE customer_id = ? LIMIT 1',
+                    (customer_id,),
+                ).fetchone():
+                    has_reference = True
+                    break
+            if has_reference:
+                retained += 1
+                continue
+            con.execute(
+                "DELETE FROM customer_identities WHERE tenant_id = ? AND customer_id = ?",
+                (tenant, customer_id),
+            )
+            removed += 1
+        con.commit()
+    return {
+        "candidates": len(candidates),
+        "removed": removed,
+        "retained_with_references": retained,
+    }
 
 
 def close_resolved_wappi_pending_conflicts(
@@ -2152,6 +4085,7 @@ def close_resolved_wappi_pending_conflicts(
         )
         for record in records
         if str(record.payload.get("resolved_customer_id") or "").strip()
+        and str(record.payload.get("identity_authority") or "") != "wappi_provisional"
     }
     resolved_source_ids.discard(("", "", "", ""))
     if not resolved_source_ids or not db_path.exists():
@@ -2162,47 +4096,48 @@ def close_resolved_wappi_pending_conflicts(
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
-        for source_system, profile_id, chat_id, message_id in sorted(resolved_source_ids):
-            rows = con.execute(
+        rows = con.execute(
+            """
+            SELECT conflict_id, record_json
+            FROM timeline_conflicts
+            WHERE tenant_id = ?
+              AND conflict_type = 'pending_attribution'
+              AND status = 'open'
+            """,
+            (tenant_id,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(str(row["record_json"] or "{}"))
+            metadata = dict(payload.get("metadata") or {})
+            key = tuple(
+                str(metadata.get(name) or "")
+                for name in ("source_system", "profile_id", "chat_id", "message_id")
+            )
+            if key not in resolved_source_ids:
+                continue
+            metadata["superseded_by"] = "resolved_wappi_timeline_event"
+            metadata["resolved_by"] = "wappi_history_auto_resolver"
+            payload["metadata"] = metadata
+            payload["status"] = "resolved"
+            payload["resolved_at"] = now
+            safe_payload = scrub_timeline_persisted_json(payload)
+            con.execute(
                 """
-                SELECT conflict_id, record_json
-                FROM timeline_conflicts
-                WHERE tenant_id = ?
-                  AND conflict_type = 'pending_attribution'
-                  AND status = 'open'
-                  AND json_extract(record_json, '$.metadata.source_system') = ?
-                  AND json_extract(record_json, '$.metadata.profile_id') = ?
-                  AND json_extract(record_json, '$.metadata.chat_id') = ?
-                  AND json_extract(record_json, '$.metadata.message_id') = ?
+                UPDATE timeline_conflicts
+                SET status = 'resolved',
+                    resolved_at = ?,
+                    record_json = ?,
+                    record_hash = ?
+                WHERE conflict_id = ?
                 """,
-                (tenant_id, source_system, profile_id, chat_id, message_id),
-            ).fetchall()
-            for row in rows:
-                payload = json.loads(str(row["record_json"] or "{}"))
-                metadata = dict(payload.get("metadata") or {})
-                metadata["superseded_by"] = "resolved_wappi_timeline_event"
-                metadata["resolved_by"] = "wappi_history_auto_resolver"
-                payload["metadata"] = metadata
-                payload["status"] = "resolved"
-                payload["resolved_at"] = now
-                safe_payload = scrub_timeline_persisted_json(payload)
-                con.execute(
-                    """
-                    UPDATE timeline_conflicts
-                    SET status = 'resolved',
-                        resolved_at = ?,
-                        record_json = ?,
-                        record_hash = ?
-                    WHERE conflict_id = ?
-                    """,
-                    (
-                        now,
-                        json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                        stable_digest(safe_payload),
-                        row["conflict_id"],
-                    ),
-                )
-                closed += 1
+                (
+                    now,
+                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    stable_digest(safe_payload),
+                    row["conflict_id"],
+                ),
+            )
+            closed += 1
         con.commit()
     return {"resolved_pending_conflicts_closed": closed}
 

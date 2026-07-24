@@ -45,7 +45,12 @@ MAIL_LINK_ENRICH_SOURCE_REF = "mail_link_enrich:stage2_pending"
 PHONE_LINK_TYPES = ("phone", "primary_phone", "mango_client_phone", "whatsapp_phone")
 EMAIL_LINK_TYPES = ("email", "primary_email")
 MAIL_IDENTITY_SOURCE_SYSTEMS = {"mail_archive", A2V3_MAIL_SOURCE_SYSTEM}
-TRUSTED_EMAIL_IDENTITY_SOURCES = {"tallanto_snapshot", "amocrm_snapshot", "master_contacts_snapshot"}
+TRUSTED_EMAIL_IDENTITY_SOURCES = {
+    "tallanto_snapshot",
+    "tallanto_historical_snapshot",
+    "amocrm_snapshot",
+    "master_contacts_snapshot",
+}
 OWN_DOMAINS = {"kmipt.ru", "cdpofoton.ru", "foton.school", "amocrm.ru", "amocrm.com"}
 OWN_EMAILS = {"edu@kmipt.ru"}
 HOTLINE_PHONE_DIGITS = {"88000000000", "88005553535", "74951234567"}
@@ -65,7 +70,9 @@ class MailLinkEnrichConfig:
     apply: bool = False
     max_events: Optional[int] = None
     reconsider_pending: bool = False
+    revalidate_existing_strong: bool = False
     fallback_archive_dbs: tuple[Path, ...] = ()
+    tallanto_identity_dbs: tuple[Path, ...] = ()
     aggregate_only: bool = False
 
     def __post_init__(self) -> None:
@@ -76,6 +83,11 @@ class MailLinkEnrichConfig:
             self,
             "fallback_archive_dbs",
             tuple(Path(path).expanduser() for path in self.fallback_archive_dbs),
+        )
+        object.__setattr__(
+            self,
+            "tallanto_identity_dbs",
+            tuple(Path(path).expanduser() for path in self.tallanto_identity_dbs),
         )
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         if self.max_events is not None and self.max_events < 0:
@@ -92,6 +104,9 @@ class LinkDecision:
     contact_phone: Optional[str] = None
     contact_source: Optional[str] = None
     candidate_customer_ids: tuple[str, ...] = ()
+    brand_context_authorized: bool = False
+    customer_brand: str = "unknown"
+    family_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,17 +131,26 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
         tenant_id=config.tenant_id,
         max_events=config.max_events,
         reconsider_pending=config.reconsider_pending,
+        revalidate_existing_strong=config.revalidate_existing_strong,
     )
     archive_cache: dict[Path, sqlite3.Connection] = {}
     participant_cache: dict[Path, Mapping[str, list[Mapping[str, Any]]]] = {}
     message_id_cache: dict[Path, Mapping[str, tuple[str, ...]]] = {}
     decisions: list[dict[str, Any]] = []
     counters: Counter[str] = Counter(target_events=len(targets))
+    historical_identity_summary: Mapping[str, Any] = {"databases": 0, "usable_email_values": 0}
     try:
         with sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True) as ro:
             ro.row_factory = sqlite3.Row
             ro.execute("PRAGMA query_only=ON")
             identity_index = _load_identity_index(ro, tenant_id=config.tenant_id)
+            family_ids = _load_persisted_family_ids(ro, tenant_id=config.tenant_id)
+            historical_email_index, historical_identity_summary = _load_historical_tallanto_email_index(
+                ro,
+                tenant_id=config.tenant_id,
+                identity_dbs=config.tallanto_identity_dbs,
+                family_ids=family_ids,
+            )
             customer_brands = _load_trusted_customer_brands(ro, tenant_id=config.tenant_id)
             for row in targets:
                 decision = _plan_event(
@@ -136,12 +160,27 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
                     participant_cache,
                     identity_index,
                     message_id_cache,
+                    family_ids=family_ids,
+                    historical_email_index=historical_email_index,
                     fallback_archive_dbs=config.fallback_archive_dbs,
                 )
                 decision = _block_existing_customer_conflict(row, decision)
-                decision = _block_cross_brand_decision(row, decision, customer_brands)
+                decision = _preserve_existing_strong_without_explicit_conflict(row, decision)
+                decision = _annotate_brand_authorization(row, decision, customer_brands)
                 decisions.append(_decision_report(row, decision))
                 counters[f"planned.{decision.outcome}"] += 1
+                counters[f"transition.{str(row['match_status'])}.{decision.outcome}"] += 1
+                counters[
+                    f"transition_reason.{str(row['match_status'])}.{decision.outcome}.{decision.reason or 'none'}"
+                ] += 1
+                existing_customer_id = str(row["customer_id"] or "")
+                if existing_customer_id and decision.outcome != "strong":
+                    relation = (
+                        "existing_in_candidates"
+                        if existing_customer_id in set(decision.candidate_customer_ids)
+                        else "existing_not_in_candidates"
+                    )
+                    counters[f"transition_relation.{decision.outcome}.{decision.reason}.{relation}"] += 1
                 if decision.reason:
                     counters[f"reason.{decision.reason}"] += 1
     finally:
@@ -167,7 +206,9 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
         "allowed_root": str(allowed_root),
         "target_events": len(targets),
         "reconsider_pending": config.reconsider_pending,
+        "revalidate_existing_strong": config.revalidate_existing_strong,
         "fallback_archive_db_count": len(config.fallback_archive_dbs),
+        "historical_tallanto_identity": historical_identity_summary,
         "counts": dict(counters),
         "apply": apply_report,
         "before": before,
@@ -213,6 +254,7 @@ def _load_target_events(
     tenant_id: str,
     max_events: Optional[int],
     reconsider_pending: bool,
+    revalidate_existing_strong: bool,
 ) -> list[sqlite3.Row]:
     sql = """
         SELECT *
@@ -226,17 +268,13 @@ def _load_target_events(
               AND json_extract(record_json, '$.metadata.pending_attribution') = 1
               AND (
                 json_extract(record_json, '$.metadata.pending_reason') IS NULL
-                OR (
-                  ? = 1
-                  AND json_extract(record_json, '$.metadata.pending_reason') != 'cross_brand_signal'
-                )
+                OR ? = 1
               )
             )
             OR (
               ? = 1
               AND match_status = 'strong_unique'
               AND customer_id IS NOT NULL AND customer_id != ''
-              AND json_extract(record_json, '$.metadata.mail_link_enrich.outcome') = 'strong'
             )
           )
         ORDER BY event_at, event_id
@@ -246,7 +284,7 @@ def _load_target_events(
         A2V3_MAIL_SOURCE_SYSTEM,
         int(reconsider_pending),
         int(reconsider_pending),
-        int(reconsider_pending),
+        int(revalidate_existing_strong),
     ]
     if max_events is not None:
         sql += " LIMIT ?"
@@ -266,6 +304,8 @@ def _plan_event(
     message_id_cache: dict[Path, Mapping[str, tuple[str, ...]]],
     *,
     fallback_archive_dbs: Sequence[Path] = (),
+    family_ids: Mapping[str, str] | None = None,
+    historical_email_index: Mapping[str, Sequence[str]] | None = None,
 ) -> LinkDecision:
     payload = _event_payload(row)
     source_payload = _source_payload(payload)
@@ -281,6 +321,12 @@ def _plan_event(
         )
         if raw_message:
             break
+    if not raw_message and str(row["match_status"]) == IdentityMatchClass.STRONG_UNIQUE.value:
+        return LinkDecision(
+            "not_revalidated_archive_missing",
+            "not_revalidated_archive_missing",
+            customer_id=str(row["customer_id"] or "") or None,
+        )
     contact = _contact_from_archive_row(str(row["direction"]), raw_message)
     email = normalize_email(contact.contact_email)
     phone = _normalize_phone(contact.contact_phone)
@@ -306,9 +352,61 @@ def _plan_event(
         if email
         else _empty_identity_resolution()
     )
+    if email:
+        email_resolution = _with_historical_tallanto_email(
+            email_resolution,
+            historical_customer_ids=(historical_email_index or {}).get(email, ()),
+        )
     phone_ids = set(phone_resolution["candidate_customer_ids"])
     email_ids = set(email_resolution["candidate_customer_ids"])
     candidates = tuple(sorted(phone_ids | email_ids))
+    trusted_email_ids = set(email_resolution.get("external_strong_customer_ids", ()))
+    trusted_email_sources = set(email_resolution.get("external_strong_source_systems", ()))
+    trusted_email_id = str(email_resolution.get("customer_id") or "")
+    if not (
+        email_resolution["status"] == "strong"
+        and trusted_email_ids == {trusted_email_id}
+        and trusted_email_sources & TRUSTED_EMAIL_IDENTITY_SOURCES
+    ):
+        trusted_email_id = ""
+    family_candidates = tuple(
+        sorted(
+            set(phone_resolution.get("trusted_family_customer_ids", ()))
+            | set(email_resolution.get("trusted_family_customer_ids", ()))
+        )
+    )
+    _family_customer_id, family_id = _family_customer_for_candidates(
+        family_candidates,
+        family_ids=family_ids or {},
+        preferred_customer_ids=tuple(
+            sorted(
+                set(phone_resolution.get("amo_customer_ids", ()))
+                | set(email_resolution.get("amo_customer_ids", ()))
+            )
+        ),
+    )
+
+    if family_id:
+        return LinkDecision(
+            "family_strong",
+            "strong_tallanto_family_identity_link",
+            method="tallanto_family_identity_link",
+            contact_email=email or None,
+            contact_phone=phone or None,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=candidates,
+            family_id=family_id,
+        )
+
+    if email_resolution.get("reason") == "historical_tallanto_email_multiple_customers":
+        return LinkDecision(
+            "blocked",
+            "historical_tallanto_email_cross_family",
+            contact_email=email or None,
+            contact_phone=phone or None,
+            contact_source=contact.contact_source,
+            candidate_customer_ids=candidates,
+        )
 
     if phone_ids and email_ids and phone_ids.isdisjoint(email_ids):
         return LinkDecision(
@@ -340,21 +438,17 @@ def _plan_event(
                 contact_source=contact.contact_source,
                 candidate_customer_ids=candidates,
             )
-        if phone_resolution["status"] == "ambiguous":
-            external_email_ids = set(email_resolution.get("external_strong_customer_ids", ()))
-            intersection = phone_ids & external_email_ids
-            if len(intersection) == 1:
-                customer_id = next(iter(intersection))
-                return LinkDecision(
-                    "strong",
-                    "shared_phone_strong_email_intersection",
-                    customer_id=customer_id,
-                    method="phone_email_identity_intersection",
-                    contact_email=email or None,
-                    contact_phone=phone,
-                    contact_source=contact.contact_source,
-                    candidate_customer_ids=candidates,
-                )
+        if phone_resolution["status"] in {"ambiguous", "blocked"} and trusted_email_id in phone_ids:
+            return LinkDecision(
+                "strong",
+                "shared_phone_strong_email_intersection",
+                customer_id=trusted_email_id,
+                method="phone_email_identity_intersection",
+                contact_email=email or None,
+                contact_phone=phone,
+                contact_source=contact.contact_source,
+                candidate_customer_ids=candidates,
+            )
         if phone_resolution["status"] in {"ambiguous", "blocked"}:
             return LinkDecision(
                 "blocked",
@@ -365,16 +459,21 @@ def _plan_event(
                 candidate_customer_ids=candidates,
             )
     if email:
-        external_strong_ids = set(email_resolution.get("external_strong_customer_ids", ()))
-        external_strong_sources = set(email_resolution.get("external_strong_source_systems", ()))
-        if email_resolution["status"] == "strong" and external_strong_ids == {
-            email_resolution["customer_id"]
-        } and external_strong_sources & TRUSTED_EMAIL_IDENTITY_SOURCES:
+        if trusted_email_id:
+            historical = "tallanto_historical_snapshot" in trusted_email_sources
             return LinkDecision(
                 "strong",
-                "strong_external_email_identity_link",
+                (
+                    "strong_historical_tallanto_email_identity_link"
+                    if historical
+                    else "strong_external_email_identity_link"
+                ),
                 customer_id=email_resolution["customer_id"],
-                method="external_email_identity_link",
+                method=(
+                    "historical_tallanto_email_identity_link"
+                    if historical
+                    else "external_email_identity_link"
+                ),
                 contact_email=email,
                 contact_phone=phone or None,
                 contact_source=contact.contact_source,
@@ -539,6 +638,24 @@ def _compatible_thread_decision(
 
 def _block_existing_customer_conflict(row: sqlite3.Row, decision: LinkDecision) -> LinkDecision:
     existing_customer_id = str(row["customer_id"] or "")
+    if decision.outcome == "family_strong" and existing_customer_id:
+        if existing_customer_id in decision.candidate_customer_ids:
+            return replace(
+                decision,
+                outcome="strong",
+                reason="existing_customer_confirmed_within_family",
+                customer_id=existing_customer_id,
+            )
+        return LinkDecision(
+            "blocked",
+            "existing_customer_family_conflict",
+            contact_email=decision.contact_email,
+            contact_phone=decision.contact_phone,
+            contact_source=decision.contact_source,
+            candidate_customer_ids=tuple(
+                sorted({existing_customer_id, *(decision.candidate_customer_ids or ())})
+            ),
+        )
     if decision.outcome == "strong" and existing_customer_id and decision.customer_id != existing_customer_id:
         return LinkDecision(
             "blocked",
@@ -551,6 +668,33 @@ def _block_existing_customer_conflict(row: sqlite3.Row, decision: LinkDecision) 
             ),
         )
     return decision
+
+
+def _preserve_existing_strong_without_explicit_conflict(
+    row: sqlite3.Row,
+    decision: LinkDecision,
+) -> LinkDecision:
+    existing_customer_id = str(row["customer_id"] or "")
+    if str(row["match_status"]) != IdentityMatchClass.STRONG_UNIQUE.value or not existing_customer_id:
+        return decision
+    if decision.outcome == "strong" or decision.outcome.startswith("not_revalidated_"):
+        return decision
+    reason = decision.reason
+    if (
+        "conflict" in reason
+        or reason == "cross_brand_signal"
+        or reason.endswith(("multiple_customers", "ambiguous_identity_link"))
+    ):
+        return decision
+    return LinkDecision(
+        "not_revalidated_no_explicit_conflict",
+        "not_revalidated_no_explicit_conflict",
+        customer_id=existing_customer_id,
+        contact_email=decision.contact_email,
+        contact_phone=decision.contact_phone,
+        contact_source=decision.contact_source,
+        candidate_customer_ids=decision.candidate_customer_ids,
+    )
 
 
 def _load_message_id_index(archive_db: Path) -> Mapping[str, tuple[str, ...]]:
@@ -641,7 +785,7 @@ def _load_trusted_customer_brands(con: sqlite3.Connection, *, tenant_id: str) ->
     }
 
 
-def _block_cross_brand_decision(
+def _annotate_brand_authorization(
     row: sqlite3.Row,
     decision: LinkDecision,
     customer_brands: Mapping[str, str],
@@ -650,16 +794,14 @@ def _block_cross_brand_decision(
         return decision
     customer_brand = customer_brands.get(decision.customer_id, "unknown")
     mail_brand = _brand_for_event(row, source_payload=_source_payload(_event_payload(row)))
-    if customer_brand not in {"foton", "unpk"} or mail_brand not in {"foton", "unpk"}:
-        return decision
-    if customer_brand == mail_brand:
-        return decision
     return replace(
         decision,
-        outcome="blocked",
-        reason="cross_brand_signal",
-        customer_id=None,
-        method=None,
+        brand_context_authorized=(
+            customer_brand in {"foton", "unpk"}
+            and mail_brand in {"foton", "unpk"}
+            and customer_brand == mail_brand
+        ),
+        customer_brand=customer_brand,
     )
 
 
@@ -979,15 +1121,40 @@ def _resolve_identity_value(
             (tenant_id, *link_types, link_value),
         ).fetchall()
     customer_ids = sorted({str(row["customer_id"]) for row in rows if row["customer_id"]})
+    amo_customer_ids = {
+        str(row["customer_id"])
+        for row in rows
+        if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
+        and str(row["source_system"]) == "amocrm_snapshot"
+    }
+    trusted_family_customer_ids = {
+        str(row["customer_id"])
+        for row in rows
+        if str(row["identity_status"] or "").lower() == "strong"
+        and str(row["source_system"]) in TRUSTED_EMAIL_IDENTITY_SOURCES
+        and str(row["match_class"]) in {
+            IdentityMatchClass.STRONG_UNIQUE.value,
+            IdentityMatchClass.AMBIGUOUS.value,
+        }
+    }
     if not customer_ids:
         return {"status": "unmatched", "reason": "no_identity_link", "candidate_customer_ids": ()}
     if len(customer_ids) != 1:
-        return {"status": "ambiguous", "reason": "multiple_customers", "candidate_customer_ids": tuple(customer_ids)}
+        return {
+            "status": "ambiguous",
+            "reason": "multiple_customers",
+            "candidate_customer_ids": tuple(customer_ids),
+            "amo_customer_ids": tuple(amo_customer_ids),
+            "trusted_family_customer_ids": tuple(trusted_family_customer_ids),
+        }
     if any(str(row["match_class"]) == IdentityMatchClass.AMBIGUOUS.value for row in rows):
-        return {"status": "ambiguous", "reason": "ambiguous_identity_link", "candidate_customer_ids": tuple(customer_ids)}
-    identity_statuses = {str(row["identity_status"] or "").lower() for row in rows}
-    if identity_statuses != {"strong"}:
-        return {"status": "blocked", "reason": "customer_identity_not_strong", "candidate_customer_ids": tuple(customer_ids)}
+        return {
+            "status": "ambiguous",
+            "reason": "ambiguous_identity_link",
+            "candidate_customer_ids": tuple(customer_ids),
+            "amo_customer_ids": tuple(amo_customer_ids),
+            "trusted_family_customer_ids": tuple(trusted_family_customer_ids),
+        }
     strong_customer_ids = {
         str(row["customer_id"])
         for row in rows
@@ -1005,6 +1172,14 @@ def _resolve_identity_value(
         if str(row["match_class"]) == IdentityMatchClass.STRONG_UNIQUE.value
         and str(row["source_system"]) not in MAIL_IDENTITY_SOURCE_SYSTEMS
     }
+    identity_statuses = {str(row["identity_status"] or "").lower() for row in rows}
+    exact_trusted_email = (
+        bool(set(link_types) & set(EMAIL_LINK_TYPES))
+        and external_strong_customer_ids == {customer_ids[0]}
+        and bool(external_strong_source_systems & TRUSTED_EMAIL_IDENTITY_SOURCES)
+    )
+    if identity_statuses != {"strong"} and not exact_trusted_email:
+        return {"status": "blocked", "reason": "customer_identity_not_strong", "candidate_customer_ids": tuple(customer_ids)}
     if not strong_customer_ids:
         return {
             "status": "weak",
@@ -1012,6 +1187,8 @@ def _resolve_identity_value(
             "candidate_customer_ids": tuple(customer_ids),
             "external_strong_customer_ids": tuple(external_strong_customer_ids),
             "external_strong_source_systems": tuple(external_strong_source_systems),
+            "amo_customer_ids": tuple(amo_customer_ids),
+            "trusted_family_customer_ids": tuple(trusted_family_customer_ids),
         }
     return {
         "status": "strong",
@@ -1020,6 +1197,80 @@ def _resolve_identity_value(
         "candidate_customer_ids": tuple(customer_ids),
         "external_strong_customer_ids": tuple(external_strong_customer_ids),
         "external_strong_source_systems": tuple(external_strong_source_systems),
+        "amo_customer_ids": tuple(amo_customer_ids),
+        "trusted_family_customer_ids": tuple(trusted_family_customer_ids),
+    }
+
+
+def _with_historical_tallanto_email(
+    current: Mapping[str, Any],
+    *,
+    historical_customer_ids: Sequence[str],
+) -> Mapping[str, Any]:
+    if (
+        current.get("trusted_family_customer_ids")
+        or current.get("status") in {"ambiguous", "blocked"}
+        or current.get("external_strong_source_systems")
+    ):
+        return current
+    historical = tuple(sorted(set(historical_customer_ids)))
+    if not historical:
+        return current
+    if len(historical) == 1:
+        return {
+            "status": "strong",
+            "reason": "historical_tallanto_email_identity_link",
+            "customer_id": historical[0],
+            "candidate_customer_ids": historical,
+            "external_strong_customer_ids": historical,
+            "external_strong_source_systems": ("tallanto_historical_snapshot",),
+            "amo_customer_ids": (),
+            "trusted_family_customer_ids": historical,
+        }
+    return {
+        "status": "ambiguous",
+        "reason": "historical_tallanto_email_multiple_customers",
+        "candidate_customer_ids": historical,
+        "external_strong_customer_ids": (),
+        "external_strong_source_systems": ("tallanto_historical_snapshot",),
+        "amo_customer_ids": (),
+        "trusted_family_customer_ids": historical,
+    }
+
+
+def _family_customer_for_candidates(
+    candidate_customer_ids: Sequence[str],
+    *,
+    family_ids: Mapping[str, str],
+    preferred_customer_ids: Sequence[str] = (),
+) -> tuple[str, str]:
+    candidates = tuple(sorted(set(candidate_customer_ids)))
+    if len(candidates) < 2:
+        return "", ""
+    families = {family_ids.get(customer_id, "") for customer_id in candidates}
+    if len(families) != 1 or "" in families:
+        return "", ""
+    del preferred_customer_ids
+    return "", next(iter(families))
+
+
+def _load_persisted_family_ids(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, str]:
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='family_members_v1'"
+    ).fetchone()
+    if exists is None:
+        return {}
+    return {
+        str(row["customer_id"]): str(row["family_id"])
+        for row in con.execute(
+            """
+            SELECT customer_id, family_id
+            FROM family_members_v1
+            WHERE tenant_id = ? AND membership_status != 'conflict'
+            """,
+            (tenant_id,),
+        )
+        if str(row["customer_id"] or "") and str(row["family_id"] or "")
     }
 
 
@@ -1046,6 +1297,81 @@ def _load_identity_index(
     return grouped
 
 
+def _load_historical_tallanto_email_index(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    identity_dbs: Sequence[Path],
+    family_ids: Mapping[str, str],
+) -> tuple[Mapping[str, Sequence[str]], Mapping[str, Any]]:
+    tallanto_customers: dict[str, set[str]] = {}
+    for row in con.execute(
+        """
+        SELECT l.link_value, l.customer_id
+        FROM identity_links l
+        JOIN customer_identities c
+          ON c.tenant_id = l.tenant_id AND c.customer_id = l.customer_id
+        WHERE l.tenant_id = ?
+          AND l.link_type = 'tallanto_student_id'
+          AND l.source_system = 'tallanto_snapshot'
+          AND l.match_class = 'strong_unique'
+          AND c.identity_status = 'strong'
+        """,
+        (tenant_id,),
+    ):
+        tallanto_customers.setdefault(str(row["link_value"]), set()).add(str(row["customer_id"]))
+    email_customers: dict[str, set[str]] = {}
+    databases = 0
+    source_email_values = 0
+    for raw_path in dict.fromkeys(Path(path).expanduser().resolve(strict=False) for path in identity_dbs):
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"Tallanto identity DB is missing: {raw_path}")
+        with sqlite3.connect(f"file:{raw_path}?mode=ro", uri=True, timeout=15) as identity_con:
+            identity_con.row_factory = sqlite3.Row
+            identity_con.execute("PRAGMA query_only=ON")
+            if str(identity_con.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise RuntimeError(f"Tallanto identity DB failed quick_check: {raw_path}")
+            rows = identity_con.execute(
+                """
+                SELECT l.value, c.tallanto_id
+                FROM identity_links l
+                JOIN identity_values v
+                  ON v.kind = l.kind AND v.value = l.value
+                JOIN identity_candidates c
+                  ON c.candidate_key = l.candidate_key
+                WHERE l.kind = 'email'
+                  AND v.match_class = 'strong_unique'
+                  AND v.candidate_count = 1
+                  AND c.tallanto_id IS NOT NULL
+                  AND c.tallanto_id != ''
+                """
+            ).fetchall()
+        databases += 1
+        source_email_values += len(rows)
+        for row in rows:
+            customers = tallanto_customers.get(str(row["tallanto_id"]), ())
+            if customers:
+                email_customers.setdefault(normalize_email(row["value"]), set()).update(customers)
+    result = {email: tuple(sorted(customers)) for email, customers in email_customers.items() if email}
+    single_values = sum(1 for customers in result.values() if len(customers) == 1)
+    same_family_values = sum(
+        1
+        for customers in result.values()
+        if len(customers) > 1
+        and len({family_ids.get(customer_id, "") for customer_id in customers}) == 1
+        and all(family_ids.get(customer_id) for customer_id in customers)
+    )
+    return result, {
+        "databases": databases,
+        "source_email_values": source_email_values,
+        "usable_email_values": len(result),
+        "single_customer_values": single_values,
+        "same_family_values": same_family_values,
+        "cross_family_values": len(result) - single_values - same_family_values,
+        "read_only": True,
+    }
+
+
 def _empty_identity_resolution() -> Mapping[str, Any]:
     return {
         "status": "unmatched",
@@ -1053,6 +1379,8 @@ def _empty_identity_resolution() -> Mapping[str, Any]:
         "candidate_customer_ids": (),
         "external_strong_customer_ids": (),
         "external_strong_source_systems": (),
+        "amo_customer_ids": (),
+        "trusted_family_customer_ids": (),
     }
 
 
@@ -1068,6 +1396,9 @@ def _decision_report(row: sqlite3.Row, decision: LinkDecision) -> dict[str, Any]
         "contact_phone_hash": _hash_optional(decision.contact_phone),
         "contact_source": decision.contact_source,
         "candidate_customer_count": len(decision.candidate_customer_ids),
+        "brand_context_authorized": decision.brand_context_authorized,
+        "customer_brand": decision.customer_brand,
+        "family_id": decision.family_id,
     }
 
 
@@ -1119,6 +1450,9 @@ def _apply_decisions(
             )
             for decision in decisions:
                 row = by_event[str(decision["event_id"])]
+                if str(decision["outcome"]).startswith("not_revalidated_"):
+                    counters["not_revalidated_events"] += 1
+                    continue
                 event = _updated_event_from_decision(row, decision)
                 before_hash = str(row["record_hash"])
                 result = store.upsert_event(event, actor="mail_link_enrich", ingestion_run_id=run.run_id)
@@ -1181,8 +1515,12 @@ def _updated_event_from_decision(row: sqlite3.Row, decision: Mapping[str, Any]) 
     source_payload["mail_link_enrich_reason"] = decision["reason"]
     if decision["outcome"] == "strong":
         source_payload["customer_id"] = decision.get("customer_id")
+    elif decision["outcome"] == "family_strong":
+        source_payload["customer_id"] = None
     record["payload"] = source_payload
     metadata["brand"] = brand
+    metadata["brand_context_authorized"] = bool(decision.get("brand_context_authorized"))
+    metadata["family_id"] = str(decision.get("family_id") or "")
     metadata["mail_link_enrich"] = {
         "schema_version": MAIL_LINK_ENRICH_SCHEMA_VERSION,
         "outcome": decision["outcome"],
@@ -1197,6 +1535,12 @@ def _updated_event_from_decision(row: sqlite3.Row, decision: Mapping[str, Any]) 
         metadata.pop("pending_reason", None)
         customer_id = str(decision["customer_id"])
         match_status = IdentityMatchClass.STRONG_UNIQUE
+        confidence = 0.92
+    elif decision["outcome"] == "family_strong":
+        metadata["pending_attribution"] = False
+        metadata["family_attributed"] = True
+        customer_id = None
+        match_status = IdentityMatchClass.AMBIGUOUS
         confidence = 0.92
     elif decision["outcome"] == "weak_email":
         metadata["pending_attribution"] = True
@@ -1295,6 +1639,7 @@ def _chunk_for_event(row: sqlite3.Row, event: TimelineEvent, decision: Mapping[s
             "thread_context_overflow": overflow,
             "bot_eligible_candidate": False,
             "bot_gate_reason": "manager_review_until_owner_opening",
+            "brand_context_authorized": bool(event.metadata.get("brand_context_authorized")),
         },
         created_at=event.created_at,
     )

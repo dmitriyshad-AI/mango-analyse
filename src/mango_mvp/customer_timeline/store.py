@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
@@ -37,6 +37,16 @@ from mango_mvp.customer_timeline.source_policy import assert_bot_context_chunk_s
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
 CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260702_002_soft_delete_content_key_backfill"
+
+BRAND_AUTH_EVENT_SOURCES = (
+    "channel_snapshot",
+    "mail_archive",
+    "mail_archive_stage2",
+    "telegram_history",
+    "wappi_max",
+    "wappi_telegram",
+)
+BRAND_AUTH_SELF_SOURCES = ("customer_timeline_bot_safe_summary",)
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -744,6 +754,20 @@ class CustomerTimelineSQLiteStore:
               UNIQUE(tenant_id, old_customer_id, new_customer_id)
             );
 
+            CREATE TABLE IF NOT EXISTS family_members_v1 (
+              tenant_id TEXT NOT NULL,
+              family_id TEXT NOT NULL,
+              customer_id TEXT NOT NULL,
+              membership_status TEXT NOT NULL,
+              confidence TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id)
+            );
+
             CREATE TABLE IF NOT EXISTS audit_log (
               seq INTEGER PRIMARY KEY AUTOINCREMENT,
               audit_id TEXT NOT NULL UNIQUE,
@@ -801,6 +825,8 @@ class CustomerTimelineSQLiteStore:
               ON customer_id_mappings(tenant_id, old_customer_id, resolution_status);
             CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_new
               ON customer_id_mappings(tenant_id, new_customer_id, resolution_status);
+            CREATE INDEX IF NOT EXISTS ix_family_members_v1_family
+              ON family_members_v1(tenant_id, family_id, customer_id);
             CREATE INDEX IF NOT EXISTS ix_audit_log_entity
               ON audit_log(tenant_id, entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS ix_audit_log_ingestion
@@ -867,6 +893,9 @@ class CustomerTimelineSQLiteStore:
               WHERE superseded_by IS NULL
             """
         )
+        family_member_columns = self._table_columns("family_members_v1")
+        if "updated_at" not in family_member_columns:
+            self._con.execute("ALTER TABLE family_members_v1 ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 
     def backfill_timeline_event_content_keys(
         self,
@@ -982,6 +1011,32 @@ class CustomerTimelineSQLiteStore:
             raise TypeError("link must be IdentityLink")
         if link.customer_id:
             self._assert_customer_exists(link.tenant_id, link.customer_id)
+        existing = self._con.execute(
+            "SELECT first_seen_at, last_seen_at FROM identity_links WHERE link_id = ?",
+            (link.link_id,),
+        ).fetchone()
+        if existing is not None:
+            existing_first = (
+                parse_datetime(existing["first_seen_at"], "first_seen_at")
+                if existing["first_seen_at"]
+                else None
+            )
+            existing_last = (
+                parse_datetime(existing["last_seen_at"], "last_seen_at")
+                if existing["last_seen_at"]
+                else None
+            )
+            link = replace(
+                link,
+                first_seen_at=min(
+                    (value for value in (existing_first, link.first_seen_at) if value is not None),
+                    default=None,
+                ),
+                last_seen_at=max(
+                    (value for value in (existing_last, link.last_seen_at) if value is not None),
+                    default=None,
+                ),
+            )
         return self._upsert_record(
             table="identity_links",
             key_column="link_id",
@@ -1239,6 +1294,7 @@ class CustomerTimelineSQLiteStore:
         )
         payload = chunk.to_json_dict()
         record_hash = stable_digest(scrub_timeline_persisted_json(payload))
+        was_superseded = self._is_superseded("bot_context_chunks", "chunk_id", chunk.chunk_id)
         result = self._upsert_record(
             table="bot_context_chunks",
             key_column="chunk_id",
@@ -1265,9 +1321,26 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        if result.status != "duplicate" and self._bulk_write_depth > 0:
+        if was_superseded:
+            self._con.execute(
+                "UPDATE bot_context_chunks SET superseded_by = NULL WHERE chunk_id = ?",
+                (chunk.chunk_id,),
+            )
+            self._append_audit_log(
+                tenant_id=chunk.tenant_id,
+                action="bot_context_chunk_reactivated",
+                entity_type="bot_context_chunk",
+                entity_id=chunk.chunk_id,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=record_hash,
+                after_hash=record_hash,
+                metadata={"source_system": chunk.source_system},
+                now=self._now(),
+            )
+        if (result.status != "duplicate" or was_superseded) and self._bulk_write_depth > 0:
             self._bulk_fts_dirty = True
-        elif result.status != "duplicate":
+        elif result.status != "duplicate" or was_superseded:
             self._sync_chunk_fts(chunk, record_hash)
         self._commit()
         return result
@@ -1370,6 +1443,17 @@ class CustomerTimelineSQLiteStore:
         event = require_text(event_id, "event_id")
         source = normalize_key(source_system, "source_system")
         normalized_reason = normalize_key(reason, "reason")
+        chunk_ids = tuple(
+            str(row[0])
+            for row in self._con.execute(
+                """
+                SELECT chunk_id FROM bot_context_chunks
+                WHERE tenant_id = ? AND event_id = ? AND source_system = ?
+                  AND superseded_by IS NULL
+                """,
+                (tenant, event, source),
+            ).fetchall()
+        )
         cursor = self._con.execute(
             """
             UPDATE bot_context_chunks
@@ -1381,7 +1465,7 @@ class CustomerTimelineSQLiteStore:
         )
         revoked = int(cursor.rowcount)
         if revoked:
-            self._delete_bot_context_fts_for_event_ids((event,))
+            self._delete_bot_context_fts_for_chunk_ids(chunk_ids)
             self._append_audit_log(
                 tenant_id=tenant,
                 action="bot_context_chunks_revoked",
@@ -3038,6 +3122,7 @@ class CustomerTimelineSQLiteStore:
         table_alias: Optional[str] = None,
     ) -> None:
         prefix = f"{table_alias}." if table_alias else ""
+        outer_prefix = prefix or "bot_context_chunks."
         self._append_active_filter("bot_context_chunks", clauses, table_alias=table_alias)
         if customer_id:
             clauses.append(f"{prefix}customer_id = ?")
@@ -3056,6 +3141,29 @@ class CustomerTimelineSQLiteStore:
         if allowed_for_bot is not None:
             clauses.append(f"{prefix}allowed_for_bot = ?")
             params.append(int(bool(allowed_for_bot)))
+        if allowed_for_bot is True:
+            clauses.append(f"{prefix}requires_manager_review = 0")
+            protected = (*BRAND_AUTH_EVENT_SOURCES, *BRAND_AUTH_SELF_SOURCES)
+            protected_placeholders = ",".join("?" for _ in protected)
+            event_placeholders = ",".join("?" for _ in BRAND_AUTH_EVENT_SOURCES)
+            self_placeholders = ",".join("?" for _ in BRAND_AUTH_SELF_SOURCES)
+            clauses.append(
+                f"(COALESCE({prefix}source_system, '') NOT IN ({protected_placeholders}) OR ("
+                f"{prefix}source_system IN ({event_placeholders}) "
+                f"AND json_type({prefix}record_json, '$.metadata.brand_context_authorized') = 'true' "
+                f"AND {prefix}event_id IS NOT NULL AND EXISTS ("
+                "SELECT 1 FROM timeline_events auth_event "
+                f"WHERE auth_event.tenant_id = {outer_prefix}tenant_id "
+                f"AND auth_event.event_id = {outer_prefix}event_id "
+                f"AND auth_event.customer_id = {outer_prefix}customer_id "
+                "AND auth_event.superseded_by IS NULL "
+                "AND json_type(auth_event.record_json, '$.metadata.brand_context_authorized') = 'true'"
+                ")) OR ("
+                f"{prefix}source_system IN ({self_placeholders}) "
+                f"AND json_type({prefix}record_json, '$.metadata.brand_context_authorized') = 'true'"
+                "))"
+            )
+            params.extend((*protected, *BRAND_AUTH_EVENT_SOURCES, *BRAND_AUTH_SELF_SOURCES))
 
     def _delete_superseded_from_fts(self, event_ids: Sequence[str]) -> None:
         if not event_ids:
@@ -3081,6 +3189,17 @@ class CustomerTimelineSQLiteStore:
             )
             """,
             tuple(event_ids),
+        )
+
+    def _delete_bot_context_fts_for_chunk_ids(self, chunk_ids: Sequence[str]) -> None:
+        if not chunk_ids:
+            return
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is None:
+            return
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        self._con.execute(
+            f"DELETE FROM bot_context_chunk_fts WHERE chunk_id IN ({placeholders})",
+            tuple(chunk_ids),
         )
 
     def _table_count(self, table_name: str) -> int:

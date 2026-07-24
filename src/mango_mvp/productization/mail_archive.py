@@ -54,6 +54,9 @@ CANONICAL_MAIL_STAGE2_DELTA_EVENTS = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/stag
 CANONICAL_MAIL_HISTORY_HANDOFF_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/mail_customer_history_handoff.sqlite"
 CANONICAL_MAIL_MANGO_BRIDGE_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "derived/mail_mango_bridge_preview.sqlite"
 CANONICAL_MAIL_IDENTITY_DB = CANONICAL_MAIL_ARCHIVE_ROOT / "identity/tallanto_email_identity_map.sqlite"
+CANONICAL_MAIL_CURRENT_IDENTITY_DB = (
+    CANONICAL_MAIL_ARCHIVE_ROOT / "identity/current/tallanto_email_identity_map.sqlite"
+)
 CANONICAL_MAIL_INCOMING_ROOT = CANONICAL_MAIL_ARCHIVE_ROOT / "incoming"
 TALLANTO_IDENTITY_MAP_SCHEMA_VERSION = "tallanto_email_identity_map_v1"
 MAIL_MATCHING_REPORT_SCHEMA_VERSION = "mail_matching_report_v1"
@@ -89,6 +92,7 @@ DEFAULT_TALLANTO_CANDIDATE_COLUMNS = (
     "Имя",
     "Фамилия",
     "ФИО родителя",
+    "parent_fio",
     "Тип ученика",
     "Филиал",
     "Ответственный(ая)",
@@ -581,7 +585,7 @@ def build_tallanto_identity_map(config: TallantoIdentityMapConfig) -> Mapping[st
                 "amocrm_id": candidate_payload.get("amoCRM ID", ""),
                 "first_name": candidate_payload.get("Имя", ""),
                 "last_name": candidate_payload.get("Фамилия", ""),
-                "parent_name": candidate_payload.get("ФИО родителя", ""),
+                "parent_name": candidate_payload.get("parent_fio") or candidate_payload.get("ФИО родителя", ""),
                 "student_type": candidate_payload.get("Тип ученика", ""),
                 "manager": candidate_payload.get("Ответственный(ая)", ""),
                 "manager_id": candidate_payload.get("Ответственный(ая) (ID)", ""),
@@ -763,7 +767,7 @@ def build_tallanto_identity_map_union(config: TallantoIdentityMapUnionConfig) ->
                 "amocrm_id": candidate_payload.get("amoCRM ID", ""),
                 "first_name": candidate_payload.get("Имя", ""),
                 "last_name": candidate_payload.get("Фамилия", ""),
-                "parent_name": candidate_payload.get("ФИО родителя", ""),
+                "parent_name": candidate_payload.get("parent_fio") or candidate_payload.get("ФИО родителя", ""),
                 "student_type": candidate_payload.get("Тип ученика", ""),
                 "manager": candidate_payload.get("Ответственный(ая)", ""),
                 "manager_id": candidate_payload.get("Ответственный(ая) (ID)", ""),
@@ -9563,6 +9567,7 @@ def utc_now() -> str:
 
 
 __all__ = [
+    "CANONICAL_MAIL_CURRENT_IDENTITY_DB",
     "FULL_MESSAGE_FETCH_QUERY",
     "DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS",
     "DEFAULT_ATTACHMENT_PARSE_ALLOW_EXTENSIONS",

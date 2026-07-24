@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import sqlite3
 import shutil
 import subprocess
@@ -22,6 +23,27 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     summarize_report,
 )
 from mango_mvp.customer_timeline.mail_link_enrich import MailLinkEnrichConfig, run_mail_link_enrich
+from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
+from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
+from mango_mvp.customer_timeline.tallanto_attendance_import import (
+    TallantoAttendanceApiIncrementConfig,
+    TallantoAttendanceImportConfig,
+    run_tallanto_attendance_api_increment,
+    run_tallanto_attendance_import,
+)
+from mango_mvp.customer_timeline.wappi_history_import import (
+    WappiFetchLimits,
+    WappiHistoryImportConfig,
+    run_wappi_history_import,
+)
+
+
+def _repo_python_env(repo_root: Path) -> dict[str, str]:
+    src = str(repo_root.resolve(strict=False) / "src")
+    existing = os.environ.get("PYTHONPATH", "")
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(part for part in (src, existing) if part)}
+
+
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
 
 
@@ -39,6 +61,12 @@ class NightlyServiceStep:
     mail_link_config: Optional[MailLinkEnrichConfig] = None
     mango_sweep_config: Optional[Mapping[str, Any]] = None
     amo_incremental_config: Optional[AmoIncrementalConfig] = None
+    attendance_config: Optional[TallantoAttendanceImportConfig] = None
+    tallanto_money_api_config: Optional[Mapping[str, Any]] = None
+    tallanto_attendance_api_config: Optional[TallantoAttendanceApiIncrementConfig] = None
+    wappi_history_config: Optional[WappiHistoryImportConfig] = None
+    family_graph_config: Optional[FamilyGraphConfig] = None
+    bot_safe_rebuild_config: Optional[BotSafeSummaryBuildConfig] = None
     reason: Optional[str] = None
 
 
@@ -275,6 +303,246 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     }
                 )
                 continue
+            if step.kind == "tallanto_attendance":
+                try:
+                    if step.attendance_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_tallanto_attendance_import(step.attendance_config)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("validation_ok") else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": step_report,
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "tallanto_money_api":
+                try:
+                    if step.tallanto_money_api_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_tallanto_money_api_step(
+                        step,
+                        timeline_db=timeline_db,
+                        allowed_root=allowed_root,
+                        tenant_id=config.tenant_id,
+                    )
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("validation_ok") else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "status": step_report.get("summary", {}).get("status"),
+                            "records_loaded": step_report.get("summary", {}).get("records_loaded"),
+                            "api": step_report.get("api"),
+                            "safety": step_report.get("safety"),
+                        },
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "tallanto_attendance_api":
+                try:
+                    if step.tallanto_attendance_api_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_tallanto_attendance_api_increment(step.tallanto_attendance_api_config)
+                    step_partial = step_report.get("status") == "partial"
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "partial" if step_partial else (
+                    "ok" if step_report.get("validation_ok") else "failed"
+                )
+                if status in {"failed", "partial"} and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "status": step_report.get("status"),
+                            "unresolved_count": step_report.get("unresolved_count"),
+                            "cursor_before": step_report.get("cursor_before"),
+                            "cursor_after": step_report.get("cursor_after"),
+                            "counts": step_report.get("counts"),
+                            "safety": step_report.get("safety"),
+                        },
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "wappi_history":
+                try:
+                    if step.wappi_history_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_wappi_history_import(step.wappi_history_config)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("validation_ok") else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": step_report.get("summary"),
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "family_graph":
+                try:
+                    if step.family_graph_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = build_family_graph(step.family_graph_config)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("quick_check") == "ok" else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": step_report,
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "bot_safe_rebuild":
+                try:
+                    if step.bot_safe_rebuild_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = build_bot_safe_summaries(step.bot_safe_rebuild_config).to_json_dict()
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": "ok",
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "considered_customers": step_report.get("considered_customers"),
+                            "customers_with_summary": step_report.get("customers_with_summary"),
+                            "created": step_report.get("created"),
+                            "updated": step_report.get("updated"),
+                            "duplicate": step_report.get("duplicate"),
+                            "retired_stale": step_report.get("retired_stale"),
+                        },
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
             if step.kind != "nightly_incremental":
                 reason = f"unsupported nightly service step kind: {step.kind}"
                 if step.required:
@@ -423,6 +691,12 @@ def service_step_from_json(
     mail_link_config = None
     mango_sweep_config = None
     amo_incremental_config = None
+    attendance_config = None
+    tallanto_money_api_config = None
+    tallanto_attendance_api_config = None
+    wappi_history_config = None
+    family_graph_config = None
+    bot_safe_rebuild_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
         if not isinstance(config_payload, Mapping):
@@ -456,6 +730,7 @@ def service_step_from_json(
             tenant_id=str(raw_config.get("tenant_id") or tenant_id),
             apply=bool(raw_config.get("apply", True)),
             max_events=int(raw_config["max_events"]) if raw_config.get("max_events") is not None else None,
+            tallanto_identity_dbs=tuple(Path(str(path)) for path in raw_config.get("tallanto_identity_dbs", ())),
         )
     elif kind == "mango_processed_sweep":
         raw_config = payload.get("config")
@@ -480,6 +755,97 @@ def service_step_from_json(
             sleep_sec=float(raw_config.get("sleep_sec", 1.05)),
             copy_db=False,
         )
+    elif kind == "tallanto_attendance":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        attendance_config = TallantoAttendanceImportConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            contacts_workbook=Path(str(raw_config["contacts_workbook"])),
+            attendance_report=Path(str(raw_config["attendance_report"])),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+            actor=str(raw_config.get("actor") or actor),
+            tallanto_env_file=Path(str(raw_config["tallanto_env_file"])) if raw_config.get("tallanto_env_file") else None,
+        )
+    elif kind == "tallanto_attendance_api":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        initial_since = datetime.fromisoformat(str(raw_config["initial_since"]).replace("Z", "+00:00"))
+        if initial_since.tzinfo is None:
+            raise ValueError(f"step {name} initial_since must be timezone-aware")
+        tallanto_attendance_api_config = TallantoAttendanceApiIncrementConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            tallanto_env_file=Path(str(raw_config["tallanto_env_file"])).expanduser(),
+            initial_since=initial_since,
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+            actor=str(raw_config.get("actor") or actor),
+        )
+    elif kind == "tallanto_money_api":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        tallanto_money_api_config = dict(raw_config)
+    elif kind == "wappi_history":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        wappi_history_config = WappiHistoryImportConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            env_file=Path(str(raw_config["env_file"])),
+            phase1_config=Path(str(raw_config["phase1_config"])),
+            pairs_file=Path(str(raw_config["pairs_file"])) if raw_config.get("pairs_file") else None,
+            auto_pairs_file=Path(str(raw_config["auto_pairs_file"])) if raw_config.get("auto_pairs_file") else None,
+            amo_auto_resolver_enabled=bool(raw_config.get("amo_auto_resolver_enabled", False)),
+            amo_mcp_env_file=Path(str(raw_config["amo_mcp_env_file"])) if raw_config.get("amo_mcp_env_file") else None,
+            shared_phone_stoplist=Path(str(raw_config["shared_phone_stoplist"])) if raw_config.get("shared_phone_stoplist") else None,
+            apply=bool(raw_config.get("apply", True)),
+            require_nonempty_profiles=bool(raw_config.get("require_nonempty_profiles", True)),
+            require_widget_linkage=bool(raw_config.get("require_widget_linkage", True)),
+            widget_link_db=Path(str(raw_config["widget_link_db"])) if raw_config.get("widget_link_db") else None,
+            refresh_widget_links=bool(raw_config.get("refresh_widget_links", True)),
+            actor=str(raw_config.get("actor") or actor),
+            out_path=Path(str(raw_config["out_path"])) if raw_config.get("out_path") else None,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=int(raw_config.get("chat_limit_per_profile", 5000)),
+                messages_per_chat=int(raw_config.get("messages_per_chat", 100)),
+                message_limit_total=int(raw_config.get("message_limit_total", 50000)),
+                request_limit_total=int(raw_config.get("request_limit_total", 10000)),
+                page_size=int(raw_config.get("page_size", 100)),
+                sleep_seconds=float(raw_config.get("sleep_seconds", 0.2)),
+                show_all_chats=bool(raw_config.get("show_all_chats", True)),
+                complete_message_history=bool(raw_config.get("complete_message_history", False)),
+            ),
+        )
+    elif kind == "family_graph":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        family_graph_config = FamilyGraphConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            out_path=Path(str(raw_config["out_path"])) if raw_config.get("out_path") else None,
+            profiles_db=Path(str(raw_config["profiles_db"])) if raw_config.get("profiles_db") else None,
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+        )
+    elif kind == "bot_safe_rebuild":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        bot_safe_rebuild_config = BotSafeSummaryBuildConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+            limit=int(raw_config["limit"]) if raw_config.get("limit") is not None else None,
+        )
     elif enabled:
         raise ValueError(f"unsupported enabled step kind: {kind}")
     return NightlyServiceStep(
@@ -492,6 +858,12 @@ def service_step_from_json(
         mail_link_config=mail_link_config,
         mango_sweep_config=mango_sweep_config,
         amo_incremental_config=amo_incremental_config,
+        attendance_config=attendance_config,
+        tallanto_money_api_config=tallanto_money_api_config,
+        tallanto_attendance_api_config=tallanto_attendance_api_config,
+        wappi_history_config=wappi_history_config,
+        family_graph_config=family_graph_config,
+        bot_safe_rebuild_config=bot_safe_rebuild_config,
         reason=reason,
     )
 
@@ -507,6 +879,8 @@ def source_from_json(payload: Any, *, tenant_id: str) -> IncrementalSourceConfig
         source_ref=str(payload["source_ref"]) if payload.get("source_ref") else None,
         normalizer=str(payload.get("normalizer") or "jsonl"),
         required=bool(payload.get("required", True)),
+        ignore_cursor=bool(payload.get("ignore_cursor", False)),
+        preserve_cursor=bool(payload.get("preserve_cursor", False)),
     )
 
 
@@ -558,6 +932,22 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 guard_customer_timeline_output_path(step.amo_incremental_config.timeline_db, allowed_root)
                 guard_customer_timeline_output_path(step.amo_incremental_config.allowed_root, allowed_root)
                 guard_customer_timeline_output_path(step.amo_incremental_config.out_root, allowed_root)
+            if step.attendance_config is not None:
+                guard_customer_timeline_output_path(step.attendance_config.timeline_db, allowed_root)
+            if step.tallanto_attendance_api_config is not None:
+                guard_customer_timeline_output_path(step.tallanto_attendance_api_config.timeline_db, allowed_root)
+                guard_customer_timeline_output_path(step.tallanto_attendance_api_config.allowed_root, allowed_root)
+            if step.wappi_history_config is not None:
+                guard_customer_timeline_output_path(step.wappi_history_config.timeline_db, allowed_root)
+                if step.wappi_history_config.widget_link_db is not None:
+                    guard_customer_timeline_output_path(step.wappi_history_config.widget_link_db, allowed_root)
+            if step.family_graph_config is not None:
+                guard_customer_timeline_output_path(step.family_graph_config.timeline_db, allowed_root)
+                if step.family_graph_config.out_path is not None:
+                    guard_customer_timeline_output_path(step.family_graph_config.out_path, allowed_root)
+            if step.bot_safe_rebuild_config is not None:
+                guard_customer_timeline_output_path(step.bot_safe_rebuild_config.timeline_db, allowed_root)
+                guard_customer_timeline_output_path(step.bot_safe_rebuild_config.allowed_root, allowed_root)
             continue
         guard_customer_timeline_output_path(step.config.timeline_db, allowed_root)
         guard_customer_timeline_output_path(step.config.allowed_root, allowed_root)
@@ -671,6 +1061,62 @@ def run_local_freshness_monitor(
     }
 
 
+def run_tallanto_money_api_step(
+    step: NightlyServiceStep,
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    tenant_id: str,
+) -> Mapping[str, Any]:
+    config = dict(step.tallanto_money_api_config or {})
+    importer_script = Path(str(config.get("importer_script") or "")).expanduser().resolve(strict=False)
+    env_file = Path(str(config.get("tallanto_env_file") or "")).expanduser().resolve(strict=False)
+    configured_db = Path(str(config.get("timeline_db") or timeline_db)).expanduser().resolve(strict=False)
+    configured_root = Path(str(config.get("allowed_root") or allowed_root)).expanduser().resolve(strict=False)
+    if configured_db != timeline_db.resolve(strict=False) or configured_root != allowed_root.resolve(strict=False):
+        raise ValueError("Tallanto money API step must use the service staging DB and allowed root")
+    if config.get("apply") is not True:
+        raise ValueError("Tallanto money API step must explicitly apply to staging")
+    if not importer_script.is_file() or not env_file.is_file():
+        raise FileNotFoundError("Tallanto money API importer or read-only env is missing")
+    command = [
+        sys.executable,
+        str(importer_script),
+        "--tallanto-api-env",
+        str(env_file),
+        "--timeline-db",
+        str(timeline_db),
+        "--allowed-root",
+        str(allowed_root),
+        "--tenant-id",
+        tenant_id,
+        "--apply",
+        "--actor",
+        str(config.get("actor") or "customer_timeline_nightly_tallanto_money"),
+    ]
+    proc = subprocess.run(
+        command,
+        cwd=importer_script.parents[1],
+        env=_repo_python_env(importer_script.parents[1]),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Tallanto money API importer failed with rc={proc.returncode}")
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Tallanto money API importer returned invalid JSON") from exc
+    if not isinstance(report, Mapping):
+        raise RuntimeError("Tallanto money API importer returned a non-object report")
+    safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
+    if safety.get("write_tallanto") is not False or safety.get("write_product_timeline_db") is not True:
+        raise RuntimeError("Tallanto money API importer safety contract failed")
+    return report
+
+
 def run_mango_processed_sweep(
     step: NightlyServiceStep,
     *,
@@ -712,7 +1158,9 @@ def run_mango_processed_sweep(
             rc=127,
         )
     cursor = mango_processed_cursor(timeline_db, tenant_id=tenant_id)
-    since = str(config.get("since") or cursor.get("max_source_ts") or cursor.get("last_cursor_ts") or "").strip()
+    # ponytail: source timestamps cannot reveal a call analyzed after its old call date.
+    # Re-read analyzed rows and rely on stable event deduplication instead.
+    since = ""
     scan_roots = tuple(Path(str(item)).expanduser() for item in config.get("scan_roots") or ())
     package_globs = tuple(str(item) for item in config.get("package_globs") or ("mango_update_after_*",))
     inventory = discover_mango_processed_call_dbs(scan_roots, package_globs=package_globs, since=since)
@@ -778,7 +1226,16 @@ def run_mango_processed_sweep(
         command.extend(["--since", since])
     for db_path in package_dbs:
         command.extend(["--package-db", str(db_path)])
-    proc = subprocess.run(command, cwd=Path.cwd(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    repo_root = producer_script.parents[1]
+    proc = subprocess.run(
+        command,
+        cwd=repo_root,
+        env=_repo_python_env(repo_root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
     producer_report: Mapping[str, Any] = {}
     if report_out.exists():
         try:
@@ -943,6 +1400,15 @@ def inspect_mango_call_db(root: Path, db_path: Path, *, since_dt: datetime | Non
         for row in rows
         if str(row["analysis_status"] or "") == "done" and str(row["analysis_json"] or "").strip()
     ]
+    for row in done_rows:
+        if parse_iso_datetime(str(row["call_at"] or "")) is None:
+            return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "invalid_done_call_datetime"}
+        try:
+            analysis = json.loads(str(row["analysis_json"] or ""))
+        except json.JSONDecodeError:
+            analysis = None
+        if not isinstance(analysis, Mapping):
+            return {"root": str(root), "db_path": str(db_path), "usable": False, "skip_reason": "invalid_done_analysis_json"}
     selected = 0
     min_at = None
     max_at = None

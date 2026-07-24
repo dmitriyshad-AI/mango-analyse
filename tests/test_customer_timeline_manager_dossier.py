@@ -20,9 +20,12 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.manager_dossier import (
+    _enrich_owner50_selected_rows,
+    _product_interest_values,
     _season_purchase_matches,
     build_customer_dossier,
     build_manager_dossier_workbook,
+    build_owner50_family_workbook,
     load_canonical_call_client_texts,
     manager_outreach_eligibility,
 )
@@ -31,6 +34,18 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
+
+
+def test_product_interest_reads_existing_amo_product_context_fields() -> None:
+    values = _product_interest_values(
+        None,
+        ({"record_json": json.dumps({"product_context": {
+            "course": "ОГЭ по физике", "group": "Группа 8", "filial": "МФТИ",
+            "subject_name": "Физика",
+        }}, ensure_ascii=False)},),
+    )
+
+    assert values == ("ОГЭ по физике", "Группа 8", "МФТИ", "Физика")
 
 
 def test_manager_dossier_extracts_interests_and_pains_from_client_text_only(tmp_path: Path) -> None:
@@ -65,6 +80,64 @@ def test_manager_dossier_extracts_interests_and_pains_from_client_text_only(tmp_
     assert "переживаем" in pain_text.casefold()
     assert "не успеваем" in pain_text.casefold()
     assert "сложно оплатить" not in pain_text
+
+
+def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=NOW + timedelta(hours=1),
+                source_system="tallanto_attendance",
+                source_id="attendance-1",
+                direction=TimelineDirection.SYSTEM,
+                subject="Физика 8 класс",
+                summary="Занятие с подтверждённым списанием в Tallanto.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    text = "\n".join(row.text for row in dossier.chronology)
+    assert "Списание за занятие: Физика 8 класс" in text
+    assert "посетил" not in text.casefold()
+
+
+def test_owner50_counts_only_explicitly_confirmed_attendance(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        for suffix, hours, confirmed in (("visit", 1, True), ("no-show", 2, False)):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:1",
+                    event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                    event_at=NOW + timedelta(hours=hours),
+                    source_system="tallanto_attendance_api",
+                    source_id=f"attendance-{suffix}",
+                    direction=TimelineDirection.SYSTEM,
+                    subject="Физика 8 класс",
+                    summary=suffix,
+                    match_status="strong_unique",
+                    record={"attendance_confirmed": confirmed},
+                    created_at=NOW,
+                )
+            )
+
+    rows = [{"member_ids": ("customer:1",), "email": ""}]
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        _enrich_owner50_selected_rows(con, rows, tenant_id="foton")
+
+    assert rows[0]["attendance"] == f"Последнее подтверждённое посещение: {(NOW + timedelta(hours=1)).isoformat()}"
 
 
 def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
@@ -948,6 +1021,203 @@ def test_manager_dossier_pain_quote_trims_adjacent_asr_tail(tmp_path: Path) -> N
     assert "рисунок" not in pain_text.casefold()
 
 
+def test_manager_dossier_reads_family_chronology_without_merging_customer_records(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:2",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Второй ученик",
+                primary_phone="+79000000001",
+                metadata={"brands": ["foton"]},
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:2",
+                event_type=TimelineEventType.EMAIL_MESSAGE,
+                event_at=NOW + timedelta(hours=1),
+                source_system="mail_archive_stage2",
+                source_id="family-mail",
+                direction=TimelineDirection.INBOUND,
+                summary="Родитель уточнил расписание второго ребёнка.",
+                match_status="strong_unique",
+                created_at=NOW,
+            )
+        )
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM family_members_v1 WHERE tenant_id='foton'")
+        con.executemany(
+            """
+            INSERT INTO family_members_v1 (
+              tenant_id, family_id, customer_id, membership_status, confidence,
+              reason, created_at, updated_at, record_hash, record_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                ("foton", "family:shared", "customer:1", "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), "hash-1", "{}"),
+                ("foton", "family:shared", "customer:2", "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), "hash-2", "{}"),
+            ),
+        )
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    chronology = "\n".join(row.text for row in dossier.chronology)
+    assert dossier.customer_id == "customer:1"
+    assert "второго ребёнка" in chronology
+    assert "карточка: Второй ученик" in chronology
+    assert any(row.source.endswith(":customer:2") for row in dossier.chronology)
+
+
+@pytest.fixture
+def owner50_workbook(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:shared", customer_id="customer:a",
+        signal_type="deal_stalling", membership_reason="exact_tallanto_parent_name_and_phone_or_email",
+    )
+    _seed_owner50_member(db, tmp_path, family_id="family:shared", customer_id="customer:b", signal_type="callback_due")
+    out = tmp_path / ".codex_local" / "owner50.xlsx"
+    summary = dict(
+        build_owner50_family_workbook(
+            timeline_db=db,
+            allowed_root=tmp_path,
+            out_xlsx=out,
+            as_of=NOW,
+        )
+    )
+    return out, summary
+
+
+def test_owner50_deduplicates_family_and_uses_best_family_signal(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
+    out, summary = owner50_workbook
+    rows = list(load_workbook(out, read_only=True)["Кому писать"].iter_rows(values_only=True))
+
+    assert summary["families"] == 1
+    assert len(rows) == 2
+    columns = {name: index for index, name in enumerate(rows[0])}
+    assert rows[1][columns["family_id"]] == "family:shared"
+    assert rows[1][columns["Сигнал"]] == "callback_due"
+    assert rows[1][columns["Телефон"]] == "+79000000002"
+    assert rows[1][columns["Email"]] == "customer-b@example.com"
+    assert rows[1][columns["Формула ранга"]] == (
+        "tier=0; due=1; fresh_intent=0; specific_offer=1; child_fit=1; payment_history=1"
+    )
+
+
+def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
+    out, _ = owner50_workbook
+    wb = load_workbook(out, read_only=True)
+    families = {row[1] for row in list(wb["Кому писать"].iter_rows(values_only=True))[1:]}
+    evidence = list(wb["Доказательства"].iter_rows(values_only=True))[1:]
+
+    assert families
+    assert families == {row[0] for row in evidence}
+    assert any(str(row[4]).startswith("derived_signals:") for row in evidence)
+    assert any(str(row[4]).startswith("timeline_events:") for row in evidence)
+    assert any(str(row[4]).startswith("customer_opportunities:") for row in evidence)
+    assert any(str(row[4]).startswith("family_links_v1:") for row in evidence)
+    assert any(row[4] == "customer_purchases_v1" for row in evidence)
+
+
+def test_owner50_workbook_has_exactly_three_owner_sheets(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
+    out, summary = owner50_workbook
+    wb = load_workbook(out, read_only=True)
+
+    assert wb.sheetnames == ["Кому писать", "Доказательства", "Контроль"]
+    assert summary["sheets"] == ("Кому писать", "Доказательства", "Контроль")
+
+
+def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:unsafe",
+        customer_id="customer:unsafe",
+        signal_type="client_returned",
+        display_name="Тестовый сотрудник",
+        no_contact=True,
+        grade="11",
+        event_summary="Хочу возврат денег за курс.",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:active-learning",
+        customer_id="customer:c",
+        signal_type="season_return_candidate",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:weak",
+        customer_id="customer:d",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:closed-deal",
+        customer_id="customer:e",
+        signal_type="deal_stalling",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:c",
+                event_type=TimelineEventType.TALLANTO_GROUP,
+                event_at=NOW - timedelta(days=1),
+                source_system="tallanto_snapshot",
+                source_id="active-group",
+                direction=TimelineDirection.SYSTEM,
+                summary="Активная учебная группа.",
+                match_status="strong_unique",
+                created_at=NOW - timedelta(days=1),
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE family_members_v1 SET membership_status='conflict', confidence='low' WHERE customer_id='customer:d'"
+        )
+        con.execute(
+            "UPDATE customer_opportunities SET status='closed', closed_at=? WHERE customer_id='customer:e'",
+            ((NOW - timedelta(days=1)).isoformat(),),
+        )
+        con.commit()
+    out = tmp_path / ".codex_local" / "owner50_excluded.xlsx"
+
+    summary = build_owner50_family_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        as_of=NOW,
+    )
+    wb = load_workbook(out, read_only=True)
+    control = "\n".join(str(row[2]) for row in list(wb["Контроль"].iter_rows(values_only=True))[1:])
+
+    assert summary["families"] == 0
+    assert list(wb["Кому писать"].iter_rows(values_only=True))[1:] == []
+    assert {
+        "structured_no_contact",
+        "staff_test_system",
+        "grade_11_or_graduate",
+        "durable_p0_history",
+        "active_access_or_learning",
+        "family_ambiguous",
+        "active_deal_missing",
+    }.issubset(
+        set(control.replace(",", "").split())
+    )
+
+
 def _timeline_db(tmp_path: Path) -> Path:
     db = tmp_path / "timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
@@ -1038,6 +1308,117 @@ def _seed_customer_with_call_and_opportunity(db: Path, tmp_path: Path) -> None:
         )
     finally:
         store.close()
+
+
+def _seed_owner50_member(
+    db: Path,
+    tmp_path: Path,
+    *,
+    family_id: str,
+    customer_id: str,
+    signal_type: str,
+    display_name: str | None = None,
+    no_contact: bool = False,
+    grade: str = "8",
+    event_summary: str = "Клиент подтвердил интерес к курсу.",
+    membership_reason: str = "exact_amo_parent_name_and_phone_or_email",
+) -> None:
+    number = ord(customer_id[-1].casefold()) - ord("a") + 1 if customer_id[-1].isalpha() else 9
+    event = TimelineEvent(
+        tenant_id="foton",
+        customer_id=customer_id,
+        event_type=TimelineEventType.EMAIL_MESSAGE,
+        event_at=NOW - timedelta(days=10),
+        source_system="mail_archive_stage2",
+        source_id=f"event-{customer_id}",
+        direction=TimelineDirection.INBOUND,
+        summary=event_summary,
+        match_status="strong_unique",
+        created_at=NOW - timedelta(days=10),
+    )
+    opportunity = CustomerOpportunity(
+        tenant_id="foton",
+        customer_id=customer_id,
+        opportunity_type=OpportunityType.AMO_DEAL,
+        source_system="amo",
+        source_id=f"lead-{customer_id}",
+        title="Курс математики 8 класс",
+        status="active",
+        product_context={"products_of_interest": ["Курс математики 8 класс"]},
+        opened_at=NOW - timedelta(days=30),
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id=customer_id,
+                identity_status=IdentityStatus.STRONG,
+                display_name=display_name or f"Родитель {customer_id}",
+                primary_phone=f"+790000000{number:02d}",
+                primary_email=f"{customer_id.replace(':', '-')}@example.com",
+                metadata={"brands": ["foton"], "no_contact": no_contact},
+            )
+        )
+        store.upsert_opportunity(opportunity)
+        store.upsert_event(event)
+        store.upsert_signal(
+            DerivedSignal(
+                tenant_id="foton",
+                customer_id=customer_id,
+                opportunity_id=opportunity.opportunity_id,
+                event_id=event.event_id,
+                signal_type=signal_type,
+                severity=SignalSeverity.MEDIUM,
+                evidence_text=f"Основание {signal_type} для {customer_id}.",
+                recommended_action="Проверить историю и написать клиенту.",
+                expires_at=NOW + timedelta(days=30),
+                created_at=NOW - timedelta(days=10),
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS family_links_v1 (
+              tenant_id TEXT NOT NULL, family_id TEXT NOT NULL, customer_id TEXT NOT NULL,
+              child_key TEXT NOT NULL, canonical_name TEXT NOT NULL, name_variants_json TEXT NOT NULL,
+              grades_json TEXT NOT NULL, subjects_json TEXT NOT NULL, brand TEXT NOT NULL,
+              status TEXT NOT NULL, confidence TEXT NOT NULL, reason TEXT NOT NULL,
+              source_refs_json TEXT NOT NULL, evidence_count INTEGER NOT NULL, created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL, record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, family_id, customer_id, child_key)
+            )
+            """
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("foton", family_id, customer_id, "confident", "high", membership_reason, NOW.isoformat(), NOW.isoformat(), f"hash-{customer_id}", "{}"),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", family_id, customer_id, f"child:{customer_id}", f"Ребёнок {customer_id}", "[]",
+                json.dumps([grade]), json.dumps(["математика"], ensure_ascii=False), "foton", "confident", "high",
+                "test", "[]", 1, NOW.isoformat(), f"hash-child-{customer_id}", "{}",
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_purchases_v1 (
+              tenant_id TEXT NOT NULL, customer_id TEXT NOT NULL, period TEXT NOT NULL, money_kind TEXT NOT NULL,
+              total_in REAL, total_out REAL, deals_cnt INTEGER NOT NULL DEFAULT 0, last_purchase_at TEXT,
+              sources_json TEXT NOT NULL, computability TEXT NOT NULL, code_version TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id, period, money_kind)
+            )
+            """
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO customer_purchases_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("foton", customer_id, "all_time", "fact", 50000, 0, 1, "2026-06-01", "[]", "ok", "test"),
+        )
+        con.commit()
 
 
 def _canonical_calls_db(tmp_path: Path, transcripts: dict[str, str]) -> Path:

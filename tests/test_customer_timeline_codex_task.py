@@ -8,6 +8,8 @@ import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_customer_timeline_codex_task.py"
 spec = importlib.util.spec_from_file_location("run_customer_timeline_codex_task", SCRIPT)
 module = importlib.util.module_from_spec(spec)
@@ -21,6 +23,55 @@ builder = importlib.util.module_from_spec(builder_spec)
 assert builder_spec and builder_spec.loader
 sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
+
+
+def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    mail_data_root = tmp_path / "Mango_Data"
+    captured = {}
+    assert builder.build_parser().parse_args([]).mail_data_root == str(builder.DEFAULT_MAIL_DATA_ROOT)
+
+    def fake_mail_builder(root, **kwargs):
+        captured["mail_data_root"] = root
+        return {}
+
+    monkeypatch.setattr(builder, "build_mail_increment", fake_mail_builder)
+    monkeypatch.setattr(builder, "build_mango_freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr(builder, "build_tallanto_freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr(builder, "build_service_config", lambda **kwargs: {})
+
+    result = builder.main(
+        [
+            "--source-root",
+            str(repo_root),
+            "--mail-data-root",
+            str(mail_data_root),
+            "--out-root",
+            str(tmp_path / "out"),
+            "--timeline-db",
+            str(tmp_path / "timeline.sqlite"),
+        ]
+    )
+
+    assert result == 0
+    assert captured["mail_data_root"] == mail_data_root.resolve()
+
+
+def test_mail_builder_fails_before_writing_when_archive_input_is_missing(tmp_path) -> None:
+    out_jsonl = tmp_path / "out.jsonl"
+    manifest = tmp_path / "manifest.json"
+
+    with pytest.raises(FileNotFoundError, match="required mail archive input is missing"):
+        builder.build_mail_increment(
+            tmp_path / "Mango_Data",
+            out_jsonl=out_jsonl,
+            manifest_path=manifest,
+            since=builder.parse_dt(builder.DEFAULT_CURSOR),
+            text_limit=1200,
+        )
+
+    assert not out_jsonl.exists()
+    assert not manifest.exists()
 
 
 def valid_nightly_payload(staging_root: Path) -> dict:
@@ -49,12 +100,71 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                             "normalizer": normalizer,
                             "required": True,
                             "path": str(staging_root / "nightly_dv2_sources" / f"{source_system}.jsonl"),
+                            **(
+                                {"ignore_cursor": True, "preserve_cursor": True}
+                                if source_system == "mango_processed_summary"
+                                else {}
+                            ),
                         }
                         for source_system, normalizer in module.REQUIRED_CALL_SOURCES.items()
                     ],
                 },
             },
+            {
+                "name": "wappi_history_incremental",
+                "kind": "wappi_history",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
             {"name": "mail_archive_incremental", "enabled": True, "required": True},
+            {"name": "mail_link_enrich", "enabled": True, "required": True},
+            {
+                "name": "tallanto_money_api_incremental",
+                "kind": "tallanto_money_api",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "importer_script": str(
+                        module.ROOT / "scripts/import_tallanto_payments_to_timeline.py"
+                    ),
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
+            {
+                "name": "tallanto_attendance_api_incremental",
+                "kind": "tallanto_attendance_api",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
+            {
+                "name": "family_graph_refresh",
+                "kind": "family_graph",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
+            {
+                "name": "bot_safe_rebuild",
+                "kind": "bot_safe_rebuild",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
         ],
     }
 
@@ -204,6 +314,60 @@ def test_nightly_config_accepts_calls_step_without_optional_amo_sources(tmp_path
     assert reason == ""
 
 
+@pytest.mark.parametrize("step_name", [name for name, _kind in module.REQUIRED_MUTATING_NIGHTLY_CHAIN])
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("enabled", "enabled and required"),
+        ("required", "enabled and required"),
+        ("kind", "kind must be"),
+        ("timeline_db", "timeline_db must match"),
+        ("apply", "apply must be true"),
+    ],
+)
+def test_nightly_config_rejects_invalid_mutating_chain_step(
+    tmp_path, monkeypatch, step_name: str, field: str, expected: str
+) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    step = next(item for item in payload["steps"] if item["name"] == step_name)
+    if field in {"enabled", "required"}:
+        step[field] = False
+    elif field == "kind":
+        step["kind"] = "wrong_kind"
+    elif field == "timeline_db":
+        step["config"]["timeline_db"] = str(staging_root / "another.sqlite")
+    else:
+        step["config"]["apply"] = False
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert expected in module.validate_nightly_config(config)
+
+
+@pytest.mark.parametrize(("mutation", "expected"), [("duplicate", "exactly one"), ("reorder", "step order")])
+def test_nightly_config_rejects_duplicate_or_reordered_mutating_chain(
+    tmp_path, monkeypatch, mutation: str, expected: str
+) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    steps = payload["steps"]
+    wappi_index = next(index for index, step in enumerate(steps) if step["name"] == "wappi_history_incremental")
+    family_index = next(index for index, step in enumerate(steps) if step["name"] == "family_graph_refresh")
+    if mutation == "duplicate":
+        steps.insert(wappi_index + 1, dict(steps[wappi_index]))
+    else:
+        steps[wappi_index], steps[family_index] = steps[family_index], steps[wappi_index]
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert expected in module.validate_nightly_config(config)
+
+
 def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
@@ -350,8 +514,28 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert [source["source_system"] for source in sources] == ["mango_processed_summary"]
     amo = steps["amo_incremental_shadow"]
     assert amo["kind"] == "amo_incremental"
-    assert amo["required"] is False
+    assert amo["required"] is True
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
+    attendance_api = steps["tallanto_attendance_api_incremental"]
+    assert attendance_api["kind"] == "tallanto_attendance_api"
+    assert attendance_api["required"] is True
+    assert attendance_api["config"]["apply"] is True
+    assert attendance_api["config"]["initial_since"] == "2026-06-09T00:00:00+03:00"
+    money_api = steps["tallanto_money_api_incremental"]
+    assert money_api["kind"] == "tallanto_money_api"
+    assert money_api["required"] is True
+    assert money_api["config"]["apply"] is True
+    assert money_api["config"]["timeline_db"] == str(
+        staging_root / "customer_timeline_staging.sqlite"
+    )
+    assert "tallanto_money_incremental" not in steps
+    mail_link_enrich = steps["mail_link_enrich"]
+    assert mail_link_enrich["required"] is True
+    assert [Path(path).name for path in mail_link_enrich["config"]["tallanto_identity_dbs"]] == [
+        "tallanto_email_identity_map.sqlite",
+        "tallanto_email_identity_map.sqlite",
+    ]
+    assert ".codex_local/staging" not in " ".join(mail_link_enrich["config"]["tallanto_identity_dbs"])
 
 
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:

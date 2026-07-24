@@ -12,7 +12,7 @@ def _write_wappi_attestation(root: Path, *, head: str, started_at: str = "2026-0
     manifest = root / "phase1b_startup_manifest.json"
     heartbeat = root / "heartbeat.json"
     manifest.write_text(
-        json.dumps({"head": head, "started_at": started_at, "cwd": str(root)}),
+        json.dumps({"status": "ready", "head": head, "started_at": started_at, "cwd": str(root)}),
         encoding="utf-8",
     )
     heartbeat.write_text(
@@ -257,6 +257,31 @@ def test_live_truth_rejects_startup_manifest_from_previous_pid(tmp_path: Path, m
     assert snapshot.status == "WARN"
     assert snapshot.processes[0].head == ""
     assert any("startup_manifest_pid_mismatch" in item for item in snapshot.processes[0].warnings)
+
+
+def test_live_truth_rejects_startup_manifest_that_is_not_ready(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(live_truth, "_git_value", lambda *_args: "abc")
+    process = ProcessInfo(pid=46, ppid=1, command="python3 scripts/run_amo_wappi_draft_loop.py --loop")
+    manifest, heartbeat = _write_wappi_attestation(tmp_path, head="abc")
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["status"] = "starting"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    heartbeat.write_text("{}", encoding="utf-8")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+        wappi_pid_reader=lambda: 46,
+        wappi_manifest_path=manifest,
+        wappi_heartbeat_path=heartbeat,
+    )
+
+    assert snapshot.processes[0].head == ""
+    assert any("startup_manifest_not_ready" in item for item in snapshot.processes[0].warnings)
 
 
 def test_live_truth_ignores_stale_heartbeat_when_startup_manifest_matches_process(

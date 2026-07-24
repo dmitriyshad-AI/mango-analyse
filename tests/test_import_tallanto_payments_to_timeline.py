@@ -18,7 +18,9 @@ from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_c
 from mango_mvp.customer_timeline.ingestion import timeline_ingestion_safety_contract
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
+    fetch_tallanto_module_strict,
     main,
+    run_tallanto_money_api_increment,
     run_tallanto_payments_import,
 )
 
@@ -196,6 +198,57 @@ def test_cli_stdin_defaults_to_dry_run_and_does_not_create_db(tmp_path: Path, ca
     assert report["summary"]["write_applied"] is False
 
 
+def test_tallanto_money_api_full_rescan_imports_sanitized_rows_idempotently(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="existing-1",
+        tallanto_id="contact-1",
+    )
+    client = _TallantoMoneyClient()
+    config = TallantoPaymentsImportConfig(
+        source=None,
+        timeline_db=timeline_db,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        apply=True,
+        source_label="tallanto_api:get_entry_list",
+    )
+
+    first = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=client)
+    second = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=client)
+
+    assert first["validation_ok"] is True
+    assert first["api"]["modules"]["most_finances"] == {"pages": 2, "records": 1}
+    assert first["api"]["modules"]["most_abonements"] == {"pages": 2, "records": 1}
+    assert first["api"]["raw_payload_persisted"] is False
+    assert first["safety"]["network_calls"] is True
+    assert first["safety"]["write_tallanto"] is False
+    assert second["import_report"]["write_status_counts"]["duplicate"] >= 4
+    assert "must_not_be_stored" not in db_dump(timeline_db)
+
+
+def test_tallanto_money_api_rejects_duplicate_ids_across_pages() -> None:
+    class DuplicateClient:
+        def get_entry_list(self, **kwargs):  # type: ignore[no-untyped-def]
+            if kwargs["offset"] == 0:
+                return {"entry_list": [{"id": "same"}], "next_offset": 1, "total_count": 2}
+            return {"entry_list": [{"id": "same"}], "next_offset": None, "total_count": 2}
+
+    with pytest.raises(ValueError, match="duplicate id"):
+        fetch_tallanto_module_strict(DuplicateClient(), module="most_finances")
+
+
+def test_tallanto_money_api_requires_total_count() -> None:
+    class Client:
+        def get_entry_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return {"entry_list": [{"id": "payment-1"}], "next_offset": None}
+
+    with pytest.raises(ValueError, match="misses total_count"):
+        fetch_tallanto_module_strict(Client(), module="most_finances")
+
+
 def test_importer_safety_contract_and_no_network_or_subprocess(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     def fail(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("Tallanto B2 importer must not use subprocess or network APIs")
@@ -233,6 +286,19 @@ def mcp_snapshot() -> dict[str, object]:
         "most_abonements": mcp_response("most_abonements", [abonement_row()]),
         "most_class": mcp_response("most_class", [class_row()]),
     }
+
+
+class _TallantoMoneyClient:
+    def get_entry_list(self, *, module: str, offset: int, **_kwargs):  # type: ignore[no-untyped-def]
+        if offset:
+            return {"entry_list": [], "next_offset": None, "total_count": 1}
+        if module == "most_finances":
+            row = {**payment_row(), "private_note": "must_not_be_stored"}
+        elif module == "most_abonements":
+            row = {**abonement_row(), "private_note": "must_not_be_stored"}
+        else:
+            raise AssertionError(module)
+        return {"entry_list": [row], "next_offset": 1, "total_count": 1}
 
 
 def mcp_response(module: str, records: list[dict[str, object]]) -> dict[str, object]:

@@ -21,7 +21,12 @@ from mango_mvp.customer_timeline import (
     IdentityMatchClass,
     IdentityStatus,
 )
-from mango_mvp.customer_timeline.nightly_service import run_nightly_service, service_config_from_json
+from mango_mvp.customer_timeline.nightly_service import (
+    NightlyServiceStep,
+    run_nightly_service,
+    run_tallanto_money_api_step,
+    service_config_from_json,
+)
 
 
 NOW = datetime(2026, 7, 3, 3, 20, tzinfo=timezone.utc)
@@ -65,7 +70,12 @@ def seed_phone_link(db_path: Path, allowed_root: Path, *, phone: str = "+7999000
         )
 
 
-def write_processed_call_db(path: Path, *, phone: str = "+79990001122") -> None:
+def write_processed_call_db(
+    path: Path,
+    *,
+    phone: str = "+79990001122",
+    rows: tuple[dict[str, object], ...] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as con:
         con.execute(
@@ -84,33 +94,42 @@ def write_processed_call_db(path: Path, *, phone: str = "+79990001122") -> None:
             )
             """
         )
-        con.execute(
-            """
-            INSERT INTO call_records (
-              id, source_call_id, source_filename, started_at, phone, manager_name,
-              direction, duration_sec, analysis_status, analysis_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "call-row-1",
-                "provider-call-1",
-                "call-row-1.wav",
-                "2026-07-04T10:00:00+00:00",
-                phone,
-                "manager",
-                "inbound",
-                120.0,
-                "done",
-                json.dumps(
-                    {
-                        "summary": "Клиент спросил про расписание.",
-                        "history_summary": "Клиент спросил про расписание.",
-                        "call_type": "sales_call",
-                    },
-                    ensure_ascii=False,
-                ),
-            ),
+        rows = rows or (
+            {
+                "id": "call-row-1",
+                "source_call_id": "provider-call-1",
+                "started_at": "2026-07-04T10:00:00+00:00",
+                "analysis_status": "done",
+            },
         )
+        for row in rows:
+            con.execute(
+                """
+                INSERT INTO call_records (
+                  id, source_call_id, source_filename, started_at, phone, manager_name,
+                  direction, duration_sec, analysis_status, analysis_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["source_call_id"],
+                    f"{row['id']}.wav",
+                    row["started_at"],
+                    phone,
+                    "manager",
+                    "inbound",
+                    120.0,
+                    row["analysis_status"],
+                    json.dumps(
+                        {
+                            "summary": "Клиент спросил про расписание.",
+                            "history_summary": "Клиент спросил про расписание.",
+                            "call_type": "sales_call",
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
         con.commit()
 
 
@@ -378,6 +397,114 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
     assert captured["config"].copy_db is False
 
 
+def test_nightly_service_runs_required_tallanto_attendance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    captured = {}
+
+    def fake_run(config):
+        captured["config"] = config
+        return {"validation_ok": True, "counts": {"resolved": 2}, "safety": {"network_calls": False}}
+
+    monkeypatch.setattr(nightly_service_module, "run_tallanto_attendance_import", fake_run)
+    config_path = staging / "service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(staging),
+                "out_root": str(staging / "runs"),
+                "publish_dir": str(staging / "published"),
+                "steps": [
+                    {
+                        "name": "tallanto_attendance",
+                        "kind": "tallanto_attendance",
+                        "required": True,
+                        "config": {
+                            "contacts_workbook": str(tmp_path / "contacts.xlsx"),
+                            "attendance_report": str(tmp_path / "attendance.xlsx"),
+                            "apply": True,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["summary"]["counts"]["resolved"] == 2
+    assert captured["config"].timeline_db == db_path
+
+
+def test_nightly_service_runs_wappi_then_refreshes_family_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    calls: list[str] = []
+
+    def fake_wappi(config):
+        calls.append("wappi")
+        assert config.require_widget_linkage is True
+        assert config.limits.show_all_chats is True
+        return {"validation_ok": True, "summary": {"records_built": 3}}
+
+    def fake_family(config):
+        calls.append("family")
+        assert config.apply is True
+        return {"quick_check": "ok", "family_members_write_applied": True}
+
+    monkeypatch.setattr(nightly_service_module, "run_wappi_history_import", fake_wappi)
+    monkeypatch.setattr(nightly_service_module, "build_family_graph", fake_family)
+    config_path = staging / "service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(staging),
+                "out_root": str(staging / "runs"),
+                "publish_dir": str(staging / "published"),
+                "steps": [
+                    {
+                        "name": "wappi_history_incremental",
+                        "kind": "wappi_history",
+                        "config": {
+                            "env_file": str(tmp_path / "wappi.env"),
+                            "phase1_config": str(tmp_path / "phase1.json"),
+                            "widget_link_db": str(staging / "wappi_links.sqlite"),
+                            "require_widget_linkage": True,
+                            "show_all_chats": True,
+                        },
+                    },
+                    {
+                        "name": "family_graph_refresh",
+                        "kind": "family_graph",
+                        "config": {
+                            "out_path": str(staging / "family_graph.json"),
+                            "apply": True,
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert calls == ["wappi", "family"]
+    assert report["steps"][0]["summary"]["records_built"] == 3
+    assert report["steps"][1]["summary"]["family_members_write_applied"] is True
+
+
 def test_nightly_service_amo_incremental_failure_is_optional(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -490,6 +617,65 @@ def test_nightly_service_imports_mango_processed_summary(tmp_path: Path) -> None
         ).fetchone()
     assert row[1:] == ("mango_call", "mango_processed_summary")
     assert chunk_row == (0, 1)
+
+
+def test_nightly_service_runs_tallanto_money_api_importer_without_exposing_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "validation_ok": True,
+                    "summary": {"status": "completed", "records_loaded": 2},
+                    "api": {"modules": {}},
+                    "safety": {
+                        "write_tallanto": False,
+                        "write_product_timeline_db": True,
+                    },
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(nightly_service_module.subprocess, "run", fake_run)
+    step = NightlyServiceStep(
+        name="tallanto_money_api_incremental",
+        kind="tallanto_money_api",
+        tallanto_money_api_config={
+            "importer_script": str(importer),
+            "tallanto_env_file": str(env_file),
+            "timeline_db": str(timeline_db),
+            "allowed_root": str(tmp_path),
+            "apply": True,
+        },
+    )
+
+    report = run_tallanto_money_api_step(
+        step,
+        timeline_db=timeline_db,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+    )
+
+    assert report["validation_ok"] is True
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--tallanto-api-env") + 1] == str(env_file)
+    assert "secret" not in " ".join(command)
 
 
 def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path: Path) -> None:
@@ -639,6 +825,101 @@ def test_nightly_service_sweeps_explicit_ready_package_db_before_import(tmp_path
     assert [item["db_path"] for item in inventory] == [str(ready_db.resolve())]
 
 
+def test_nightly_service_imports_late_analyzed_old_call_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    seed_phone_link(db_path, tmp_path)
+    ready_db = tmp_path / "drop" / "mango_calls_ready.sqlite"
+    write_processed_call_db(
+        ready_db,
+        rows=(
+            {
+                "id": "new-done",
+                "source_call_id": "provider-new-done",
+                "started_at": "2026-07-04T10:00:00+00:00",
+                "analysis_status": "done",
+            },
+            {
+                "id": "old-pending",
+                "source_call_id": "provider-old-pending",
+                "started_at": "2026-06-01T10:00:00+00:00",
+                "analysis_status": "pending",
+            },
+        ),
+    )
+    out_jsonl = tmp_path / "nightly_dv2_sources" / "mango_processed_sweep.jsonl"
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "config": {
+                    "producer_script": str(
+                        Path(__file__).resolve().parents[1]
+                        / "scripts"
+                        / "build_mango_call_timeline_increment.py"
+                    ),
+                    "package_dbs": [str(ready_db)],
+                    "out_jsonl": str(out_jsonl),
+                    "report_out": str(tmp_path / "nightly_dv2_sources/producer_report.json"),
+                    "manifest_path": str(tmp_path / "nightly_dv2_sources/manifest.json"),
+                    "inventory_out": str(tmp_path / "nightly_dv2_sources/inventory.json"),
+                },
+            },
+            {
+                "name": "calls_and_amo_incremental",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service/journal.jsonl"),
+                    "sources": [
+                        {
+                            "name": "mango_processed_sweep",
+                            "source_system": "mango_processed_summary",
+                            "path": str(out_jsonl),
+                            "source_ref": "mango:processed_sweep:latest",
+                            "normalizer": "mango_processed_summary",
+                            "ignore_cursor": True,
+                            "preserve_cursor": True,
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "late_call_service_config.json"
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    config = service_config_from_json(config_path)
+
+    first = run_nightly_service(config)
+    with sqlite3.connect(ready_db) as con:
+        con.execute(
+            "UPDATE call_records SET analysis_status = 'done' WHERE id = 'old-pending'"
+        )
+        con.commit()
+    second = run_nightly_service(config)
+    third = run_nightly_service(config)
+
+    assert first["steps"][1]["summary"]["changed_customer_count"] == 1
+    assert second["steps"][1]["summary"]["changed_customer_count"] == 1
+    assert third["steps"][1]["summary"]["changed_customer_count"] == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        count = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM timeline_events
+            WHERE source_system = 'mango_processed_summary' AND event_type = 'mango_call'
+            """
+        ).fetchone()[0]
+    assert count == 2
+
+
 def test_nightly_service_fails_when_explicit_ready_package_db_is_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
@@ -772,6 +1053,163 @@ def test_nightly_service_rejects_enabled_unknown_step(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unsupported enabled step kind"):
         service_config_from_json(config_path)
+
+
+def test_nightly_service_runs_required_tallanto_attendance_api_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [{
+                    "name": "tallanto_attendance_api_incremental",
+                    "kind": "tallanto_attendance_api",
+                    "required": True,
+                    "config": {
+                        "tallanto_env_file": "~/.mango_secrets/tallanto_readonly.env",
+                        "initial_since": "2026-07-13T00:00:00+03:00",
+                        "apply": True,
+                    },
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {
+            "validation_ok": True,
+            "cursor_before": config.initial_since.isoformat(),
+            "cursor_after": "2026-07-24T10:00:00+03:00",
+            "counts": {"created": 1},
+            "safety": {"writes_tallanto": False},
+        },
+    )
+
+    config = service_config_from_json(config_path)
+    report = run_nightly_service(config)
+
+    assert config.steps[0].tallanto_attendance_api_config is not None
+    assert config.steps[0].tallanto_attendance_api_config.tallanto_env_file == Path(
+        "~/.mango_secrets/tallanto_readonly.env"
+    ).expanduser()
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["counts"] == {"created": 1}
+
+
+def test_nightly_service_marks_required_tallanto_partial_and_does_not_publish_latest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "tallanto_attendance_api_incremental",
+                        "kind": "tallanto_attendance_api",
+                        "required": True,
+                        "config": {
+                            "tallanto_env_file": "~/.mango_secrets/tallanto_readonly.env",
+                            "initial_since": "2026-07-13T00:00:00+03:00",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {
+            "status": "partial",
+            "validation_ok": False,
+            "unresolved_count": 2,
+            "cursor_before": config.initial_since.isoformat(),
+            "cursor_after": config.initial_since.isoformat(),
+            "counts": {"created": 1, "identity_unmatched": 2},
+            "safety": {"writes_tallanto": False},
+        },
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "partial"
+    assert report["steps"][0]["summary"]["unresolved_count"] == 2
+    assert report["failed_required_steps"] == ["tallanto_attendance_api_incremental"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_runs_terminal_bot_safe_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "bot_safe_rebuild_service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "bot_safe_rebuild",
+                        "kind": "bot_safe_rebuild",
+                        "required": True,
+                        "config": {"apply": True},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Report:
+        def to_json_dict(self):
+            return {
+                "considered_customers": 3,
+                "customers_with_summary": 2,
+                "created": 1,
+                "updated": 1,
+                "duplicate": 0,
+                "retired_stale": 1,
+            }
+
+    monkeypatch.setattr(nightly_service_module, "build_bot_safe_summaries", lambda config: Report())
+
+    config = service_config_from_json(config_path)
+    report = run_nightly_service(config)
+
+    assert config.steps[0].bot_safe_rebuild_config is not None
+    assert config.steps[0].bot_safe_rebuild_config.apply is True
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["customers_with_summary"] == 2
 
 
 def test_launchd_install_scripts_are_dry_run_by_default(tmp_path: Path) -> None:

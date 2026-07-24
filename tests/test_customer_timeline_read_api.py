@@ -138,6 +138,19 @@ def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_pat
     monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
     db_path, customer_id = seed_timeline_db(tmp_path)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="email_message",
+            event_at=NOW + timedelta(minutes=3),
+            source_system="mail_archive_stage2",
+            source_id="bab8a94ccfc211a7e15956076b3d7d00519bde54efc3fdc3e5a855fba546b093",
+            direction="inbound",
+            match_status="strong_unique",
+            metadata={"brand_context_authorized": True},
+            created_at=NOW + timedelta(minutes=3),
+        )
+        store.upsert_event(event)
         for chunk_id, source_ref, text in (
             ("mail-1", "a2v3_mail:120:bab8a94c", "Первый вариант письма."),
             ("mail-2", "mail_stage2:stage2_full:7450:bab8a94c", "Дубль того же письма."),
@@ -147,6 +160,7 @@ def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_pat
                     tenant_id="foton",
                     customer_id=customer_id,
                     chunk_id=chunk_id,
+                    event_id=event.event_id,
                     source_system="mail_archive_stage2",
                     source_ref=source_ref,
                     chunk_type="email_message",
@@ -156,7 +170,10 @@ def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_pat
                     relevance_tags=("email", "bot_visible", "mail_archive_stage2", "foton"),
                     allowed_for_bot=True,
                     requires_manager_review=False,
-                    metadata={"message_sha256": "bab8a94ccfc211a7e15956076b3d7d00519bde54efc3fdc3e5a855fba546b093"},
+                    metadata={
+                        "message_sha256": "bab8a94ccfc211a7e15956076b3d7d00519bde54efc3fdc3e5a855fba546b093",
+                        "brand_context_authorized": True,
+                    },
                     created_at=NOW + timedelta(minutes=3),
                 )
             )
@@ -168,6 +185,100 @@ def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_pat
     assert len(mail_items) == 1
     assert context["summary"]["allowed_chunks"] > context["summary"]["visible_chunks"]
     assert "Дубль того же письма" not in json.dumps(context, ensure_ascii=False)
+
+
+def test_bot_safe_boundary_requires_boolean_brand_authorization_on_event_and_chunk(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    cases = (
+        ("auth-good", True, True),
+        ("auth-event-false", False, True),
+        ("auth-chunk-false", True, False),
+        ("auth-missing", None, None),
+        ("auth-string", "true", "true"),
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for suffix, event_auth, chunk_auth in cases:
+            event_metadata = {} if event_auth is None else {"brand_context_authorized": event_auth}
+            chunk_metadata = {} if chunk_auth is None else {"brand_context_authorized": chunk_auth}
+            event = TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_type="email_message",
+                event_at=NOW + timedelta(minutes=4),
+                source_system="mail_archive_stage2",
+                source_id=suffix,
+                direction="inbound",
+                match_status="strong_unique",
+                metadata=event_metadata,
+                created_at=NOW + timedelta(minutes=4),
+            )
+            store.upsert_event(event)
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=suffix,
+                    event_id=event.event_id,
+                    source_system="mail_archive_stage2",
+                    source_ref=f"mail:{suffix}",
+                    chunk_type="email_message",
+                    text=f"brandgateprobe {suffix}",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata=chunk_metadata,
+                    created_at=NOW + timedelta(minutes=4),
+                )
+            )
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_id="auth-orphan",
+                source_system="mail_archive_stage2",
+                source_ref="mail:auth-orphan",
+                chunk_type="email_message",
+                text="brandgateprobe orphan",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"brand_context_authorized": True},
+                created_at=NOW + timedelta(minutes=4),
+            )
+        )
+        for suffix, authorized in (("summary-good", True), ("summary-missing", None)):
+            metadata = {} if authorized is None else {"brand_context_authorized": authorized}
+            store.upsert_bot_context_chunk(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    chunk_id=suffix,
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"botsafe:{suffix}",
+                    chunk_type="bot_safe_summary",
+                    text=f"brandgateprobe {suffix}",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata=metadata,
+                    created_at=NOW + timedelta(minutes=4),
+                )
+            )
+
+    with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
+        context = api.bot_context("foton", customer_id, allowed_only=True, limit=50)
+        search = api.search(
+            "foton",
+            "brandgateprobe",
+            customer_id=customer_id,
+            scopes=("events", "bot_context", "signals"),
+            allowed_for_bot=True,
+            limit=50,
+        )
+
+    visible = {item["chunk_id"] for item in context["items"] if str(item.get("chunk_id") or "").startswith(("auth-", "summary-"))}
+    assert visible == {"auth-good", "summary-good"}
+    assert {item["scope"] for item in search["result"]["items"]} == {"bot_context"}
+    assert {item["id"] for item in search["result"]["items"]} == {"auth-good", "summary-good"}
 
 
 def test_read_api_routes_are_get_only_and_report_is_deterministic(tmp_path: Path) -> None:

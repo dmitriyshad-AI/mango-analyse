@@ -165,7 +165,15 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             match_status="ambiguous",
             text="Фотон. Неоднозначный telegram не должен открыться.",
         )
-        for event in (telegram_event, conflict_event, wappi_event, pending_event):
+        unauthorized_event = _channel_event(
+            clean_customer,
+            "wappi_telegram",
+            "wappi-brand-unconfirmed",
+            match_status="strong_unique",
+            text="Фотон. Контекст бренда не подтверждён.",
+            brand_context_authorized=False,
+        )
+        for event in (telegram_event, conflict_event, wappi_event, pending_event, unauthorized_event):
             store.upsert_event(event)
             store.upsert_bot_context_chunk(_channel_chunk(event, text=event.summary or ""))
         store.record_conflict(
@@ -207,6 +215,8 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
     assert rows[conflict_event.event_id]["requires_manager_review"] == 1
     assert rows[pending_event.event_id]["allowed_for_bot"] == 0
     assert rows[pending_event.event_id]["requires_manager_review"] == 1
+    assert rows[unauthorized_event.event_id]["allowed_for_bot"] == 0
+    assert rows[unauthorized_event.event_id]["requires_manager_review"] == 1
 
 
 def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_path: Path) -> None:
@@ -647,6 +657,7 @@ def _mail_event(customer: CustomerIdentity, suffix: str, summary: str) -> Timeli
         match_status="strong_unique",
         created_at=NOW,
         record={"message_sha256": f"{suffix:0<64}"[:64]},
+        metadata={"brand_context_authorized": True},
     )
 
 
@@ -663,7 +674,10 @@ def _mail_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
         event_at=event.event_at,
         allowed_for_bot=False,
         requires_manager_review=True,
-        metadata={"sensitivity_tags": ["brand_unknown", "manager_review"]},
+        metadata={
+            "sensitivity_tags": ["brand_unknown", "manager_review"],
+            "brand_context_authorized": True,
+        },
         created_at=event.created_at,
     )
 
@@ -675,6 +689,7 @@ def _channel_event(
     *,
     match_status: str,
     text: str,
+    brand_context_authorized: bool = True,
 ) -> TimelineEvent:
     event_type = "max_message" if source_system == "wappi_max" else "telegram_message"
     return TimelineEvent(
@@ -690,6 +705,7 @@ def _channel_event(
         match_status=match_status,
         created_at=NOW,
         record={"message_id": suffix},
+        metadata={"brand_context_authorized": brand_context_authorized},
     )
 
 
@@ -706,6 +722,9 @@ def _channel_chunk(event: TimelineEvent, *, text: str) -> BotContextChunk:
         event_at=event.event_at,
         allowed_for_bot=False,
         requires_manager_review=True,
+        metadata={
+            "brand_context_authorized": bool(event.metadata.get("brand_context_authorized")),
+        },
         created_at=event.created_at,
     )
 

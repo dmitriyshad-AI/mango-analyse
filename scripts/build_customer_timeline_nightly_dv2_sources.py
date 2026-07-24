@@ -24,7 +24,10 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_ARCHIVE_DB,
+    CANONICAL_MAIL_CURRENT_IDENTITY_DB,
+    CANONICAL_MAIL_IDENTITY_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+    DEFAULT_MAIL_DATA_ROOT,
 )
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
@@ -41,12 +44,21 @@ DEFAULT_OUT_ROOT = DEFAULT_STAGING_ROOT / "nightly_dv2_sources"
 DEFAULT_TIMELINE_DB = DEFAULT_STAGING_ROOT / "customer_timeline_staging.sqlite"
 DEFAULT_BASE_SERVICE_CONFIG = DEFAULT_STAGING_ROOT / "nightly_service" / "customer_timeline_nightly_service_config.json"
 DEFAULT_CURSOR = "2026-06-19T14:53:27+00:00"
+DEFAULT_TALLANTO_ATTENDANCE_SINCE = "2026-06-09T00:00:00+03:00"
+DEFAULT_TALLANTO_READONLY_ENV = Path("~/.mango_secrets/tallanto_readonly.env").expanduser()
+DEFAULT_WAPPI_ENV = Path.home() / ".mango_secrets" / "amo_wappi.env"
+DEFAULT_WAPPI_CONFIG = Path.home() / ".mango_secrets" / "amo_wappi_phase1.json"
+DEFAULT_WAPPI_PAIRS = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
+DEFAULT_WAPPI_AUTO_PAIRS = Path.home() / ".mango_local" / "draft_loop" / "empty_auto_pairs.json"
+DEFAULT_WAPPI_AMO_ENV = Path.home() / ".mango_secrets" / "foton_crm_readonly_mcp_connector.env"
+DEFAULT_WAPPI_STOPLIST = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build D v2 staging-local nightly source files.")
     parser.add_argument("--source-root", default=str(DEFAULT_SOURCE_ROOT))
+    parser.add_argument("--mail-data-root", default=str(DEFAULT_MAIL_DATA_ROOT))
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--timeline-db", default=str(DEFAULT_TIMELINE_DB))
     parser.add_argument("--mail-cursor", default=DEFAULT_CURSOR)
@@ -59,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     source_root = Path(args.source_root).expanduser().resolve(strict=False)
+    mail_data_root = Path(args.mail_data_root).expanduser().resolve(strict=False)
     out_root = Path(args.out_root).expanduser().resolve(strict=False)
     timeline_db = Path(args.timeline_db).expanduser().resolve(strict=False)
     base_service_config = Path(args.base_service_config).expanduser().resolve(strict=False)
@@ -68,7 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mail_jsonl = out_root / "mail_archive_stage2_incremental.jsonl"
     mail_manifest = out_root / "mail_archive_stage2_incremental_manifest.json"
     mail_report = build_mail_increment(
-        source_root,
+        mail_data_root,
         out_jsonl=mail_jsonl,
         manifest_path=mail_manifest,
         since=mail_cursor,
@@ -124,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def build_mail_increment(
-    source_root: Path,
+    mail_data_root: Path,
     *,
     out_jsonl: Path,
     manifest_path: Path,
@@ -144,13 +157,21 @@ def build_mail_increment(
     existing_skipped = 0
     fallback_date_rows = 0
     stage2_paths = [
-        source_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
+        mail_data_root / CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     ]
-    archive_dbs = list(archive_db_paths or (source_root / CANONICAL_MAIL_ARCHIVE_DB,))
+    archive_dbs = (
+        list(archive_db_paths)
+        if archive_db_paths is not None
+        else [mail_data_root / CANONICAL_MAIL_ARCHIVE_DB]
+    )
+    missing_archive_dbs = [path for path in archive_dbs if not path.is_file()]
+    if not archive_dbs or missing_archive_dbs:
+        missing = missing_archive_dbs or [mail_data_root / CANONICAL_MAIL_ARCHIVE_DB]
+        raise FileNotFoundError("required mail archive input is missing: " + ", ".join(map(str, missing)))
     inputs: list[Mapping[str, Any]] = []
     for path in stage2_paths:
         count_before = len(rows)
-        if path.exists():
+        if path.is_file():
             for row in read_jsonl(path):
                 event_at = parse_optional_dt(
                     row.get("date_last")
@@ -191,27 +212,26 @@ def build_mail_increment(
                         existing_state.get(message_sha),
                     )
                 )
-        inputs.append({"path": str(path), "exists": path.exists(), "rows_selected": len(rows) - count_before})
+        inputs.append({"path": str(path), "exists": path.is_file(), "rows_selected": len(rows) - count_before})
     for db_path in archive_dbs:
         count_before = len(rows)
-        if db_path.exists():
-            for row in read_archive_messages(
-                db_path,
-                since=None if missing_only else since,
-                text_limit=text_limit,
-            ):
-                message_sha = str(row.get("message_sha256") or "").strip()
-                if not message_sha or message_sha in seen:
-                    continue
-                if message_sha in existing_source_ids:
-                    seen.add(message_sha)
-                    existing_skipped += 1
-                    continue
+        for row in read_archive_messages(
+            db_path,
+            since=None if missing_only else since,
+            text_limit=text_limit,
+        ):
+            message_sha = str(row.get("message_sha256") or "").strip()
+            if not message_sha or message_sha in seen:
+                continue
+            if message_sha in existing_source_ids:
                 seen.add(message_sha)
-                if row.pop("_fallback_date", False):
-                    fallback_date_rows += 1
-                rows.append(merge_existing_mail_state(row, existing_state.get(message_sha)))
-        inputs.append({"path": str(db_path), "exists": db_path.exists(), "rows_selected": len(rows) - count_before})
+                existing_skipped += 1
+                continue
+            seen.add(message_sha)
+            if row.pop("_fallback_date", False):
+                fallback_date_rows += 1
+            rows.append(merge_existing_mail_state(row, existing_state.get(message_sha)))
+        inputs.append({"path": str(db_path), "exists": True, "rows_selected": len(rows) - count_before})
     rows.sort(key=lambda item: str(item.get("event_at") or ""))
     write_jsonl(out_jsonl, rows)
     max_event_at = max((str(row.get("event_at") or "") for row in rows), default=None)
@@ -495,6 +515,8 @@ def build_service_config(
             source["name"] = "mango_processed_sweep"
             source["path"] = str(mango_sweep_jsonl)
             source["source_ref"] = "mango:processed_sweep:latest"
+            source["ignore_cursor"] = True
+            source["preserve_cursor"] = True
     if not mango_source_found:
         raise RuntimeError("calls_and_amo_incremental misses mango_processed_summary source")
     steps.append(normalized)
@@ -503,7 +525,7 @@ def build_service_config(
             "name": "amo_incremental_shadow",
             "kind": "amo_incremental",
             "enabled": True,
-            "required": False,
+            "required": True,
             "config": {
                 "source_db": str(timeline_db),
                 "timeline_db": str(timeline_db),
@@ -514,6 +536,38 @@ def build_service_config(
                 "page_limit": 250,
                 "max_pages": 20,
                 "sleep_sec": 1.05,
+            },
+        }
+    )
+    steps.append(
+        {
+            "name": "wappi_history_incremental",
+            "kind": "wappi_history",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "env_file": str(DEFAULT_WAPPI_ENV),
+                "phase1_config": str(DEFAULT_WAPPI_CONFIG),
+                "pairs_file": str(DEFAULT_WAPPI_PAIRS),
+                "auto_pairs_file": str(DEFAULT_WAPPI_AUTO_PAIRS),
+                "amo_mcp_env_file": str(DEFAULT_WAPPI_AMO_ENV),
+                "shared_phone_stoplist": str(DEFAULT_WAPPI_STOPLIST),
+                "amo_auto_resolver_enabled": True,
+                "widget_link_db": str(allowed_root / "wappi_amo_links.sqlite"),
+                "apply": True,
+                "require_nonempty_profiles": True,
+                "require_widget_linkage": False,
+                "refresh_widget_links": True,
+                "chat_limit_per_profile": 5000,
+                "messages_per_chat": 100,
+                "message_limit_total": 50000,
+                "request_limit_total": 50000,
+                "page_size": 100,
+                "sleep_seconds": 0.2,
+                "show_all_chats": True,
+                "complete_message_history": True,
             },
         }
     )
@@ -544,34 +598,83 @@ def build_service_config(
             "name": "mail_link_enrich",
             "kind": "mail_link_enrich",
             "enabled": True,
-            "required": False,
+            "required": True,
             "config": {
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
                 "out_dir": str(out_root / "mail_link_enrich"),
                 "tenant_id": "foton",
                 "apply": True,
+                "tallanto_identity_dbs": [
+                    str(DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_CURRENT_IDENTITY_DB),
+                    str(DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_IDENTITY_DB),
+                ],
             },
         }
     )
-    wappi_metrics = allowed_root / "wappi_history_block4" / "block4_wappi_metrics.json"
+    steps.append(
+        {
+            "name": "tallanto_money_api_incremental",
+            "kind": "tallanto_money_api",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "importer_script": str(ROOT / "scripts" / "import_tallanto_payments_to_timeline.py"),
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
+    steps.append(
+        {
+            "name": "tallanto_attendance_api_incremental",
+            "kind": "tallanto_attendance_api",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
+                "initial_since": DEFAULT_TALLANTO_ATTENDANCE_SINCE,
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
+    steps.append(
+        {
+            "name": "family_graph_refresh",
+            "kind": "family_graph",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "out_path": str(out_root / "family_graph_refresh.json"),
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
+    steps.append(
+        {
+            "name": "bot_safe_rebuild",
+            "kind": "bot_safe_rebuild",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
     steps.extend(
         [
-            monitor_step(
-                "tallanto_money_incremental",
-                tallanto_manifest,
-                cursor_source_system="tallanto_snapshot",
-                cursor_ts="2026-05-21T08:59:36+00:00",
-                reason="optional_no_nightly_ready_export",
-            ),
-            monitor_step(
-                "wappi_history_incremental",
-                wappi_metrics,
-                cursor_source_system="wappi_history_pending",
-                cursor_ts=DEFAULT_CURSOR,
-                reason="optional_pending_only_no_timeline_events",
-                deprecated_cursor_source_systems=("wappi_history",),
-            ),
             monitor_step(
                 "mango_api_freshness",
                 mango_manifest,

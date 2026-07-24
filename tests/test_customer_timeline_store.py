@@ -708,6 +708,39 @@ def test_upserts_core_records_idempotently_after_reopen(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_identity_link_accumulates_time_range_without_replay_churn(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    store.upsert_customer(customer)
+    base = identity_link(customer)
+    later = replace(
+        base,
+        first_seen_at=NOW + timedelta(days=2),
+        last_seen_at=NOW + timedelta(days=3),
+    )
+    earlier = replace(
+        base,
+        first_seen_at=NOW - timedelta(days=1),
+        last_seen_at=NOW,
+    )
+
+    assert store.upsert_identity_link(later).status == "created"
+    assert store.upsert_identity_link(earlier).status == "updated"
+    assert store.upsert_identity_link(later).status == "duplicate"
+    assert store.upsert_identity_link(earlier).status == "duplicate"
+
+    with sqlite3.connect(store.db_path) as con:
+        row = con.execute(
+            "SELECT first_seen_at, last_seen_at FROM identity_links WHERE link_id = ?",
+            (base.link_id,),
+        ).fetchone()
+    assert row == (
+        (NOW - timedelta(days=1)).isoformat(),
+        (NOW + timedelta(days=3)).isoformat(),
+    )
+    store.close()
+
+
 def test_upsert_updates_existing_record_without_changing_stable_id(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     customer = identity()
@@ -999,18 +1032,32 @@ def test_revoking_event_chunks_keeps_active_event_in_fts(tmp_path: Path) -> None
     )
     context = replace(
         chunk(ev),
+        chunk_id=None,
+        source_ref="mail-context",
         text="уникальныйконтекст должен исчезнуть",
         summary="уникальныйконтекст",
         source_system="mail_archive_stage2",
         allowed_for_bot=False,
         requires_manager_review=True,
     )
+    other_context = replace(
+        chunk(ev),
+        chunk_id=None,
+        source_ref="trusted-context",
+        text="другойконтекст должен остаться",
+        summary="другойконтекст",
+        source_system="trusted_summary",
+        allowed_for_bot=True,
+        requires_manager_review=False,
+    )
     store.upsert_customer(customer)
     store.upsert_event(ev)
     store.upsert_bot_context_chunk(context)
+    store.upsert_bot_context_chunk(other_context)
 
     assert store.search_timeline("foton", "уникальноесобытие", mode="fts")["items"]
     assert store.search_timeline("foton", "уникальныйконтекст", mode="fts")["items"]
+    assert store.search_timeline("foton", "другойконтекст", mode="fts")["items"]
     with store.bulk_write():
         assert store.revoke_bot_context_chunks_for_event(
             "foton",
@@ -1023,6 +1070,11 @@ def test_revoking_event_chunks_keeps_active_event_in_fts(tmp_path: Path) -> None
     chunk_result = store.search_timeline("foton", "уникальныйконтекст", mode="fts")
     assert {item["scope"] for item in event_result["items"]} == {"event"}
     assert chunk_result["items"] == []
+    assert store.search_timeline("foton", "другойконтекст", mode="fts")["items"]
+
+    store.upsert_bot_context_chunk(context)
+    restored = store.search_timeline("foton", "уникальныйконтекст", mode="fts")
+    assert {item["scope"] for item in restored["items"]} == {"bot_context"}
     store.close()
 
 

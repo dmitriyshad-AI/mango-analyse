@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import time
@@ -41,6 +42,7 @@ from mango_mvp.integrations.draft_loop import (
     DEFAULT_STOP_PATH,
     AmoWappiDraftLoop,
     DraftLoopConfig,
+    DraftLoopConfigError,
     DraftLoopKey,
     DraftLoopProfile,
     DraftLoopState,
@@ -69,6 +71,8 @@ DEFAULT_PROFILES_PATH = Path.home() / ".mango_secrets" / "amo_wappi_profiles.jso
 DEFAULT_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
 DEFAULT_AUTO_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json"
 DEFAULT_RETRO_DIR = Path.home() / ".mango_local" / "draft_loop_inventory"
+DEFAULT_WRITER_LOCK_PATH = Path.home() / ".mango_local" / "draft_loop" / "writer.lock"
+STARTUP_MANIFEST_ENV = "DRAFT_LOOP_STARTUP_MANIFEST"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 LEGACY_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
@@ -115,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--customer-timeline-tenant", default=bot_safe_tenant_from_env())
     parser.add_argument("--local-dir", type=Path, default=DEFAULT_DRAFT_LOOP_DIR)
     parser.add_argument("--stop-file", type=Path, default=DEFAULT_STOP_PATH)
-    parser.add_argument("--chat-limit", type=int, default=50)
+    parser.add_argument("--chat-limit", type=int, default=0, help="0 scans all personal chats; positive values are diagnostic limits.")
     parser.add_argument("--amo-mcp-env-file", type=Path, default=Path("~/.mango_secrets/foton_crm_readonly_mcp_connector.env").expanduser())
     parser.add_argument("--shared-phone-stoplist", type=Path, default=DEFAULT_STOPLIST_PATH)
     parser.add_argument("--retro-report", nargs="?", const="", default=None, help="Write an offline bot-vs-manager report outside the repo and exit.")
@@ -161,6 +165,7 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
         stop_path=args.stop_file.expanduser(),
         manager_outgoing_visible=visibility,
         chat_limit=chat_limit,
+        all_personal_mode=True,
         config_fingerprint=build_draft_loop_config_fingerprint(
             getattr(args, "snapshot", DEFAULT_SNAPSHOT),
             gold_pack_version=DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
@@ -245,14 +250,17 @@ def _build_bot_safe_crm_context_for_draft(
 
 
 def build_safe_transport(ai_office_config: AiOfficeClientConfig, wappi_config: WappiClientConfig) -> DefaultDenyTransport:
-    ai_office_host = url_parse.urlparse(ai_office_config.base_url).netloc.casefold()
+    ai_office_url = url_parse.urlparse(ai_office_config.base_url)
+    ai_office_host = str(ai_office_url.hostname or "").casefold()
+    if ai_office_url.scheme != "https" or ai_office_host != "api.fotonai.online":
+        raise DraftLoopConfigError("AI Office URL must be https://api.fotonai.online")
     wappi_host = url_parse.urlparse(wappi_config.base_url).netloc.casefold()
     return DefaultDenyTransport(
         _json_http_request,
         policy=SafeTransportPolicy(
             wappi_hosts=frozenset(host for host in (wappi_host,) if host),
             amo_read_hosts=frozenset(),
-            ai_office_hosts=frozenset(host for host in (ai_office_host,) if host),
+            ai_office_hosts=frozenset({"api.fotonai.online"}),
         ),
     )
 
@@ -523,7 +531,15 @@ class AmoAutoResolver:
         message: WappiHistoryMessage,
     ) -> Mapping[str, Any]:
         event_candidate = self._resolve_by_amo_chat_event(key=key, profile=profile, messages=messages, message=message)
-        if event_candidate is not None:
+        if event_candidate is not None and str(event_candidate.get("status") or "") == "matched":
+            return event_candidate
+        if str((event_candidate or {}).get("reason") or "") in {
+            "amo_chat_event_ambiguous",
+            "event_contact_not_linked_to_lead",
+            "event_lead_contacts_missing",
+            "brand_mismatch",
+            "organization_ambiguous",
+        }:
             return event_candidate
         if profile.channel == "telegram":
             return self._resolve_telegram(key=key, profile=profile)
@@ -739,31 +755,41 @@ class AmoAutoResolver:
             contact_payload = self.client.amo_api_get(path=f"contacts/{int(contact_id)}", params={"with": "leads"}, limit=1)
             lead_ids = _lead_ids_from_contact(contact_payload)
         leads: list[Mapping[str, Any]] = []
-        deleted_seen = False
         for lead_id in lead_ids:
             lead = self.client.amo_api_get(path=f"leads/{int(lead_id)}", params={"with": "contacts"}, limit=1)
-            if bool(lead.get("is_deleted") or lead.get("deleted")):
-                deleted_seen = True
             leads.append(lead)
         active = [lead for lead in leads if _is_active_lead(lead)]
-        if not active:
-            reason = "deleted_lead" if deleted_seen else "closed_lead" if leads else "no_active_lead"
-            return {"status": "rejected", "reason": reason, "contact_id": contact_id, "match_key": match_key}
-        if len(active) != 1:
-            return {"status": "rejected", "reason": "multi_active_lead", "contact_id": contact_id, "match_key": match_key}
-        lead = active[0]
-        org_brand, org_values, org_reason = lead_org_brand_guard(
-            lead, expected_brand=profile.brand
-        )
-        if org_reason:
+        active_brand: list[tuple[Mapping[str, Any], str, Sequence[Any]]] = []
+        brand_conflicts: list[str] = []
+        for lead in active:
+            org_brand, org_values, org_reason = lead_org_brand_guard(lead, expected_brand=profile.brand)
+            if org_reason in {"brand_mismatch", "organization_ambiguous"}:
+                brand_conflicts.append(str(lead.get("id") or ""))
+            elif not org_reason:
+                active_brand.append((lead, org_brand, org_values))
+        if not active_brand and brand_conflicts:
             return {
                 "status": "rejected",
-                "reason": org_reason,
+                "reason": "brand_mismatch",
                 "contact_id": contact_id,
-                "lead_id": str(lead.get("id") or ""),
-                "organization_brand": org_brand,
-                "organization_values": org_values,
+                "lead_ids": tuple(brand_conflicts),
+                "match_key": match_key,
             }
+        if len(active_brand) != 1:
+            return {
+                "status": "matched",
+                "lead_id": "",
+                "contact_id": contact_id,
+                "match_key": match_key,
+                "match_value": match_value,
+                "source": "amo_exact_contact",
+                "lead_snapshot": {
+                    "active_brand_lead_count": len(active_brand),
+                    "closed_or_missing_lead_count": len(leads) - len(active),
+                    "note_entity_type": "contact",
+                },
+            }
+        lead, org_brand, org_values = active_brand[0]
         return {
             "status": "matched",
             "lead_id": str(lead.get("id") or ""),
@@ -780,10 +806,7 @@ class AmoAutoResolver:
         }
 
 
-def build_auto_resolver(args: argparse.Namespace) -> AmoAutoResolver | None:
-    if not _truthy(os.getenv(DRAFT_LOOP_AUTO_RESOLVER_ENV)):
-        return None
-    stoplist, stoplist_error = _load_phone_stoplist(args.shared_phone_stoplist)
+def build_amo_read_client(args: argparse.Namespace) -> AmoMcpClient:
     config = read_mcp_env(args.amo_mcp_env_file)
     if config.transport != "curl":
         config = AmoMcpConfig(
@@ -794,7 +817,184 @@ def build_auto_resolver(args: argparse.Namespace) -> AmoAutoResolver | None:
             user_agent="mango-draft-loop-auto-resolver/1.0",
             transport="curl",
         )
-    return AmoAutoResolver(client=AmoMcpClient(config), shared_phone_stoplist=stoplist, stoplist_error=stoplist_error)
+    return AmoMcpClient(config)
+
+
+def build_widget_resolver(
+    wappi_client: WappiPhase1Client,
+    amo_read_client: AmoMcpClient,
+    *,
+    runtime_profile_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> Callable[..., Mapping[str, Any]]:
+    crm_id = str(os.getenv("AMO_WAPPI_CRM_ID") or "").strip()
+    if not crm_id:
+        raise RuntimeError("AMO_WAPPI_CRM_ID is required for authoritative Wappi linkage.")
+    runtime_profiles: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for item in runtime_profile_rows if runtime_profile_rows is not None else wappi_client.list_all_profiles():
+        profile_id = str(item.get("profile_id") or "").strip()
+        platform = str(item.get("channel") or item.get("platform") or "").strip().casefold()
+        channel = "telegram" if platform in {"tg", "telegram"} else "max" if platform == "max" else ""
+        if profile_id and channel:
+            runtime_profiles[(channel, profile_id)] = item
+
+    def resolve(*, key, profile, dialog, messages, message) -> Mapping[str, Any]:
+        del key, messages, message
+        runtime_profile = runtime_profiles.get((profile.channel, profile.profile_id))
+        if runtime_profile is None:
+            return {"status": "rejected", "reason": "wappi_widget_profile_missing"}
+        payload = wappi_client.find_amocrm_contact_for_dialog(
+            channel=profile.channel,
+            dialog=dialog,
+            profile=runtime_profile,
+            crm_id=crm_id,
+        )
+        contact = payload.get("contact") if isinstance(payload.get("contact"), Mapping) else {}
+        contact_id = str(contact.get("id") or "").strip()
+        leads: dict[str, Mapping[str, Any]] = {}
+        embedded = contact.get("_embedded") if isinstance(contact.get("_embedded"), Mapping) else {}
+        for candidate in (payload.get("leads"), embedded.get("leads")):
+            if not isinstance(candidate, Sequence) or isinstance(candidate, (str, bytes, bytearray)):
+                continue
+            for item in candidate:
+                if isinstance(item, Mapping) and str(item.get("id") or "").strip():
+                    leads[str(item["id"]).strip()] = item
+        if not contact_id:
+            return {"status": "rejected", "reason": "wappi_widget_contact_missing", "source": "wappi_amo_widget"}
+        active_brand_leads: list[Mapping[str, Any]] = []
+        lead_contact_conflicts: list[str] = []
+        lead_brand_conflicts: list[str] = []
+        for lead_id in sorted(leads):
+            lead = amo_read_client.amo_api_get(
+                path=f"leads/{int(lead_id)}",
+                params={"with": "contacts"},
+                limit=1,
+            )
+            if not _is_active_lead(lead):
+                continue
+            lead_embedded = lead.get("_embedded") if isinstance(lead.get("_embedded"), Mapping) else {}
+            lead_contacts = lead_embedded.get("contacts") if isinstance(lead_embedded, Mapping) else ()
+            linked_contact_ids = {
+                str(item.get("id") or "").strip()
+                for item in (lead_contacts or ())
+                if isinstance(item, Mapping)
+            }
+            if contact_id not in linked_contact_ids:
+                if _is_active_lead(lead):
+                    lead_contact_conflicts.append(lead_id)
+                continue
+            _brand, _values, reason = lead_org_brand_guard(lead, expected_brand=profile.brand)
+            if reason in {"brand_mismatch", "organization_ambiguous"}:
+                lead_brand_conflicts.append(lead_id)
+                continue
+            if not reason:
+                active_brand_leads.append(lead)
+        if lead_contact_conflicts:
+            return {
+                "status": "rejected",
+                "reason": "wappi_widget_lead_contact_conflict",
+                "source": "wappi_amo_widget",
+                "contact_id": contact_id,
+                "lead_ids": tuple(sorted(leads)),
+                "conflicting_lead_ids": tuple(lead_contact_conflicts),
+            }
+        if lead_brand_conflicts and not active_brand_leads:
+            return {
+                "status": "rejected",
+                "reason": "wappi_widget_brand_conflict",
+                "source": "wappi_amo_widget",
+                "contact_id": contact_id,
+                "lead_ids": tuple(sorted(leads)),
+                "conflicting_lead_ids": tuple(lead_brand_conflicts),
+            }
+        if len(active_brand_leads) != 1:
+            return {
+                "status": "matched",
+                "source": "wappi_amo_widget",
+                "lead_id": "",
+                "lead_ids": tuple(sorted(leads)),
+                "contact_id": contact_id,
+                "match_key": "wappi_widget_contact",
+                "lead_snapshot": {
+                    "lead_count": len(leads),
+                    "active_brand_lead_count": len(active_brand_leads),
+                    "note_entity_type": "contact",
+                },
+            }
+        selected = active_brand_leads[0]
+        return {
+            "status": "matched",
+            "source": "wappi_amo_widget",
+            "lead_id": str(selected.get("id") or ""),
+            "lead_ids": tuple(sorted(leads)),
+            "contact_id": contact_id,
+            "match_key": "wappi_widget_contact",
+            "lead_snapshot": {
+                "status_id": str(selected.get("status_id") or ""),
+                "lead_count": len(leads),
+                "active_brand_lead_count": 1,
+                "note_entity_type": "lead",
+            },
+        }
+
+    return resolve
+
+
+def validate_runtime_profiles(
+    configured_profiles: Mapping[str, DraftLoopProfile],
+    runtime_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    actual: set[tuple[str, str]] = set()
+    for item in runtime_rows:
+        profile_id = str(item.get("profile_id") or "").strip()
+        platform = str(item.get("channel") or item.get("platform") or "").strip().casefold()
+        channel = "telegram" if platform in {"tg", "telegram"} else "max" if platform == "max" else ""
+        if not profile_id or not channel:
+            raise RuntimeError("Wappi returned an invalid runtime profile.")
+        key = (channel, profile_id)
+        if key in actual:
+            raise RuntimeError(f"Wappi returned duplicate runtime profile: {channel}:{profile_id}.")
+        actual.add(key)
+    expected = {(profile.channel, profile.profile_id) for profile in configured_profiles.values()}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise RuntimeError(f"Wappi profile configuration mismatch: missing={missing}, extra={extra}.")
+
+
+def build_authoritative_resolver(
+    *,
+    wappi_client: WappiPhase1Client,
+    amo_read_client: AmoMcpClient,
+    configured_profiles: Mapping[str, DraftLoopProfile],
+    shared_phone_stoplist: Path,
+) -> Callable[..., Mapping[str, Any]]:
+    runtime_rows = tuple(wappi_client.list_all_profiles())
+    validate_runtime_profiles(configured_profiles, runtime_rows)
+    widget = build_widget_resolver(
+        wappi_client,
+        amo_read_client,
+        runtime_profile_rows=runtime_rows,
+    )
+    stoplist, stoplist_error = _load_phone_stoplist(shared_phone_stoplist)
+    exact_amo = AmoAutoResolver(
+        client=amo_read_client,
+        shared_phone_stoplist=stoplist,
+        stoplist_error=stoplist_error,
+    )
+
+    def resolve(**kwargs: Any) -> Mapping[str, Any]:
+        widget_result = widget(**kwargs)
+        if str(widget_result.get("status") or "") == "matched":
+            return widget_result
+        if str(widget_result.get("reason") or "") != "wappi_widget_contact_missing":
+            return widget_result
+        exact_result = exact_amo(**kwargs)
+        return exact_result if str(exact_result.get("status") or "") == "matched" else {
+            **dict(exact_result),
+            "widget_reason": "wappi_widget_contact_missing",
+        }
+
+    return resolve
 
 
 def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
@@ -807,6 +1007,8 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     ai_office_config = AiOfficeClientConfig.from_env()
     wappi_config = WappiClientConfig.from_env()
     transport = build_safe_transport(ai_office_config, wappi_config)
+    wappi_client = WappiPhase1Client(wappi_config, transport=transport)
+    amo_read_client = build_amo_read_client(args)
     bot_provider = SubscriptionLlmDraftProvider(
         model=args.model,
         reasoning_effort=args.reasoning,
@@ -816,8 +1018,12 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     )
     return AmoWappiDraftLoop(
         config=config,
-        wappi_client=WappiPhase1Client(wappi_config, transport=transport),
-        amo_client=AiOfficeAmoNoteClient(ai_office_config, transport=transport),
+        wappi_client=wappi_client,
+        amo_client=AiOfficeAmoNoteClient(
+            ai_office_config,
+            transport=transport,
+            read_client=amo_read_client,
+        ),
         bot_provider=bot_provider,
         context_builder=build_context_builder(
             args.snapshot,
@@ -827,7 +1033,12 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
             customer_timeline_tenant=args.customer_timeline_tenant,
         ),
         state=DraftLoopState(config.state_path),
-        auto_resolver=build_auto_resolver(args),
+        auto_resolver=build_authoritative_resolver(
+            wappi_client=wappi_client,
+            amo_read_client=amo_read_client,
+            configured_profiles=config.profiles,
+            shared_phone_stoplist=args.shared_phone_stoplist,
+        ),
     )
 
 
@@ -860,10 +1071,59 @@ def run_loop_forever(
         sleep(interval)
 
 
+def acquire_process_lock(path: Path):
+    path.expanduser().parent.mkdir(parents=True, exist_ok=True)
+    handle = path.expanduser().open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise RuntimeError(f"Another Wappi draft-loop writer already holds {path}.") from exc
+    return handle
+
+
+def write_startup_manifest(
+    path: Path,
+    *,
+    runner: AmoWappiDraftLoop,
+    args: argparse.Namespace,
+) -> None:
+    code_root = Path(__file__).resolve().parents[1]
+    timeline_db = args.customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
+    payload = {
+        "schema_version": "wappi_phase1b_startup_v2",
+        "status": "ready",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "cwd": str(code_root),
+        "head": str(os.environ.get("DRAFT_LOOP_RUNTIME_HEAD") or "").strip(),
+        "wrapper_sha256": str(os.environ.get("DRAFT_LOOP_WRAPPER_SHA256") or "").strip(),
+        "profile": "pilot_gold_v1",
+        "profile_count": len(runner.config.profiles),
+        "pair_mode": "authoritative_widget_then_exact_amo",
+        "all_personal_mode": bool(runner.config.all_personal_mode),
+        "chat_limit": int(runner.config.chat_limit),
+        "writer_lock_path": str(DEFAULT_WRITER_LOCK_PATH),
+        "customer_timeline_db": str(Path(timeline_db).expanduser().resolve()),
+        "amo_note_write_enabled": bool(args.live_write),
+        "client_send_enabled": False,
+    }
+    if not payload["head"]:
+        raise RuntimeError("DRAFT_LOOP_RUNTIME_HEAD is required for an auditable live startup manifest.")
+    target = path.expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
+
+
 def main() -> int:
     args = parse_args()
     dry_run = not bool(args.live_write)
+    process_lock = acquire_process_lock(DEFAULT_WRITER_LOCK_PATH) if args.live_write else None
     runner = build_runner(args)
+    manifest_path = str(os.environ.get(STARTUP_MANIFEST_ENV) or "").strip()
+    if manifest_path:
+        write_startup_manifest(Path(manifest_path), runner=runner, args=args)
     if args.retro_report is not None:
         report = runner.build_retro_report(lookback_hours=args.retro_lookback_hours, limit=args.retro_limit)
         if args.retro_report:
@@ -880,6 +1140,7 @@ def main() -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     run_loop_forever(runner, dry_run=dry_run, interval_sec=args.interval_sec, emit=lambda line: print(line, flush=True))
+    del process_lock
 
 
 if __name__ == "__main__":

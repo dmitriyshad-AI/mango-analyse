@@ -75,6 +75,24 @@ from mango_mvp.productization.mail_imap_snapshot import MailImapCredentials
 from scripts import mango_office_mail_archive
 
 
+def test_tallanto_identity_map_keeps_normalized_parent_fio_alias(tmp_path: Path) -> None:
+    source = tmp_path / "normalized.tsv"
+    _write_tallanto_csv(
+        source,
+        [{"ID": "T-1", "parent_fio": "Мария Иванова", "E-mail": "parent@example.com"}],
+    )
+
+    report = build_tallanto_identity_map(
+        TallantoIdentityMapConfig(
+            tallanto_csv_path=source, out_dir=tmp_path / "identity", encoding="utf-8", delimiter="\t"
+        )
+    )
+
+    with sqlite3.connect(report["paths"]["identity_db"]) as con:
+        parent_name = con.execute("SELECT parent_name FROM identity_candidates").fetchone()[0]
+    assert parent_name == "Мария Иванова"
+
+
 def test_mail_archive_identity_ingest_and_matching_are_read_only(tmp_path: Path) -> None:
     tallanto_csv = tmp_path / "students.csv"
     _write_tallanto_csv(

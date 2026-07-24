@@ -25,6 +25,11 @@ CHILD_RELEVANT_RE = re.compile(
     r"математик|физик|информатик|русск|английск|курс|заняти|школ)\w*\b",
     re.I,
 )
+OTHER_CHILD_REFERENCE_RE = re.compile(
+    r"\b(?:младш\w*|старш\w*|втор\w*|друг\w*|ещ[её]\s+од(?:ин|на))\s+"
+    r"(?:реб[её]н\w*|сын\w*|доч\w*|брат\w*|сестр\w*)\b",
+    re.I,
+)
 INITIALS_RE = re.compile(r"\b[А-ЯЁA-Z]\.\s*[А-ЯЁA-Z]\.", re.U)
 EMAIL_OR_PHONE_RE = re.compile(r"@|\+?\d[\d\s().-]{5,}")
 NON_CHILD_NAME_RE = re.compile(
@@ -95,6 +100,16 @@ class CustomerContext:
     primary_email: str
     shared_family_phone: bool
     parent_name_keys: frozenset[str]
+    family_id: str
+
+
+@dataclass(frozen=True)
+class FamilyAssignment:
+    family_id: str
+    status: str
+    confidence: str
+    reason: str
+    created_at: str
 
 
 def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
@@ -102,7 +117,25 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
     db_path = _guard_db(config.timeline_db, apply=config.apply)
     generated_at = _stable_generated_at(db_path)
     with _connect(db_path, write=config.apply) as con:
-        customers = _load_customers(con, tenant_id=tenant_id, customer_ids=config.customer_ids)
+        if config.apply:
+            _ensure_schema(con)
+        existing_family_links = (
+            int(con.execute("SELECT COUNT(*) FROM family_links_v1 WHERE tenant_id = ?", (tenant_id,)).fetchone()[0])
+            if _table_exists(con, "family_links_v1")
+            else 0
+        )
+        profiles_db_available = bool(config.profiles_db and Path(config.profiles_db).expanduser().is_file())
+        preserve_child_graph = not profiles_db_available and existing_family_links > 0
+        # ponytail: the persisted family graph is one global derived view; partial writes
+        # can split a family or erase rows outside the selection, so apply always rebuilds all.
+        selected_customer_ids = () if config.apply else config.customer_ids
+        customers = _load_customers(con, tenant_id=tenant_id, customer_ids=selected_customer_ids)
+        assignments = _resolve_family_assignments(
+            con,
+            tenant_id=tenant_id,
+            customer_ids=tuple(customers),
+            generated_at=generated_at,
+        )
         shared_customers = _shared_family_phone_customers(con, tenant_id=tenant_id)
         contexts = {
             customer_id: CustomerContext(
@@ -114,6 +147,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                 primary_email=str(row["primary_email"] or ""),
                 shared_family_phone=customer_id in shared_customers,
                 parent_name_keys=frozenset(),
+                family_id=assignments[customer_id].family_id,
             )
             for customer_id, row in customers.items()
         }
@@ -140,17 +174,32 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                         primary_email=ctx.primary_email,
                         shared_family_phone=ctx.shared_family_phone,
                         parent_name_keys=frozenset(keys),
+                        family_id=ctx.family_id,
                     )
         mail_report, mail_evidence = _load_mail_fact_evidence(con, tenant_id=tenant_id, customer_ids=set(customers))
         for customer_id, items in mail_evidence.items():
             evidence_by_customer[customer_id].extend(items)
 
-        family_rows, groups_by_customer = _build_family_rows(contexts, evidence_by_customer, generated_at=generated_at)
-        event_rows = _build_event_attributions(con, tenant_id=tenant_id, groups_by_customer=groups_by_customer, contexts=contexts, generated_at=generated_at)
+        member_rows = _build_family_member_rows(tenant_id, assignments, generated_at=generated_at)
+        if preserve_child_graph:
+            family_rows = []
+            groups_by_customer = _load_persisted_family_groups(con, tenant_id=tenant_id)
+        else:
+            family_rows, groups_by_customer = _build_family_rows(
+                contexts, evidence_by_customer, generated_at=generated_at
+            )
+        groups_by_family: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for owner_id, groups in groups_by_customer.items():
+            groups_by_family[assignments[owner_id].family_id].extend(groups)
+        scoped_groups = {
+            customer_id: groups_by_family[assignment.family_id]
+            for customer_id, assignment in assignments.items()
+        }
+        event_rows = _build_event_attributions(con, tenant_id=tenant_id, groups_by_customer=scoped_groups, contexts=contexts, generated_at=generated_at)
         opportunity_rows = _build_opportunity_attributions(
             con,
             tenant_id=tenant_id,
-            groups_by_customer=groups_by_customer,
+            groups_by_customer=scoped_groups,
             contexts=contexts,
             generated_at=generated_at,
         )
@@ -160,14 +209,18 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             generated_at=generated_at,
             profile_report=profile_report,
             mail_report=mail_report,
+            member_rows=member_rows,
             family_rows=family_rows,
             event_rows=event_rows,
             opportunity_rows=opportunity_rows,
+            existing_family_links=existing_family_links,
+            preserve_child_graph=preserve_child_graph,
             apply=config.apply,
         )
         if config.apply:
-            _ensure_schema(con)
-            _replace_rows(con, "family_links_v1", tenant_id, family_rows)
+            _upsert_family_member_rows(con, member_rows)
+            if not preserve_child_graph:
+                _replace_rows(con, "family_links_v1", tenant_id, family_rows)
             _replace_rows(con, "event_child_attribution_v1", tenant_id, event_rows)
             _replace_rows(con, "opportunity_child_attribution_v1", tenant_id, opportunity_rows)
             _record_run(con, tenant_id=tenant_id, generated_at=generated_at, summary=summary)
@@ -232,6 +285,348 @@ def _load_customers(
         tuple(params),
     ).fetchall()
     return {str(row["customer_id"]): row for row in rows}
+
+
+def _resolve_family_assignments(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_ids: Sequence[str],
+    generated_at: str,
+) -> dict[str, FamilyAssignment]:
+    customers = set(customer_ids)
+    existing_rows = (
+        con.execute(
+            "SELECT customer_id, family_id, created_at FROM family_members_v1 WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
+        if _table_exists(con, "family_members_v1")
+        else ()
+    )
+    existing = {str(row["customer_id"]): str(row["family_id"]) for row in existing_rows}
+    created_at = {str(row["customer_id"]): str(row["created_at"] or generated_at) for row in existing_rows}
+    tallanto_rows = con.execute(
+        """
+        SELECT customer_id, source_id AS link_value, match_status AS match_class
+        FROM timeline_events
+        WHERE tenant_id = ? AND source_system = 'tallanto_snapshot'
+          AND event_type = 'tallanto_student_snapshot'
+          AND customer_id IS NOT NULL AND customer_id != '' AND superseded_by IS NULL
+        UNION ALL
+        SELECT link.customer_id, link.link_value, link.match_class
+        FROM identity_links AS link
+        WHERE link.tenant_id = ? AND link.source_system = 'tallanto_snapshot'
+          AND link.link_type = 'tallanto_student_id'
+          AND link.customer_id IS NOT NULL AND link.customer_id != ''
+          AND NOT EXISTS (
+            SELECT 1 FROM timeline_events AS event
+            WHERE event.tenant_id = link.tenant_id
+              AND event.source_system = 'tallanto_snapshot'
+              AND event.event_type = 'tallanto_student_snapshot'
+              AND event.source_id = link.link_value
+              AND event.customer_id = link.customer_id
+              AND event.superseded_by IS NULL
+          )
+        """,
+        (tenant_id, tenant_id),
+    ).fetchall()
+    ids_by_customer: dict[str, set[str]] = defaultdict(set)
+    customers_by_id: dict[str, set[str]] = defaultdict(set)
+    unsafe: set[str] = set()
+    for row in tallanto_rows:
+        customer_id = str(row["customer_id"])
+        student_id = str(row["link_value"] or "")
+        if not student_id:
+            continue
+        customers_by_id[student_id].add(customer_id)
+        if customer_id not in customers:
+            continue
+        ids_by_customer[customer_id].add(student_id)
+        if str(row["match_class"] or "") != "strong_unique":
+            unsafe.add(customer_id)
+    for owners in customers_by_id.values():
+        if len(owners) != 1:
+            unsafe.update(customers & owners)
+    for row in con.execute(
+        "SELECT record_json FROM timeline_conflicts "
+        "WHERE tenant_id = ? AND conflict_type = 'tallanto_identity_conflict' AND status = 'open'",
+        (tenant_id,),
+    ):
+        refs = _json_loads(row["record_json"]).get("entity_refs", [])
+        for ref in refs if isinstance(refs, list) else ():
+            if str(ref).startswith("tallanto_student_id:"):
+                unsafe.update(customers & customers_by_id[str(ref).split(":", 1)[1]])
+    amo_contact_owners: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        SELECT customer_id, link_value
+        FROM identity_links
+        WHERE tenant_id=? AND source_system='amocrm_snapshot'
+          AND link_type='amo_contact_id' AND match_class='strong_unique'
+          AND customer_id IS NOT NULL AND customer_id != '' AND link_value != ''
+        """,
+        (tenant_id,),
+    ):
+        amo_contact_owners[str(row["link_value"])].add(str(row["customer_id"]))
+    shared_amo_contact_customers = {
+        customer_id
+        for owners in amo_contact_owners.values()
+        if len({existing[owner] for owner in owners if owner in existing}) > 1
+        for customer_id in owners & customers
+    }
+    unsafe.update(shared_amo_contact_customers)
+    eligible = set(ids_by_customer) - unsafe
+    parents = {customer_id: customer_id for customer_id in eligible}
+    parent_keys_by_customer: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        WITH ranked AS (
+          SELECT customer_id, source_id,
+                 json_extract(record_json, '$.record.payload.parent_fio') AS parent_fio,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY customer_id, source_id ORDER BY event_at DESC, event_id DESC
+                 ) AS row_number
+          FROM timeline_events
+          WHERE tenant_id = ? AND source_system = 'tallanto_snapshot'
+            AND event_type = 'tallanto_student_snapshot'
+            AND customer_id IS NOT NULL AND customer_id != '' AND superseded_by IS NULL
+        )
+        SELECT customer_id, parent_fio FROM ranked WHERE row_number = 1
+        """,
+        (tenant_id,),
+    ):
+        parent_key = _parent_identity_key(str(row["parent_fio"] or ""))
+        if parent_key:
+            parent_keys_by_customer[str(row["customer_id"])].add(parent_key)
+
+    def find(customer_id: str) -> str:
+        while parents[customer_id] != customer_id:
+            parents[customer_id] = parents[parents[customer_id]]
+            customer_id = parents[customer_id]
+        return customer_id
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+
+    by_parent_identity: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        SELECT link_type, link_value, customer_id
+        FROM identity_links
+        WHERE tenant_id = ? AND source_system = 'tallanto_snapshot'
+          AND link_type IN ('phone', 'email')
+          AND customer_id IS NOT NULL AND customer_id != '' AND link_value != ''
+        """,
+        (tenant_id,),
+    ):
+        customer_id = str(row["customer_id"])
+        parent_keys = parent_keys_by_customer.get(customer_id, set())
+        if customer_id in eligible and len(parent_keys) == 1:
+            by_parent_identity[
+                (str(row["link_type"]), str(row["link_value"]), next(iter(parent_keys)))
+            ].add(customer_id)
+    for members in by_parent_identity.values():
+        # ponytail: larger groups are likely shared/system contacts; review them manually.
+        if 2 <= len(members) <= 8:
+            anchor = min(members)
+            for member in members:
+                union(anchor, member)
+
+    identity_roots: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for identity_key, members in by_parent_identity.items():
+        identity_roots[identity_key].update(find(member) for member in members)
+    tallanto_customers = {
+        str(row["customer_id"])
+        for row in con.execute(
+            """
+            SELECT DISTINCT customer_id FROM identity_links
+            WHERE tenant_id=? AND link_type='tallanto_student_id'
+              AND customer_id IS NOT NULL AND customer_id != ''
+            """,
+            (tenant_id,),
+        )
+    }
+    amo_contact_customers = {
+        str(row["customer_id"])
+        for row in con.execute(
+            """
+            SELECT customer_id
+            FROM identity_links
+            WHERE tenant_id=? AND source_system='amocrm_snapshot'
+              AND link_type='amo_contact_id' AND match_class='strong_unique'
+              AND customer_id IS NOT NULL AND customer_id != ''
+            GROUP BY customer_id
+            HAVING COUNT(DISTINCT link_value)=1
+            """,
+            (tenant_id,),
+        )
+        if str(row["customer_id"]) in customers
+        and str(row["customer_id"]) not in tallanto_customers
+        and str(row["customer_id"]) not in unsafe
+    }
+    amo_identity_values: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    if amo_contact_customers:
+        placeholders = ",".join("?" for _ in amo_contact_customers)
+        for row in con.execute(
+            f"""
+            SELECT customer_id, link_type, link_value
+            FROM identity_links
+            WHERE tenant_id=? AND customer_id IN ({placeholders})
+              AND source_system='amocrm_snapshot' AND link_type IN ('phone','email')
+              AND match_class IN ('strong_unique','ambiguous') AND link_value != ''
+            """,
+            (tenant_id, *sorted(amo_contact_customers)),
+        ):
+            amo_identity_values[str(row["customer_id"])].add(
+                (str(row["link_type"]), str(row["link_value"]))
+            )
+        for row in con.execute(
+            f"""
+            SELECT customer_id, display_name
+            FROM customer_identities
+            WHERE tenant_id=? AND customer_id IN ({placeholders})
+            """,
+            (tenant_id, *sorted(amo_contact_customers)),
+        ):
+            customer_id = str(row["customer_id"])
+            parent_key = _parent_identity_key(str(row["display_name"] or ""))
+            roots = {
+                root
+                for link_type, link_value in amo_identity_values.get(customer_id, set())
+                for root in identity_roots.get((link_type, link_value, parent_key), set())
+            }
+            if parent_key and len(roots) == 1:
+                parents[customer_id] = customer_id
+                eligible.add(customer_id)
+                union(customer_id, next(iter(roots)))
+    attached_amo_parents = amo_contact_customers & eligible
+
+    components: dict[str, set[str]] = defaultdict(set)
+    for customer_id in eligible:
+        components[find(customer_id)].add(customer_id)
+    assignments: dict[str, FamilyAssignment] = {}
+    for members in components.values():
+        roots = {existing[member] for member in members if member in existing}
+        non_amo_roots = {
+            existing[member]
+            for member in members
+            if member in existing and member not in attached_amo_parents
+        }
+        safe_amo_attach = bool(attached_amo_parents & members) and len(non_amo_roots) == 1
+        if len(roots) > 1 and not safe_amo_attach:
+            for member in members:
+                assignments[member] = FamilyAssignment(
+                    existing.get(member, _family_id(tenant_id, member)),
+                    "conflict",
+                    "low",
+                    "conflicting_persisted_family_roots",
+                    created_at.get(member, generated_at),
+                )
+            continue
+        multi = len(members) > 1
+        root = (
+            min(non_amo_roots or roots)
+            if multi and (non_amo_roots or roots)
+            else _family_id(tenant_id, min(members))
+        )
+        for member in members:
+            assignments[member] = FamilyAssignment(
+                root,
+                "confident" if multi else "singleton",
+                "high" if multi else "medium",
+                (
+                    "exact_amo_parent_name_and_phone_or_email"
+                    if member in attached_amo_parents
+                    else "exact_tallanto_parent_name_and_phone_or_email"
+                )
+                if multi
+                else "single_customer_family",
+                created_at.get(member, generated_at) if existing.get(member) == root else generated_at,
+            )
+
+    for customer_id in customers - set(assignments):
+        conflict = customer_id in unsafe
+        amo_conflict = customer_id in shared_amo_contact_customers
+        root = (
+            existing.get(customer_id, _family_id(tenant_id, customer_id))
+            if amo_conflict
+            else _family_id(tenant_id, customer_id)
+        )
+        assignments[customer_id] = FamilyAssignment(
+            root,
+            "conflict" if conflict else "singleton",
+            "low" if conflict else "medium",
+            (
+                "shared_amo_contact_across_customers"
+                if amo_conflict
+                else "tallanto_student_id_conflict"
+            )
+            if conflict
+            else "single_customer_family",
+            created_at.get(customer_id, generated_at) if existing.get(customer_id) == root else generated_at,
+        )
+    return assignments
+
+
+def _parent_identity_key(value: str) -> str:
+    tokens = sorted(normalized_name_tokens(value))
+    return "|".join(tokens) if len(tokens) >= 2 else ""
+
+
+def _build_family_member_rows(
+    tenant_id: str,
+    assignments: Mapping[str, FamilyAssignment],
+    *,
+    generated_at: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for customer_id, assignment in sorted(assignments.items()):
+        payload = {
+            "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
+            "tenant_id": tenant_id,
+            "family_id": assignment.family_id,
+            "customer_id": customer_id,
+            "membership_status": assignment.status,
+            "confidence": assignment.confidence,
+            "reason": assignment.reason,
+            "created_at": assignment.created_at,
+            "updated_at": generated_at,
+        }
+        rows.append({**payload, "record_hash": stable_digest(payload), "record_json": _json_dumps(payload)})
+    return rows
+
+
+def _upsert_family_member_rows(con: sqlite3.Connection, rows: Sequence[Mapping[str, Any]]) -> None:
+    con.executemany(
+        """
+        INSERT INTO family_members_v1 (
+          tenant_id, family_id, customer_id, membership_status, confidence, reason,
+          created_at, updated_at, record_hash, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tenant_id, customer_id) DO UPDATE SET
+          family_id=excluded.family_id, membership_status=excluded.membership_status,
+          confidence=excluded.confidence, reason=excluded.reason,
+          updated_at=excluded.updated_at, record_hash=excluded.record_hash,
+          record_json=excluded.record_json
+        """,
+        [
+            (
+                row["tenant_id"],
+                row["family_id"],
+                row["customer_id"],
+                row["membership_status"],
+                row["confidence"],
+                row["reason"],
+                row["created_at"],
+                row["updated_at"],
+                row["record_hash"],
+                row["record_json"],
+            )
+            for row in rows
+        ],
+    )
 
 
 def _shared_family_phone_customers(con: sqlite3.Connection, *, tenant_id: str) -> set[str]:
@@ -437,7 +832,7 @@ def _build_family_rows(
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
                 "tenant_id": context.tenant_id,
-                "family_id": _family_id(context.tenant_id, customer_id),
+                "family_id": context.family_id,
                 "customer_id": customer_id,
                 "child_key": child_key,
                 "canonical_name": group.canonical_name,
@@ -476,6 +871,39 @@ def _build_family_rows(
             rows.append(row)
             groups_by_customer[customer_id].append({**payload, **{"child_key": child_key}})
     return rows, groups_by_customer
+
+
+def _load_persisted_family_groups(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in con.execute(
+        """
+        SELECT family_id,customer_id,child_key,canonical_name,name_variants_json,
+               grades_json,subjects_json,brand,status,confidence,reason
+        FROM family_links_v1 WHERE tenant_id=?
+        ORDER BY customer_id,child_key
+        """,
+        (tenant_id,),
+    ):
+        groups[str(row["customer_id"])].append(
+            {
+                "family_id": str(row["family_id"]),
+                "customer_id": str(row["customer_id"]),
+                "child_key": str(row["child_key"]),
+                "canonical_name": str(row["canonical_name"] or ""),
+                "name_variants": _json_list(row["name_variants_json"]),
+                "grades": _json_list(row["grades_json"]),
+                "subjects": _json_list(row["subjects_json"]),
+                "brand": str(row["brand"] or "unknown"),
+                "status": str(row["status"] or "unknown"),
+                "confidence": str(row["confidence"] or "low"),
+                "reason": str(row["reason"] or "persisted_family_graph"),
+            }
+        )
+    return groups
 
 
 def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequence[ChildEvidence]) -> dict[str, ChildGroup]:
@@ -845,11 +1273,12 @@ def _build_event_attributions(
             )
             if not attribution:
                 continue
+            child_customer_id = str(attribution.pop("child_customer_id", customer_id))
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
                 "tenant_id": tenant_id,
                 "event_id": str(event["event_id"]),
-                "customer_id": customer_id,
+                "customer_id": child_customer_id,
                 **attribution,
                 "created_at": generated_at,
             }
@@ -892,11 +1321,12 @@ def _build_opportunity_attributions(
             )
             if not attribution:
                 continue
+            child_customer_id = str(attribution.pop("child_customer_id", customer_id))
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
                 "tenant_id": tenant_id,
                 "opportunity_id": str(opp["opportunity_id"]),
-                "customer_id": customer_id,
+                "customer_id": child_customer_id,
                 **attribution,
                 "created_at": generated_at,
             }
@@ -930,8 +1360,17 @@ def _attribute_text(
             "reason": "identity_risk",
             "matched_names": [group.get("canonical_name", "") for group in matches],
         }
+    if len(matches) == 1 and OTHER_CHILD_REFERENCE_RE.search(text):
+        return {
+            "child_key": "",
+            "status": "ambiguous",
+            "confidence": "low",
+            "reason": "named_child_plus_other_child_reference",
+            "matched_names": [str(matches[0].get("canonical_name") or "")],
+        }
     if len(matches) == 1:
         return {
+            "child_customer_id": str(matches[0].get("customer_id") or context.customer_id),
             "child_key": str(matches[0].get("child_key") or ""),
             "status": "matched",
             "confidence": "medium" if len(usable) > 1 else "high",
@@ -948,6 +1387,7 @@ def _attribute_text(
         }
     if len(usable) == 1 and usable[0].get("confidence") == "high":
         return {
+            "child_customer_id": str(usable[0].get("customer_id") or context.customer_id),
             "child_key": str(usable[0].get("child_key") or ""),
             "status": "matched",
             "confidence": "high",
@@ -985,6 +1425,21 @@ def _attribution_row(table: str, payload: Mapping[str, Any]) -> dict[str, Any]:
 def _ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(
         """
+        CREATE TABLE IF NOT EXISTS family_members_v1 (
+          tenant_id TEXT NOT NULL,
+          family_id TEXT NOT NULL,
+          customer_id TEXT NOT NULL,
+          membership_status TEXT NOT NULL,
+          confidence TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          record_hash TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, customer_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_family_members_v1_family
+          ON family_members_v1(tenant_id, family_id, customer_id);
         CREATE TABLE IF NOT EXISTS family_links_v1 (
           tenant_id TEXT NOT NULL,
           family_id TEXT NOT NULL,
@@ -1049,6 +1504,9 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(family_members_v1)")}
+    if "updated_at" not in columns:
+        con.execute("ALTER TABLE family_members_v1 ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 
 
 def _replace_rows(con: sqlite3.Connection, table: str, tenant_id: str, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -1091,9 +1549,12 @@ def _summary(
     generated_at: str,
     profile_report: Mapping[str, Any],
     mail_report: Mapping[str, Any],
+    member_rows: Sequence[Mapping[str, Any]],
     family_rows: Sequence[Mapping[str, Any]],
     event_rows: Sequence[Mapping[str, Any]],
     opportunity_rows: Sequence[Mapping[str, Any]],
+    existing_family_links: int,
+    preserve_child_graph: bool,
     apply: bool,
 ) -> Mapping[str, Any]:
     return {
@@ -1105,7 +1566,21 @@ def _summary(
         "llm_calls_total": 0,
         "profile_source": dict(profile_report),
         "mail_source": dict(mail_report),
+        "family_members_total": len(member_rows),
+        "family_members_write_applied": bool(apply),
+        "families_total": len({str(row["family_id"]) for row in member_rows}),
+        "family_membership_status_counts": _counts(row["membership_status"] for row in member_rows),
+        "multi_customer_families": len(
+            {
+                str(row["family_id"])
+                for row in member_rows
+                if str(row["membership_status"]) == "confident"
+            }
+        ),
         "family_links_total": len(family_rows),
+        "existing_family_links": int(existing_family_links),
+        "child_graph_preserved_without_profiles": bool(preserve_child_graph),
+        "child_graph_write_applied": bool(apply and not preserve_child_graph),
         "family_status_counts": _counts(row["status"] for row in family_rows),
         "family_confidence_counts": _counts(row["confidence"] for row in family_rows),
         "customers_with_family_links": len({str(row["customer_id"]) for row in family_rows}),
@@ -1244,6 +1719,11 @@ def _json_loads(value: Any) -> Any:
         return json.loads(str(value or ""))
     except json.JSONDecodeError:
         return {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    parsed = _json_loads(value)
+    return parsed if isinstance(parsed, list) else []
 
 
 def _json_dumps(value: Any) -> str:

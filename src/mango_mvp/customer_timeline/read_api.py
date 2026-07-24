@@ -319,11 +319,22 @@ class CustomerTimelineReadApi:
         limit: int = 50,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
-        clauses = ["tenant_id = ?", "customer_id = ?"]
-        params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        normalized_customer_id = require_text(customer_id, "customer_id")
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant]
         if allowed_only:
-            clauses.append("allowed_for_bot = 1")
-            clauses.append("requires_manager_review = 0")
+            self.store._append_chunk_filters(  # noqa: SLF001 - one canonical bot-safe boundary.
+                clauses,
+                params,
+                customer_id=normalized_customer_id,
+                opportunity_id=None,
+                since=None,
+                until=None,
+                allowed_for_bot=True,
+            )
+        else:
+            clauses.append("customer_id = ?")
+            params.append(normalized_customer_id)
         page_limit = bounded_limit(limit, default=50, max_limit=200)
         raw_limit = min(page_limit * 4, 500) if allowed_only else page_limit
         raw_items = self._records(
@@ -334,16 +345,23 @@ class CustomerTimelineReadApi:
             limit=raw_limit,
         )
         visible_items = _dedupe_bot_context_items(raw_items)[:page_limit] if allowed_only else raw_items
-        total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, customer_id))
-        allowed_chunks = self._count(
-            "bot_context_chunks",
-            "tenant_id = ? AND customer_id = ? AND allowed_for_bot = 1 AND requires_manager_review = 0",
-            (tenant, customer_id),
+        total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, normalized_customer_id))
+        allowed_clauses = ["tenant_id = ?"]
+        allowed_params: list[Any] = [tenant]
+        self.store._append_chunk_filters(  # noqa: SLF001 - summary uses the same bot-safe boundary.
+            allowed_clauses,
+            allowed_params,
+            customer_id=normalized_customer_id,
+            opportunity_id=None,
+            since=None,
+            until=None,
+            allowed_for_bot=True,
         )
+        allowed_chunks = self._count("bot_context_chunks", " AND ".join(allowed_clauses), tuple(allowed_params))
         review_required_chunks = self._count(
             "bot_context_chunks",
             "tenant_id = ? AND customer_id = ? AND requires_manager_review = 1",
-            (tenant, customer_id),
+            (tenant, normalized_customer_id),
         )
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
@@ -375,6 +393,8 @@ class CustomerTimelineReadApi:
         cursor: Optional[str] = None,
     ) -> Mapping[str, Any]:
         tenant = normalize_key(tenant_id, "tenant_id")
+        if allowed_for_bot is True:
+            scopes = ("bot_context",)
         result = self.store.search_timeline(
             tenant,
             query,

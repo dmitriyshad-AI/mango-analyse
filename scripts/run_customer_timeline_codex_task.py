@@ -44,10 +44,21 @@ PROD_TIMELINE_DB = Path(
 )
 PROD_SNAPSHOT_STALE_HOURS = 7 * 24
 TASK_SUCCESS_STALE_HOURS = 30
+REQUIRED_MUTATING_NIGHTLY_CHAIN = (
+    ("wappi_history_incremental", "wappi_history"),
+    ("family_graph_refresh", "family_graph"),
+    ("bot_safe_rebuild", "bot_safe_rebuild"),
+)
 REQUIRED_NIGHTLY_STEPS = {
     "mango_processed_sweep",
     "calls_and_amo_incremental",
+    "wappi_history_incremental",
     "mail_archive_incremental",
+    "mail_link_enrich",
+    "tallanto_money_api_incremental",
+    "tallanto_attendance_api_incremental",
+    "family_graph_refresh",
+    "bot_safe_rebuild",
 }
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 
@@ -106,6 +117,9 @@ def validate_nightly_config(path: Path | None = None) -> str:
         strict=False
     ):
         return "nightly config allowed_root does not match persistent staging root"
+    chain_reason = validate_mutating_nightly_chain(payload)
+    if chain_reason:
+        return chain_reason
     steps = {
         str(item.get("name") or ""): item
         for item in payload.get("steps") or ()
@@ -121,6 +135,26 @@ def validate_nightly_config(path: Path | None = None) -> str:
     )
     if inactive:
         return "nightly config has inactive required steps: " + ",".join(inactive)
+    money_step = steps["tallanto_money_api_incremental"]
+    money_config = money_step.get("config")
+    if money_step.get("kind") != "tallanto_money_api" or not isinstance(money_config, Mapping):
+        return "tallanto_money_api_incremental has invalid kind or config"
+    expected_money_importer = (ROOT / "scripts" / "import_tallanto_payments_to_timeline.py").resolve(
+        strict=False
+    )
+    money_importer = Path(str(money_config.get("importer_script") or "")).resolve(strict=False)
+    if money_importer != expected_money_importer:
+        return "nightly config points Tallanto money import at another code root"
+    money_db = Path(str(money_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
+    if money_config.get("apply") is not True or money_db != STAGING_TIMELINE_DB.resolve(strict=False):
+        return "tallanto_money_api_incremental must apply to persistent staging DB"
+    attendance_step = steps["tallanto_attendance_api_incremental"]
+    attendance_config = attendance_step.get("config")
+    if attendance_step.get("kind") != "tallanto_attendance_api" or not isinstance(attendance_config, Mapping):
+        return "tallanto_attendance_api_incremental has invalid kind or config"
+    attendance_db = Path(str(attendance_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
+    if attendance_config.get("apply") is not True or attendance_db != STAGING_TIMELINE_DB.resolve(strict=False):
+        return "tallanto_attendance_api_incremental must apply to persistent staging DB"
     calls_config = steps["calls_and_amo_incremental"].get("config")
     if not isinstance(calls_config, Mapping):
         return "calls_and_amo_incremental has no config"
@@ -139,6 +173,10 @@ def validate_nightly_config(path: Path | None = None) -> str:
         source = call_sources[source_system]
         if source.get("normalizer") != normalizer or source.get("required") is not True:
             return f"calls_and_amo_incremental source contract is invalid: {source_system}"
+        if source_system == "mango_processed_summary" and (
+            source.get("ignore_cursor") is not True or source.get("preserve_cursor") is not True
+        ):
+            return "mango_processed_summary late sweep must ignore and preserve the shared cursor"
         source_path = Path(str(source.get("path") or "")).expanduser().resolve(strict=False)
         if not path_is_within(source_path, STAGING_ROOT):
             return f"calls_and_amo_incremental source is outside persistent staging root: {source_system}"
@@ -168,12 +206,51 @@ def validate_nightly_config(path: Path | None = None) -> str:
     return ""
 
 
+def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
+    raw_steps = payload.get("steps")
+    if not isinstance(raw_steps, list):
+        return "nightly config must contain a steps list"
+    declared_db = Path(str(payload.get("timeline_db") or "")).expanduser().resolve(strict=False)
+    positions: list[int] = []
+    for name, expected_kind in REQUIRED_MUTATING_NIGHTLY_CHAIN:
+        matches = [
+            (index, step)
+            for index, step in enumerate(raw_steps)
+            if isinstance(step, Mapping) and step.get("name") == name
+        ]
+        if len(matches) != 1:
+            return f"nightly config requires exactly one {name} step"
+        position, step = matches[0]
+        if step.get("enabled") is not True or step.get("required") is not True:
+            return f"nightly config {name} must be enabled and required"
+        if step.get("kind") != expected_kind:
+            return f"nightly config {name} kind must be {expected_kind}"
+        config = step.get("config")
+        if not isinstance(config, Mapping):
+            return f"nightly config {name} requires config"
+        if config.get("apply") is not True:
+            return f"nightly config {name} apply must be true"
+        step_db = Path(str(config.get("timeline_db") or "")).expanduser().resolve(strict=False)
+        if step_db != declared_db:
+            return f"nightly config {name} timeline_db must match declared staging DB"
+        positions.append(position)
+    if positions != sorted(positions):
+        names = " -> ".join(name for name, _kind in REQUIRED_MUTATING_NIGHTLY_CHAIN)
+        return f"nightly config required step order must be {names}"
+    return ""
+
+
 def path_is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(root.resolve(strict=False))
     except ValueError:
         return False
     return True
+
+
+def repo_python_env() -> dict[str, str]:
+    existing = os.environ.get("PYTHONPATH", "")
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(part for part in (str(ROOT / "src"), existing) if part)}
 
 
 def ensure_nightly_config() -> str:
@@ -198,7 +275,7 @@ def ensure_nightly_config() -> str:
     completed = subprocess.run(
         command,
         cwd=ROOT,
-        env={**os.environ, "CUSTOMER_TIMELINE_NIGHTLY_HOME": str(NIGHTLY_HOME)},
+        env={**repo_python_env(), "CUSTOMER_TIMELINE_NIGHTLY_HOME": str(NIGHTLY_HOME)},
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -475,6 +552,7 @@ def run_task(task: str, *, tallanto_phone_limit: int) -> int:
         proc = subprocess.run(
             spec.command,
             cwd=ROOT,
+            env=repo_python_env(),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

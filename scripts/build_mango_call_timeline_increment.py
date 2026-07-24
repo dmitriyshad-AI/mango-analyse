@@ -220,15 +220,15 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
         result: list[SourceRow] = []
         for raw in con.execute(query):
             row = dict(raw)
+            row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
             analysis = parse_json_object(str(row.get("analysis_json") or ""))
             if not analysis:
-                continue
+                raise ValueError(f"invalid done analysis_json in {path}: {row_id or 'unknown'}")
             started_at = first_text(row, "started_at", "call_at", "event_at")
             if not started_at:
-                continue
-            row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
+                raise ValueError(f"missing done call datetime in {path}: {row_id}")
             if not row_id:
-                continue
+                raise ValueError(f"missing done call id in {path}")
             result.append(
                 SourceRow(
                     source_kind=source_kind,

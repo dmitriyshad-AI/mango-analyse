@@ -210,24 +210,45 @@ class AmoAutoResolver:
         profile: DraftLoopProfile,
         dialog: Mapping[str, Any],
         messages: Sequence[WappiHistoryMessage],
-        message: WappiHistoryMessage,
+        message: WappiHistoryMessage | None,
+        identity_only: bool = False,
     ) -> Mapping[str, Any]:
         del messages, message
         if profile.channel == "telegram":
-            return self._resolve_telegram(key=key, profile=profile)
+            return self._resolve_telegram(key=key, profile=profile, identity_only=identity_only)
         if profile.channel == "max":
-            return self._resolve_max(key=key, profile=profile, dialog=dialog)
+            return self._resolve_max(key=key, profile=profile, dialog=dialog, identity_only=identity_only)
         return {"status": "rejected", "reason": "unsupported_channel"}
 
-    def _resolve_telegram(self, *, key: DraftLoopKey, profile: DraftLoopProfile) -> Mapping[str, Any]:
+    def _resolve_telegram(
+        self,
+        *,
+        key: DraftLoopKey,
+        profile: DraftLoopProfile,
+        identity_only: bool,
+    ) -> Mapping[str, Any]:
         if not key.chat_id.isdigit():
             return {"status": "rejected", "reason": "username_only", "channel": "telegram"}
         contacts = self._search_contacts_exact_telegram_id(key.chat_id)
         if len(contacts) != 1:
             return {"status": "rejected", "reason": "multi_contact" if contacts else "telegram_id_no_contact", "channel": "telegram"}
+        if identity_only:
+            return {
+                "status": "matched_identity",
+                "contact_id": str(contacts[0].get("id") or ""),
+                "match_key": "Telegram ID",
+                "match_value": key.chat_id,
+            }
         return self._resolve_contact(profile=profile, contact=contacts[0], match_key="Telegram ID", match_value=key.chat_id)
 
-    def _resolve_max(self, *, key: DraftLoopKey, profile: DraftLoopProfile, dialog: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _resolve_max(
+        self,
+        *,
+        key: DraftLoopKey,
+        profile: DraftLoopProfile,
+        dialog: Mapping[str, Any],
+        identity_only: bool,
+    ) -> Mapping[str, Any]:
         del key
         phone, source = max_dialog_phone(dialog)
         if not phone:
@@ -239,6 +260,13 @@ class AmoAutoResolver:
         contacts = self._search_contacts_exact_phone(phone)
         if len(contacts) != 1:
             return {"status": "rejected", "reason": "multi_contact" if contacts else "no_contact", "channel": "max", "match_key": source}
+        if identity_only:
+            return {
+                "status": "matched_identity",
+                "contact_id": str(contacts[0].get("id") or ""),
+                "match_key": source,
+                "match_value": phone,
+            }
         return self._resolve_contact(profile=profile, contact=contacts[0], match_key=source, match_value=phone)
 
     def _search_contacts_exact_telegram_id(self, telegram_id: str) -> list[Mapping[str, Any]]:

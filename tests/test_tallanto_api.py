@@ -58,6 +58,50 @@ def test_tallanto_client_handles_invalid_base_url():
         TallantoApiClient(TallantoApiConfig(base_url="", api_token="token")).healthcheck()
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "http://kmipt.tallanto.com",
+        "https://evil.example",
+        "https://kmipt.tallanto.com:444",
+        "https://kmipt.tallanto.com:bad",
+        "https://user:password@kmipt.tallanto.com",
+    ),
+)
+def test_tallanto_client_rejects_non_https_or_unapproved_endpoint(base_url):
+    with pytest.raises(TallantoApiError):
+        TallantoApiClient(TallantoApiConfig(base_url=base_url, api_token="secret-token"))
+
+
+@pytest.mark.parametrize("rest_path", ("https://evil.example/collect", "//evil.example/collect", "/rest.php?next=evil"))
+def test_tallanto_client_rejects_nonlocal_rest_path(rest_path):
+    with pytest.raises(TallantoApiError):
+        tallanto_api_module._build_url("https://kmipt.tallanto.com", rest_path)
+
+
+def test_tallanto_http_error_does_not_expose_token(monkeypatch):
+    token = "must-not-leak"
+
+    def fake_urlopen(*_args, **_kwargs):
+        raise url_error.HTTPError(
+            "https://kmipt.tallanto.com/service/api/rest.php",
+            400,
+            "bad request",
+            {},
+            io.BytesIO(f"server echoed {token}".encode()),
+        )
+
+    monkeypatch.setattr(tallanto_api_module.url_request, "urlopen", fake_urlopen)
+    with pytest.raises(TallantoApiError) as error:
+        tallanto_api_module._http_json_request(
+            method="GET",
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            headers={"X-Auth-Token": token},
+        )
+    assert token not in str(error.value)
+    assert "[REDACTED]" in str(error.value)
+
+
 def test_tallanto_phone_lookup_uses_existing_contact_phone_fields_only():
     assert TallantoApiClient.CONTACT_PHONE_FIELDS == ("phone_mobile", "phone_work")
 

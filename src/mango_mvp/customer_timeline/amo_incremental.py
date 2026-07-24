@@ -634,6 +634,13 @@ def resolve_card_customers(
     if direct:
         return direct, "direct_identity_link" if len(direct) == 1 else "direct_ambiguous"
     if entity_type != "lead":
+        lead_customers: set[str] = set()
+        for lead_id in embedded_entity_ids(item, "leads"):
+            lead_customers.update(link_index.get(("amo_lead_id", lead_id), ()))
+        if len(lead_customers) == 1:
+            return tuple(lead_customers), "embedded_lead_identity_link"
+        if len(lead_customers) > 1:
+            return tuple(sorted(lead_customers)), "embedded_lead_ambiguous"
         return (), "new_contact_identity"
     contact_customers: set[str] = set()
     for contact_id in embedded_entity_ids(item, "contacts"):

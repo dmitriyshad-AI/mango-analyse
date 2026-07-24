@@ -32,7 +32,6 @@ echo "[$STARTED_AT] starting Phase 1b Wappi draft-loop from $ROOT at $HEAD"
 export CODEX_HOME="${CODEX_HOME:-$HOME/.mango_local/codex_wappi_draft_loop_v1}"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH=src
-export DRAFT_LOOP_AUTO_RESOLVER=0
 
 export ENFORCE_CANONICAL_PROFILE=1
 export TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1
@@ -51,24 +50,9 @@ fi
 CUSTOMER_TIMELINE_DB="${CUSTOMER_TIMELINE_DB:-/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite}"
 
 MANIFEST="$LOG_DIR/phase1b_startup_manifest.json"
-MANIFEST_TMP="$MANIFEST.$$"
-{
-  printf '{\n'
-  printf '  "schema_version": "wappi_phase1b_startup_v1",\n'
-  printf '  "started_at": "%s",\n' "$STARTED_AT"
-  printf '  "cwd": "%s",\n' "$ROOT"
-  printf '  "head": "%s",\n' "$HEAD"
-  printf '  "wrapper_sha256": "%s",\n' "$WRAPPER_SHA256"
-  printf '  "profile": "pilot_gold_v1",\n'
-  printf '  "pair_mode": "manual_only",\n'
-  printf '  "memory_step_guard": true,\n'
-  printf '  "bot_safe_crm_context": true,\n'
-  printf '  "timeline_memory_in_prompt": true,\n'
-  printf '  "format_guidance": true,\n'
-  printf '  "scope_overclaim_guard": false\n'
-  printf '}\n'
-} >"$MANIFEST_TMP"
-mv "$MANIFEST_TMP" "$MANIFEST"
+export DRAFT_LOOP_STARTUP_MANIFEST="$MANIFEST"
+export DRAFT_LOOP_RUNTIME_HEAD="$HEAD"
+export DRAFT_LOOP_WRAPPER_SHA256="$WRAPPER_SHA256"
 
 exec "$PYTHON_BIN" scripts/run_amo_wappi_draft_loop.py \
   --loop \

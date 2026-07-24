@@ -18,13 +18,16 @@ def test_transport_allows_only_declared_read_and_note_paths() -> None:
         "ok": True
     }
     assert transport(method="GET", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p") == {"ok": True}
+    assert transport(method="GET", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p&show_all=true") == {"ok": True}
     assert transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=false") == {
         "ok": True
     }
     assert transport(method="GET", url="https://educent.amocrm.ru/api/v4/contacts?query=test") == {"ok": True}
-    assert transport(method="POST", url="https://wappi.pro/messanger/proxy/amocrm/contact/find") == {"ok": True}
+    assert transport(method="GET", url="https://educent.amocrm.ru/api/v4/contacts/2002/notes") == {"ok": True}
+    assert transport(method="POST", url="https://wappi.pro/amocrm/contact/find") == {"ok": True}
     assert transport(method="POST", url="https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes") == {"ok": True}
-    assert len(calls) == 6
+    assert transport(method="POST", url="https://api.fotonai.online/api/integrations/amocrm/contacts/2002/notes") == {"ok": True}
+    assert len(calls) == 9
 
 
 def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
@@ -37,17 +40,15 @@ def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
     with pytest.raises(TransportDenied):
         transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=true")
     with pytest.raises(TransportDenied):
-        transport(method="GET", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p&show_all=true")
-    with pytest.raises(TransportDenied):
         transport(method="POST", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p")
     with pytest.raises(TransportDenied):
-        transport(method="POST", url="https://wappi.pro/messanger/proxy/amocrm/contact/find?chat_id=1")
+        transport(method="POST", url="https://wappi.pro/amocrm/contact/find?chat_id=1")
     with pytest.raises(TransportDenied):
-        transport(method="POST", url="http://wappi.pro/messanger/proxy/amocrm/contact/find")
+        transport(method="POST", url="http://wappi.pro/amocrm/contact/find")
     with pytest.raises(TransportDenied):
-        transport(method="POST", url="https://wappi.pro/messanger/proxy/amocrm/contact/other")
+        transport(method="POST", url="https://wappi.pro/amocrm/contact/other")
     with pytest.raises(TransportDenied):
-        transport(method="PUT", url="https://wappi.pro/messanger/proxy/amocrm/contact/find")
+        transport(method="PUT", url="https://wappi.pro/amocrm/contact/find")
     with pytest.raises(TransportDenied):
         transport(method="DELETE", url="https://educent.amocrm.ru/api/v4/leads/49832125")
     with pytest.raises(TransportDenied):
@@ -58,6 +59,8 @@ def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
         transport(method="POST", url="https://api.fotonai.online/api/v4/leads/49832125/notes")
     with pytest.raises(TransportDenied):
         transport(method="POST", url="https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes?api_key=x")
+    with pytest.raises(TransportDenied):
+        transport(method="POST", url="http://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes")
 
 
 def test_transport_denies_unknown_host() -> None:

@@ -23,6 +23,7 @@ from mango_mvp.customer_timeline.bot_safe_summary import (
     BotSafeSummaryBuildConfig,
     build_bot_safe_summaries,
     expected_bot_safe_chunk_id,
+    _bounded_events_with_attendance,
 )
 
 
@@ -195,6 +196,53 @@ def test_bot_safe_summary_uses_structural_fields_redacts_title_and_keeps_raw_blo
         ).fetchone()[0] == 0
 
 
+def test_bot_safe_summary_includes_last_tallanto_writeoff_date_without_claiming_presence(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(_opportunity(customer))
+    store.upsert_event(
+        TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+            event_at=datetime(2026, 7, 1, 7, 0, tzinfo=timezone.utc),
+            source_system="tallanto_attendance",
+            source_id="attendance-1",
+            direction=TimelineDirection.SYSTEM,
+            subject="Физика 8 класс",
+            summary="Занятие с подтверждённым списанием в Tallanto.",
+            match_status="strong_unique",
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    text = payload["text"]
+
+    assert "Последнее подтверждённое списание за занятие: 01.07.2026" in text
+    assert "посетил" not in text.casefold()
+    assert payload["metadata"]["safe_slots"]["last_attendance_date"] == "01.07.2026"
+
+
+def test_bot_safe_event_limit_keeps_latest_attendance() -> None:
+    attendance = {"event_type": "tallanto_attendance", "event_at": "2026-06-01T10:00:00+03:00"}
+    events = [attendance, *({"event_type": "telegram_message", "event_at": str(index)} for index in range(501))]
+
+    bounded = _bounded_events_with_attendance(events)
+
+    assert len(bounded) == 501
+    assert bounded[0] == attendance
+
+
 def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
@@ -265,7 +313,7 @@ def test_bot_safe_summary_ignores_event_without_brand_context_authorization(tmp_
         confidence=0.9,
         summary="Ученик 9 класса интересуется физикой.",
         record={"brand": "foton"},
-        metadata={"brand": "foton", "brand_context_authorized": False},
+        metadata={"brand": "foton"},
         created_at=NOW,
     )
     store.upsert_customer(customer)
@@ -285,6 +333,53 @@ def test_bot_safe_summary_ignores_event_without_brand_context_authorization(tmp_
             created_at=NOW,
         )
     )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.created == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_ignores_inactive_or_unsafe_unconfirmed_attendance(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    cases = (
+        ("inactive", False, True),
+        ("unsafe", True, False),
+    )
+    for suffix, fact_active, bot_safe in cases:
+        customer = _customer(f"customer:attendance-{suffix}")
+        store.upsert_customer(customer)
+        store.upsert_opportunity(_opportunity(customer, source_id=f"lead-{suffix}", title="Оплата"))
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id=customer.tenant_id,
+                customer_id=customer.customer_id,
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=NOW,
+                source_system="tallanto_attendance_api",
+                source_id=f"attendance-{suffix}",
+                direction=TimelineDirection.SYSTEM,
+                subject="Физика",
+                summary="Посещение и списание занятия подтверждены в Tallanto.",
+                match_status="strong_unique",
+                confidence=1.0,
+                record={"fact_active": fact_active, "writeoff_confirmed": False},
+                metadata={"fact_active": fact_active, "bot_safe": bot_safe},
+                created_at=NOW,
+            )
+        )
     store.close()
 
     report = build_bot_safe_summaries(
@@ -361,6 +456,43 @@ def test_bot_safe_summary_ignores_revoked_source_chunk(tmp_path: Path) -> None:
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchone()[0] == 0
 
+
+def test_bot_safe_summary_rejects_orphan_protected_chunk(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            event_id=None,
+            source_system="mail_archive_stage2",
+            source_ref="mail:orphan",
+            chunk_type="email_message",
+            text="Ученик 9 класса интересуется математикой онлайн.",
+            allowed_for_bot=False,
+            requires_manager_review=True,
+            metadata={"brand": "foton", "brand_context_authorized": True},
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.created == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
 
 def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path: Path) -> None:
     store = _open_store(tmp_path)

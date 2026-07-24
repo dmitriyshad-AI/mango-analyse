@@ -21,7 +21,9 @@ from mango_mvp.integrations.amo_wappi_phase1 import (
     WappiPhase1Client,
     append_manager_edit_log,
     build_draft_note_text,
+    draft_note_idempotency_marker,
     load_env_file,
+    wappi_amocrm_lookup_fields,
 )
 
 
@@ -144,20 +146,18 @@ def test_wappi_amocrm_contact_find_uses_exact_endpoint_headers_and_body() -> Non
     assert calls == [
         {
             "method": "POST",
-            "url": "https://wappi.pro/messanger/proxy/amocrm/contact/find",
-            "headers": {
-                "Authorization": "tg-token",
-                "X-CRM-Type": "amo",
-                "X-CRM-ID": "amojo-crm-uuid",
-                "X-Manager-ID": "manager-42",
-            },
+            "url": "https://wappi.pro/amocrm/contact/find",
+            "headers": {"Authorization": "tg-token"},
             "json_body": {
                 "chat_id": "chat-1",
                 "phone": "+79991234567",
                 "username": "client_name",
+                "avito_user_id": "",
+                "avito_user_hash": "",
                 "platform": "tg",
                 "crm_id": "amojo-crm-uuid",
                 "profile_uuid": "profile-uuid",
+                "token": "tg-token",
             },
             "timeout_seconds": 25,
         }
@@ -181,12 +181,65 @@ def test_wappi_amocrm_contact_find_omits_optional_manager_and_other_secrets() ->
         profile_uuid="profile-uuid",
     )
 
-    assert calls[0]["headers"] == {
-        "Authorization": "max-token",
-        "X-CRM-Type": "amo",
-        "X-CRM-ID": "amojo-crm-uuid",
+    assert calls[0]["headers"] == {"Authorization": "max-token"}
+    assert calls[0]["json_body"]["token"] == "max-token"
+
+
+def test_wappi_amocrm_lookup_fields_match_widget_for_telegram_and_max() -> None:
+    telegram = wappi_amocrm_lookup_fields(
+        "telegram",
+        {"id": "tg-chat", "type": "user", "user": {"Phone": "+70000000001", "Username": "parent"}},
+    )
+    max_dialog = wappi_amocrm_lookup_fields(
+        "max",
+        {
+            "id": "max-room",
+            "type": "DIALOG",
+            "participants": [
+                {"user_id": "self", "is_me": True},
+                {"user_id": "max-person", "is_me": False},
+            ],
+            "manager": {"id": "manager-1"},
+        },
+    )
+
+    assert telegram == {
+        "chat_id": "tg-chat",
+        "phone": "+70000000001",
+        "username": "parent",
+        "manager_id": "",
     }
-    assert set(calls[0]["headers"]) == {"Authorization", "X-CRM-Type", "X-CRM-ID"}
+    assert max_dialog == {
+        "chat_id": "max-person",
+        "phone": "",
+        "username": "",
+        "manager_id": "manager-1",
+    }
+
+    assert wappi_amocrm_lookup_fields(
+        "max",
+        {
+            "id": "max-room",
+            "type": "DIALOG",
+            "participants": [
+                {"user_id": "one", "is_me": False},
+                {"user_id": "two", "is_me": False},
+            ],
+        },
+    )["chat_id"] == "max-room"
+    assert wappi_amocrm_lookup_fields(
+        "max",
+        {
+            "id": "max-room",
+            "type": "DIALOG",
+            "participants": [{"user_id": "self", "is_me": True}],
+        },
+    )["chat_id"] == "max-room"
+
+    assert wappi_amocrm_lookup_fields(
+        "max",
+        {"id": "max-room", "max_user_id": "max-person", "type": "DIALOG"},
+    )["chat_id"] == "max-person"
 
 
 def test_wappi_amocrm_contact_find_rejects_incomplete_or_non_https_request() -> None:
@@ -295,10 +348,37 @@ def test_draft_note_write_outside_allowlist_is_blocked_before_http() -> None:
 
 def test_ai_office_note_client_posts_only_server_endpoint() -> None:
     calls: list[dict] = []
+    read_calls: list[dict] = []
 
     def transport(**kwargs):
         calls.append(kwargs)
         return {"status": "ok", "note_id": 9001}
+
+    class ReadClient:
+        calls = 0
+
+        def amo_api_get(self, **kwargs):
+            self.calls += 1
+            read_calls.append(kwargs)
+            if self.calls == 1:
+                return {"_embedded": {"notes": []}}
+            return {
+                "_embedded": {
+                    "notes": [
+                        {
+                            "id": 9001,
+                            "params": {
+                                "text": "Mango draft id: "
+                                + draft_note_idempotency_marker(
+                                    profile_id="profile-1",
+                                    chat_id="chat-1",
+                                    message_id="message-1",
+                                )
+                            },
+                        }
+                    ]
+                }
+            }
 
     config = AmoWappiPhase1Config(
         profile_brand_map={"profile-1": "foton"},
@@ -307,6 +387,7 @@ def test_ai_office_note_client_posts_only_server_endpoint() -> None:
     client = AiOfficeAmoNoteClient(
         AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
         transport=transport,
+        read_client=ReadClient(),
     )
 
     response = client.add_draft_note_to_test_lead(
@@ -315,9 +396,13 @@ def test_ai_office_note_client_posts_only_server_endpoint() -> None:
         draft_text="Черновик",
         brand="foton",
         profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
     )
 
-    assert response == {"status": "ok", "note_id": 9001}
+    assert response["status"] == "ok"
+    assert response["note_id"] == 9001
+    assert response["deduplicated"] is False
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"] == "https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes"
     assert "/tasks" not in calls[0]["url"]
@@ -328,20 +413,199 @@ def test_ai_office_note_client_posts_only_server_endpoint() -> None:
     assert calls[0]["json_body"]["text"].startswith("Черновик")
     assert DRAFT_NOTE_MARKER in calls[0]["json_body"]["text"]
     assert "Черновик" in calls[0]["json_body"]["text"]
+    assert "Mango draft id: mango-draft:" in calls[0]["json_body"]["text"]
+    assert read_calls == [
+        {
+            "path": "leads/49832125/notes",
+            "params": {"order[id]": "desc"},
+            "limit": 50,
+        },
+        {
+            "path": "leads/49832125/notes",
+            "params": {"order[id]": "desc"},
+            "limit": 50,
+        },
+    ]
 
 
-def test_ai_office_note_client_blocks_non_allowlisted_lead_before_http() -> None:
+def test_ai_office_note_client_writes_and_reads_back_contact_note() -> None:
+    calls: list[dict] = []
+
+    def transport(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "note_id": 7001}
+
+    class ReadClient:
+        calls = 0
+
+        def amo_api_get(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"_embedded": {"notes": []}}
+            return {
+                "_embedded": {
+                    "notes": [
+                        {
+                            "id": 7001,
+                            "params": {
+                                "text": draft_note_idempotency_marker(
+                                    profile_id="profile-1",
+                                    chat_id="chat-1",
+                                    message_id="message-1",
+                                )
+                            },
+                        }
+                    ]
+                }
+            }
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=transport,
+        read_client=ReadClient(),
+    )
+
+    response = client.add_draft_note_to_contact(
+        "2002",
+        config=AmoWappiPhase1Config(),
+        draft_text="Черновик",
+        brand="foton",
+        profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
+    )
+
+    assert response["contact_id"] == 2002
+    assert response["note_id"] == 7001
+    assert calls[0]["url"] == "https://api.fotonai.online/api/integrations/amocrm/contacts/2002/notes"
+
+
+def test_ai_office_note_client_quarantines_positive_note_id_when_readback_is_delayed() -> None:
+    posts: list[dict] = []
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {"_embedded": {"notes": []}}
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs) or {"status": "ok", "note_id": 9001},
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match="readback did not confirm"):
+        client.add_draft_note_to_test_lead(
+            "49832125",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+
+    assert len(posts) == 1
+
+
+def test_ai_office_note_client_rejects_success_without_note_id() -> None:
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {"_embedded": {"notes": []}}
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **_kwargs: {"status": "ok"},
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match="no valid note_id"):
+        client.add_draft_note_to_test_lead(
+            "49832125",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+
+
+def test_ai_office_note_client_reuses_existing_note_without_allowlist_or_second_post() -> None:
     calls: list[dict] = []
     config = AmoWappiPhase1Config(allowed_test_lead_ids=frozenset({"49832125"}))
+    marker = draft_note_idempotency_marker(
+        profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
+    )
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {"_embedded": {"notes": [{"id": 7001, "params": {"text": f"draft\n{marker}"}}]}}
+
     client = AiOfficeAmoNoteClient(
         AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
         transport=lambda **kwargs: calls.append(kwargs),
+        read_client=ReadClient(),
     )
 
-    with pytest.raises(AmoWappiWriteBlocked):
-        client.add_draft_note_to_test_lead("111", config=config, draft_text="Черновик", brand="foton")
+    response = client.add_draft_note_to_test_lead(
+        "111",
+        config=config,
+        draft_text="Черновик",
+        brand="foton",
+        profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
+    )
 
     assert calls == []
+    assert response["note_id"] == 7001
+    assert response["deduplicated"] is True
+
+
+def test_ai_office_note_client_reuses_marker_from_second_page_without_post() -> None:
+    posts: list[dict] = []
+    read_calls: list[dict] = []
+    marker = draft_note_idempotency_marker(
+        profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
+    )
+
+    class ReadClient:
+        def amo_api_get(self, **kwargs):
+            read_calls.append(kwargs)
+            if kwargs["params"].get("page") == 2:
+                return {"_embedded": {"notes": [{"id": 7001, "params": {"text": marker}}]}}
+            return {
+                "_embedded": {"notes": [{"id": note_id, "params": {"text": "other"}} for note_id in range(50)]},
+                "_links": {"next": {"href": "page-2"}},
+            }
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs),
+        read_client=ReadClient(),
+    )
+
+    response = client.add_draft_note_to_test_lead(
+        "111",
+        config=AmoWappiPhase1Config(),
+        draft_text="Черновик",
+        brand="foton",
+        profile_id="profile-1",
+        chat_id="chat-1",
+        message_id="message-1",
+    )
+
+    assert response["note_id"] == 7001
+    assert response["deduplicated"] is True
+    assert posts == []
+    assert [call["params"] for call in read_calls] == [
+        {"order[id]": "desc"},
+        {"order[id]": "desc", "page": 2},
+    ]
 
 
 def test_draft_note_text_requires_known_brand() -> None:

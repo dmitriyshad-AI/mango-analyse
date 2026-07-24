@@ -100,6 +100,7 @@ class TimelineEventType(str, Enum):
     TALLANTO_STUDENT_SNAPSHOT = "tallanto_student_snapshot"
     TALLANTO_PAYMENT = "tallanto_payment"
     TALLANTO_ABONEMENT = "tallanto_abonement"
+    TALLANTO_ATTENDANCE = "tallanto_attendance"
     TALLANTO_GROUP = "tallanto_group"
     MANAGER_ACTION = "manager_action"
     SYSTEM_NOTE = "system_note"

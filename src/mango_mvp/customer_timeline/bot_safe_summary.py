@@ -18,7 +18,11 @@ from mango_mvp.customer_timeline.next_step_resolver import (
     NextStepResolution,
     resolve_customer_next_step,
 )
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, scrub_timeline_persisted_json
+from mango_mvp.customer_timeline.store import (
+    BRAND_AUTH_EVENT_SOURCES,
+    CustomerTimelineSQLiteStore,
+    scrub_timeline_persisted_json,
+)
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE as INSIGHTS_COMMON_SINGLE_NAME_RE
 
 
@@ -208,6 +212,7 @@ class BotSafeExtractedSlots:
     subjects: tuple[str, ...] = ()
     interests: tuple[str, ...] = ()
     formats: tuple[str, ...] = ()
+    last_attendance_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -384,6 +389,7 @@ def _build_customer_draft(
         metadata={
             "schema_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
             "raw_text_used": False,
+            "brand_context_authorized": True,
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
@@ -395,6 +401,7 @@ def _build_customer_draft(
                 "subjects": list(slots.subjects),
                 "interests": list(slots.interests),
                 "formats": list(slots.formats),
+                "last_attendance_date": slots.last_attendance_date,
             },
         },
         created_at=created_at,
@@ -468,6 +475,8 @@ def _render_safe_text(*, brand: str, slots: BotSafeExtractedSlots, safe_next_ste
             parts.append(f"Формат: {slots.formats[0]}.")
         else:
             parts.append(f"Рассматривались форматы: {_join_unique(slots.formats, max_items=3)}.")
+    if slots.last_attendance_date:
+        parts.append(f"Последнее подтверждённое списание за занятие: {slots.last_attendance_date}.")
     known_fields = _known_field_labels(slots)
     if known_fields:
         parts.append(f"Уже известно: {'; '.join(known_fields)}.")
@@ -602,7 +611,22 @@ def _extract_bot_safe_slots(
         subjects=subjects,
         interests=interests,
         formats=formats,
+        last_attendance_date=_last_attendance_date(events),
     )
+
+
+def _last_attendance_date(events: Sequence[Mapping[str, Any]]) -> str:
+    dates = sorted(
+        str(event.get("event_at") or "")
+        for event in events
+        if str(event.get("event_type") or "") == "tallanto_attendance" and event.get("event_at")
+    )
+    if not dates:
+        return ""
+    try:
+        return datetime.fromisoformat(dates[-1]).strftime("%d.%m.%Y")
+    except ValueError:
+        return ""
 
 
 def _bot_safe_slot_sources(
@@ -991,11 +1015,44 @@ def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mappin
             event = _json_mapping(row["record_json"])
             if _event_authorized_for_bot_safe_summary(event):
                 grouped.setdefault(str(row["customer_id"]), []).append(event)
-    return {customer_id: tuple(items[-500:]) for customer_id, items in grouped.items()}
+    return {customer_id: _bounded_events_with_attendance(items) for customer_id, items in grouped.items()}
+
+
+def _bounded_events_with_attendance(items: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    recent = list(items[-500:])
+    latest_attendance = next(
+        (item for item in reversed(items) if str(item.get("event_type") or "") == "tallanto_attendance"),
+        None,
+    )
+    if latest_attendance is not None and latest_attendance not in recent:
+        recent.insert(0, latest_attendance)
+    return tuple(recent)
 
 
 def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
-    return _mapping(event.get("metadata")).get("brand_context_authorized") is not False
+    metadata = _mapping(event.get("metadata"))
+    authorization = metadata.get("brand_context_authorized")
+    if str(event.get("source_system") or "") in {
+        "mail_archive",
+        "mail_archive_stage2",
+        "wappi_telegram",
+        "wappi_max",
+        "telegram_history",
+        "channel_snapshot",
+    }:
+        return authorization is True
+    if authorization is False:
+        return False
+    record = _mapping(event.get("record"))
+    return not (
+        event.get("event_type") == "tallanto_attendance"
+        and (
+            record.get("fact_active") is False
+            or metadata.get("fact_active") is False
+            or metadata.get("bot_safe") is False
+        )
+        and record.get("writeoff_confirmed") is not True
+    )
 
 
 def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
@@ -1022,6 +1079,8 @@ def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple
         for row in rows:
             chunk = _json_mapping(row["record_json"])
             linked_event = _json_mapping(row["event_record_json"])
+            if str(chunk.get("source_system") or "") in BRAND_AUTH_EVENT_SOURCES and not linked_event:
+                continue
             if _event_authorized_for_bot_safe_summary(chunk) and _event_authorized_for_bot_safe_summary(linked_event):
                 grouped.setdefault(str(row["customer_id"]), []).append(chunk)
     return {customer_id: tuple(items[-700:]) for customer_id, items in grouped.items()}

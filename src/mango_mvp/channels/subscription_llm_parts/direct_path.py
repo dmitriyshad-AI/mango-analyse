@@ -717,69 +717,46 @@ def _direct_path_bot_safe_context_items(
     active_brand = _active_brand(context)
     if active_brand not in {"foton", "unpk"}:
         return ()
-    containers: list[Any] = []
-    timeline_context = context.get("timeline_context")
-    if isinstance(timeline_context, Mapping):
-        containers.append(timeline_context)
-    read_only_context = context.get("read_only_customer_context")
-    if isinstance(read_only_context, Mapping):
-        nested_timeline = read_only_context.get("timeline_context")
-        if isinstance(nested_timeline, Mapping):
-            containers.append(nested_timeline)
-        containers.append(read_only_context)
+    memory = build_customer_memory_for_prompt(
+        context,
+        active_brand=active_brand,
+        item_limit=max(1, int(limit or 3)),
+        history_limit=0,
+    )
     result: list[Mapping[str, Any]] = []
-    for container in containers:
-        bot_context = container.get("bot_context") if isinstance(container, Mapping) else None
-        if not isinstance(bot_context, Mapping):
+    for item in memory.items:
+        source_system = str(item.get("source_system") or "").strip().casefold()
+        chunk_type = str(item.get("chunk_type") or "").strip().casefold()
+        tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
+        if not _direct_path_bot_safe_item_visible(
+            tags,
+            active_brand=active_brand,
+            source_system=source_system,
+            chunk_type=chunk_type,
+        ):
             continue
-        if bot_context.get("allowed_only") is not True:
+        status = _direct_path_bot_safe_next_step_status(item)
+        text = strip_unconfirmed_next_step_text_for_bot(
+            scrub_customer_memory_text(item.get("text") or item.get("summary")),
+            next_step_status=status,
+        )
+        if not text or _direct_path_bot_safe_text_has_pii(text):
             continue
-        raw_items = bot_context.get("items")
-        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
-            continue
-        for item in raw_items:
-            if not isinstance(item, Mapping):
-                continue
-            if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
-                continue
-            source_system = str(item.get("source_system") or "").strip().casefold()
-            chunk_type = str(item.get("chunk_type") or "").strip().casefold()
-            tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
-            if not _direct_path_bot_safe_item_visible(
-                tags,
-                active_brand=active_brand,
-                source_system=source_system,
-                chunk_type=chunk_type,
-            ):
-                continue
-            status = _direct_path_bot_safe_next_step_status(item)
-            text = strip_unconfirmed_next_step_text_for_bot(
-                str(item.get("summary") or item.get("text") or "").strip(),
-                next_step_status=status,
-            )
-            if not text or _direct_path_bot_safe_text_has_pii(text):
-                continue
-            next_step_status = _direct_path_bot_safe_next_step_status(item)
-            text = strip_unconfirmed_next_step_text_for_bot(text, next_step_status=next_step_status)
-            if not text:
-                continue
-            result.append(
-                {
-                    "source_system": source_system,
-                    "chunk_type": chunk_type,
-                    "text": _direct_path_trim_context_text(text, 700),
-                    "event_at": str(item.get("event_at") or "").strip(),
-                    "next_step_status": status,
-                    "relevance_tags": _direct_path_bot_safe_visible_tags(
-                        tags,
-                        active_brand=active_brand,
-                        source_system=source_system,
-                        chunk_type=chunk_type,
-                    ),
-                }
-            )
-            if len(result) >= max(1, int(limit or 3)):
-                return tuple(result)
+        result.append(
+            {
+                "source_system": source_system,
+                "chunk_type": chunk_type,
+                "text": _direct_path_trim_context_text(text, 700),
+                "event_at": str(item.get("event_at") or "").strip(),
+                "next_step_status": status,
+                "relevance_tags": _direct_path_bot_safe_visible_tags(
+                    tags,
+                    active_brand=active_brand,
+                    source_system=source_system,
+                    chunk_type=chunk_type,
+                ),
+            }
+        )
     return tuple(result)
 
 
@@ -805,6 +782,9 @@ def _direct_path_bot_safe_item_visible(
     if chunk_type == "bot_safe_summary":
         required_tags = {"bot_safe"}
         allow_unknown_brand = True
+    elif source_system == "customer_timeline_family" and chunk_type == "family_dossier":
+        required_tags = {"bot_visible", "family"}
+        allow_unknown_brand = False
     elif source_system == "mail_archive_stage2" and chunk_type == "email_message":
         required_tags = {"email", "bot_visible", "mail_archive_stage2"}
         allow_unknown_brand = False
@@ -836,6 +816,8 @@ def _direct_path_bot_safe_visible_tags(
 ) -> list[str]:
     if chunk_type == "bot_safe_summary":
         candidates = ("bot_safe", "structured", active_brand, "unknown")
+    elif source_system == "customer_timeline_family" and chunk_type == "family_dossier":
+        candidates = ("bot_visible", "family", active_brand)
     elif source_system == "mail_archive_stage2":
         candidates = ("email", "bot_visible", "mail_archive_stage2", active_brand)
     elif source_system == "mango_processed_summary":

@@ -436,6 +436,41 @@ def test_fetch_cards_source_maps_lead_via_embedded_contact_identity() -> None:
     assert stats["page_cap_hit"] is False
 
 
+def test_fetch_cards_source_maps_contact_via_embedded_lead_identity() -> None:
+    payload = {
+        "_embedded": {
+            "contacts": [
+                {
+                    "id": 30,
+                    "name": "Known family contact",
+                    "created_at": 1782250000,
+                    "updated_at": 1782250001,
+                    "_embedded": {"leads": [{"id": 42}, {"id": 43}]},
+                }
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="contacts"),
+        path="contacts",
+        embedded_key="contacts",
+        entity_type="contact",
+        cursor_name="amo_contacts_updated_at",
+        from_ts=NOW,
+        link_index={
+            ("amo_lead_id", "42"): ("customer:family",),
+            ("amo_lead_id", "43"): ("customer:family",),
+        },
+        config=config,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["customer_id"] == "customer:family"
+    assert stats["resolution_counts"]["embedded_lead_identity_link"] == 1
+
+
 def test_fetch_cards_source_reports_page_cap_hit() -> None:
     payload = {
         "_embedded": {"leads": [{"id": 42, "updated_at": 1782250001, "_embedded": {"contacts": [{"id": 30}]}}]},

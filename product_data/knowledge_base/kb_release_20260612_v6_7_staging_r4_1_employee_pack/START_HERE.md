@@ -16,10 +16,10 @@
 - run_id: `kb_release_20260612_v6_7_staging_r4_1`
 - formal_pass: `True`
 - semantic_pass: `True`
-- client_safe_facts: `699`
-- manager_only_or_internal_facts: `376`
+- client_safe_facts: `713`
+- manager_only_or_internal_facts: `379`
 - Фотон client-safe facts: `319`
-- УНПК client-safe facts: `380`
+- УНПК client-safe facts: `394`
 - Smoke 50: `FOTON rows=0, UNPK rows=0, errors=0, brand_violations=0`
 
 ## Главный принцип

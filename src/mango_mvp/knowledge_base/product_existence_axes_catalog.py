@@ -448,6 +448,8 @@ def _parse_grade_values(value: Any, *, allow_bare: bool) -> list[int]:
 
 
 def _venue_from_text(text: str) -> str:
+    if "подлипк" in text or "podlipki" in text:
+        return "lvsh_podlipki"
     if "долгопруд" in text:
         return "dolgoprudny"
     if "менделеево" in text or "лвш" in text:

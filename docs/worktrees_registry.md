@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-21.
+Обновлено: 2026-07-24.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -21,6 +21,9 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
+| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_arch_audit_20260724` | `codex/customer-timeline-architecture-audit` | Read-only аудит Customer Timeline и подготовка понятного владельцу документа. | Удалить после приёмки документа и переноса нужных выводов в следующие ТЗ. |
+| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline` | `codex/ai-employee-timeline`, активная незавершённая работа | Отдельная задача связки Wappi/AMO с customer timeline. | Не трогать и не удалять до завершения задачи владельцем ветки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_m1_measurement_fixes` | `codex/m1-measurement-fixes` | Изолированные исправления измерителей M1. | Не трогать и не удалять до приёмки владельцем ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `exam/payment-subject-guards` | Неизменяемый приватный M1-экзамен двух защит; production-код уже в `main`, флаг OFF. | Удалить после завершения и смысловой приёмки M1. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
 

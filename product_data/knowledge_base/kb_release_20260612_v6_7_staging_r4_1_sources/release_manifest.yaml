@@ -2,6 +2,7 @@ schema_version: kb_release_manifest_v1
 release_id: kb_release_20260612_v6_7_staging_r4_1
 builder_version: kb_release_v6_1_builder_2026_05_20
 freshness_check_date: '2026-06-12'
+fact_scope_axes_file: facts/fact_scope_axes.jsonl
 source_mutation_policy: read_only_yaml_sources_no_business_patches_in_python
 client_safe_path_markers:
 - refund_presale_policy
@@ -1984,6 +1985,287 @@ manual_decision_fact_overrides:
   structured_value:
     source_decision: 'owner_2026_06_12'
     client_allowed: false
+- fact_key: lvsh_podlipki_2026.overview
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: '«Подлипки» — дополнительная летняя выездная физико-математическая школа УНПК МФТИ с проживанием.'
+  client_safe_text: '«Подлипки» — дополнительная летняя выездная физико-математическая школа УНПК МФТИ с проживанием.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.location.address
+  fact_type: location
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Смена «Подлипки» проходит в санатории-профилактории «Подлипки» РКК «Энергия»: Московская область, Королёв, улица Северная, 15Б.'
+  client_safe_text: 'Смена «Подлипки» проходит в санатории-профилактории «Подлипки» РКК «Энергия»: Московская область, Королёв, улица Северная, 15Б.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.dates
+  fact_type: schedule
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Смена «Подлипки» пройдёт с 16 по 26 августа 2026 года; заезд — в воскресенье.'
+  client_safe_text: 'Смена «Подлипки» пройдёт с 16 по 26 августа 2026 года; заезд — в воскресенье.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.direction
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Направление смены «Подлипки» — физико-математическое.'
+  client_safe_text: 'Направление смены «Подлипки» — физико-математическое.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.audience
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Смена «Подлипки» рассчитана на 5–10 классы. Группа 10 класса откроется после подтверждения достаточного набора.'
+  client_safe_text: 'Смена «Подлипки» рассчитана на 5–10 классы. Группа 10 класса откроется после подтверждения достаточного набора.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.accommodation
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'На смене «Подлипки» дети живут по 2 человека в номере.'
+  client_safe_text: 'На смене «Подлипки» дети живут по 2 человека в номере.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.meals
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'В стоимость смены «Подлипки» входит 5-разовое питание по системе «шведский стол».'
+  client_safe_text: 'В стоимость смены «Подлипки» входит 5-разовое питание по системе «шведский стол».'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.climate
+  fact_type: policy
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'В номерах базы «Подлипки» нет кондиционеров; на окнах установлены вентиляционные устройства, в помещениях прохладно.'
+  client_safe_text: 'В номерах базы «Подлипки» нет кондиционеров; на окнах установлены вентиляционные устройства, в помещениях прохладно.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.transfer
+  fact_type: process
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Для смены «Подлипки» организуем трансфер из Москвы; ориентир — Медведково или Бабушкинская. Точные место и время сообщим ближе к заезду.'
+  client_safe_text: 'Для смены «Подлипки» организуем трансфер из Москвы; ориентир — Медведково или Бабушкинская. Точные место и время сообщим ближе к заезду.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.medical_support
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'На территории базы «Подлипки» работает отдельный медблок с врачами.'
+  client_safe_text: 'На территории базы «Подлипки» работает отдельный медблок с врачами.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.venue_description
+  fact_type: location
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'На базе «Подлипки» зелёная территория с домиками, беседками, асфальтированными дорожками и спортплощадками; занятия проходят в переговорных, кабинетах и домиках.'
+  client_safe_text: 'На базе «Подлипки» зелёная территория с домиками, беседками, асфальтированными дорожками и спортплощадками; занятия проходят в переговорных, кабинетах и домиках.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.capacity
+  fact_type: program
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Вместимость смены «Подлипки» — ориентировочно 120–150 детей.'
+  client_safe_text: 'Вместимость смены «Подлипки» — ориентировочно 120–150 детей.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.pricing.base
+  fact_type: price
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Базовая стоимость смены «Подлипки» — 130 000 ₽.'
+  client_safe_text: 'Базовая стоимость смены «Подлипки» — 130 000 ₽.'
+  source_key: owner_google_doc:podlipki_2026
+  status: current
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+  structured_value:
+    amount: 130000
+    currency: RUB
+- fact_key: lvsh_podlipki_2026.availability
+  fact_type: availability
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'На дополнительную смену УНПК МФТИ «Подлипки» набор открыт. Место в группе нужного класса подтверждает менеджер.'
+  client_safe_text: 'На дополнительную смену УНПК МФТИ «Подлипки» набор открыт. Место в группе нужного класса подтверждает менеджер.'
+  source_key: owner_google_doc:podlipki_2026
+  status: current
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-15'
+  freshness_check_date: '2026-07-16'
+  structured_value:
+    enrollment_open: true
+- fact_key: processes_2026_06_10.unpk.camp_enrollment
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Смена УНПК в Менделеево распродана; можно записаться в лист ожидания. Дополнительная смена УНПК МФТИ «Подлипки» в Королёве пройдёт 16–26 августа 2026 года, набор открыт; место в группе нужного класса подтверждает менеджер.'
+  client_safe_text: 'Смена УНПК в Менделеево распродана; можно записаться в лист ожидания. Дополнительная смена УНПК МФТИ «Подлипки» в Королёве пройдёт 16–26 августа 2026 года, набор открыт; место в группе нужного класса подтверждает менеджер.'
+  source_key: owner_google_doc:podlipki_2026
+  status: current
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh
+  fact_type: camp_lvsh
+  brand: unpk
+  product: boarding_and_camps
+  fact_text: 'Постоянного проживания или интерната нет. Проживание есть в выездных школах УНПК: в Менделеево — по 2–3 человека в номере, на смене «Подлипки» — по 2 человека. Городские летние школы — дневные, без проживания.'
+  client_safe_text: 'Постоянного проживания или интерната нет. Проживание есть в выездных школах УНПК: в Менделеево — по 2–3 человека в номере, на смене «Подлипки» — по 2 человека. Городские летние школы — дневные, без проживания.'
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: false
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+- fact_key: lvsh_podlipki_2026.pricing.minimum_internal
+  fact_type: price
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Минимальная согласованная цена смены «Подлипки» — 114 000 ₽; только для решения менеджера.'
+  client_safe_text: ''
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: manager_handoff_only
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: true
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+  structured_value:
+    amount: 114000
+    currency: RUB
+    client_allowed: false
+- fact_key: lvsh_podlipki_2026.discounts.internal
+  fact_type: discount
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Внутренние варианты скидок для смены «Подлипки»: быстрая продажа 5%; индивидуально 5%, 10% или 15%. Решение принимает менеджер.'
+  client_safe_text: ''
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: manager_handoff_only
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: true
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+  structured_value:
+    fast_sale_percent: 5
+    individual_percent_options: [5, 10, 15]
+    client_allowed: false
+- fact_key: lvsh_podlipki_2026.do_not_promise.internal
+  fact_type: policy
+  brand: unpk
+  product: lvsh_podlipki_2026
+  fact_text: 'Не обещать точные место и время трансфера, конкретный кабинет или корпус, открытие 10 класса без достаточного набора, кондиционер или цену ниже согласованной без решения менеджера.'
+  client_safe_text: ''
+  source_key: owner_google_doc:podlipki_2026
+  status: verified
+  route_policy: manager_handoff_only
+  linked_open_question: podlipki_2026_owner_source
+  internal_only: true
+  valid_from: '2026-07-16'
+  valid_until: '2026-08-26'
+  freshness_check_date: '2026-07-16'
+  structured_value:
+    client_allowed: false
 structured_metadata_rules:
 - brand: unpk
   fact_key_prefix: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.
@@ -2028,7 +2310,15 @@ control_numbers:
   - '59000'
   - 41 800
   - 69 900
+  - '130000'
 source_files:
+  podlipki_2026_owner_source:
+    filename: podlipki_2026_owner_source.yaml
+    source_id: owner_google_doc:podlipki_2026
+    kind: owner_google_doc_transcription
+    brand: unpk
+    title: База знаний КЦ — дополнительная смена УНПК МФТИ «Подлипки»
+    url: https://docs.google.com/document/d/1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo/edit?tab=t.gnwj6o2a1spz
   gold_answers_v3:
     filename: gold_answers_v3.yaml
     source_id: dmitry_approved:gold_answers_v3_2026_05_22
@@ -2043,6 +2333,8 @@ required_source_files:
 - facts/bot_policy.yaml
 - facts/facts_internal_only.yaml
 - facts/gold_answers_v3.yaml
+- facts/podlipki_2026_owner_source.yaml
+- facts/fact_scope_axes.jsonl
 required_yaml_paths:
 - file: facts/facts_for_bot_FOTON.yaml
   path: contacts_foton.vk

@@ -1283,7 +1283,7 @@ _FACT_SELECT_PRODUCT_KEYS = (
 
 _FACT_SELECT_CANONICAL_BRANDS = frozenset(("foton", "unpk"))
 _FACT_SELECT_CANONICAL_FORMATS = frozenset(("online", "offline"))
-_FACT_SELECT_CANONICAL_VENUES = frozenset(("moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "online", "unspecified"))
+_FACT_SELECT_CANONICAL_VENUES = frozenset(("moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "lvsh_podlipki", "online", "unspecified"))
 _FACT_SELECT_CANONICAL_PROGRAM_KINDS = frozenset(("regular", "olympiad", "camp_city", "camp_lvsh", "any"))
 
 
@@ -1438,13 +1438,13 @@ def _fact_select_product_axis_conflicts(product: Mapping[str, str]) -> tuple[str
         conflicts.append("invalid_venue")
     if program_kind and program_kind not in _FACT_SELECT_CANONICAL_PROGRAM_KINDS:
         conflicts.append("invalid_program_kind")
-    if format_axis == "online" and venue in {"moscow_regular", "dolgoprudny", "lvsh_mendeleevo"}:
+    if format_axis == "online" and venue in {"moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "lvsh_podlipki"}:
         conflicts.append("format_venue_conflict")
     if format_axis == "offline" and venue == "online":
         conflicts.append("format_venue_conflict")
-    if program_kind == "camp_lvsh" and venue and venue not in {"lvsh_mendeleevo", "unspecified"}:
+    if program_kind == "camp_lvsh" and venue and venue not in {"lvsh_mendeleevo", "lvsh_podlipki", "unspecified"}:
         conflicts.append("program_venue_conflict")
-    if program_kind in {"regular", "olympiad"} and venue == "lvsh_mendeleevo":
+    if program_kind in {"regular", "olympiad"} and venue in {"lvsh_mendeleevo", "lvsh_podlipki"}:
         conflicts.append("program_venue_conflict")
     return tuple(dict.fromkeys(conflicts))
 
@@ -2205,11 +2205,11 @@ def build_direct_path_llm_retriever_prompt(
     if venue_scope:
         requested_scope_instruction = (
             "\nДополнительно верни requested_scope — какую площадку/инстанс по смыслу спрашивает клиент в текущем подвопросе. "
-            "Допустимые значения: moscow_regular, dolgoprudny, lvsh_mendeleevo, online, unspecified. "
+            "Допустимые значения: moscow_regular, dolgoprudny, lvsh_mendeleevo, lvsh_podlipki, online, unspecified. "
             "Если клиент не уточнил площадку или вопрос общий, верни unspecified. Это понимание текущего вопроса; "
             "не выводи requested_scope из списка фактов.\n"
         )
-        json_schema = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified","exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+        json_schema = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|lvsh_podlipki|online|unspecified","exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
     if need_declaration:
         driver_line = (
             "В этом режиме сам по смыслу определи, какие факты нужны для ответа; "
@@ -2231,11 +2231,11 @@ def build_direct_path_llm_retriever_prompt(
                 "requested_product_confidence — число 0..1; если не уверен в продукте/классе/формате/площадке, снизь confidence. "
                 "Поля brand, format, venue, program_kind заполняй только каноническими значениями: "
                 "brand=foton|unpk; format=online|offline; "
-                "venue=moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified; "
+                "venue=moscow_regular|dolgoprudny|lvsh_mendeleevo|lvsh_podlipki|online|unspecified; "
                 "program_kind=regular|olympiad|camp_city|camp_lvsh|any.\n"
             )
         if venue_scope:
-            prefix = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified",'
+            prefix = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|lvsh_podlipki|online|unspecified",'
         else:
             prefix = "{"
         product_schema = (

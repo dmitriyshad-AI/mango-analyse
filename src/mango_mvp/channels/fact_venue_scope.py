@@ -6,7 +6,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 FACT_VENUE_SCOPE_ENV = "TELEGRAM_FACT_VENUE_SCOPE"
 
-VENUE_SCOPE_VALUES = frozenset({"moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "online"})
+VENUE_SCOPE_VALUES = frozenset({"moscow_regular", "dolgoprudny", "lvsh_mendeleevo", "lvsh_podlipki", "online"})
 VENUE_SCOPE_ANY = "any"
 VENUE_SCOPE_UNSPECIFIED = "unspecified"
 PROGRAM_KIND_VALUES = frozenset({"regular", "camp_city", "camp_lvsh", "olympiad"})
@@ -15,6 +15,7 @@ VENUE_SCOPE_LABELS: Mapping[str, str] = {
     "moscow_regular": "Москва/регулярные очные занятия",
     "dolgoprudny": "Долгопрудный",
     "lvsh_mendeleevo": "ЛВШ Менделеево",
+    "lvsh_podlipki": "ЛВШ Подлипки",
     "online": "онлайн",
     "any": "любая площадка",
     "unspecified": "не уточнено",
@@ -55,10 +56,10 @@ def normalize_requested_scope(value: Any) -> str:
         "regular_offline": "moscow_regular",
         "dolgoprudnyi": "dolgoprudny",
         "долгопрудный": "dolgoprudny",
-        "lvsh": "lvsh_mendeleevo",
-        "лвш": "lvsh_mendeleevo",
         "mendeleevo": "lvsh_mendeleevo",
         "менделеево": "lvsh_mendeleevo",
+        "podlipki": "lvsh_podlipki",
+        "подлипки": "lvsh_podlipki",
         "онлайн": "online",
         "not_specified": "unspecified",
         "unknown": "unspecified",

@@ -1,19 +1,19 @@
 {
   "bot_pack_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_bot_pack",
   "build_result": {
-    "approval_queue_items": 1053,
+    "approval_queue_items": 1070,
     "blocking_failures": [],
-    "client_allowed_facts": 699,
+    "client_allowed_facts": 713,
     "control_numbers_missing": [],
-    "facts_total": 1075,
+    "facts_total": 1092,
     "handoff_out_dir": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_handoff_for_claude_and_team",
     "out_dir": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1",
     "quality_passed": true,
     "run_id": "kb_release_20260612_v6_7_staging_r4_1",
     "snapshot_path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
-    "source_registry_total": 11
+    "source_registry_total": 12
   },
-  "created_at": "2026-06-30T16:29:41.252570+00:00",
+  "created_at": "2026-07-24T09:48:47.972019+00:00",
   "employee_pack_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_employee_pack",
   "handoff_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_handoff_for_claude_and_team",
   "pack_result": {
@@ -42,7 +42,7 @@
       "source_registry.json"
     ],
     "bot_pack": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_bot_pack",
-    "client_safe_facts": 699,
+    "client_safe_facts": 713,
     "employee_files": [
       "BRAND_ISOLATION.md",
       "CLIENT_SAFE_FACTS_FOTON.csv",
@@ -60,7 +60,7 @@
       "manifest.json"
     ],
     "employee_pack": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_employee_pack",
-    "facts_total": 1075,
+    "facts_total": 1092,
     "schema_version": "kb_distribution_packs_v1"
   },
   "release_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1",

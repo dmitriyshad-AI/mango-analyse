@@ -39,7 +39,8 @@
       "37 000",
       "59000",
       "41 800",
-      "69 900"
+      "69 900",
+      "130000"
     ],
     "found": [
       "44600",
@@ -61,11 +62,12 @@
       "37 000",
       "59000",
       "41 800",
-      "69 900"
+      "69 900",
+      "130000"
     ],
     "missing": []
   },
-  "created_at": "2026-06-30T16:29:36.782144+00:00",
+  "created_at": "2026-07-24T09:48:43.172101+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -178,11 +180,11 @@
     "approval_queue_by_type": {
       "availability": 1,
       "camp_city": 17,
-      "camp_lvsh": 124,
+      "camp_lvsh": 140,
       "camp_zvsh": 3,
       "contact": 14,
       "contacts": 3,
-      "deadline": 133,
+      "deadline": 134,
       "discount": 68,
       "documents": 67,
       "format": 6,
@@ -200,9 +202,9 @@
       "tax": 40,
       "teacher": 13
     },
-    "approval_queue_items": 1053,
-    "client_allowed_facts": 699,
-    "facts_total": 1075,
-    "source_registry_total": 11
+    "approval_queue_items": 1070,
+    "client_allowed_facts": 713,
+    "facts_total": 1092,
+    "source_registry_total": 12
   }
 }

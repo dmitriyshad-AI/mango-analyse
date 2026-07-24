@@ -190,6 +190,7 @@ def apply_release_manifest(manifest: Mapping[str, Any]) -> None:
         if isinstance(item, Mapping)
     ]
     kb_builder.MANIFEST_STRUCTURED_METADATA_RULES = tuple(structured_rules)
+    kb_builder.MANIFEST_FACT_SCOPE_AXES_FILE = str(manifest.get("fact_scope_axes_file") or "")
 
 
 def load_gold_answers_v3(source_root: Path | None = None) -> dict[str, Any]:

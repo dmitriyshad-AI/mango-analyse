@@ -5,4 +5,4 @@
 Сборка не запускала ASR, Resolve+Analyze, live write в AMO/CRM/Tallanto и не меняла `stable_runtime`.
 
 Quality passed: `True`.
-Facts: `1075`.
+Facts: `1092`.

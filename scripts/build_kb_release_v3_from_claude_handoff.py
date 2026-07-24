@@ -155,6 +155,7 @@ FORBIDDEN_KEYS = {
 CLIENT_SAFE_PATH_MARKERS = ("refund_presale_policy",)
 MANIFEST_MANUAL_DECISION_FACT_OVERRIDES: tuple[Mapping[str, Any], ...] = ()
 MANIFEST_STRUCTURED_METADATA_RULES: tuple[Mapping[str, Any], ...] = ()
+MANIFEST_FACT_SCOPE_AXES_FILE = ""
 INTERNAL_PATH_MARKERS = {
     "legal_entities",
     "legal_entities_full_map",
@@ -356,6 +357,7 @@ def build_kb_release_v3(
     facts = attach_source_details(dedupe_facts(facts), source_lookup=source_lookup)
     facts = ensure_fact_refresh_dates(facts)
     facts = enrich_phase2_structured_metadata(facts)
+    facts = apply_fact_scope_axes(facts, handoff_root=handoff_root)
     facts = sorted(facts, key=lambda item: (str(item.get("brand")), str(item.get("product")), str(item.get("fact_key"))))
 
     approval_queue = build_approval_queue_v3(facts)
@@ -424,9 +426,9 @@ def build_source_registry(handoff_root: Path) -> list[dict[str, Any]]:
                 "schema_version": SOURCE_SCHEMA_VERSION,
                 "source_id": meta["source_id"],
                 "source_kind": meta["kind"],
-                "title": f"{meta['filename']} (Claude layer v3)",
+                "title": str(meta.get("title") or f"{meta['filename']} (Claude layer v3)"),
                 "path": str(path),
-                "url": "",
+                "url": str(meta.get("url") or ""),
                 "sha256": sha,
                 "source_sha256": sha,
                 "brand": meta["brand"],
@@ -974,6 +976,9 @@ def make_manual_fact(
     structured_value: Mapping[str, Any] | None = None,
     internal_only: bool = False,
     requires_manager_confirmation: bool | None = None,
+    valid_from: str = "",
+    valid_until: str = "",
+    freshness_check_date: str = "",
 ) -> dict[str, Any]:
     clean_brand = normalize_brand(brand)
     freshness = normalize_freshness(status)
@@ -992,7 +997,12 @@ def make_manual_fact(
         allowed = False
     structured = dict(structured_value or {})
     structured.setdefault("path", fact_key)
-    structured["freshness_check_date"] = FRESHNESS_CHECK_DATE
+    fact_freshness_date = freshness_check_date or FRESHNESS_CHECK_DATE
+    structured["freshness_check_date"] = fact_freshness_date
+    if valid_from:
+        structured["valid_from"] = valid_from
+    if valid_until:
+        structured["valid_until"] = valid_until
     fact_id = f"fact:v3:{clean_brand}:{safe_id(fact_key)}:{sha256_text(f'{fact_key}|{fact_text}')[:10]}"
     return {
         "schema_version": FACT_SCHEMA_VERSION,
@@ -1021,9 +1031,9 @@ def make_manual_fact(
         "freshness_status": freshness,
         "verification_status": normalize_status(status),
         "structured_value": structured,
-        "valid_from": "",
-        "valid_until": "",
-        "freshness_check_date": FRESHNESS_CHECK_DATE,
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "freshness_check_date": fact_freshness_date,
         "verified_by": "",
         "verified_at": "",
         "owner_role": owner_role_for_fact(tuple(fact_key.split(".")), fact_type),
@@ -1945,6 +1955,29 @@ def enrich_phase2_structured_metadata(facts: Sequence[Mapping[str, Any]]) -> lis
         if applies_to:
             structured["applies_to"] = applies_to
             item["structured_value"] = structured
+        result.append(item)
+    return result
+
+
+def apply_fact_scope_axes(
+    facts: Sequence[Mapping[str, Any]], *, handoff_root: Path
+) -> list[dict[str, Any]]:
+    if not MANIFEST_FACT_SCOPE_AXES_FILE:
+        return [dict(fact) for fact in facts]
+    path = handoff_root / MANIFEST_FACT_SCOPE_AXES_FILE
+    axes_by_key: dict[tuple[str, str], tuple[str, str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        key = (str(item.get("brand") or ""), str(item.get("fact_key") or ""))
+        axes_by_key[key] = (str(item.get("venue") or "any"), str(item.get("program_kind") or "any"))
+    result: list[dict[str, Any]] = []
+    for fact in facts:
+        item = dict(fact)
+        axes = axes_by_key.get((str(item.get("brand") or ""), str(item.get("fact_key") or "")))
+        if axes:
+            item["venue"], item["program_kind"] = axes
         result.append(item)
     return result
 

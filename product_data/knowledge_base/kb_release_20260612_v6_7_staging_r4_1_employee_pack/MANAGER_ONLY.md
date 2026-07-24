@@ -19,15 +19,15 @@
 - ЛВШ: `26`
 - материнский капитал: `24`
 - рассрочка и варианты оплаты: `20`
+- цены: `18`
 - возвраты: `18`
-- цены: `17`
 - даты и сроки: `17`
 - параметры занятий: `14`
 - промокоды: `13`
 - преподаватели: `11`
 - налоговый вычет: `10`
-- правила ответа: `9`
-- скидки: `9`
+- правила ответа: `10`
+- скидки: `10`
 - адреса: `6`
 - интенсивы: `2`
 - городской лагерь: `1`
@@ -103,6 +103,7 @@
 - `Фотон` Фотон: для ЛВШ Менделеево используется динамическая система раннего бронирования; актуальную ступень скидки проверяет менеджер. Причина: `manager_only_route`
 - `внутреннее` Внутренне: скидка — -10 000 ₽. Причина: `internal_only, invalid_client_brand, manager_only_route, not_client_allowed_status:removed_2026_05_19, promocode_removed_from_bot`
 - `внутреннее` Внутренне: скидка — -20 000 ₽. Причина: `internal_only, invalid_client_brand, manager_only_route, not_client_allowed_status:removed_2026_05_19, promocode_removed_from_bot`
+- `УНПК МФТИ` Внутренние варианты скидок для смены «Подлипки»: быстрая продажа 5%; индивидуально 5%, 10% или 15%. Решение принимает менеджер. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: 1 , name, название — ООО «ЦДПО Фотон». Причина: `global_forbidden:ООО «ЦДПО, internal_only, manager_only_route`
 - `Фотон` Фотон: receipt , over 18 — Квитанция с НДС 5%. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: receipt , under 18 — QR + Квитанция без НДС. Причина: `internal_only, manager_only_route`
@@ -154,4 +155,3 @@
 - `УНПК МФТИ` УНПК: grants , 2 — Приём оплаты маткапиталом. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: grants , 3 — Договоры на платные образовательные услуги. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ano dpo unpk mfti , holder — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: ano dpo unpk mfti , number — Л035-01255-50/01195871. Причина: `global_forbidden:Л035, internal_only, manager_only_route`

@@ -9,7 +9,11 @@ from mango_mvp.channels.output_verification_floor import (
     AnswerContract,
     verify_output as verify_dialogue_contract_output,
 )
-from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV, venue_scope_enabled
+from mango_mvp.channels.fact_venue_scope import (
+    FACT_VENUE_SCOPE_ENV,
+    normalize_requested_scope,
+    venue_scope_enabled,
+)
 from mango_mvp.channels.subscription_llm import LLM_RETRIEVE_ENV
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_context_fact_pack,
@@ -90,6 +94,12 @@ def test_fact_venue_scope_profile_default_on_and_explicit_override(monkeypatch) 
     assert subscription_llm.FACT_VENUE_SCOPE_ENV == FACT_VENUE_SCOPE_ENV
 
 
+def test_fact_venue_scope_distinguishes_podlipki_from_mendeleevo() -> None:
+    assert normalize_requested_scope("Подлипки") == "lvsh_podlipki"
+    assert normalize_requested_scope("Менделеево") == "lvsh_mendeleevo"
+    assert normalize_requested_scope("ЛВШ") == "unspecified"
+
+
 def test_fact_venue_scope_prompt_requests_scope_only_when_enabled() -> None:
     candidate = _fact(
         "unpk.moscow.address",
@@ -112,6 +122,7 @@ def test_fact_venue_scope_prompt_requests_scope_only_when_enabled() -> None:
     assert "venue=moscow_regular" not in off_prompt
     assert "requested_scope" in on_prompt
     assert "venue=moscow_regular" in on_prompt
+    assert "lvsh_podlipki" in on_prompt
     assert "не выводи requested_scope из списка фактов" in on_prompt
 
 
@@ -372,17 +383,18 @@ def test_r4_1_live_snapshot_has_structural_venue_scope_markup() -> None:
         if fact.get("program_kind"):
             program_counts[str(fact["program_kind"])] = program_counts.get(str(fact["program_kind"]), 0) + 1
 
-    assert len(facts) == 1075
+    assert len(facts) == 1092
     assert venue_counts == {
-        "any": 90,
+        "any": 91,
         "moscow_regular": 97,
         "online": 78,
-        "lvsh_mendeleevo": 119,
+        "lvsh_mendeleevo": 118,
+        "lvsh_podlipki": 17,
         "dolgoprudny": 16,
     }
     assert program_counts == {
         "regular": 171,
-        "camp_lvsh": 117,
+        "camp_lvsh": 134,
         "camp_city": 45,
         "any": 37,
         "olympiad": 30,

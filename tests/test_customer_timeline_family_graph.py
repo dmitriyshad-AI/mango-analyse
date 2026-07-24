@@ -96,7 +96,7 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path) -
     assert report["multi_customer_families"] == 1
 
 
-@pytest.mark.parametrize("match_status", ("ambiguous", "inferred"))
+@pytest.mark.parametrize("match_status", ("ambiguous", "inferred", "needs_review"))
 def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_status: str) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:risky", phone="+79000000021")

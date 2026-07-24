@@ -29,8 +29,10 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiPairCustomerResolver,
     WappiProfileSpec,
     assert_readonly_wappi_client,
+    _build_safe_amo_talk_client,
     collect_wappi_widget_links,
     close_resolved_wappi_pending_conflicts,
+    confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
     hydrate_wappi_widget_contacts,
     is_personal_wappi_dialog,
@@ -3387,6 +3389,157 @@ def test_wappi_widget_event_sequence_rejects_one_talk_for_two_chats(tmp_path: Pa
     assert report["candidates"] == 0
     assert report["cross_chat_ambiguous"] == 2
     assert all(item["status"] == "missing" for item in load_wappi_widget_links(link_db).values())
+
+
+def seed_amo_talk_candidate(
+    link_db: Path,
+    *,
+    chat_id: str = "123456",
+    talk_id: str = "3003",
+    contact_id: str = "2002",
+    lead_id: str = "1001",
+) -> None:
+    client = WappiPhase1Client(
+        WappiClientConfig(base_url="https://wappi.pro", telegram_token="token"),
+        transport=lambda **kwargs: (
+            {"dialogs": [{"id": chat_id, "type": "user", "last_timestamp": 1}]}
+            if "/chats/get" in str(kwargs["url"])
+            else {"contact": None, "leads": []}
+        ),
+    )
+    collect_wappi_widget_links(
+        client=client,
+        profiles=(WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),),
+        runtime_profiles={("telegram", "p-tg"): {"uuid": "p-tg", "platform": "tg"}},
+        crm_id="crm-id",
+        db_path=link_db,
+        limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=0, request_limit_total=10),
+    )
+    with sqlite3.connect(link_db) as con:
+        con.execute(
+            """
+            UPDATE wappi_amo_links
+            SET status='candidate', contact_id=?, lead_ids_json=?,
+                resolution_source='amo_event_sequence_candidate', amo_talk_id=?
+            WHERE chat_id=?
+            """,
+            (contact_id, json.dumps((lead_id,)), talk_id, chat_id),
+        )
+
+
+class FakeAmoTalkClient:
+    def __init__(self, payload: Mapping[str, Any]) -> None:
+        self.payload = payload
+        self.paths: list[str] = []
+
+    def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
+        assert params == {}
+        assert limit == 1
+        self.paths.append(path)
+        return self.payload
+
+
+def amo_talk_payload(*, talk_id: str = "3003", contact_id: str = "2002", lead_id: str = "1001") -> Mapping[str, Any]:
+    return {
+        "talk_id": int(talk_id),
+        "chat_id": "88278e98-2b8d-4ae2-a5f0-bfab511cd621",
+        "contact_id": int(contact_id),
+        "entity_id": int(lead_id),
+        "entity_type": "lead",
+        "_embedded": {"contacts": [{"id": int(contact_id)}], "leads": [{"id": int(lead_id)}]},
+    }
+
+
+def test_amo_talk_exact_confirmation_is_idempotent(tmp_path: Path) -> None:
+    link_db = tmp_path / "wappi_amo_links.sqlite"
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(timeline_db, tmp_path, lead_id="1001", contact_id="2002")
+    seed_amo_talk_candidate(link_db)
+    client = FakeAmoTalkClient(amo_talk_payload())
+
+    first = confirm_wappi_widget_candidates_from_amo_talks(widget_link_db=link_db, amo_client=client)
+    second = confirm_wappi_widget_candidates_from_amo_talks(widget_link_db=link_db, amo_client=client)
+
+    assert first == {
+        "candidates": 1,
+        "resolved": 1,
+        "identity_conflict": 0,
+        "cross_chat_conflict": 0,
+        "invalid_response": 0,
+        "lookup_error": 0,
+    }
+    assert second["candidates"] == 0
+    assert client.paths == ["/api/v4/talks/3003"]
+    link = load_wappi_widget_links(link_db)[("telegram", "p-tg", "123456")]
+    assert link["status"] == "resolved"
+    assert link["resolution_source"] == "amo_talk_authoritative"
+    with sqlite3.connect(link_db) as con:
+        assert con.execute("SELECT amo_talk_id, amo_chat_id FROM wappi_amo_links").fetchone() == (
+            "3003",
+            "88278e98-2b8d-4ae2-a5f0-bfab511cd621",
+        )
+    resolution = WappiPairCustomerResolver.from_store(
+        timeline_db,
+        tenant_id="foton",
+        pairs={},
+        widget_links=load_wappi_widget_links(link_db),
+    ).resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+    )
+    assert resolution.customer_id == customer_id
+    assert resolution.resolution_source == "amo_talk_authoritative"
+
+
+def test_amo_talk_identity_conflict_stays_candidate(tmp_path: Path) -> None:
+    link_db = tmp_path / "wappi_amo_links.sqlite"
+    seed_amo_talk_candidate(link_db)
+
+    report = confirm_wappi_widget_candidates_from_amo_talks(
+        widget_link_db=link_db,
+        amo_client=FakeAmoTalkClient(amo_talk_payload(contact_id="9009")),
+    )
+
+    assert report["identity_conflict"] == 1
+    assert load_wappi_widget_links(link_db)[("telegram", "p-tg", "123456")]["status"] == "conflict"
+
+
+def test_amo_talk_null_or_malformed_response_stays_candidate(tmp_path: Path) -> None:
+    link_db = tmp_path / "wappi_amo_links.sqlite"
+    seed_amo_talk_candidate(link_db)
+
+    report = confirm_wappi_widget_candidates_from_amo_talks(
+        widget_link_db=link_db,
+        amo_client=FakeAmoTalkClient({}),
+    )
+
+    assert report["invalid_response"] == 1
+    assert load_wappi_widget_links(link_db)[("telegram", "p-tg", "123456")]["status"] == "candidate"
+
+
+def test_amo_talk_reused_by_two_wappi_chats_fails_closed(tmp_path: Path) -> None:
+    link_db = tmp_path / "wappi_amo_links.sqlite"
+    seed_amo_talk_candidate(link_db, chat_id="111111")
+    seed_amo_talk_candidate(link_db, chat_id="222222")
+    client = FakeAmoTalkClient(amo_talk_payload())
+
+    report = confirm_wappi_widget_candidates_from_amo_talks(widget_link_db=link_db, amo_client=client)
+
+    assert report["cross_chat_conflict"] == 2
+    assert client.paths == []
+    assert all(item["status"] == "conflict" for item in load_wappi_widget_links(link_db).values())
+
+
+def test_amo_talk_client_requires_https_ai_office_proxy(tmp_path: Path) -> None:
+    good = tmp_path / "good.env"
+    good.write_text("CONNECTOR_URL=https://api.fotonai.online/api/mcp/foton-crm-readonly\nBEARER_TOKEN=x\n")
+    assert _build_safe_amo_talk_client(good).config.connector_url.startswith("https://api.fotonai.online/")
+
+    bad = tmp_path / "bad.env"
+    bad.write_text("CONNECTOR_URL=https://educent.amocrm.ru/api/mcp\nBEARER_TOKEN=x\n")
+    with pytest.raises(ValueError, match="HTTPS api.fotonai.online"):
+        _build_safe_amo_talk_client(bad)
 
 
 def test_wappi_widget_map_rechecks_activity_and_quarantines_changed_contact(tmp_path: Path) -> None:

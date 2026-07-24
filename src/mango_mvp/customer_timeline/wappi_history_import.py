@@ -103,6 +103,7 @@ RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY = {
     "timeline_identity": IdentityMatchClass.STRONG_UNIQUE,
     "amo_auto_resolver": IdentityMatchClass.STRONG_UNIQUE,
     "wappi_amo_widget": IdentityMatchClass.STRONG_UNIQUE,
+    "amo_talk_authoritative": IdentityMatchClass.STRONG_UNIQUE,
     "wappi_provisional": IdentityMatchClass.INFERRED,
 }
 WAPPI_EXACT_AMO_AUTHORITIES = {"wappi_amo_widget"}
@@ -279,6 +280,7 @@ WAPPI_TECHNICAL_LINK_STATUSES = {
     "lookup_error",
     "request_limit",
 }
+WAPPI_EXACT_AMO_AUTHORITIES = {"wappi_amo_widget", "amo_talk_authoritative"}
 
 
 def _ensure_wappi_widget_link_schema(con: sqlite3.Connection) -> None:
@@ -979,6 +981,118 @@ def enrich_wappi_widget_links_from_timeline_amo_events(
     }
 
 
+def _amo_talk_identity(payload: Mapping[str, Any], *, expected_talk_id: str) -> tuple[str, str, str, str] | None:
+    talk_id, contact_id, chat_id, entity_id = (
+        str(payload.get(name) or "").strip()
+        for name in ("talk_id", "contact_id", "chat_id", "entity_id")
+    )
+    if (
+        talk_id != expected_talk_id
+        or not all(value.isdigit() and int(value) > 0 for value in (talk_id, contact_id, entity_id))
+        or not chat_id
+        or str(payload.get("entity_type") or "") != "lead"
+    ):
+        return None
+    embedded = payload.get("_embedded") if isinstance(payload.get("_embedded"), Mapping) else {}
+    embedded_ids = lambda name: {  # noqa: E731 - local one-use validator keeps the gate compact.
+        str(item.get("id") or "").strip() for item in embedded.get(name) or () if isinstance(item, Mapping)
+    }
+    if embedded_ids("contacts") != {contact_id} or embedded_ids("leads") != {entity_id}:
+        return None
+    return talk_id, chat_id, contact_id, entity_id
+
+
+def confirm_wappi_widget_candidates_from_amo_talks(*, widget_link_db: Path, amo_client: Any) -> Mapping[str, int]:
+    """Promote timing candidates only after exact read-only AMO Talk confirmation."""
+    counts: Counter[str] = Counter()
+    with sqlite3.connect(widget_link_db) as con:
+        _ensure_wappi_widget_link_schema(con)
+        candidates = con.execute(
+            "SELECT channel, profile_id, chat_id, contact_id, lead_ids_json, amo_talk_id "
+            "FROM wappi_amo_links WHERE status='candidate' "
+            "AND resolution_source='amo_event_sequence_candidate' AND amo_talk_id!=''"
+        ).fetchall()
+        talk_owners: dict[str, int] = Counter(str(row[5]) for row in candidates)
+
+        def mark_conflict(channel: str, profile_id: str, chat_id: str, talk_id: str) -> None:
+            con.execute(
+                "UPDATE wappi_amo_links SET status='conflict', checked_at=?, "
+                "resolution_source='amo_talk_conflict', response_sha256=? "
+                "WHERE channel=? AND profile_id=? AND chat_id=? AND status='candidate' AND amo_talk_id=?",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    stable_digest({"status": "conflict", "talk_id": talk_id}),
+                    channel,
+                    profile_id,
+                    chat_id,
+                    talk_id,
+                ),
+            )
+
+        for channel, profile_id, wappi_chat_id, candidate_contact, candidate_leads_json, talk_id in candidates:
+            talk_id = str(talk_id)
+            if talk_owners[talk_id] != 1:
+                mark_conflict(str(channel), str(profile_id), str(wappi_chat_id), talk_id)
+                counts["cross_chat_conflict"] += 1
+                continue
+            try:
+                payload = amo_client.amo_api_get(path=f"/api/v4/talks/{talk_id}", params={}, limit=1)
+            except Exception:  # noqa: BLE001 - fail closed; no secret-bearing exception is persisted.
+                counts["lookup_error"] += 1
+                continue
+            if not isinstance(payload, Mapping):
+                counts["invalid_response"] += 1
+                continue
+            identity = _amo_talk_identity(payload, expected_talk_id=talk_id)
+            if identity is None:
+                counts["invalid_response"] += 1
+                continue
+            _confirmed_talk_id, amo_chat_id, contact_id, lead_id = identity
+            try:
+                raw_candidate_leads = json.loads(str(candidate_leads_json or "[]"))
+                candidate_leads = {str(item) for item in raw_candidate_leads}
+            except (TypeError, json.JSONDecodeError):
+                counts["invalid_response"] += 1
+                continue
+            if str(candidate_contact or "") != contact_id or candidate_leads != {lead_id}:
+                mark_conflict(str(channel), str(profile_id), str(wappi_chat_id), talk_id)
+                counts["identity_conflict"] += 1
+                continue
+            safe_result = {"status": "resolved", "contact_id": contact_id, "lead_ids": (lead_id,),
+                           "talk_id": talk_id, "chat_id": amo_chat_id}
+            con.execute(
+                "UPDATE wappi_amo_links SET contact_id=?, lead_ids_json=?, status='resolved', checked_at=?, "
+                "response_sha256=?, resolution_source='amo_talk_authoritative', amo_chat_id=? "
+                "WHERE channel=? AND profile_id=? AND chat_id=? AND status='candidate' AND amo_talk_id=?",
+                (
+                    contact_id,
+                    json.dumps((lead_id,), separators=(",", ":")),
+                    datetime.now(timezone.utc).isoformat(),
+                    stable_digest(safe_result),
+                    amo_chat_id,
+                    channel,
+                    profile_id,
+                    wappi_chat_id,
+                    talk_id,
+                ),
+            )
+            counts["resolved"] += 1
+        con.commit()
+    return {name: len(candidates) if name == "candidates" else counts[name] for name in (
+        "candidates", "resolved", "identity_conflict", "cross_chat_conflict", "invalid_response", "lookup_error"
+    )}
+
+
+def _build_safe_amo_talk_client(env_file: Path) -> Any:
+    from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, read_mcp_env
+
+    config = read_mcp_env(env_file)
+    parsed = url_parse.urlparse(config.connector_url)
+    if parsed.scheme != "https" or (parsed.hostname or "").casefold() != "api.fotonai.online":
+        raise ValueError("AMO Talk reads require the HTTPS api.fotonai.online proxy")
+    return AmoMcpClient(config)
+
+
 def hydrate_wappi_widget_contacts(
     *,
     timeline_db: Path,
@@ -1432,6 +1546,7 @@ def run_wappi_history_import(
     *,
     client: WappiHistoryClient | None = None,
     amo_auto_resolver: AmoAutoResolver | None = None,
+    amo_talk_client: Any = None,
 ) -> Mapping[str, Any]:
     code_identity_start = dict(build_draft_loop_code_identity())
     code_root = Path(str(code_identity_start.get("code_root") or Path(__file__).resolve().parents[3]))
@@ -1480,6 +1595,7 @@ def run_wappi_history_import(
         )
     widget_link_report: Mapping[str, Any] = {}
     widget_event_link_report: Mapping[str, Any] = {}
+    widget_talk_link_report: Mapping[str, Any] = {}
     widget_contact_hydrate_report: Mapping[str, Any] = {}
     if config.widget_link_db is not None:
         if not config.refresh_widget_links and not config.widget_link_db.exists():
@@ -1552,6 +1668,23 @@ def run_wappi_history_import(
                 widget_link_db=config.widget_link_db,
                 tenant_id=config.tenant_id,
             )
+            if amo_talk_client is not None or config.amo_mcp_env_file is not None:
+                try:
+                    talk_client = amo_talk_client or (
+                        _build_safe_amo_talk_client(config.amo_mcp_env_file)
+                        if config.amo_mcp_env_file is not None
+                        else None
+                    )
+                    widget_talk_link_report = (
+                        confirm_wappi_widget_candidates_from_amo_talks(
+                            widget_link_db=config.widget_link_db,
+                            amo_client=talk_client,
+                        )
+                        if talk_client is not None
+                        else {"setup_unavailable": 1}
+                    )
+                except Exception:  # noqa: BLE001 - report only a safe class, never connector secrets.
+                    widget_talk_link_report = {"setup_error": 1}
     widget_links = load_wappi_widget_links(config.widget_link_db)
     if config.apply and widget_links and not widget_setup_errors:
         widget_contact_hydrate_report = hydrate_wappi_widget_contacts(
@@ -1934,6 +2067,7 @@ def run_wappi_history_import(
             "amo_widget_link_map": widget_link_report,
             "amo_widget_contact_hydrate": widget_contact_hydrate_report,
             "amo_event_sequence_link_map": widget_event_link_report,
+            "amo_talk_authoritative_link_map": widget_talk_link_report,
             "amo_widget_map_prime": widget_prime_report,
             "message_identity_prime": message_identity_prime_report,
             "provisional_wappi_prime": provisional_prime_report,
@@ -2707,7 +2841,7 @@ class WappiPairCustomerResolver:
         lead_ids: Sequence[str],
         resolution_source: str = "wappi_amo_widget",
     ) -> WappiChatResolution:
-        source = "wappi_amo_widget"
+        source = resolution_source if resolution_source in WAPPI_EXACT_AMO_AUTHORITIES else "wappi_amo_widget"
         match_key = "wappi_widget_contact"
         contact_owners = set(self._local_identity_customers.get(("amo_contact_id", contact_id), ()))
         lead_owner_sets = tuple(
@@ -2849,7 +2983,7 @@ class WappiPairCustomerResolver:
             (profile.source_system, profile.profile_id, chat_id),
             (),
         )
-        if resolution.resolution_source == "wappi_amo_widget" and (
+        if resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES and (
             not exact_owners or exact_owners == (resolution.customer_id,)
         ):
             return resolution
@@ -3280,7 +3414,7 @@ def fetch_wappi_history_records(
                 stats.personal_chats += 1
                 if resolution.resolved and resolution.resolution_source in {
                     "wappi_amo_widget",
-                    "amo_event_sequence",
+                    "amo_talk_authoritative",
                 }:
                     stats.widget_resolved_chats += 1
                 else:
@@ -3309,7 +3443,7 @@ def fetch_wappi_history_records(
                 if resolution.resolved:
                     if resolution.resolution_source == "amo_auto_resolver":
                         stats.linked_by_amo_auto += 1
-                    elif resolution.resolution_source == "wappi_amo_widget":
+                    elif resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES:
                         stats.linked_by_amo_widget += 1
                     elif resolution.resolution_source == "amo_event_sequence":
                         stats.linked_by_amo_event_sequence += 1
@@ -3831,8 +3965,8 @@ def load_existing_unmatched_wappi_records(
             existing_customer = str(row["customer_id"] or "").strip()
             existing_authority = str(row["identity_authority"] or "").strip()
             exact_override = (
-                resolution.resolution_source == "wappi_amo_widget"
-                and existing_authority != "wappi_amo_widget"
+                resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES
+                and existing_authority not in WAPPI_EXACT_AMO_AUTHORITIES
             )
             if existing_customer and not bool(row["provisional"]) and not exact_override:
                 continue

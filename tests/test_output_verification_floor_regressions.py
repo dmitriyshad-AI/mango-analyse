@@ -971,7 +971,7 @@ def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_l
                 "active": True,
                 "codes": ["refund"],
                 "primary_risk": "refund",
-                "had_hard_p0_claim": True,
+                "had_hard_p0_claim": False,
             }
         },
     }

@@ -324,7 +324,7 @@ def test_answer_safety_presale_refund_latch_does_not_leak_to_neutral_followup() 
                     "active": True,
                     "codes": ["refund"],
                     "primary_risk": "refund",
-                    "had_hard_p0_claim": True,
+                    "had_hard_p0_claim": False,
                 }
             },
         },
@@ -333,6 +333,27 @@ def test_answer_safety_presale_refund_latch_does_not_leak_to_neutral_followup() 
     assert decision.p0_required is False
     assert decision.zero_collect_required is False
     assert decision.risk_codes == ()
+
+
+def test_answer_safety_presale_wording_cannot_release_hard_refund_latch() -> None:
+    decision = classify_answer_safety(
+        client_message="В целом, просто заранее спрашиваю: если передумаем, вернут остаток?",
+        context={
+            "recent_messages": ["Клиент: Подскажите расписание.", "Ответ: Сейчас расскажу."],
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["refund"],
+                    "primary_risk": "refund",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert decision.risk_codes == ("refund",)
 
 
 def test_answer_safety_presale_context_does_not_release_payment_dispute_latch() -> None:

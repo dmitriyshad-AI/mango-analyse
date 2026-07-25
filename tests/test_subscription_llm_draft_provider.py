@@ -2169,7 +2169,7 @@ def test_authoritative_gate_does_not_turn_presale_refund_followup_into_p0() -> N
                 "active": True,
                 "codes": ["refund"],
                 "primary_risk": "refund",
-                "had_hard_p0_claim": True,
+                "had_hard_p0_claim": False,
             }
         },
     }

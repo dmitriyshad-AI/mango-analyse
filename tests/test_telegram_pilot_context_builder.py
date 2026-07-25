@@ -214,6 +214,28 @@ def test_builder_semantic_plan_does_not_release_p0_after_prior_turn_payment() ->
     assert payload["answer_contract"]["route"] == "manager_only"
 
 
+def test_builder_presale_wording_cannot_release_hard_refund_latch_outside_recent_window() -> None:
+    context = build_telegram_pilot_context(
+        "В целом, просто заранее спрашиваю: если передумаем, вернут остаток?",
+        active_brand="foton",
+        recent_messages=["Клиент: Подскажите расписание.", "Ответ: Сейчас расскажу.", "Клиент: И ещё вопрос."],
+        dialogue_memory={
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": True,
+            }
+        },
+        kc_snapshot={"schema_version": "kc_knowledge_snapshot_v1", "run_id": "empty", "facts": [], "chunks": []},
+    )
+    payload = context.to_prompt_context()
+
+    assert payload["conversation_intent_plan"]["refund_frame"] == "presale_policy"
+    assert payload["answer_contract"]["p0_required"] is True
+    assert payload["answer_contract"]["route"] == "manager_only"
+
+
 def test_builder_keeps_legacy_live_availability_floor_out_of_prompt_text() -> None:
     message = "Можно закрепить место на ЛВШ для 8 класса?"
     context = build_telegram_pilot_context(

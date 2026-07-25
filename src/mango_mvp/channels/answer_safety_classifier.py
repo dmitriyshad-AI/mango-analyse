@@ -175,8 +175,6 @@ def classify_answer_safety(
         evidence.pop("safety_flags", None)
 
     latch_codes = _p0_latch_codes(context, current_text=current_norm)
-    if current_benign_refund and not current_codes:
-        latch_codes = tuple(code for code in latch_codes if code != "refund")
     if latch_codes:
         codes.extend(latch_codes)
         evidence["p0_latch"] = ",".join(latch_codes)
@@ -261,6 +259,8 @@ def _suppress_presale_refund_latch(
     *,
     current_text: str = "",
 ) -> bool:
+    if bool(latch.get("had_hard_p0_claim")):
+        return False
     if codes_from_current_message(current_text):
         return False
     if not _has_presale_refund_evidence(context, current_text=current_text):

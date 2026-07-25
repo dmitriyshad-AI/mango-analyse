@@ -85,7 +85,8 @@ def classify_answer_safety(
     # that structural payment-provenance check (REFUND_POST_PAYMENT markers via
     # _refund_frame), so the single-message reading must not override it: only
     # treat the current message as benign presale when the haystack agrees.
-    current_benign_refund = is_benign_hypothetical_refund(current_norm) and is_benign_hypothetical_refund(haystack)
+    haystack_benign_refund = is_benign_hypothetical_refund(haystack)
+    current_benign_refund = is_benign_hypothetical_refund(current_norm) and haystack_benign_refund
     evidence: dict[str, str] = {}
     codes: list[str] = []
 
@@ -159,7 +160,9 @@ def classify_answer_safety(
         codes.append("complaint")
         evidence.setdefault("topic_id", topic)
 
-    semantic_non_p0 = _semantic_non_p0_by_plan(plan, current_norm=current_norm)
+    semantic_non_p0 = _semantic_non_p0_by_plan(
+        plan, current_norm=current_norm, haystack_benign_refund=haystack_benign_refund
+    )
     if current_benign_refund and not current_codes:
         codes = [code for code in codes if code != "refund"]
         evidence.pop("refund", None)
@@ -288,11 +291,20 @@ def _has_presale_refund_evidence(context: Mapping[str, Any] | None, *, current_t
     return False
 
 
-def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> bool:
+def _semantic_non_p0_by_plan(
+    plan: Mapping[str, Any], *, current_norm: str, haystack_benign_refund: bool = True
+) -> bool:
+    # `plan.refund_frame` (and the current-message-only is_benign_hypothetical_refund
+    # check below) come from tag_message_roles() run on the current message alone
+    # (see conversation_intent_plan.build_conversation_intent_plan / semantic_roles._refund_frame)
+    # -- it has no visibility into an earlier turn's payment confirmation. That is a
+    # second, independent route to a "benign presale refund" verdict besides
+    # current_benign_refund above, so it needs the exact same haystack-agreement gate:
+    # only trust a presale-refund verdict here when the recent-turns haystack agrees.
     if not plan:
         return False
     if str(plan.get("refund_frame") or "") == "presale_policy" and not codes_from_current_message(current_norm):
-        return True
+        return haystack_benign_refund
     primary = str(plan.get("primary_intent") or "").strip()
     if primary in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         return False
@@ -300,7 +312,7 @@ def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> b
     if risks:
         return False
     if is_benign_hypothetical_refund(current_norm):
-        return True
+        return haystack_benign_refund
     if codes_from_current_message(current_norm):
         return False
     return primary in {

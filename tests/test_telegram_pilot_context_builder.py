@@ -189,6 +189,31 @@ def test_builder_adds_conversation_intent_plan_to_prompt_context() -> None:
     assert payload["conversation_intent_plan_internal"]["legacy_live_availability_floor_signal"] is True
 
 
+def test_builder_semantic_plan_does_not_release_p0_after_prior_turn_payment() -> None:
+    """Codex finding: the conversation_intent_plan is built from tag_message_roles()
+    on the CURRENT message alone (build_conversation_intent_plan -> semantic_roles.
+    _refund_frame), so in isolation "Как оформить возврат?" reads as
+    refund_frame="presale_policy" -- a second, independent route to a false "not
+    P0" verdict besides the current_norm/haystack check already fixed in
+    answer_safety_classifier.py. The prior client turn ("Я уже оплатил.") must
+    still force manager_only through the real build_telegram_pilot_context ->
+    classify_answer_safety production path, the same way a stale post_payment
+    haystack was already proven to (test_answer_safety_post_payment_refund_process_question_is_p0)."""
+    context = build_telegram_pilot_context(
+        "Как оформить возврат?",
+        active_brand="foton",
+        recent_messages=["Клиент: Я уже оплатил.", "Ответ: Отлично, доступ откроем к началу занятий."],
+        kc_snapshot={"schema_version": "kc_knowledge_snapshot_v1", "run_id": "empty", "facts": [], "chunks": []},
+    )
+    payload = context.to_prompt_context()
+
+    # The semantic plan really does mis-read the single message as presale --
+    # proves this test exercises the second path, not the already-fixed one.
+    assert payload["conversation_intent_plan"]["refund_frame"] == "presale_policy"
+    assert payload["answer_contract"]["p0_required"] is True
+    assert payload["answer_contract"]["route"] == "manager_only"
+
+
 def test_builder_keeps_legacy_live_availability_floor_out_of_prompt_text() -> None:
     message = "Можно закрепить место на ЛВШ для 8 класса?"
     context = build_telegram_pilot_context(

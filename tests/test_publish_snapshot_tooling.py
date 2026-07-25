@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -544,8 +544,106 @@ def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp
     assert nightly["sha256_match"] is True
     assert nightly["size_match"] is True
     assert nightly["fresh"] is True
+    assert nightly["future_dated"] is False
     assert nightly["count_mismatches"] == {}
+    # Находка 4/5а: WAL/SHM sidecars checkpointed and schema matches prod --
+    # a clean night must not be blocked by either new gate.
+    assert report["wal_sidecars"]["prod"]["ok"] is True
+    assert report["wal_sidecars"]["prod"]["wal_size_bytes"] == 0
+    assert report["wal_sidecars"]["staging"]["ok"] is True
+    assert report["wal_sidecars"]["staging"]["wal_size_bytes"] == 0
+    assert report["schema_diff"]["ok"] is True
+    assert report["schema_diff"]["changed_count"] == 0
+    assert report["schema_diff"]["left_schema_sha256"] == report["schema_diff"]["right_schema_sha256"]
     assert ok is True
+
+
+def test_preflight_blocks_nonempty_staging_wal(tmp_path: Path) -> None:
+    """Находка 4: a non-empty staging -wal (uncheckpointed commit, or an
+    active writer still holding the file open) must fail preflight even
+    though the base .sqlite file's bytes -- and therefore the nightly
+    manifest's sha256/size/counts, which are only ever computed against that
+    base file -- still match exactly."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    writer = sqlite3.connect(str(staging_db))
+    try:
+        writer.execute("UPDATE customer_identities SET display_name = 'Active Writer Touch' WHERE 1=1")
+        writer.commit()
+        wal_path = Path(str(staging_db) + "-wal")
+        assert wal_path.exists() and wal_path.stat().st_size > 0
+
+        report, ok = preflight.build_report(cfg_path)
+    finally:
+        writer.close()
+
+    assert ok is False
+    assert report["wal_sidecars"]["staging"]["ok"] is False
+    assert report["wal_sidecars"]["staging"]["wal_size_bytes"] > 0
+    assert report["wal_sidecars"]["staging"]["reason"] == "wal_not_checkpointed_or_active_writer"
+    assert report["wal_sidecars"]["prod"]["ok"] is True
+    # The gap Находка 4 describes: the old byte-level manifest checks alone
+    # were blind to this and would have said everything matched.
+    assert report["nightly_manifest"]["sha256_match"] is True
+    assert report["nightly_manifest"]["count_mismatches"] == {}
+
+
+def test_preflight_blocks_schema_drift_between_staging_and_prod(tmp_path: Path) -> None:
+    """Находка 5а: staging schema diverging from prod (here: an added column,
+    same shape of drift as a new/removed table) must fail preflight even
+    when quick_check/sha/counts/WAL all look fine, because a reader built
+    for one schema can break silently right after the flip."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    with sqlite3.connect(staging_db) as con:
+        con.execute("ALTER TABLE customer_identities ADD COLUMN preflight_schema_drift_probe TEXT")
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    diff = report["schema_diff"]
+    assert ok is False
+    assert diff["ok"] is False
+    assert diff["reason"] == "schema_changed_conscious_apply_required"
+    assert diff["changed_count"] >= 1
+    assert "table:customer_identities" in diff["changed"]
+    assert diff["left_schema_sha256"] != diff["right_schema_sha256"]
+
+
+def test_preflight_nightly_manifest_gate_blocks_future_dated_manifest(tmp_path: Path) -> None:
+    """Находка 5б: a manifest published_at ahead of "now" beyond clock-drift
+    tolerance (clock skew, or a forged/tampered manifest) must fail
+    preflight instead of the previous max(0, age) clamp reading it as
+    freshly published (age 0)."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["published_at"] = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    nightly = report["nightly_manifest"]
+    assert nightly["future_dated"] is True
+    assert nightly["fresh"] is False
+    assert nightly["manifest_age_hours"] < 0
+    assert "nightly_manifest_published_at_future" in nightly["reasons"]
+    assert nightly["ok"] is False
+    assert ok is False
 
 
 def test_preflight_nightly_manifest_gate_blocks_stale_manifest(tmp_path: Path) -> None:

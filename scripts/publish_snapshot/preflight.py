@@ -28,7 +28,15 @@ from scripts.publish_snapshot.common import (
     schema_diff,
     sha256_file,
     table_counts,
+    wal_sidecar_report,
 )
+
+
+# Fail-closed if a nightly manifest's published_at is ahead of "now" by more
+# than this many minutes. Small clock drift between hosts is expected; a
+# manifest minutes/hours in the future is a clock fault or a forged/tampered
+# manifest, not freshness.
+MANIFEST_FUTURE_TOLERANCE_MINUTES = 5.0
 
 
 def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
@@ -74,12 +82,23 @@ def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
 
     age_hours = _manifest_age_hours(manifest.get("published_at"))
     report["manifest_age_hours"] = round(age_hours, 3) if age_hours is not None else None
+    report["manifest_future_tolerance_minutes"] = MANIFEST_FUTURE_TOLERANCE_MINUTES
+    future_tolerance_hours = MANIFEST_FUTURE_TOLERANCE_MINUTES / 60.0
     if age_hours is None:
         reasons.append("nightly_manifest_published_at_invalid")
         report["fresh"] = False
+        report["future_dated"] = False
+    elif age_hours < -future_tolerance_hours:
+        # published_at is ahead of "now" beyond clock-drift tolerance -- a
+        # naive max(0, age) clamp used to silently read this as age=0 (i.e.
+        # "fresh"). Must fail closed instead: clock skew or a forged manifest.
+        report["fresh"] = False
+        report["future_dated"] = True
+        reasons.append("nightly_manifest_published_at_future")
     else:
-        fresh = age_hours <= cfg.max_manifest_age_hours
+        fresh = max(0.0, age_hours) <= cfg.max_manifest_age_hours
         report["fresh"] = fresh
+        report["future_dated"] = False
         if not fresh:
             reasons.append("nightly_manifest_stale")
 
@@ -168,6 +187,11 @@ def nightly_manifest_report(cfg: PublishConfig) -> dict[str, Any]:
 
 
 def _manifest_age_hours(published_at_raw: Any) -> float | None:
+    """Hours between now and published_at. Positive means the manifest is
+    that old; negative means published_at is in the future. Callers must not
+    clamp negative values to zero -- that is what previously let a
+    future-dated (clock-skewed or forged) manifest pass as "fresh"; see the
+    future-dated fail-closed branch in nightly_manifest_report."""
     text = str(published_at_raw or "").strip()
     if not text:
         return None
@@ -179,7 +203,7 @@ def _manifest_age_hours(published_at_raw: Any) -> float | None:
         return None
     if published_at.tzinfo is None:
         published_at = published_at.replace(tzinfo=timezone.utc)
-    return max(0.0, (datetime.now(timezone.utc) - published_at.astimezone(timezone.utc)).total_seconds() / 3600.0)
+    return (datetime.now(timezone.utc) - published_at.astimezone(timezone.utc)).total_seconds() / 3600.0
 
 
 def _load_nightly_service_report(manifest: Mapping[str, Any]) -> tuple[dict[str, Any], str | None, list[str]]:
@@ -240,6 +264,7 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
         required_bytes=prod.stat().st_size if prod.exists() else 0,
     )
     nightly_manifest = nightly_manifest_report(cfg)
+    wal_sidecars = {"prod": wal_sidecar_report(prod), "staging": wal_sidecar_report(staging)}
     report.update(
         {
             "staging_db": str(staging),
@@ -248,6 +273,7 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
             "quick_check": {"prod": quick_check(prod), "staging": quick_check(staging)},
             "foreign_key_check": {"prod_rows": len(foreign_key_check(prod)), "staging_rows": len(foreign_key_check(staging))},
             "schema_diff": diff,
+            "wal_sidecars": wal_sidecars,
             "counts": {"prod": table_counts(prod, cfg.count_tables), "staging": table_counts(staging, cfg.count_tables)},
             "disk": disk,
             "backup": backup,
@@ -259,6 +285,8 @@ def build_report(config_path: Path) -> tuple[dict, bool]:
     ok = ok and bool(backup["ok"])
     ok = ok and report["foreign_key_check"]["prod_rows"] == 0 and report["foreign_key_check"]["staging_rows"] == 0
     ok = ok and bool(nightly_manifest["ok"])
+    ok = ok and bool(diff["ok"])
+    ok = ok and bool(wal_sidecars["prod"]["ok"]) and bool(wal_sidecars["staging"]["ok"])
     return report, bool(ok)
 
 

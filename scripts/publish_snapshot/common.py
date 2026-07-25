@@ -190,18 +190,37 @@ def schema_signature(path: Path) -> dict[str, str]:
     return {f"{row[0]}:{row[1]}": str(row[2]) for row in rows}
 
 
+def _schema_signature_sha256(signature: Mapping[str, str]) -> str:
+    """Hash of a schema_signature() mapping, order-independent (sorted keys)
+    so it is stable regardless of sqlite_master row ordering."""
+    normalized = "\n".join(f"{key}\x1f{signature[key]}" for key in sorted(signature))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def schema_diff(left: Path, right: Path) -> Mapping[str, Any]:
+    """Structural diff of two SQLite schemas (tables/views/indexes and their
+    CREATE SQL) plus a normalized sha256 fingerprint per side. ``ok`` is
+    False (fail-closed) whenever anything differs -- new/removed objects or a
+    changed CREATE statement (e.g. an added/removed column) -- because a
+    reader built against one schema can break silently after a prod flip to
+    the other; publication then needs a conscious apply, not an automatic one.
+    """
     a = schema_signature(left)
     b = schema_signature(right)
     keys = sorted(set(a) | set(b))
     changed = [key for key in keys if a.get(key) != b.get(key)]
+    changed_count = len(changed)
     return {
         "left": str(left),
         "right": str(right),
-        "changed_count": len(changed),
+        "left_schema_sha256": _schema_signature_sha256(a),
+        "right_schema_sha256": _schema_signature_sha256(b),
+        "changed_count": changed_count,
         "only_left": [key for key in keys if key in a and key not in b],
         "only_right": [key for key in keys if key in b and key not in a],
         "changed": [key for key in changed if key in a and key in b],
+        "ok": changed_count == 0,
+        "reason": None if changed_count == 0 else "schema_changed_conscious_apply_required",
     }
 
 
@@ -221,6 +240,38 @@ def remove_sidecars(db_path: Path, *, execute: bool) -> list[str]:
             if execute:
                 path.unlink()
     return removed
+
+
+def wal_sidecar_report(db_path: Path) -> Mapping[str, Any]:
+    """Presence/size of a db's -wal/-shm sidecars, read via plain filesystem
+    stat (no sqlite connection opened, so this never contends with an active
+    writer). A non-empty -wal means committed frames sit outside the main
+    .sqlite file -- the sha256/size/counts checks elsewhere in preflight only
+    look at the main file and would silently miss that data. Fail-closed:
+    publication requires wal_size_bytes == 0, either because it was
+    checkpointed (see wal_checkpoint_truncate) or because nothing has written
+    to the db since its last checkpoint; a non-zero size is either a skipped
+    checkpoint or a writer that is still active right now. -shm size is
+    reported for visibility only (a lingering shm index page after a clean
+    checkpoint is normal and does not by itself indicate pending data).
+    """
+    wal_path, shm_path, _journal_path = sidecar_paths(db_path)
+    wal_exists = wal_path.exists()
+    shm_exists = shm_path.exists()
+    wal_size = wal_path.stat().st_size if wal_exists else 0
+    shm_size = shm_path.stat().st_size if shm_exists else 0
+    ok = wal_size == 0
+    return {
+        "db": str(db_path),
+        "wal_path": str(wal_path),
+        "wal_exists": wal_exists,
+        "wal_size_bytes": wal_size,
+        "shm_path": str(shm_path),
+        "shm_exists": shm_exists,
+        "shm_size_bytes": shm_size,
+        "ok": ok,
+        "reason": None if ok else "wal_not_checkpointed_or_active_writer",
+    }
 
 
 def replace_sqlite_verified(

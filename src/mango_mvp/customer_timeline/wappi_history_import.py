@@ -106,10 +106,23 @@ RESOLVED_MATCH_CLASS_BY_IDENTITY_AUTHORITY = {
     "amo_talk_authoritative": IdentityMatchClass.STRONG_UNIQUE,
     "wappi_provisional": IdentityMatchClass.INFERRED,
 }
-WAPPI_EXACT_AMO_AUTHORITIES = {"wappi_amo_widget"}
-
 WAPPI_MESSAGE_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
 WAPPI_MESSAGE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?7|8)(?:[\s()\-]*\d){10}(?!\d)")
+
+
+def _is_exact_authority_override(
+    existing_customer: str,
+    existing_authority: str,
+    proposed_customer: str,
+    proposed_authority: str,
+) -> bool:
+    return bool(
+        existing_customer
+        and proposed_customer
+        and proposed_customer != existing_customer
+        and proposed_authority in WAPPI_EXACT_AMO_AUTHORITIES
+        and existing_authority not in WAPPI_EXACT_AMO_AUTHORITIES
+    )
 
 
 class WappiPhysicalRequestBudgetExceeded(RuntimeError):
@@ -1787,18 +1800,18 @@ def run_wappi_history_import(
         )
         proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
         proposed_authority = str(record.payload.get("identity_authority") or "")
-        exact_override = bool(
-            existing_customer
-            and proposed_customer
-            and proposed_customer != existing_customer
-            and proposed_authority == "wappi_amo_widget"
-            and existing_authority != "wappi_amo_widget"
+        exact_override = _is_exact_authority_override(
+            existing_customer,
+            existing_authority,
+            proposed_customer,
+            proposed_authority,
         )
         provisional_upgrade = bool(
             existing_customer
             and proposed_customer
             and proposed_customer != existing_customer
             and existing_customer in provisional_customer_ids
+            and existing_authority not in WAPPI_EXACT_AMO_AUTHORITIES
             and str(record.payload.get("identity_authority") or "") != "wappi_provisional"
         )
         if provisional_upgrade:
@@ -2975,14 +2988,15 @@ class WappiPairCustomerResolver:
         owners = self._chat_customer_ids.get((profile.source_system, profile.profile_id, chat_id), ())
         if not owners or owners == (resolution.customer_id,):
             return resolution
-        if resolution.resolution_source != "wappi_provisional" and set(owners).issubset(
-            self._provisional_customer_ids
-        ):
-            return resolution
         exact_owners = self._exact_chat_customer_ids.get(
             (profile.source_system, profile.profile_id, chat_id),
             (),
         )
+        exact_owner_conflict = bool(exact_owners and exact_owners != (resolution.customer_id,))
+        if resolution.resolution_source != "wappi_provisional" and set(owners).issubset(
+            self._provisional_customer_ids
+        ) and not exact_owner_conflict:
+            return resolution
         if resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES and (
             not exact_owners or exact_owners == (resolution.customer_id,)
         ):
@@ -3964,6 +3978,12 @@ def load_existing_unmatched_wappi_records(
                 continue
             existing_customer = str(row["customer_id"] or "").strip()
             existing_authority = str(row["identity_authority"] or "").strip()
+            if (
+                existing_customer
+                and existing_customer != resolution.customer_id
+                and existing_authority in WAPPI_EXACT_AMO_AUTHORITIES
+            ):
+                continue
             exact_override = (
                 resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES
                 and existing_authority not in WAPPI_EXACT_AMO_AUTHORITIES

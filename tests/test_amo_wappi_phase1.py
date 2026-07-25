@@ -608,6 +608,125 @@ def test_ai_office_note_client_reuses_marker_from_second_page_without_post() -> 
     ]
 
 
+def test_ai_office_note_client_blocks_post_when_readback_payload_is_invalid() -> None:
+    posts: list[dict] = []
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {"_embedded": {"notes": None}}
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs),
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match="invalid notes payload"):
+        client.add_draft_note_to_test_lead(
+            "111",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+    assert posts == []
+
+
+@pytest.mark.parametrize(
+    ("notes", "error"),
+    (
+        (["broken-row"], "invalid note row"),
+        ([{"id": 0, "params": {"text": "marker"}}], "invalid note_id"),
+    ),
+)
+def test_ai_office_note_client_blocks_post_on_invalid_matching_note_rows(notes, error: str) -> None:
+    posts: list[dict] = []
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            marker = draft_note_idempotency_marker(profile_id="profile-1", chat_id="chat-1", message_id="message-1")
+            rows = notes if notes == ["broken-row"] else [{**notes[0], "params": {"text": marker}}]
+            return {"_embedded": {"notes": rows}}
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs),
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match=error):
+        client.add_draft_note_to_test_lead(
+            "111",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+    assert posts == []
+
+
+def test_ai_office_note_client_blocks_post_when_readback_pagination_is_incomplete() -> None:
+    posts: list[dict] = []
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {
+                "_embedded": {"notes": [{"id": item, "params": {"text": "other"}} for item in range(50)]},
+                "_links": {"next": {"href": "next"}},
+            }
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs),
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match="pagination limit"):
+        client.add_draft_note_to_test_lead(
+            "111",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+    assert posts == []
+
+
+def test_ai_office_note_client_blocks_post_when_next_page_link_is_malformed() -> None:
+    posts: list[dict] = []
+
+    class ReadClient:
+        def amo_api_get(self, **_kwargs):
+            return {
+                "_embedded": {"notes": [{"id": item, "params": {"text": "other"}} for item in range(50)]},
+                "_links": {"next": "not-a-link-object"},
+            }
+
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: posts.append(kwargs),
+        read_client=ReadClient(),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked, match="invalid next-page link"):
+        client.add_draft_note_to_test_lead(
+            "111",
+            config=AmoWappiPhase1Config(),
+            draft_text="Черновик",
+            brand="foton",
+            profile_id="profile-1",
+            chat_id="chat-1",
+            message_id="message-1",
+        )
+    assert posts == []
+
+
 def test_draft_note_text_requires_known_brand() -> None:
     with pytest.raises(AmoWappiConfigError):
         build_draft_note_text(draft_text="Черновик", brand="other")

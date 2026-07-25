@@ -67,7 +67,7 @@ def test_startup_manifest_reports_actual_all_personal_runtime(tmp_path: Path, mo
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["status"] == "ready"
     assert payload["head"] == "abc123"
-    assert payload["pair_mode"] == "authoritative_widget_then_exact_amo"
+    assert payload["pair_mode"] == "authoritative_widget_only"
     assert payload["profile_count"] == 2
     assert payload["all_personal_mode"] is True
     assert payload["chat_limit"] == 0
@@ -386,7 +386,9 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
     monkeypatch.setattr(
         runner,
         "build_authoritative_resolver",
-        lambda **kwargs: None if kwargs["wappi_client"] is wappi_client and kwargs["configured_profiles"] is profiles else "wrong",
+        lambda **kwargs: None
+        if kwargs["wappi_client"] is wappi_client and kwargs["configured_profiles"] is profiles
+        else "wrong",
     )
     monkeypatch.setattr(runner, "AmoWappiDraftLoop", lambda **kwargs: kwargs)
     args = argparse.Namespace(
@@ -469,10 +471,8 @@ def test_runtime_profiles_must_exactly_match_configured_profiles() -> None:
         )
 
 
-def test_authoritative_resolver_falls_back_to_exact_amo_identity(monkeypatch, tmp_path: Path) -> None:
+def test_authoritative_resolver_uses_only_exact_wappi_widget_link(monkeypatch) -> None:
     monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
-    stoplist = tmp_path / "shared_phones_stoplist.json"
-    stoplist.write_text(json.dumps({"phones": ["+79999999999"]}), encoding="utf-8")
 
     class WappiClient:
         def list_all_profiles(self):
@@ -489,7 +489,6 @@ def test_authoritative_resolver_falls_back_to_exact_amo_identity(monkeypatch, tm
         wappi_client=WappiClient(),
         amo_read_client=amo,
         configured_profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")},
-        shared_phone_stoplist=stoplist,
     )
 
     result = resolver(
@@ -500,8 +499,9 @@ def test_authoritative_resolver_falls_back_to_exact_amo_identity(monkeypatch, tm
         message=_wappi_message(profile_id="profile-foton", chat_id="123456"),
     )
 
-    assert result["status"] == "matched"
-    assert result["match_key"] == "Telegram ID"
+    assert result["status"] != "matched"
+    assert result["reason"] == "wappi_widget_contact_missing"
+    assert amo.calls == []
 
 
 def test_widget_resolver_targets_the_only_active_lead_of_the_profile_brand(monkeypatch) -> None:

@@ -432,6 +432,28 @@ def test_bot_safe_family_projection_blocks_partial_family_conflict_and_old_chunk
     assert "онлайн-курс" not in memory.prompt_text
 
 
+def test_bot_safe_family_projection_rechecks_open_identity_conflict_at_runtime(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(f"customer:{customer_id}",),
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["timeline_context"]["family_dossier"]["context_blocked"] is True
+    assert "онлайн-курс" not in context["summary"]
+    assert "онлайн-курс" not in build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
+
+
 def test_bot_safe_family_projection_blocks_low_confidence_member_and_old_chunks(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)

@@ -845,6 +845,13 @@ def _build_bot_safe_family_projection(
         members = [str(row["customer_id"]) for row in member_rows]
         if not 1 <= len(members) <= 8:
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
+        if "timeline_conflicts" in tables and _has_open_family_identity_conflict(
+            con,
+            tenant_id=tenant_id,
+            family_id=str(root["family_id"]),
+            members=members,
+        ):
+            return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
         placeholders = ",".join("?" for _ in members)
         rows = con.execute(
             f"SELECT customer_id, child_key, grades_json, subjects_json, brand, status, confidence "
@@ -948,6 +955,42 @@ def _build_bot_safe_family_projection(
                 else "unknown",
             },
         }
+
+
+def _has_open_family_identity_conflict(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    family_id: str,
+    members: Sequence[str],
+) -> bool:
+    placeholders = ",".join("?" for _ in members)
+    identity_refs = {
+        f"{row['link_type']}:{row['link_value']}"
+        for row in con.execute(
+            f"SELECT link_type, link_value FROM identity_links "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            (tenant_id, *members),
+        )
+    }
+    for row in con.execute(
+        "SELECT conflict_type, record_json FROM timeline_conflicts WHERE tenant_id=? AND status='open'",
+        (tenant_id,),
+    ):
+        conflict_type = _normalize_tag(row["conflict_type"])
+        if not any(marker in conflict_type for marker in ("identity", "family", "brand", "shared_")):
+            continue
+        try:
+            payload = json.loads(str(row["record_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        refs = payload.get("entity_refs", []) if isinstance(payload, Mapping) else []
+        for raw_ref in refs if isinstance(refs, list) else ():
+            ref = str(raw_ref or "")
+            customer_ref = ref.removeprefix("customer:") if ref.startswith("customer:customer:") else ref
+            if customer_ref in members or ref == family_id or ref in identity_refs:
+                return True
+    return False
 
 
 def _child_attributed_bot_items(

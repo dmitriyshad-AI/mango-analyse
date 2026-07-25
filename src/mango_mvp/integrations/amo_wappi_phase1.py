@@ -520,24 +520,31 @@ class AiOfficeAmoNoteClient:
             embedded = payload.get("_embedded") if isinstance(payload, Mapping) else None
             notes = embedded.get("notes") if isinstance(embedded, Mapping) else payload.get("notes")
             if not isinstance(notes, Sequence) or isinstance(notes, (str, bytes, bytearray)):
-                return None
+                raise AmoWappiWriteBlocked("AMO draft-note readback returned an invalid notes payload.")
             for item in notes:
                 if not isinstance(item, Mapping):
-                    continue
+                    raise AmoWappiWriteBlocked("AMO draft-note readback returned an invalid note row.")
                 params = item.get("params") if isinstance(item.get("params"), Mapping) else {}
                 if marker not in str(params.get("text") or item.get("text") or ""):
                     continue
                 try:
-                    return int(item.get("id"))
-                except (TypeError, ValueError):
-                    return None
+                    note_id = int(item.get("id"))
+                except (TypeError, ValueError) as exc:
+                    raise AmoWappiWriteBlocked("AMO draft-note readback returned an invalid note_id.") from exc
+                if note_id <= 0:
+                    raise AmoWappiWriteBlocked("AMO draft-note readback returned an invalid note_id.")
+                return note_id
             links = payload.get("_links") if isinstance(payload, Mapping) else None
+            if links is not None and not isinstance(links, Mapping):
+                raise AmoWappiWriteBlocked("AMO draft-note readback returned invalid pagination links.")
             if isinstance(links, Mapping):
-                if not isinstance(links.get("next"), Mapping):
+                if "next" not in links:
                     return None
+                if not isinstance(links.get("next"), Mapping):
+                    raise AmoWappiWriteBlocked("AMO draft-note readback returned an invalid next-page link.")
             elif len(notes) < page_limit:
                 return None
-        return None
+        raise AmoWappiWriteBlocked("AMO draft-note readback exceeded the pagination limit.")
 
 
 @dataclass(frozen=True)

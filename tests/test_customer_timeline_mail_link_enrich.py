@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import mango_mvp.customer_timeline.mail_link_enrich as mail_link_enrich_module
+import scripts.run_mail_link_enrich as mail_link_enrich_runner
 from mango_mvp.customer_timeline.a2_mail_ingest import A2V3_MAIL_SOURCE_SYSTEM
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
@@ -26,6 +27,31 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("flag", "reconsider_pending", "revalidate_existing_strong"),
+    (
+        ("--reconsider-pending", True, False),
+        ("--revalidate-existing-strong", False, True),
+    ),
+)
+def test_mail_link_enrich_runner_separates_pending_and_strong_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+    reconsider_pending: bool,
+    revalidate_existing_strong: bool,
+) -> None:
+    configs: list[MailLinkEnrichConfig] = []
+    monkeypatch.setattr(
+        mail_link_enrich_runner,
+        "run_mail_link_enrich",
+        lambda config: configs.append(config) or {"safety": {}},
+    )
+
+    assert mail_link_enrich_runner.main([flag]) == 0
+    assert configs[0].reconsider_pending is reconsider_pending
+    assert configs[0].revalidate_existing_strong is revalidate_existing_strong
 
 
 @pytest.mark.parametrize(
@@ -617,6 +643,46 @@ def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_pat
     assert default_report["target_events"] == 0
     assert reconsidered["target_events"] == 1
     assert reconsidered["counts"]["planned.strong"] == 1
+
+
+def test_mail_link_enrich_reconsider_pending_does_not_select_existing_strong(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "1" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unlinked@example.com",
+        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+    first = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "first",
+            apply=True,
+        )
+    )
+    assert first["counts"]["planned.strong"] == 1
+
+    reconsidered = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "reconsidered",
+            apply=True,
+            reconsider_pending=True,
+        )
+    )
+
+    assert reconsidered["target_events"] == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()
+    assert event == ("customer:phone", "strong_unique")
 
 
 def test_mail_link_enrich_reconsiders_cross_brand_identity_but_keeps_context_blocked(tmp_path: Path) -> None:

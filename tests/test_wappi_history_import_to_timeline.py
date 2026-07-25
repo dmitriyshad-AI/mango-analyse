@@ -28,6 +28,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiHistoryTimelineNormalizer,
     WappiPairCustomerResolver,
     WappiProfileSpec,
+    _is_exact_authority_override,
     assert_readonly_wappi_client,
     _build_safe_amo_talk_client,
     collect_wappi_widget_links,
@@ -79,6 +80,12 @@ def test_wappi_max_requires_one_non_bot_peer_when_participants_are_present() -> 
         profile,
         {"id": "room", "type": "DIALOG", "participants": [{"is_me": True}]},
     ) is False
+
+
+@pytest.mark.parametrize("authority", ("wappi_amo_widget", "amo_talk_authoritative"))
+def test_exact_amo_authorities_override_older_non_exact_owner(authority: str) -> None:
+    assert _is_exact_authority_override("customer:old", "timeline_identity", "customer:real", authority) is True
+    assert _is_exact_authority_override("customer:old", "wappi_amo_widget", "customer:real", authority) is False
 
 
 def test_wappi_history_import_resolves_by_widget_and_is_idempotent(
@@ -3831,6 +3838,76 @@ def test_wappi_exact_widget_link_can_upgrade_existing_provisional_family(tmp_pat
     assert len(records) == 1
     assert records[0].payload["resolved_customer_id"] == real_customer
     assert records[0].payload["identity_authority"] == "wappi_amo_widget"
+
+
+def test_exact_owner_is_not_replaced_when_its_customer_shell_is_provisional(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    profile_spec = WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram")
+    provisional_record = wappi_message_to_record(
+        profile=profile_spec,
+        message=WappiHistoryMessage(
+            profile_id="p-tg",
+            chat_id="123456",
+            message_id="message-1",
+            text="Здравствуйте",
+            message_type="text",
+            timestamp=1_753_000_000,
+            from_me=False,
+        ),
+        resolution=WappiChatResolution(
+            status="resolved",
+            customer_id="customer:provisional",
+            reason="provisional_wappi_family",
+            resolution_source="wappi_provisional",
+            evidence={"provisional_wappi_family": True, "brand_context_authorized": False},
+        ),
+    )
+    batch = WappiHistoryTimelineNormalizer(tenant_id="foton", source_system="wappi_telegram").normalize(
+        provisional_record
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(batch.customers[0], actor="test")
+        store.upsert_identity_link(batch.identity_links[0], actor="test")
+        store.upsert_event(batch.events[0], actor="test")
+    with sqlite3.connect(db_path) as con:
+        raw = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (batch.events[0].source_id,)).fetchone()[0]
+        payload = json.loads(raw)
+        payload["metadata"]["identity_authority"] = "wappi_amo_widget"
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id=?",
+            (json.dumps(payload, ensure_ascii=False), batch.events[0].source_id),
+        )
+    seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        customer_id="customer:real",
+        lead_id="1001",
+        contact_id="2002",
+    )
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={},
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "2002",
+                "lead_ids": ("1001",),
+                "resolution_source": "amo_talk_authoritative",
+            }
+        },
+    )
+
+    resolver.prime_widget_chat_resolutions((profile_spec,))
+    resolution = resolver.chat_resolutions[("wappi_telegram", "p-tg", "123456")]
+
+    assert resolution.status == "pending_attribution"
+    assert resolution.reason == "existing_wappi_chat_customer_conflict"
+    assert load_existing_unmatched_wappi_records(
+        db_path,
+        tenant_id="foton",
+        chat_resolutions=resolver.chat_resolutions,
+    ) == ()
 
 
 def test_wappi_exact_widget_link_overrides_older_non_widget_assignment(tmp_path: Path) -> None:

@@ -79,7 +79,6 @@ DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_st
 DEFAULT_CUSTOMER_TIMELINE_DB = Path(
     "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
 )
-DRAFT_LOOP_AUTO_RESOLVER_ENV = "DRAFT_LOOP_AUTO_RESOLVER"
 CLOSED_STATUS_IDS = {"142", "143"}
 AMO_CHAT_ORIGIN_BY_CHANNEL = {
     "telegram": "pro.wappi.tg",
@@ -263,10 +262,6 @@ def build_safe_transport(ai_office_config: AiOfficeClientConfig, wappi_config: W
             ai_office_hosts=frozenset({"api.fotonai.online"}),
         ),
     )
-
-
-def _truthy(value: str | None) -> bool:
-    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _embedded_items(payload: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
@@ -966,35 +961,14 @@ def build_authoritative_resolver(
     wappi_client: WappiPhase1Client,
     amo_read_client: AmoMcpClient,
     configured_profiles: Mapping[str, DraftLoopProfile],
-    shared_phone_stoplist: Path,
 ) -> Callable[..., Mapping[str, Any]]:
     runtime_rows = tuple(wappi_client.list_all_profiles())
     validate_runtime_profiles(configured_profiles, runtime_rows)
-    widget = build_widget_resolver(
+    return build_widget_resolver(
         wappi_client,
         amo_read_client,
         runtime_profile_rows=runtime_rows,
     )
-    stoplist, stoplist_error = _load_phone_stoplist(shared_phone_stoplist)
-    exact_amo = AmoAutoResolver(
-        client=amo_read_client,
-        shared_phone_stoplist=stoplist,
-        stoplist_error=stoplist_error,
-    )
-
-    def resolve(**kwargs: Any) -> Mapping[str, Any]:
-        widget_result = widget(**kwargs)
-        if str(widget_result.get("status") or "") == "matched":
-            return widget_result
-        if str(widget_result.get("reason") or "") != "wappi_widget_contact_missing":
-            return widget_result
-        exact_result = exact_amo(**kwargs)
-        return exact_result if str(exact_result.get("status") or "") == "matched" else {
-            **dict(exact_result),
-            "widget_reason": "wappi_widget_contact_missing",
-        }
-
-    return resolve
 
 
 def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
@@ -1037,7 +1011,6 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
             wappi_client=wappi_client,
             amo_read_client=amo_read_client,
             configured_profiles=config.profiles,
-            shared_phone_stoplist=args.shared_phone_stoplist,
         ),
     )
 
@@ -1099,7 +1072,7 @@ def write_startup_manifest(
         "wrapper_sha256": str(os.environ.get("DRAFT_LOOP_WRAPPER_SHA256") or "").strip(),
         "profile": "pilot_gold_v1",
         "profile_count": len(runner.config.profiles),
-        "pair_mode": "authoritative_widget_then_exact_amo",
+        "pair_mode": "authoritative_widget_only",
         "all_personal_mode": bool(runner.config.all_personal_mode),
         "chat_limit": int(runner.config.chat_limit),
         "writer_lock_path": str(DEFAULT_WRITER_LOCK_PATH),

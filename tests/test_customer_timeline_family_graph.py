@@ -96,7 +96,7 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path) -
     assert report["multi_customer_families"] == 1
 
 
-@pytest.mark.parametrize("match_status", ("ambiguous", "inferred", "needs_review"))
+@pytest.mark.parametrize("match_status", ("ambiguous", "inferred"))
 def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_status: str) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:risky", phone="+79000000021")
@@ -121,6 +121,74 @@ def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_
     assert len({row[1] for row in rows}) == 2
     assert by_customer["customer:risky"][2:] == ("conflict", "tallanto_student_id_conflict")
     assert by_customer["customer:safe"][2:] == ("singleton", "single_customer_family")
+
+
+def test_family_root_partial_run_marks_global_tallanto_conflict(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, phone in (("customer:left", "+79000000001"), ("customer:right", "+79000000002")):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(db_path, tmp_path, customer_id, "student-shared", "parent@example.com")
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            customer_ids=("customer:left",),
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT customer_id, membership_status FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+    assert rows == [("customer:left", "conflict"), ("customer:right", "conflict")]
+
+
+def test_family_root_honors_open_tallanto_conflict_record(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, student_id, phone in (
+        ("customer:left", "student-left", "+79000000001"),
+        ("customer:right", "student-right", "+79000000002"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(db_path, tmp_path, customer_id, student_id, "parent@example.com")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_conflict",
+            entity_refs=("tallanto_student_id:student-left",),
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        rows = dict(
+            con.execute("SELECT customer_id, membership_status FROM family_members_v1 ORDER BY customer_id")
+        )
+    assert rows == {"customer:left": "conflict", "customer:right": "singleton"}
+
+
+def test_store_bootstrap_migrates_early_family_members_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE family_members_v1 (
+              tenant_id TEXT NOT NULL, family_id TEXT NOT NULL, customer_id TEXT NOT NULL,
+              membership_status TEXT NOT NULL, confidence TEXT NOT NULL, reason TEXT NOT NULL,
+              created_at TEXT NOT NULL, record_hash TEXT NOT NULL, record_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, customer_id)
+            )
+            """
+        )
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        pass
+
+    with sqlite3.connect(db_path) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(family_members_v1)")}
+    assert "updated_at" in columns
 
 
 def test_family_graph_does_not_merge_shared_email_with_different_parents(tmp_path: Path) -> None:

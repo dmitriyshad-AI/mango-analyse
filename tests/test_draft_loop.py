@@ -302,6 +302,22 @@ def test_max_dialog_without_explicit_group_marker_is_not_assumed_private() -> No
     assert _is_private_dialog({"type": "DIALOG", "isGroup": True}, channel="max") is False
 
 
+@pytest.mark.parametrize("flag", ("IsBot", "IsDeleted", "IsFake", "IsSelf", "IsSupport"))
+def test_telegram_service_accounts_are_not_private_dialogs(flag: str) -> None:
+    assert _is_private_dialog({"type": "user", "user": {flag: True}}, channel="telegram") is False
+
+
+def test_max_group_shape_and_bot_peer_are_not_private_dialogs() -> None:
+    assert _is_private_dialog(
+        {"type": "DIALOG", "isGroup": False, "participants": [{"is_me": True}, {"is_me": False}, {"is_me": False}]},
+        channel="max",
+    ) is False
+    assert _is_private_dialog(
+        {"type": "DIALOG", "isGroup": False, "participants": [{"is_me": True}, {"is_me": False, "is_bot": True}]},
+        channel="max",
+    ) is False
+
+
 def test_draft_loop_wappi_prompt_summarizes_older_context_and_keeps_recent_order(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
@@ -1637,7 +1653,7 @@ def test_draft_loop_retries_pending_note_once(tmp_path: Path) -> None:
     assert {item["message_id"] for item in saved["processed"]} == {"m0", "m1"}
 
 
-def test_pending_note_without_prior_post_is_written_once(tmp_path: Path) -> None:
+def test_persisted_pending_note_without_readback_is_not_reposted(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     cfg = _config(tmp_path, pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")})
     state = DraftLoopState(cfg.state_path)
@@ -1671,9 +1687,10 @@ def test_pending_note_without_prior_post_is_written_once(tmp_path: Path) -> None
         now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
     )
 
-    assert loop.run_once(dry_run=False)["retried_pending"] == 1
-    assert len(amo.notes) == 1
-    assert json.loads(cfg.state_path.read_text(encoding="utf-8"))["pending_notes"] == {}
+    assert loop.run_once(dry_run=False)["retried_pending"] == 0
+    assert amo.notes == []
+    pending = json.loads(cfg.state_path.read_text(encoding="utf-8"))["pending_notes"]
+    assert pending["profile-foton\tchat-1\tm1"]["status"] == "manual_review"
 
 
 def test_failed_pending_note_retry_becomes_manual_review_without_repost(tmp_path: Path) -> None:
@@ -1706,7 +1723,7 @@ def test_failed_pending_note_retry_becomes_manual_review_without_repost(tmp_path
 
     assert first.run_once(dry_run=False)["retried_pending"] == 0
     saved = json.loads(cfg.state_path.read_text(encoding="utf-8"))
-    assert saved["pending_notes"]["profile-foton\tchat-1\tm1"]["status"] == "write_outcome_unknown"
+    assert saved["pending_notes"]["profile-foton\tchat-1\tm1"]["status"] == "manual_review"
 
     class WorkingAmo(FakeAmo):
         def add_draft_note_to_test_lead(self, lead_id, **kwargs):

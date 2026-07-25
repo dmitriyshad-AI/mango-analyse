@@ -1,3 +1,5 @@
+> DONE 2026-07-25 13:59 | ветка codex/ai-employee-final | codex
+
 Ветка: codex/ai-employee-final
 Зоны: src/, scripts/, tests/, docs/, tasks/, launchd/, m1_exam/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q tests/test_customer_timeline_store.py tests/test_wappi_history_import_to_timeline.py tests/test_customer_timeline_manager_dossier.py

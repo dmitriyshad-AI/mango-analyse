@@ -602,10 +602,35 @@ def _is_private_dialog(dialog: Mapping[str, Any], *, channel: str) -> bool:
         else:
             return False
         is_group = str(is_group_raw).strip().casefold()
-        return dialog_type == "dialog" and is_group in {"0", "false", "no"}
+        if dialog_type != "dialog" or is_group not in {"0", "false", "no"}:
+            return False
+        participants = tuple(item for item in (dialog.get("participants") or ()) if isinstance(item, Mapping))
+        peers = tuple(item for item in participants if not _dialog_truthy_flag(item, "is_me", "IsMe"))
+        return (not participants or len(peers) == 1) and not any(
+            _dialog_truthy_flag(item, "is_bot", "IsBot", "bot") for item in (dialog, *peers)
+        )
     if str(channel or "").casefold() == "telegram":
-        return dialog_type in {"user", "private", "personal"}
+        if dialog_type not in {"user", "private", "personal"}:
+            return False
+        user = dialog.get("user") if isinstance(dialog.get("user"), Mapping) else {}
+        return not any(
+            _dialog_truthy_flag(user, *keys)
+            for keys in (
+                ("IsBot", "is_bot"),
+                ("IsDeleted", "is_deleted"),
+                ("IsFake", "is_fake"),
+                ("IsSelf", "is_self"),
+                ("IsSupport", "is_support"),
+            )
+        )
     return False
+
+
+def _dialog_truthy_flag(payload: Mapping[str, Any], *keys: str) -> bool:
+    return any(
+        payload.get(key) is True or str(payload.get(key) or "").strip().casefold() in {"1", "true", "yes", "on"}
+        for key in keys
+    )
 
 
 def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHistoryMessage | None:
@@ -1478,28 +1503,6 @@ class AmoWappiDraftLoop:
             if not note_id:
                 started_at = _parse_iso_epoch(str(payload.get("write_started_at") or ""))
                 age_seconds = max(0, int(self.now_fn().timestamp()) - started_at) if started_at else 900
-                pending_status = str(payload.get("status") or "note_pending")
-                if pending_status == "note_pending":
-                    try:
-                        note_response = self._write_note(payload, retry=True)
-                        note_id = note_response.get("note_id")
-                        retry_event = "note_retried"
-                    except Exception as exc:  # noqa: BLE001
-                        self.state.payload["pending_notes"][state_key] = {
-                            **dict(payload),
-                            "status": "write_outcome_unknown",
-                            "error": str(exc)[:300],
-                        }
-                        self.journal.append(
-                            {
-                                **dict(payload),
-                                "event": "note_retry_failed",
-                                "status": "write_outcome_unknown",
-                                "error": str(exc)[:300],
-                            }
-                        )
-                        state_changed = True
-                        continue
                 if not note_id:
                     status = "manual_review" if age_seconds >= 900 else "write_outcome_unknown"
                     self.state.payload["pending_notes"][state_key] = {

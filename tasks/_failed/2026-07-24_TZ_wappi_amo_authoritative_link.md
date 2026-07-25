@@ -1,3 +1,5 @@
+> FAIL 2026-07-25 13:36 | ветка codex/ai-employee-final | codex | причина: заменено единым мастер-ТЗ; live/data-приёмка не выполнялась в задаче консолидации
+
 > TAKE 2026-07-24 01:45 | ветка codex/ai-employee-timeline | codex
 
 Ветка: codex/ai-employee-timeline

@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from mango_mvp.channels.fact_retrieval import select_confirmed_facts
-from mango_mvp.knowledge_base.price_axes_catalog import build_price_axes_catalog, select_price, select_price_fact_for_query
+from mango_mvp.knowledge_base.price_axes_catalog import (
+    _extract_grade,
+    build_price_axes_catalog,
+    extract_price_query_axes,
+    select_price,
+    select_price_fact_for_query,
+    select_price_result_for_query,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -258,3 +265,79 @@ def test_fact_retrieval_clean_defer_keeps_valid_price_facts(monkeypatch) -> None
     assert str(first.get("fact_id")).startswith("fact:v3:price_axes_selector")
     assert first["brand"] == "unpk"
     assert "37 000" in first["client_safe_text"]
+
+
+# --- БЛОК 7 (2026-07-25): _extract_grade() price-risk audit -----------------
+#
+# Verify-only per ТЗ (no regex->LLM migration). `_extract_grade` sits on the
+# live runtime price path: fact_retrieval.select_confirmed_facts (called from
+# telegram_pilot_context_builder._select_confirmed_facts, which is the real
+# context builder used by scripts/run_amo_wappi_draft_loop.py, the live
+# draft-loop) calls price_axes_catalog.select_price_result_for_query ->
+# extract_price_query_axes -> _extract_grade whenever
+# TELEGRAM_PRICE_AXES_SELECTOR is on (default-on under the accepted
+# `pilot_gold_v1` profile). The crash fixed below was reproducible on that
+# path before this fix (see git history of this file for the exact
+# `"м" in match.group(0)` bug); the ambiguity case after it is a documented,
+# intentionally NOT fixed limitation of the current regex approach.
+
+
+def test_extract_grade_handles_latin_m9_m11_like_cyrillic() -> None:
+    """Regression repro for a real crash: the bot's own client_safe_text
+    renders "M9"/"M11" in the LATIN alphabet (`product_code.upper()` on the
+    ascii "m9"/"m11" strings -- see `_entries_from_m9_m11_tariff_fact`), so a
+    client echoing that exact text back triggered `_extract_grade` to raise
+    `IndexError: no such group` (patterns[1]/[2] have no capturing group; the
+    old code checked for a Cyrillic "м" to decide whether to use it, which is
+    False for Latin "m" and fell through to the missing group). Before the
+    БЛОК 7 fix, both `_extract_grade("сколько стоит m9 тариф стандарт?")` and
+    `extract_price_query_axes(...)` raised IndexError instead of returning 9.
+    """
+    assert _extract_grade("сколько стоит m9 тариф стандарт?") == 9
+    assert _extract_grade("сколько стоит m11 тариф стандарт?") == 11
+    # Cyrillic must keep working exactly as before.
+    assert _extract_grade("сколько стоит м9 тариф стандарт?") == 9
+    assert _extract_grade("сколько стоит м11 тариф стандарт?") == 11
+
+
+def test_extract_grade_latin_m9_selects_correct_tariff_price_end_to_end() -> None:
+    """End-to-end proof that the fixed extraction reaches the right price."""
+    axes = extract_price_query_axes("Сколько стоит M9 тариф Стандарт?", active_brand="foton")
+    assert axes["grade"] == 9
+    assert axes["product_code"] == "m9"
+
+    result = select_price_result_for_query(_facts(), active_brand="foton", query="Сколько стоит M9 тариф Стандарт онлайн за год?")
+    assert result["status"] == "exact"
+    assert result["entry"]["amount"] == 47250
+    assert result["entry"]["product_code"] == "m9"
+    assert result["entry"]["tariff_id"] == "standard"
+
+
+def test_extract_grade_first_mentioned_grade_wins_when_message_has_two_children() -> None:
+    """Documented, NOT fixed limitation (ТЗ: verify only, no migration).
+
+    `_extract_grade` returns the grade from whichever pattern matches
+    earliest in the text; it cannot detect "this message names two
+    different grades" and never asks for disambiguation. Here the client is
+    unambiguously asking about "М9" (a grade-9-only product), but the
+    earlier "11 классе" mention wins, so query_axes carries grade=11 next to
+    product_code="m9" -- a pairing that can never resolve to a real M9 price.
+    Fixing this is a semantic/understanding change (which grade did the
+    client mean), not an output-scrub bugfix, so ADR003's regex-understanding
+    moratorium reserves it for a SemanticFrame/LLM change, not a regex edit.
+    """
+    text = "Хочу М9 для сына, а дочь в 11 классе, сколько за М9?"
+
+    axes = extract_price_query_axes(text, active_brand="foton")
+
+    assert axes["product_code"] == "m9"
+    assert axes["grade"] == 11  # NOT 9, despite the client asking about M9 twice.
+
+    # Currently safe by accident: the mismatched pairing cannot match any
+    # catalog entry (M9 entries only cover grade 9), so this dead-ends as
+    # "needs_slot"/"not_found" rather than quoting a wrong price outright.
+    # That safety net depends on today's catalog never having a grade-11
+    # entry under product_code "m9"; it is not a property _extract_grade
+    # guarantees.
+    result = select_price_result_for_query(_facts(), active_brand="foton", query=text)
+    assert result["status"] != "exact"

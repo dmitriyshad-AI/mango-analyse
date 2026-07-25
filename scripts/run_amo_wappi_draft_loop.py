@@ -820,6 +820,8 @@ def build_widget_resolver(
     amo_read_client: AmoMcpClient,
     *,
     runtime_profile_rows: Sequence[Mapping[str, Any]] | None = None,
+    shared_phone_stoplist: frozenset[str] = frozenset(),
+    stoplist_error: str = "",
 ) -> Callable[..., Mapping[str, Any]]:
     crm_id = str(os.getenv("AMO_WAPPI_CRM_ID") or "").strip()
     if not crm_id:
@@ -831,12 +833,28 @@ def build_widget_resolver(
         channel = "telegram" if platform in {"tg", "telegram"} else "max" if platform == "max" else ""
         if profile_id and channel:
             runtime_profiles[(channel, profile_id)] = item
+    normalized_stoplist = {phone for phone in (normalize_phone(item) for item in shared_phone_stoplist) if phone}
 
     def resolve(*, key, profile, dialog, messages, message) -> Mapping[str, Any]:
         del key, messages, message
         runtime_profile = runtime_profiles.get((profile.channel, profile.profile_id))
         if runtime_profile is None:
             return {"status": "rejected", "reason": "wappi_widget_profile_missing"}
+        if str(profile.channel or "").casefold() == "max":
+            # Structural exclusion of known non-attributable MAX numbers (shared reception/
+            # office lines reused across many families -- явный мусор, not a real 1:1 personal
+            # contact) BEFORE any AMO contact search. A per-pair manual allowlist cannot express
+            # this; a stable phone stoplist can. `shared_phone_stoplist_unavailable` (no file, or
+            # an empty list) is the default/expected state and must NOT block MAX resolution --
+            # only a genuinely broken file (`_invalid`) fails closed, and only an exact stoplist
+            # match rejects a specific dialog. Same semantics as the pre-existing (previously
+            # unwired into this resolver) `AmoAutoResolver._resolve_max` below -- reused, not
+            # duplicated, so there is exactly one MAX shared-phone guard on the live path.
+            if stoplist_error == "shared_phone_stoplist_invalid":
+                return {"status": "rejected", "reason": stoplist_error, "channel": "max"}
+            dialog_phone, phone_source = _max_dialog_phone(dialog)
+            if dialog_phone and dialog_phone in normalized_stoplist:
+                return {"status": "rejected", "reason": "shared_phone", "channel": "max", "match_key": phone_source}
         payload = wappi_client.find_amocrm_contact_for_dialog(
             channel=profile.channel,
             dialog=dialog,
@@ -961,6 +979,8 @@ def build_authoritative_resolver(
     wappi_client: WappiPhase1Client,
     amo_read_client: AmoMcpClient,
     configured_profiles: Mapping[str, DraftLoopProfile],
+    shared_phone_stoplist: frozenset[str] = frozenset(),
+    stoplist_error: str = "",
 ) -> Callable[..., Mapping[str, Any]]:
     runtime_rows = tuple(wappi_client.list_all_profiles())
     validate_runtime_profiles(configured_profiles, runtime_rows)
@@ -968,6 +988,8 @@ def build_authoritative_resolver(
         wappi_client,
         amo_read_client,
         runtime_profile_rows=runtime_rows,
+        shared_phone_stoplist=shared_phone_stoplist,
+        stoplist_error=stoplist_error,
     )
 
 
@@ -990,6 +1012,9 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
         cache_dir=None,
         codex_isolated=True,
     )
+    stoplist_phones, stoplist_error = _load_phone_stoplist(
+        getattr(args, "shared_phone_stoplist", DEFAULT_STOPLIST_PATH)
+    )
     return AmoWappiDraftLoop(
         config=config,
         wappi_client=wappi_client,
@@ -1011,6 +1036,8 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
             wappi_client=wappi_client,
             amo_read_client=amo_read_client,
             configured_profiles=config.profiles,
+            shared_phone_stoplist=frozenset(stoplist_phones),
+            stoplist_error=stoplist_error,
         ),
     )
 

@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 from scripts.run_kb_semantic_review import run_kb_semantic_review
+
+
+# Real KB facts always carry `freshness_check_date` (100% of the current
+# release, see БЛОК 7 audit). Fixtures below that predate the БЛОК 7 SLA
+# check used minimal facts without it; `_FRESH_CHECK_DATE` keeps them
+# representative of real facts without hard-coding a date that ages out.
+_FRESH_CHECK_DATE = date.today().isoformat()
 
 
 def test_semantic_review_blocks_implausible_client_price(tmp_path: Path) -> None:
@@ -147,6 +155,7 @@ def test_semantic_review_passes_minimal_good_release(tmp_path: Path) -> None:
                 "client_safe_text": "Фотон: цена за год для 5-11 класса — 74 500 ₽.",
                 "structured_value": {"amount": 74500, "currency": "RUB", "path": "prices.offline_5_11.year"},
                 "valid_until": "2026-07-01",
+                "freshness_check_date": _FRESH_CHECK_DATE,
             },
             {
                 "fact_id": "fact:good-lessons",
@@ -156,6 +165,7 @@ def test_semantic_review_passes_minimal_good_release(tmp_path: Path) -> None:
                 "allowed_for_client_answer": True,
                 "client_safe_text": "Фотон: за год проходит 35 занятий.",
                 "structured_value": {"count": 35, "unit": "lessons", "path": "academic_year.total_lessons"},
+                "freshness_check_date": _FRESH_CHECK_DATE,
             },
         ],
         approval_rows=[
@@ -281,6 +291,7 @@ def test_semantic_review_allows_discount_with_conditions(tmp_path: Path) -> None
                 "client_safe_text": "Фотон: скидка 10% действует для второго предмета.",
                 "structured_value": {"percentage": 10, "unit": "percent", "path": "discounts.second_subject.percent"},
                 "valid_until": "2026-07-01",
+                "freshness_check_date": _FRESH_CHECK_DATE,
             }
         ],
     )
@@ -352,6 +363,7 @@ def test_semantic_review_allows_pilot_short_tail_when_template_required(tmp_path
                 "client_safe_text": "Фотон: ЛВШ Менделеево — 15 000 ₽.",
                 "valid_until": "2026-08-31",
                 "structured_value": {"amount": 15000, "currency": "RUB", "path": "lvsh_mendeleevo_2026.pricing_2026.deposit"},
+                "freshness_check_date": _FRESH_CHECK_DATE,
             }
         ],
     )
@@ -375,6 +387,7 @@ def test_semantic_review_allows_public_telegram_handle_with_underscore(tmp_path:
                 "route_policy": "draft_for_manager",
                 "client_safe_text": "УНПК: контакты — @unpk_mipt.",
                 "structured_value": {"raw_value": "@unpk_mipt", "path": "contacts_unpk.telegram"},
+                "freshness_check_date": _FRESH_CHECK_DATE,
             }
         ],
     )
@@ -398,6 +411,7 @@ def test_semantic_review_allows_contextual_pilot_number(tmp_path: Path) -> None:
                 "route_policy": "bot_answer_self_for_pilot",
                 "client_safe_text": "Фотон: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось 3 года.",
                 "structured_value": {"number": 3, "path": "matkap.child_age.sertificate_owner_min"},
+                "freshness_check_date": _FRESH_CHECK_DATE,
             }
         ],
     )
@@ -429,6 +443,72 @@ def test_semantic_review_warns_on_time_sensitive_fact_with_check_date_only(tmp_p
 
     assert report["semantic_pass"] is True
     assert any(item["check_id"] == "time_sensitive_fact_has_check_date_only" for item in report["findings"])
+
+
+def test_semantic_review_flags_stale_price_fact_by_sla_even_with_future_valid_until(tmp_path: Path) -> None:
+    """БЛОК 7: `valid_until` (business expiry) must not hide a stale verification date.
+
+    Before БЛОК 7, `review_fact_freshness` returned no finding as soon as
+    `valid_until` was present, which is true of ~every fact in the real
+    release and is why the old semantic_pass reported zero freshness
+    findings. This proves the new SLA check catches it independently.
+    """
+    stale_check_date = (date.today() - timedelta(days=30)).isoformat()
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:stale-price",
+                "fact_key": "prices_regular_2026_27.foton.online.year",
+                "fact_type": "price",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: онлайн, год — 47 250 ₽.",
+                "valid_until": "2027-08-31",
+                "freshness_check_date": stale_check_date,
+                "structured_value": {"amount": 47250, "currency": "RUB", "path": "prices_regular_2026_27.foton.online.year"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    breach = [item for item in report["findings"] if item["check_id"] == "fact_freshness_sla_breach"]
+    assert breach
+    assert breach[0]["item_id"] == "fact:stale-price"
+    assert "sla_class=commercial_terms" in breach[0]["evidence"]
+    # Advisory (P2): a stale-but-datestamped fact does not flip the formal gate.
+    assert report["semantic_pass"] is True
+
+
+def test_semantic_review_flags_schedule_fact_with_no_freshness_marker_via_sla_check(tmp_path: Path) -> None:
+    """`schedule`/`availability` are not in TIME_SENSITIVE_FACT_TYPES, so the
+    pre-existing check never looked at them at all. Only the БЛОК 7 SLA check
+    catches a schedule fact with no verification date whatsoever.
+    """
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:schedule-no-date",
+                "fact_key": "unpk.online.weekend.schedule",
+                "fact_type": "schedule",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: занятия по выходным.",
+                "structured_value": {"path": "unpk.online.weekend.schedule"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert not [item for item in report["findings"] if item["check_id"] == "time_sensitive_fact_missing_freshness_marker"]
+    unknown = [item for item in report["findings"] if item["check_id"] == "fact_freshness_sla_check_date_unknown"]
+    assert unknown
+    assert unknown[0]["item_id"] == "fact:schedule-no-date"
+    # Unlike a stale-but-datestamped fact, an unreadable check date blocks the gate (P1).
+    assert report["semantic_pass"] is False
 
 
 def _write_release(

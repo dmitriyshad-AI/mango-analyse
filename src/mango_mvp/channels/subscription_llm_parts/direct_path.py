@@ -749,6 +749,7 @@ def _direct_path_bot_safe_context_items(
                 "text": _direct_path_trim_context_text(text, 700),
                 "event_at": str(item.get("event_at") or "").strip(),
                 "next_step_status": status,
+                "freshness_score": item.get("freshness_score"),
                 "relevance_tags": _direct_path_bot_safe_visible_tags(
                     tags,
                     active_brand=active_brand,
@@ -758,6 +759,27 @@ def _direct_path_bot_safe_context_items(
             }
         )
     return tuple(result)
+
+
+_DIRECT_PATH_HISTORICAL_FRESHNESS_THRESHOLD = 0.5
+
+
+def _direct_path_bot_safe_item_is_historical(item: Mapping[str, Any]) -> bool:
+    """True when the source is old enough that it must not read as a current fact.
+
+    freshness_score reflects the actual latest source date (see
+    bot_safe_summary._freshness_score_for_source_date), so this is never an
+    eternal 1.0 -- it decays as the underlying opportunity/event ages. A
+    missing score (None) means no recency signal was computed, so we do not
+    guess either way.
+    """
+    score = item.get("freshness_score")
+    if score is None:
+        return False
+    try:
+        return float(score) < _DIRECT_PATH_HISTORICAL_FRESHNESS_THRESHOLD
+    except (TypeError, ValueError):
+        return False
 
 
 def _direct_path_bot_safe_next_step_status(item: Mapping[str, Any]) -> str:
@@ -856,6 +878,7 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
         return ""
     statuses = {str(item.get("next_step_status") or "").strip().casefold() for item in items}
     has_unconfirmed_step = bool(statuses & {"needs_manager_review", "empty"})
+    has_historical_item = any(_direct_path_bot_safe_item_is_historical(item) for item in items)
     lines = [
         "Безопасная выжимка клиента: это разрешённая выжимка истории по активному бренду. "
         "Используй её только для продолжения диалога, понимания уже обсуждённого и следующего шага. "
@@ -873,13 +896,20 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
             "не утверждай его клиенту, предложи уточнить с менеджером. "
             "Датированную историю с таким статусом подавай как прежние заметки: «по прежним заметкам, актуальность уточню»."
         )
+    if has_historical_item:
+        lines.append(
+            "Пункты с пометкой «историческая запись» устарели: это факт прошлого обращения, а не текущее "
+            "состояние. По ним нельзя называть клиенту актуальные цены, даты, расписание или наличие мест — "
+            "только то, что этот вопрос обсуждался раньше, а актуальность предложи уточнить."
+        )
     for idx, item in enumerate(items, 1):
         text = _direct_path_bot_safe_memory_prompt_text(str(item.get("text") or "").strip())
         event_at = str(item.get("event_at") or "").strip()
         suffix = f" ({event_at[:10]})" if event_at else ""
         status = str(item.get("next_step_status") or "").strip().casefold()
         status_suffix = f" [статус следующего шага: {status}]" if status else ""
-        lines.append(f"{idx}. {text}{suffix}{status_suffix}")
+        historical_suffix = " [историческая запись]" if _direct_path_bot_safe_item_is_historical(item) else ""
+        lines.append(f"{idx}. {text}{suffix}{status_suffix}{historical_suffix}")
     return "\n".join(lines)
 
 

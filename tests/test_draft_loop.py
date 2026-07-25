@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,12 @@ import pytest
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.dialogue_memory import DIALOG_SUMMARY_ROLLING_ENV, MEMORY_PROVENANCE_ENV
-from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiHttpError
+from mango_mvp.integrations.amo_wappi_phase1 import (
+    AiOfficeAmoNoteClient,
+    AmoPhase1Client,
+    AmoWappiHttpError,
+    WappiPhase1Client,
+)
 from mango_mvp.integrations.draft_loop import (
     AmoWappiDraftLoop,
     DraftLoopConfig,
@@ -2263,3 +2269,246 @@ def test_message_outcomes_dry_run_splits_covered_by_draft_and_unsupported_inboun
 
     assert result["message_outcomes"] == {"v1": "unsupported_inbound", "t1": "covered_by_draft"}
     assert amo.notes == []
+
+
+# --- БЛОК 5: all-personal mode, structural exclusion, client_sends=0 proof --------------------
+#
+# These exercise the REAL `AmoWappiDraftLoop.run_once()` entry point end to end (not a helper
+# called in isolation): a green unit test for a helper nothing on the live path calls proves
+# nothing about production behaviour ("потёмкинская интеграция").
+
+
+def test_run_once_surfaces_message_outcomes_for_every_inbound_with_zero_silent_skip(tmp_path: Path) -> None:
+    """Fast-track 0A acceptance case at the run_once() level: 3 inbound messages on an
+    already-paired chat collapse into ONE AMO note (one conversation batch -> one note, by
+    design), but the top-level summary must still name a terminal outcome for all 3 message_ids.
+    Proven by set-equality against independently reconstructed ground truth (private_inbound_seen
+    == len(message_outcomes)), not by trusting the loop's own "processed" counter.
+    """
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    raw_messages = [_message(f"m{i}", ts=1000 + i, text=f"Вопрос {i}") for i in range(3)]
+    amo = FakeAmo()
+    loop = _loop(tmp_path, messages=raw_messages, pairs={key: pair}, amo=amo)
+
+    summary = loop.run_once(dry_run=False)
+
+    ground_truth = {("profile-foton", "chat-1", str(item["id"])) for item in raw_messages}
+    outcome_keys = {tuple(k.split("\t")) for k in summary["message_outcomes"]}
+    assert outcome_keys == ground_truth
+    assert set(summary["message_outcomes"].values()) == {"note_written"}
+    assert len(amo.notes) == 1  # one batch -> one note, not three
+
+
+def test_all_personal_mode_writes_one_note_for_a_chat_with_no_preexisting_pair(tmp_path: Path) -> None:
+    """Core БЛОК 5 acceptance case: a personal chat that nobody manually paired ahead of time
+    still gets a draft AMO note. No allowlist of (profile, chat_id) pairs was ever populated for
+    this chat_id -- all_personal_mode + a real auto-resolver call is what makes it work. A
+    repeated cycle with no new messages must not create a second note.
+    """
+    base = _config(tmp_path)
+    cfg = DraftLoopConfig(
+        profiles=base.profiles,
+        pairs={},
+        auto_pairs_path=tmp_path / "auto_pairs.json",
+        state_path=base.state_path,
+        journal_path=base.journal_path,
+        manager_edit_log_path=base.manager_edit_log_path,
+        heartbeat_path=base.heartbeat_path,
+        stop_path=base.stop_path,
+        debounce_seconds=base.debounce_seconds,
+        all_personal_mode=True,
+    )
+    # In all_personal_mode, a chat with no known pair only considers messages at/after the
+    # persisted "inbound_not_before_ts" watermark (see test_all_personal_mode_ignores_history_
+    # before_persisted_start) -- this scopes auto-resolution to genuinely new incoming, not the
+    # ~4.6k historical backlog. Seed it before the message timestamp so this message counts as
+    # "new", matching how the watermark is set once in real operation, in the past.
+    seed_state = DraftLoopState(cfg.state_path)
+    seed_state.payload["inbound_not_before_ts"] = 500
+    seed_state.save()
+    amo = FakeAmo()
+    bot = FakeBot()
+    wappi = FakeWappi(
+        {"profile-foton": [{"id": "chat-new-client", "type": "user"}]},
+        {("profile-foton", "chat-new-client"): [_message("m1", chat_id="chat-new-client", ts=1000)]},
+    )
+
+    def resolver(**_kwargs):
+        return {
+            "status": "matched",
+            "source": "wappi_amo_widget",
+            "lead_id": "555111",
+            "contact_id": "9001",
+            "match_key": "wappi_widget_contact",
+        }
+
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=resolver,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert len(amo.notes) == 1
+    assert amo.notes[0]["lead_id"] == "555111"
+    assert summary["message_outcomes"] == {"profile-foton\tchat-new-client\tm1": "note_written"}
+
+    second = loop.run_once(dry_run=False)
+
+    assert len(amo.notes) == 1  # repeat cycle -> 0 new duplicates
+    assert second["processed"] == 0
+    assert second["message_outcomes"] == {}
+
+
+def test_run_once_structurally_excludes_group_and_bot_chats_from_every_denominator(tmp_path: Path) -> None:
+    """Group/system/bot chats are excluded BEFORE any message in them is looked at: their
+    messages never enter `message_outcomes`, never call the bot provider, never reach AMO. They
+    are only counted as a chat-level `chat_skipped`/non_private journal row, never misreported as
+    some per-message outcome (and never silently dropped either).
+    """
+    key = DraftLoopKey("profile-foton", "chat-private")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    amo = FakeAmo()
+    bot = FakeBot()
+    wappi = FakeWappi(
+        {
+            "profile-foton": [
+                {"id": "chat-private", "type": "user"},
+                {"id": "chat-group", "type": "group"},
+                {"id": "chat-bot", "type": "user", "user": {"IsBot": True}},
+            ]
+        },
+        {
+            ("profile-foton", "chat-private"): [_message("m1", chat_id="chat-private", ts=1000)],
+            ("profile-foton", "chat-group"): [_message("g1", chat_id="chat-group", ts=1000)],
+            ("profile-foton", "chat-bot"): [_message("b1", chat_id="chat-bot", ts=1000)],
+        },
+    )
+    loop = AmoWappiDraftLoop(
+        config=_config(tmp_path, pairs={key: pair}),
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert set(summary["message_outcomes"]) == {"profile-foton\tchat-private\tm1"}
+    assert len(amo.notes) == 1
+    assert len(bot.calls) == 1
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    skipped_chat_ids = {row["chat_id"] for row in rows if row.get("event") == "chat_skipped"}
+    assert skipped_chat_ids == {"chat-group", "chat-bot"}
+
+
+class _SendTrapWappi(FakeWappi):
+    """Any Wappi method whose name could plausibly deliver a message to the client raises
+    immediately with an unambiguous message -- a hard tripwire for client_sends=0, sharper than
+    an absent stub (which would just raise a generic, easy-to-misdiagnose AttributeError)."""
+
+    def _trap(self, *_args, **_kwargs):
+        raise AssertionError("client_sends=0 violated: a Wappi send-capable method was called")
+
+    send_message = _trap
+    send_text = _trap
+    sendMessage = _trap
+    send = _trap
+
+
+class _SendTrapAmo(FakeAmo):
+    def _trap(self, *_args, **_kwargs):
+        raise AssertionError("client_sends=0 violated: a client-notifying AMO method was called")
+
+    send_message = _trap
+    notify_client = _trap
+    send = _trap
+
+
+class _SendTrapBot(FakeBot):
+    def _trap(self, *_args, **_kwargs):
+        raise AssertionError("client_sends=0 violated: the bot provider's send-capable method was called")
+
+    send = _trap
+    send_message = _trap
+
+
+@pytest.mark.parametrize("dry_run", (True, False))
+def test_client_sends_is_technically_unreachable_across_every_branch(tmp_path: Path, dry_run: bool) -> None:
+    """БЛОК 5 hard requirement: client_sends=0, proven technically, not just by absence of a
+    call in today's code. Runs the paired-happy-path, pair_missing, brand_mismatch and
+    quarantined-pair branches in one cycle through the REAL run_once(), using doubles that
+    hard-fail on any send-shaped method name. If a future change ever adds a client-facing send
+    call anywhere on this path, this test fails loudly instead of silently passing.
+    """
+    key_paired = DraftLoopKey("profile-foton", "chat-paired")
+    key_brand_mismatch = DraftLoopKey("profile-foton", "chat-brand-mismatch")
+    key_quarantined = DraftLoopKey("profile-foton", "chat-quarantined")
+    pairs = {
+        key_paired: DraftLoopPair(key=key_paired, lead_id="49832125", expected_brand="foton"),
+        key_brand_mismatch: DraftLoopPair(key=key_brand_mismatch, lead_id="49832126", expected_brand="unpk"),
+        key_quarantined: DraftLoopPair(key=key_quarantined, lead_id="49832199", expected_brand="foton"),
+    }
+    cfg = _config(tmp_path, pairs=pairs)
+    state = DraftLoopState(cfg.state_path)
+    state.quarantine_pair(key_quarantined, reason="allowlist_desync", lead_id="49832199")
+    state.save()
+    wappi = _SendTrapWappi(
+        {
+            "profile-foton": [
+                {"id": "chat-paired", "type": "user"},
+                {"id": "chat-unpaired", "type": "user"},
+                {"id": "chat-brand-mismatch", "type": "user"},
+                {"id": "chat-quarantined", "type": "user"},
+            ]
+        },
+        {
+            ("profile-foton", "chat-paired"): [_message("m1", chat_id="chat-paired", ts=1000)],
+            ("profile-foton", "chat-unpaired"): [_message("m2", chat_id="chat-unpaired", ts=1000)],
+            ("profile-foton", "chat-brand-mismatch"): [_message("m3", chat_id="chat-brand-mismatch", ts=1000)],
+            ("profile-foton", "chat-quarantined"): [_message("m4", chat_id="chat-quarantined", ts=1000)],
+        },
+    )
+    amo = _SendTrapAmo()
+    bot = _SendTrapBot()
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        state=state,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=dry_run)
+
+    # The trap doubles didn't blow up mid-cycle, and every message still got an outcome:
+    assert set(summary["message_outcomes"]) == {
+        "profile-foton\tchat-paired\tm1",
+        "profile-foton\tchat-unpaired\tm2",
+        "profile-foton\tchat-brand-mismatch\tm3",
+        "profile-foton\tchat-quarantined\tm4",
+    }
+    # Only the paired + brand-ok chat ever produces a note; a draft AMO note is not a send:
+    assert len(amo.notes) == (0 if dry_run else 1)
+
+
+def test_wappi_and_amo_client_classes_expose_no_send_capable_method() -> None:
+    """Client_sends=0 must hold structurally, not just behaviourally: the concrete client
+    classes the draft loop is actually built from in production
+    (scripts/run_amo_wappi_draft_loop.py:build_runner -> WappiPhase1Client, AiOfficeAmoNoteClient)
+    do not even define a method whose name could plausibly deliver a message to a client. Send
+    methods are technically unavailable in this mode, not merely unused.
+    """
+    suspect = re.compile(r"send|reply|dispatch_message|deliver_message|notify_client", re.IGNORECASE)
+    for cls in (WappiPhase1Client, AiOfficeAmoNoteClient, AmoPhase1Client):
+        offending = [name for name in dir(cls) if not name.startswith("_") and suspect.search(name)]
+        assert offending == [], f"{cls.__name__} exposes a send-like method: {offending}"

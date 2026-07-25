@@ -1108,6 +1108,38 @@ def test_owner50_deduplicates_family_and_uses_best_family_signal(owner50_workboo
     )
 
 
+def test_owner50_offer_column_never_echoes_raw_amo_deal_title(tmp_path: Path) -> None:
+    """БЛОК 7: продукт для Owner50 -- только из принятой KB, не из названия
+    старой сделки AMO. `row["offer"]` (колонка "Актуальное предложение") is a
+    fixed, KB-deflecting string in `_owner50_family_rows`; it must never leak
+    a raw `customer_opportunities.title` (a free-text AMO deal name a
+    manager may have typed months ago, e.g. an expired promo), even though
+    that same title is legitimately shown elsewhere as dated CRM history.
+    """
+    db = _timeline_db(tmp_path)
+    stale_deal_title = "Скидка -50% Новогодняя акция 2024 -- ЗАБРОНИРОВАНО"
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:stale-deal-name",
+        customer_id="customer:z",
+        signal_type="callback_due",
+        deal_title=stale_deal_title,
+    )
+    out = tmp_path / ".codex_local" / "owner50_stale_title.xlsx"
+
+    build_owner50_family_workbook(timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW)
+
+    rows = list(load_workbook(out, read_only=True)["Кому писать"].iter_rows(values_only=True))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    offer = rows[1][columns["Актуальное предложение"]]
+
+    assert stale_deal_title not in offer
+    assert offer == "Уточнить актуальный интерес; затем подобрать продукт из действующей базы знаний."
+    # The raw deal title is legitimate as dated *history*, just not as the offer.
+    assert stale_deal_title in rows[1][columns["Исторический интерес"]]
+
+
 def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
     out, _ = owner50_workbook
     wb = load_workbook(out, read_only=True)
@@ -1218,6 +1250,96 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
     )
 
 
+@pytest.fixture
+def owner50_universe(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    """Two family_members_v1 families: one with an active signal, one with none."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(db, tmp_path, family_id="family:ready", customer_id="customer:ready", signal_type="callback_due")
+    _seed_owner50_member(db, tmp_path, family_id="family:silent", customer_id="customer:silent", signal_type="callback_due")
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM derived_signals WHERE tenant_id='foton' AND customer_id='customer:silent'")
+        con.commit()
+    out = tmp_path / ".codex_local" / "owner50_universe.xlsx"
+    summary = dict(
+        build_owner50_family_workbook(timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW)
+    )
+    return db, out, summary
+
+
+def test_owner50_classifies_every_family_before_applying_limit(
+    owner50_universe: tuple[Path, Path, dict[str, object]],
+) -> None:
+    """Universe = every family_members_v1 family, including ones with no active signal."""
+    db, out, _ = owner50_universe
+    with sqlite3.connect(db) as con:
+        all_families = {
+            str(row[0])
+            for row in con.execute("SELECT DISTINCT family_id FROM family_members_v1 WHERE tenant_id='foton'")
+        }
+    control_families = {
+        row[0]
+        for row in list(load_workbook(out, read_only=True)["Контроль"].iter_rows(values_only=True))[1:]
+    }
+
+    assert all_families == {"family:ready", "family:silent"}
+    assert control_families == all_families
+
+
+def test_owner50_candidate_does_not_pad_ready_quota(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(db, tmp_path, family_id="family:one", customer_id="customer:one", signal_type="callback_due")
+    _seed_owner50_member(db, tmp_path, family_id="family:two", customer_id="customer:two", signal_type="callback_due")
+    out = tmp_path / ".codex_local" / "owner50_limit.xlsx"
+
+    summary = build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=out, limit=1, as_of=NOW,
+    )
+    wb = load_workbook(out, read_only=True)
+    ready_rows = list(wb["Кому писать"].iter_rows(values_only=True))[1:]
+    control_status = {row[0]: row[1] for row in list(wb["Контроль"].iter_rows(values_only=True))[1:]}
+
+    assert summary["families"] == 1
+    assert summary["candidate_families"] == 2
+    assert len(ready_rows) == 1
+    assert control_status == {"family:one": "selected", "family:two": "outside_limit"}
+
+
+def test_owner50_excluded_family_has_honest_reason(
+    owner50_universe: tuple[Path, Path, dict[str, object]],
+) -> None:
+    _, out, _ = owner50_universe
+    control = {
+        row[0]: (row[1], row[2])
+        for row in list(load_workbook(out, read_only=True)["Контроль"].iter_rows(values_only=True))[1:]
+    }
+
+    status, reason = control["family:silent"]
+    assert status == "excluded"
+    assert reason == "no_active_outreach_signal"
+
+
+def test_owner50_evidence_sources_resolve_to_real_rows(
+    owner50_universe: tuple[Path, Path, dict[str, object]],
+) -> None:
+    db, out, _ = owner50_universe
+    evidence = list(load_workbook(out, read_only=True)["Доказательства"].iter_rows(values_only=True))[1:]
+    resolvers = {
+        "derived_signals": "SELECT created_at FROM derived_signals WHERE tenant_id='foton' AND signal_id=?",
+        "timeline_events": "SELECT event_at, source_system FROM timeline_events WHERE tenant_id='foton' AND event_id=?",
+        "customer_opportunities": "SELECT opened_at FROM customer_opportunities WHERE tenant_id='foton' AND opportunity_id=?",
+        "family_links_v1": "SELECT created_at FROM family_links_v1 WHERE tenant_id='foton' AND family_id=?",
+    }
+    assert evidence
+    with sqlite3.connect(db) as con:
+        for _family_id, _rank, _kind, _text, source in evidence:
+            if source == "customer_purchases_v1":
+                continue
+            table, _, ref_id = source.partition(":")
+            resolved = con.execute(resolvers[table], (ref_id,)).fetchone()
+            assert resolved is not None, f"unresolved evidence source: {source}"
+            assert all(value for value in resolved), f"evidence source missing date/system: {source}"
+
+
 def _timeline_db(tmp_path: Path) -> Path:
     db = tmp_path / "timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
@@ -1322,6 +1444,7 @@ def _seed_owner50_member(
     grade: str = "8",
     event_summary: str = "Клиент подтвердил интерес к курсу.",
     membership_reason: str = "exact_amo_parent_name_and_phone_or_email",
+    deal_title: str = "Курс математики 8 класс",
 ) -> None:
     number = ord(customer_id[-1].casefold()) - ord("a") + 1 if customer_id[-1].isalpha() else 9
     event = TimelineEvent(
@@ -1342,9 +1465,9 @@ def _seed_owner50_member(
         opportunity_type=OpportunityType.AMO_DEAL,
         source_system="amo",
         source_id=f"lead-{customer_id}",
-        title="Курс математики 8 класс",
+        title=deal_title,
         status="active",
-        product_context={"products_of_interest": ["Курс математики 8 класс"]},
+        product_context={"products_of_interest": [deal_title]},
         opened_at=NOW - timedelta(days=30),
     )
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)

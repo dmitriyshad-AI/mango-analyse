@@ -674,9 +674,20 @@ def _owner50_family_rows(
         (tenant_id, *types, as_of.isoformat()),
     ):
         signals_by_family.setdefault(str(row["family_id"]), []).append(row)
+    # ponytail: universe = every family in family_members_v1, not only families that
+    # already have a tracked signal, so signal-less families flow through the same
+    # classification and land in "Контроль" instead of silently vanishing.
+    all_family_ids = {
+        str(row["family_id"])
+        for row in con.execute(
+            "SELECT DISTINCT family_id FROM family_members_v1 WHERE tenant_id=?",
+            (tenant_id,),
+        )
+    }
     candidates: list[dict[str, Any]] = []
     control: list[tuple[str, str, str]] = []
-    for family_id, signals in signals_by_family.items():
+    for family_id in sorted(all_family_ids | signals_by_family.keys()):
+        signals = signals_by_family.get(family_id, [])
         members = con.execute(
             """SELECT member.*, identity.display_name, identity.primary_phone, identity.primary_email,
                       identity.record_json AS identity_record_json

@@ -347,6 +347,35 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     )
 
 
+_BOT_SAFE_SUMMARY_FRESHNESS_FULL_DAYS = 30.0
+_BOT_SAFE_SUMMARY_FRESHNESS_FLOOR_DAYS = 365.0
+_BOT_SAFE_SUMMARY_FRESHNESS_FLOOR = 0.2
+_BOT_SAFE_SUMMARY_FRESHNESS_UNKNOWN = 0.5
+
+
+def _freshness_score_for_source_date(latest_at: datetime | None, *, now: datetime) -> float:
+    """Freshness reflects the actual latest source date, never a fixed 1.0.
+
+    A summary built from a source dated within the last 30 days scores 1.0;
+    older sources decay linearly down to a 0.2 floor at one year old, so a
+    chunk that is rebuilt long after the underlying opportunity/event went
+    cold stops claiming full confidence. A chunk with no dated source at all
+    scores 0.5 (unknown recency, not "confirmed recent").
+    """
+    if latest_at is None:
+        return _BOT_SAFE_SUMMARY_FRESHNESS_UNKNOWN
+    age_days = (now - latest_at).total_seconds() / 86400.0
+    if age_days <= _BOT_SAFE_SUMMARY_FRESHNESS_FULL_DAYS:
+        return 1.0
+    if age_days >= _BOT_SAFE_SUMMARY_FRESHNESS_FLOOR_DAYS:
+        return _BOT_SAFE_SUMMARY_FRESHNESS_FLOOR
+    span = _BOT_SAFE_SUMMARY_FRESHNESS_FLOOR_DAYS - _BOT_SAFE_SUMMARY_FRESHNESS_FULL_DAYS
+    decayed = 1.0 - (1.0 - _BOT_SAFE_SUMMARY_FRESHNESS_FLOOR) * (
+        age_days - _BOT_SAFE_SUMMARY_FRESHNESS_FULL_DAYS
+    ) / span
+    return round(max(_BOT_SAFE_SUMMARY_FRESHNESS_FLOOR, min(1.0, decayed)), 3)
+
+
 def _build_customer_draft(
     *,
     tenant_id: str,
@@ -371,7 +400,8 @@ def _build_customer_draft(
     if not text:
         return None
     latest_at = _latest_event_at(opportunities, events, source_chunks)
-    created_at = _existing_created_at(existing_chunk) or now_utc()
+    build_now = now_utc()
+    created_at = _existing_created_at(existing_chunk) or build_now
     source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
     chunk = BotContextChunk(
         tenant_id=tenant_id,
@@ -382,7 +412,7 @@ def _build_customer_draft(
         source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
         source_ref=source_ref,
         event_at=latest_at,
-        freshness_score=1.0,
+        freshness_score=_freshness_score_for_source_date(latest_at, now=build_now),
         relevance_tags=("bot_safe", "structured", brand),
         allowed_for_bot=True,
         requires_manager_review=False,

@@ -5,7 +5,7 @@ import csv
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from zipfile import ZipFile
@@ -119,6 +119,141 @@ _FACT_KEY_ALIASES = {
     "camp_logistics": FACT_TYPE_PROGRAM,
     "transport": "location",
 }
+
+# --- Freshness SLA (БЛОК 7, 2026-07-25): age-based staleness check --------
+#
+# `FactSource.freshness_status` above is a hand-set enum (fresh/stale/...)
+# with no automatic check of *how old* that status actually is. Nothing on
+# the runtime path (see `_direct_path_valid_until_ok` in
+# channels/subscription_llm_parts/support.py) compares a fact's verification
+# date against a deadline -- it only compares the explicit `valid_until`
+# business-expiry date to today. This section adds that missing age check.
+#
+# The individual fact records actually served at runtime
+# (product_data/knowledge_base/.../kb_release_v3_snapshot.json) carry a real
+# `fact_type` string (e.g. "price", "schedule", "camp_lvsh" -- see that
+# snapshot; this is a different, more granular taxonomy than the FACT_TYPE_*
+# source-registry constants above, which classify KC *sources*, not
+# individual facts) plus a `freshness_check_date` stamped by the KB build
+# pipeline. `verified_at`/`verified_by` exist in the same fact schema but are
+# not populated by any current build script; they are accepted here as a
+# fallback for when that changes.
+#
+# SLA classes per owner ТЗ (БЛОК 7): schedule/availability -- 24 hours;
+# prices, dates, commercial conditions -- 7 days; stable descriptive rules --
+# 90 days. KB dates have day precision only (no timestamps): "checked
+# yesterday" can mean anywhere up to ~47 hours ago, which already breaches a
+# 24-hour SLA, so "24 hours" is implemented as max age 0 days (checked_at
+# must equal today; checked_at == yesterday or older already breaches it).
+
+FRESHNESS_SLA_LIVE_STATUS = "live_status"            # расписание и наличие мест -- 24 часа
+FRESHNESS_SLA_COMMERCIAL_TERMS = "commercial_terms"  # цены, даты, условия -- 7 дней
+FRESHNESS_SLA_STABLE_RULES = "stable_rules"          # стабильные правила -- 90 дней
+
+FRESHNESS_SLA_MAX_AGE_DAYS: dict[str, int] = {
+    FRESHNESS_SLA_LIVE_STATUS: 0,
+    FRESHNESS_SLA_COMMERCIAL_TERMS: 7,
+    FRESHNESS_SLA_STABLE_RULES: 90,
+}
+
+# Unknown/unmapped fact_type defaults to the middle bucket: strict enough to
+# surface a genuinely new fact_type quickly, without flooding findings for
+# every structural/descriptive fact_type nobody has classified yet.
+FRESHNESS_SLA_DEFAULT_CLASS = FRESHNESS_SLA_COMMERCIAL_TERMS
+
+# Real per-fact `fact_type` values observed in kb_release_v3 fact records.
+FRESHNESS_SLA_CLASS_BY_FACT_TYPE: dict[str, str] = {
+    "schedule": FRESHNESS_SLA_LIVE_STATUS,
+    "availability": FRESHNESS_SLA_LIVE_STATUS,
+    "price": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "deadline": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "discount": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "promocode": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "installment": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "payment": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "matkap": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "tax": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "refund": FRESHNESS_SLA_COMMERCIAL_TERMS,
+    "program": FRESHNESS_SLA_STABLE_RULES,
+    "course_parameter": FRESHNESS_SLA_STABLE_RULES,
+    "camp_lvsh": FRESHNESS_SLA_STABLE_RULES,
+    "camp_city": FRESHNESS_SLA_STABLE_RULES,
+    "camp_zvsh": FRESHNESS_SLA_STABLE_RULES,
+    "intensive": FRESHNESS_SLA_STABLE_RULES,
+    "process": FRESHNESS_SLA_STABLE_RULES,
+    "policy": FRESHNESS_SLA_STABLE_RULES,
+    "location": FRESHNESS_SLA_STABLE_RULES,
+    "contact": FRESHNESS_SLA_STABLE_RULES,
+    "contacts": FRESHNESS_SLA_STABLE_RULES,
+    "teacher": FRESHNESS_SLA_STABLE_RULES,
+    "format": FRESHNESS_SLA_STABLE_RULES,
+    "documents": FRESHNESS_SLA_STABLE_RULES,
+}
+
+FRESHNESS_SLA_STATUS_OK = "ok"
+FRESHNESS_SLA_STATUS_STALE = "stale"
+FRESHNESS_SLA_STATUS_UNKNOWN = "unknown_check_date"
+
+
+def fact_sla_class(fact_type: str) -> str:
+    key = str(fact_type or "").strip().casefold()
+    return FRESHNESS_SLA_CLASS_BY_FACT_TYPE.get(key, FRESHNESS_SLA_DEFAULT_CLASS)
+
+
+def fact_sla_max_age_days(fact_type: str) -> int:
+    return FRESHNESS_SLA_MAX_AGE_DAYS[fact_sla_class(fact_type)]
+
+
+@dataclass(frozen=True)
+class FactFreshnessSLA:
+    fact_id: str
+    fact_key: str
+    fact_type: str
+    sla_class: str
+    sla_max_age_days: int
+    checked_at: str | None
+    age_days: int | None
+    within_sla: bool
+    status: str
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def evaluate_fact_freshness_sla(fact: Mapping[str, Any], *, today: date | None = None) -> FactFreshnessSLA:
+    """Check one fact's verification age against its SLA class.
+
+    Uses `freshness_check_date` (populated by the KB build pipeline) as the
+    verification date, falling back to `verified_at` (reserved by the fact
+    schema but not currently written by any build script). A fact with
+    neither is reported as `unknown_check_date` and NOT within SLA -- unknown
+    age must not be silently treated as fresh.
+    """
+    fact_type = str(fact.get("fact_type") or next(iter(fact.get("fact_types") or ()), "") or "")
+    sla_class = fact_sla_class(fact_type)
+    sla_days = FRESHNESS_SLA_MAX_AGE_DAYS[sla_class]
+    fact_id = str(fact.get("fact_id") or fact.get("id") or "")
+    fact_key = str(fact.get("fact_key") or fact_id)
+    structured = fact.get("structured_value")
+    structured_map = structured if isinstance(structured, Mapping) else {}
+    checked_raw = str(
+        fact.get("freshness_check_date")
+        or fact.get("verified_at")
+        or structured_map.get("freshness_check_date")
+        or ""
+    ).strip()
+    if not checked_raw:
+        return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, None, None, False, FRESHNESS_SLA_STATUS_UNKNOWN)
+    try:
+        checked_date = date.fromisoformat(checked_raw[:10])
+    except ValueError:
+        return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, checked_raw, None, False, FRESHNESS_SLA_STATUS_UNKNOWN)
+    reference_today = today if today is not None else datetime.now(timezone.utc).date()
+    age_days = (reference_today - checked_date).days
+    within = age_days <= sla_days
+    status = FRESHNESS_SLA_STATUS_OK if within else FRESHNESS_SLA_STATUS_STALE
+    return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, checked_raw, age_days, within, status)
+
 
 _W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 

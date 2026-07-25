@@ -457,6 +457,152 @@ def test_widget_resolver_accepts_one_contact_with_multiple_leads(monkeypatch) ->
     assert result["lead_snapshot"]["active_brand_lead_count"] == 2
 
 
+# --- БЛОК 5: shared-phone stoplist wired into the active resolver -----------------------------
+#
+# `--shared-phone-stoplist` / `_load_phone_stoplist` / the stoplist-aware `AmoAutoResolver`
+# already existed, but `build_runner()` never actually called `_load_phone_stoplist` or passed
+# a stoplist into `build_authoritative_resolver()` -- the CLI flag and loader were orphaned
+# (`AmoAutoResolver` itself is unit-tested elsewhere in this file, but nothing on the live
+# `build_runner()` path ever instantiates it). These tests cover the now-wired check on
+# `build_widget_resolver`, the resolver `build_runner()` actually uses.
+
+
+def test_widget_resolver_rejects_max_dialog_on_stoplisted_shared_phone(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton-max", "platform": "max", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            raise AssertionError("a stoplisted shared phone must reject before any AMO contact search")
+
+    resolver = runner.build_widget_resolver(
+        WappiClient(),
+        SimpleNamespace(),
+        shared_phone_stoplist=frozenset({"+79990000000"}),
+    )
+
+    result = resolver(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="max", profile_id="profile-foton-max", brand="foton"),
+        dialog={"id": "max-1", "type": "DIALOG", "isGroup": False, "phone": "+7 999 000-00-00"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result == {"status": "rejected", "reason": "shared_phone", "channel": "max", "match_key": "max_phone_field"}
+
+
+def test_widget_resolver_max_dialog_proceeds_when_stoplist_is_simply_absent(monkeypatch) -> None:
+    """Regression guard: `shared_phone_stoplist_unavailable` (no file on disk yet -- the
+    default/expected state today) must NOT block MAX resolution. Only an exact phone match or a
+    genuinely broken stoplist file does; an absent stoplist is not a reason to disable an entire
+    channel of all-personal coverage.
+    """
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton-max", "platform": "max", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            return {"contact": {"id": 2002}, "leads": [{"id": 1001, "status_id": 142}]}
+
+    class AmoReadClient:
+        def amo_api_get(self, *, path, **_kwargs):
+            return _lead("1001", status_id=142, org="Фотон", contacts=("2002",))
+
+    resolver = runner.build_widget_resolver(
+        WappiClient(),
+        AmoReadClient(),
+        stoplist_error="shared_phone_stoplist_unavailable",
+    )
+
+    result = resolver(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="max", profile_id="profile-foton-max", brand="foton"),
+        dialog={"id": "max-1", "type": "DIALOG", "isGroup": False, "phone": "+7 999 111-22-33"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result["status"] == "matched"
+    assert result["contact_id"] == "2002"
+
+
+def test_widget_resolver_max_dialog_fails_closed_on_corrupt_stoplist(monkeypatch) -> None:
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-1")
+
+    class WappiClient:
+        def list_all_profiles(self):
+            return [{"profile_id": "profile-foton-max", "platform": "max", "uuid": "profile-uuid"}]
+
+        def find_amocrm_contact_for_dialog(self, **_kwargs):
+            raise AssertionError("a corrupt stoplist file must block MAX resolution before any AMO lookup")
+
+    resolver = runner.build_widget_resolver(
+        WappiClient(),
+        SimpleNamespace(),
+        stoplist_error="shared_phone_stoplist_invalid",
+    )
+
+    result = resolver(
+        key=SimpleNamespace(),
+        profile=SimpleNamespace(channel="max", profile_id="profile-foton-max", brand="foton"),
+        dialog={"id": "max-1", "type": "DIALOG", "isGroup": False, "phone": "+7 999 111-22-33"},
+        messages=(),
+        message=SimpleNamespace(),
+    )
+
+    assert result == {"status": "rejected", "reason": "shared_phone_stoplist_invalid", "channel": "max"}
+
+
+def test_build_runner_loads_and_forwards_shared_phone_stoplist(monkeypatch, tmp_path: Path) -> None:
+    stoplist_path = tmp_path / "stoplist.json"
+    stoplist_path.write_text(json.dumps({"phones": ["+7 999 000-00-00"]}), encoding="utf-8")
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
+    monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
+    profiles = {"profile-foton": DraftLoopProfile("profile-foton", "foton", "telegram")}
+    monkeypatch.setattr(runner, "build_config", lambda _args: SimpleNamespace(state_path=tmp_path / "state.json", profiles=profiles))
+    monkeypatch.setattr(runner.AiOfficeClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://api.fotonai.online")))
+    monkeypatch.setattr(runner.WappiClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://wappi.pro")))
+    monkeypatch.setattr(runner, "build_safe_transport", lambda _ai, _wappi: object())
+    monkeypatch.setattr(runner, "SubscriptionLlmDraftProvider", lambda **_kwargs: object())
+    wappi_client = object()
+    monkeypatch.setattr(runner, "WappiPhase1Client", lambda *_args, **_kwargs: wappi_client)
+    monkeypatch.setattr(runner, "AiOfficeAmoNoteClient", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "build_context_builder", lambda _snapshot, **_kwargs: object())
+    monkeypatch.setattr(runner, "DraftLoopState", lambda _path: object())
+    monkeypatch.setattr(runner, "build_amo_read_client", lambda _args: object())
+    captured: dict = {}
+
+    def _fake_authoritative_resolver(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(runner, "build_authoritative_resolver", _fake_authoritative_resolver)
+    monkeypatch.setattr(runner, "AmoWappiDraftLoop", lambda **kwargs: kwargs)
+    args = argparse.Namespace(
+        env_file=tmp_path / ".env",
+        ai_office_env_file=tmp_path / ".env.ai",
+        model="gpt-5.5",
+        reasoning="xhigh",
+        timeout_sec=240,
+        snapshot=tmp_path / "snapshot.json",
+        customer_timeline_db=None,
+        customer_timeline_allowed_root=None,
+        customer_timeline_tenant="mango",
+        shared_phone_stoplist=stoplist_path,
+    )
+
+    runner.build_runner(args)
+
+    assert captured["shared_phone_stoplist"] == frozenset({"+79990000000"})
+    assert captured["stoplist_error"] == ""
+
+
 def test_runtime_profiles_must_exactly_match_configured_profiles() -> None:
     configured = {"p1": DraftLoopProfile("p1", "foton", "telegram")}
 

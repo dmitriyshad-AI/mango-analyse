@@ -702,18 +702,30 @@ def _looks_like_price_query(value: str) -> bool:
 
 
 def _extract_grade(text: str) -> int | None:
+    # БЛОК 7 (2026-07-25) bugfix: patterns[1]/[2] match a Cyrillic OR Latin
+    # "m" (product codes M9/M11 -- the bot itself renders them in Latin, see
+    # `_entries_from_m9_m11_tariff_fact`'s `product_code.upper()`), but had no
+    # capturing group. The old branch below tested `"м" in match.group(0)`
+    # (Cyrillic-only) to pick the return path; for a Latin "m9"/"m11" match
+    # that test was False, so it fell through to `match.group(1)`, which does
+    # not exist on these patterns -> IndexError crashing every price lookup
+    # for a client typing "M9"/"M11" in Latin. Branching on pattern index
+    # instead of sniffing match text fixes this without touching the regex
+    # patterns themselves (no understanding/regex migration, see
+    # docs/ADR003_REGEX_UNDERSTANDING_MORATORIUM.md -- same mechanism, just
+    # correct for both alphabets).
     patterns = (
         r"\b([1-9]|1[01])\s*(?:класс|кл\.?|класса|классе)\b",
         r"\b(?:[mм]9|[mм]\s*9)\b",
         r"\b(?:[mм]11|[mм]\s*11)\b",
     )
-    for pattern in patterns:
+    for index, pattern in enumerate(patterns):
         match = re.search(pattern, text)
         if not match:
             continue
-        if "м" in match.group(0):
-            return 11 if "11" in match.group(0) else 9
-        return int(match.group(1))
+        if index == 0:
+            return int(match.group(1))
+        return 11 if index == 2 else 9
     return None
 
 

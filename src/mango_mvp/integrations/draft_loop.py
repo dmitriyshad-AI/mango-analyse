@@ -724,6 +724,7 @@ class AmoWappiDraftLoop:
                 "auth_error": True,
                 "auth_error_count": self.state.auth_error_count(),
                 "stopped": True,
+                "message_outcomes": {},
             }
             self._write_heartbeat("auth_error", summary)
             return summary
@@ -735,6 +736,15 @@ class AmoWappiDraftLoop:
         bot_calls = 0
         manager_edit_count = 0
         auto_resolver_counts: Counter[str] = Counter()
+        # Cycle-wide reconciliation of the per-message terminal outcome bookkeeping that
+        # `_process_chat_messages` returns per call (see the "message_outcomes" contract note
+        # on that method). Keyed the same way as pending/deferred state entries
+        # (`_message_state_key`: "profile_id\tchat_id\tmessage_id") so outcomes from different
+        # chats/profiles never collide even though message_id alone is not globally unique.
+        # This is what lets a caller (e.g. an all-personal replay) prove "every inbound message
+        # got exactly one terminal outcome" from the real run_once() entry point instead of
+        # re-deriving it from journal rows.
+        message_outcomes: dict[str, str] = {}
         now_epoch = int(self.now_fn().timestamp())
         inbound_not_before_ts = (
             self.state.ensure_inbound_not_before_ts(now_epoch)
@@ -839,6 +849,11 @@ class AmoWappiDraftLoop:
                     auto_reason = str(result.get("auto_resolver_reason") or "")
                     if auto_reason:
                         auto_resolver_counts[auto_reason] += 1
+                    call_outcomes = result.get("message_outcomes") or {}
+                    for item in inbound_new:
+                        outcome = call_outcomes.get(item.message_id)
+                        if outcome:
+                            message_outcomes[_message_state_key(item)] = outcome
         except Exception as exc:  # noqa: BLE001
             if not _is_auth_error_exception(exc):
                 raise
@@ -860,6 +875,7 @@ class AmoWappiDraftLoop:
                 "auth_error_count": auth_error_count,
                 "stopped": auth_error_count >= max(1, int(self.config.auth_error_limit)),
                 "error": str(exc)[:300],
+                "message_outcomes": dict(message_outcomes),
             }
             self._write_heartbeat("auth_error", summary)
             return summary
@@ -876,6 +892,7 @@ class AmoWappiDraftLoop:
             "dry_run": dry_run,
             "manager_edits_classified": manager_edit_count,
             "auto_resolver_counts": dict(auto_resolver_counts),
+            "message_outcomes": dict(message_outcomes),
             "auth_error": False,
             "auth_error_count": 0,
         }

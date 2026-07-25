@@ -17,6 +17,13 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(PROJECT_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from mango_mvp.knowledge_base.fact_registry import (  # noqa: E402
+    FRESHNESS_SLA_STATUS_UNKNOWN,
+    evaluate_fact_freshness_sla,
+)
 
 
 DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team")
@@ -409,6 +416,7 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
         if allowed:
             findings.extend(review_client_text(text, brand=brand, item_id=fact_id))
             findings.extend(review_fact_freshness(fact, fact_type=fact_type, item_id=fact_id))
+            findings.extend(review_fact_freshness_sla(fact, item_id=fact_id))
             route_policy = str(fact.get("route_policy") or "")
             template_required = bool(fact.get("bot_template_required"))
             if route_policy == "bot_answer_self_for_pilot" and has_machine_short_tail(text) and not template_required:
@@ -507,6 +515,45 @@ def review_fact_freshness(fact: Mapping[str, Any], *, fact_type: str, item_id: s
             evidence=fact_type,
         )
     ]
+
+
+def review_fact_freshness_sla(fact: Mapping[str, Any], *, item_id: str) -> list[Finding]:
+    """БЛОК 7 (2026-07-25): real age-vs-SLA check, independent of `valid_until`.
+
+    `review_fact_freshness` above stops as soon as `valid_until` is present,
+    which is true for effectively every fact in the release and is why the
+    old semantic_pass reports zero freshness findings. `valid_until` is a
+    *business* expiry date (e.g. end of a semester); it says nothing about
+    whether anyone re-checked the fact against reality recently. This check
+    compares `freshness_check_date` age against the owner SLA by fact class
+    (schedule/availability 24h, price/dates/conditions 7d, stable rules 90d)
+    regardless of `valid_until`.
+    """
+    result = evaluate_fact_freshness_sla(fact)
+    if result.status == FRESHNESS_SLA_STATUS_UNKNOWN:
+        return [
+            Finding(
+                "P1",
+                "fact_freshness_sla_check_date_unknown",
+                "Клиентский факт не имеет читаемой даты проверки (freshness_check_date/verified_at) для проверки SLA свежести.",
+                item_id=item_id,
+                evidence=f"sla_class={result.sla_class}",
+            )
+        ]
+    if not result.within_sla:
+        return [
+            Finding(
+                "P2",
+                "fact_freshness_sla_breach",
+                "Клиентский факт старше SLA свежести своего класса (проверить и переподтвердить у владельца факта).",
+                item_id=item_id,
+                evidence=(
+                    f"sla_class={result.sla_class} max_age_days={result.sla_max_age_days} "
+                    f"age_days={result.age_days} checked_at={result.checked_at}"
+                ),
+            )
+        ]
+    return []
 
 
 def discount_has_condition(text: str, fact_key: str, structured: Mapping[str, Any]) -> bool:

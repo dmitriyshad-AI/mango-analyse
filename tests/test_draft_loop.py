@@ -2080,7 +2080,7 @@ def test_auto_pair_contact_change_is_blocked(tmp_path: Path) -> None:
     summary = loop.run_once(dry_run=True)
 
     assert summary["bot_calls"] == 0
-    assert summary["message_outcomes"] == {"profile-foton\tchat-1\tm1": "manual_review"}
+    assert summary["message_outcomes"] == {"profile-foton\tchat-1\tm1": "identity_conflict"}
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(row["event"] == "auto_pair_identity_conflict" for row in rows)
     assert any(
@@ -2175,6 +2175,47 @@ def test_message_outcomes_pair_missing_dry_run_covers_every_message(tmp_path: Pa
     result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=True)
 
     assert result["message_outcomes"] == {"m1": "pair_missing", "m2": "pair_missing"}
+
+
+def test_message_outcomes_identity_conflict_is_distinct_from_pair_missing(tmp_path: Path) -> None:
+    """Codex finding: a contact_id change on an already-paired chat (an identity
+    conflict) must not be reported as an ordinary "no pair configured" -- the two
+    have different real causes and must not collapse into the same outcome label."""
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    old_pair = DraftLoopPair(
+        key=key, lead_id="49832125", contact_id="111", expected_brand="foton", source="wappi_amo_widget"
+    )
+
+    def changed_contact(**_kwargs):
+        return {
+            "status": "matched",
+            "source": "wappi_amo_widget",
+            "lead_id": "",
+            "contact_id": "222",  # disagrees with the persisted pair's contact_id "111"
+            "match_key": "wappi_widget_contact",
+        }
+
+    conflict_loop = AmoWappiDraftLoop(
+        config=_config(tmp_path, pairs={key: old_pair}),
+        wappi_client=FakeWappi({}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=changed_contact,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message("m1", ts=1000)]
+
+    conflict_result = conflict_loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=True)
+
+    missing_loop = _outcome_loop(tmp_path, pairs={})
+    missing_result = missing_loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=True)
+
+    assert conflict_result["message_outcomes"] == {"m1": "identity_conflict"}
+    assert missing_result["message_outcomes"] == {"m1": "pair_missing"}
+    assert conflict_result["message_outcomes"] != missing_result["message_outcomes"]
 
 
 def test_message_outcomes_brand_mismatch_covers_every_message(tmp_path: Path) -> None:

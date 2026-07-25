@@ -1152,7 +1152,10 @@ class AmoWappiDraftLoop:
         # Vocabulary: covered_by_draft, note_written, pair_missing, brand_mismatch,
         # manual_review, write_unknown, unsupported_inbound, plus not_before_skipped
         # for the pre-existing pairing-watermark skip (no content/write reason fits
-        # the seven names above without misrepresenting what happened).
+        # the seven names above without misrepresenting what happened), plus
+        # identity_conflict for a contact_id change on an already-paired chat (a
+        # widget candidate whose contact disagrees with the persisted pair) -- kept
+        # distinct from pair_missing because a conflict is not an absent pair.
         message_outcomes: dict[str, str] = {}
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
@@ -1236,7 +1239,11 @@ class AmoWappiDraftLoop:
             if inbound_new and not dry_run:
                 self.state.save()
             reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
-            outcome = "manual_review" if reason == "auto_pair_contact_changed" else "pair_missing"
+            # A contact_id change (auto_pair_contact_changed, set above when the widget
+            # candidate's contact disagrees with the persisted pair) is an identity
+            # conflict, not an ordinary "no pair configured yet" -- collapsing both into
+            # "pair_missing" hides the real cause from anything reading message_outcomes.
+            outcome = "identity_conflict" if reason == "auto_pair_contact_changed" else "pair_missing"
             for item in inbound_new:
                 message_outcomes[item.message_id] = outcome
             if dry_run:

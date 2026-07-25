@@ -24,7 +24,6 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_final` | `codex/ai-employee-final` | Единственная интеграционная линия текущего цикла ИИ-сотрудника. | Влить в `main` только после staging E2E и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline` | `codex/ai-employee-timeline`, активная незавершённая работа | Отдельная задача связки Wappi/AMO с customer timeline. | Не трогать и не удалять до завершения задачи владельцем ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченная уникальная работа | Донор исследования Owner50; целиком не переносится из-за избыточного diff. | Сохранить до точечного переноса полезных правил и проверки реальной витрины. |
-| `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `exam/payment-subject-guards` | Неизменяемый приватный M1-экзамен двух защит; production-код уже в `main`, флаг OFF. | Удалить после завершения и смысловой приёмки M1. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
 
 ## Удалено 2026-07-25
@@ -51,10 +50,18 @@
 `main`: `codex/amo-note-idempotency` и
 `codex/fix-tallanto-attendance-bot-safe`.
 
+После завершения M1-приёмки штатно снят
+`Mango_payment_subject_guards` и удалена ветка
+`exam/payment-subject-guards`. Полный пакет остаётся достижим по точному тегу
+`exam-payment-subject-guards-v5`; новая архивная копия не создавалась.
+
 ## Runtime-истина
 
-- Wappi, calls A/B и customer-timeline nightly запускаются из
+- Wappi сейчас остановлен; активные calls A/B запускаются из
   `/Users/dmitrijfabarisov/Projects/Mango analyse`.
+- Текущий процесс customer-timeline nightly запущен из
+  `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline`; этот worktree
+  нельзя снимать до штатного перевода ночной службы.
 - Точную загруженную ревизию Wappi подтверждают startup manifest, PID/env и
   `scripts/skills/live_truth.py`; один путь в plist сам по себе её не доказывает.
 - Wappi пока читает customer timeline из

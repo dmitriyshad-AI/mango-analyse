@@ -1126,7 +1126,17 @@ class AmoWappiDraftLoop:
         inbound_new: Sequence[WappiHistoryMessage],
         *,
         dry_run: bool,
-    ) -> Mapping[str, int]:
+    ) -> Mapping[str, Any]:
+        # Per-message terminal outcome bookkeeping (audit/metric only; does not change
+        # AMO write behaviour). Conversational batching is unchanged: several inbound
+        # messages can still resolve to a single draft/note. Every message_id that
+        # enters this call via `inbound_new` must end up with exactly one entry here
+        # before any `return` -- never zero (lost), never more than one (duplicated).
+        # Vocabulary: covered_by_draft, note_written, pair_missing, brand_mismatch,
+        # manual_review, write_unknown, unsupported_inbound, plus not_before_skipped
+        # for the pre-existing pairing-watermark skip (no content/write reason fits
+        # the seven names above without misrepresenting what happened).
+        message_outcomes: dict[str, str] = {}
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
         previous_pair = pair
@@ -1209,9 +1219,23 @@ class AmoWappiDraftLoop:
             if inbound_new and not dry_run:
                 self.state.save()
             reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+            for item in inbound_new:
+                message_outcomes[item.message_id] = "pair_missing"
             if dry_run:
-                return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
-            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
+                return {
+                    "processed": len(inbound_new),
+                    "skipped": len(inbound_new),
+                    "bot_calls": 0,
+                    "auto_resolver_reason": reason,
+                    "message_outcomes": message_outcomes,
+                }
+            return {
+                "processed": 0,
+                "skipped": len(inbound_new),
+                "bot_calls": 0,
+                "auto_resolver_reason": reason,
+                "message_outcomes": message_outcomes,
+            }
         if self.state.is_pair_quarantined(key):
             for item in inbound_new:
                 if self.state.pair_missing_is_deferred(item):
@@ -1227,7 +1251,9 @@ class AmoWappiDraftLoop:
                     self.state.defer_pair_missing(item)
             if not dry_run:
                 self.state.save()
-            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
+            for item in inbound_new:
+                message_outcomes[item.message_id] = "manual_review"
+            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "message_outcomes": message_outcomes}
         too_old = [
             item
             for item in inbound_new
@@ -1246,11 +1272,12 @@ class AmoWappiDraftLoop:
                 )
                 if not dry_run:
                     self.state.mark_processed(item)
+                message_outcomes[item.message_id] = "not_before_skipped"
             inbound_new = [item for item in inbound_new if item not in too_old]
             if not inbound_new:
                 if not dry_run:
                     self.state.save()
-                return {"processed": 0, "skipped": len(too_old), "bot_calls": 0}
+                return {"processed": 0, "skipped": len(too_old), "bot_calls": 0, "message_outcomes": message_outcomes}
         brand = self.config.brand_for_profile(profile.profile_id)
         if brand != pair.expected_brand:
             self.journal.append(
@@ -1261,13 +1288,26 @@ class AmoWappiDraftLoop:
                     "lead_id": pair.lead_id,
                 }
             )
+            for item in inbound_new:
+                message_outcomes[item.message_id] = "brand_mismatch"
             if dry_run:
-                return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0}
-            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
+                return {
+                    "processed": len(inbound_new),
+                    "skipped": len(inbound_new),
+                    "bot_calls": 0,
+                    "message_outcomes": message_outcomes,
+                }
+            return {
+                "processed": 0,
+                "skipped": len(inbound_new),
+                "bot_calls": 0,
+                "message_outcomes": message_outcomes,
+            }
         manual_review_messages = [
             item for item in inbound_new if not item.is_inbound_text or item.timestamp <= 0
         ]
         manual_review_required = bool(manual_review_messages)
+        manual_review_message_ids = {item.message_id for item in manual_review_messages}
         client_message = (
             "Входящее сообщение без доступного текста требует ручной проверки."
             if manual_review_required
@@ -1353,7 +1393,16 @@ class AmoWappiDraftLoop:
         }
         self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
         if dry_run:
-            return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": bot_call_count}
+            for item in inbound_new:
+                message_outcomes[item.message_id] = (
+                    "unsupported_inbound" if item.message_id in manual_review_message_ids else "covered_by_draft"
+                )
+            return {
+                "processed": len(inbound_new),
+                "skipped": skipped_before,
+                "bot_calls": bot_call_count,
+                "message_outcomes": message_outcomes,
+            }
         pending_payload = {
             **pending_payload,
             "write_started_at": self.now_fn().astimezone(timezone.utc).isoformat(),
@@ -1386,7 +1435,15 @@ class AmoWappiDraftLoop:
             )
             if failed_status != "manual_review" and _is_auth_error_exception(exc):
                 raise
-            return {"processed": 0, "skipped": len(inbound_new) + skipped_before, "bot_calls": bot_call_count}
+            write_outcome = "manual_review" if failed_status == "manual_review" else "write_unknown"
+            for item in inbound_new:
+                message_outcomes[item.message_id] = write_outcome
+            return {
+                "processed": 0,
+                "skipped": len(inbound_new) + skipped_before,
+                "bot_calls": bot_call_count,
+                "message_outcomes": message_outcomes,
+            }
         self.state.clear_pending(_message_state_key(last_message))
         for item in inbound_new:
             self.state.mark_processed(item)
@@ -1399,7 +1456,16 @@ class AmoWappiDraftLoop:
                 "deduplicated": bool(note_response.get("deduplicated")),
             }
         )
-        return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": bot_call_count}
+        for item in inbound_new:
+            message_outcomes[item.message_id] = (
+                "unsupported_inbound" if item.message_id in manual_review_message_ids else "note_written"
+            )
+        return {
+            "processed": len(inbound_new),
+            "skipped": skipped_before,
+            "bot_calls": bot_call_count,
+            "message_outcomes": message_outcomes,
+        }
 
     def _build_context(
         self,

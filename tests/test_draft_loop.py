@@ -2091,3 +2091,175 @@ def test_draft_loop_modules_do_not_import_public_telegram_transport() -> None:
         assert "reply_text" not in source
         assert "send_chat_action" not in source
         assert "telegram.ext" not in source
+
+
+# --- per-message terminal outcome bookkeeping (БЛОК 1.3) ---------------------
+#
+# Conversational batching stays intact (several inbound -> one draft/note is
+# expected, not a bug). These tests check the *additional* per-message_id
+# outcome map returned by `_process_chat_messages` under
+# `result["message_outcomes"]`: every message_id that goes in must come out
+# with exactly one of the terminal labels, never zero, never two.
+
+
+def _outcome_profile() -> DraftLoopProfile:
+    return DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
+
+
+def _outcome_message(
+    message_id: str,
+    *,
+    chat_id: str = "chat-1",
+    text: str = "Вопрос",
+    ts: int = 1000,
+    message_type: str = "text",
+) -> WappiHistoryMessage:
+    return WappiHistoryMessage(
+        profile_id="profile-foton",
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        message_type=message_type,
+        timestamp=ts,
+        from_me=False,
+    )
+
+
+def _outcome_loop(tmp_path: Path, *, pairs=None, amo=None, bot=None, state=None) -> AmoWappiDraftLoop:
+    cfg = _config(tmp_path, pairs=pairs or {})
+    return AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=FakeWappi({}, {}),
+        amo_client=amo or FakeAmo(),
+        bot_provider=bot or FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        state=state,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+
+def test_message_outcomes_batch_of_three_is_one_note_and_three_outcomes(tmp_path: Path) -> None:
+    """ТЗ acceptance case: batch of 3 inbound -> 1 draft/note, 3 terminal outcomes."""
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    amo = FakeAmo()
+    loop = _outcome_loop(tmp_path, pairs={key: pair}, amo=amo)
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message(f"m{i}", ts=1000 + i, text=f"Вопрос {i}") for i in range(3)]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=False)
+
+    assert result["processed"] == 3
+    assert len(amo.notes) == 1
+    outcomes = result["message_outcomes"]
+    assert outcomes == {"m0": "note_written", "m1": "note_written", "m2": "note_written"}
+    # nothing lost, nothing duplicated:
+    assert set(outcomes) == {item.message_id for item in inbound}
+    assert len(outcomes) == len(inbound)
+
+
+def test_message_outcomes_pair_missing_dry_run_covers_every_message(tmp_path: Path) -> None:
+    profile = _outcome_profile()
+    loop = _outcome_loop(tmp_path, pairs={})
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message("m1", ts=1000), _outcome_message("m2", ts=1001, text="Второй")]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=True)
+
+    assert result["message_outcomes"] == {"m1": "pair_missing", "m2": "pair_missing"}
+
+
+def test_message_outcomes_brand_mismatch_covers_every_message(tmp_path: Path) -> None:
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="unpk")
+    loop = _outcome_loop(tmp_path, pairs={key: pair})
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message("m1", ts=1000), _outcome_message("m2", ts=1001, text="Второй")]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=False)
+
+    assert result["message_outcomes"] == {"m1": "brand_mismatch", "m2": "brand_mismatch"}
+
+
+def test_message_outcomes_quarantined_pair_is_manual_review(tmp_path: Path) -> None:
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    cfg = _config(tmp_path, pairs={key: pair})
+    state = DraftLoopState(cfg.state_path)
+    state.quarantine_pair(key, reason="allowlist_desync", lead_id=pair.lead_id)
+    state.save()
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=FakeWappi({}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        state=state,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message("m1", ts=1000), _outcome_message("m2", ts=1001, text="Второй")]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=False)
+
+    assert result["message_outcomes"] == {"m1": "manual_review", "m2": "manual_review"}
+
+
+def test_message_outcomes_generic_write_failure_is_write_unknown(tmp_path: Path) -> None:
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    loop = _outcome_loop(tmp_path, pairs={key: pair}, amo=FakeAmo(fail=True))
+    dialog = {"id": "chat-1", "type": "user"}
+    inbound = [_outcome_message("m1", ts=1000)]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=False)
+
+    assert result["message_outcomes"] == {"m1": "write_unknown"}
+    state = json.loads(loop.config.state_path.read_text(encoding="utf-8"))
+    assert state["pending_notes"]["profile-foton\tchat-1\tm1"]["status"] == "write_outcome_unknown"
+
+
+def test_message_outcomes_mixed_batch_not_before_skipped_unsupported_and_written(tmp_path: Path) -> None:
+    """Mirrors test_draft_loop_skips_messages_at_or_before_not_before_ts_and_zero_timestamp,
+    but asserts the per-message outcome label instead of only counting summary totals."""
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton", not_before_ts=1000)
+    amo = FakeAmo()
+    loop = _outcome_loop(tmp_path, pairs={key: pair}, amo=amo)
+    dialog = {"id": "chat-1", "type": "user"}
+    m0 = _outcome_message("m0", ts=0, text="битое время")
+    m1 = _outcome_message("m1", ts=1000, text="старое")
+    m2 = _outcome_message("m2", ts=1010, text="новое")
+    inbound = [m0, m1, m2]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=False)
+
+    assert result["message_outcomes"] == {
+        "m0": "unsupported_inbound",
+        "m1": "not_before_skipped",
+        "m2": "note_written",
+    }
+    assert set(result["message_outcomes"]) == {"m0", "m1", "m2"}
+    assert len(amo.notes) == 1
+
+
+def test_message_outcomes_dry_run_splits_covered_by_draft_and_unsupported_inbound(tmp_path: Path) -> None:
+    profile = _outcome_profile()
+    key = DraftLoopKey(profile.profile_id, "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    amo = FakeAmo()
+    loop = _outcome_loop(tmp_path, pairs={key: pair}, amo=amo)
+    dialog = {"id": "chat-1", "type": "user"}
+    voice = _outcome_message("v1", ts=1000, text="", message_type="voice")
+    text_msg = _outcome_message("t1", ts=1001, text="Уточню?")
+    inbound = [voice, text_msg]
+
+    result = loop._process_chat_messages(profile, dialog, inbound, inbound, dry_run=True)
+
+    assert result["message_outcomes"] == {"v1": "unsupported_inbound", "t1": "covered_by_draft"}
+    assert amo.notes == []

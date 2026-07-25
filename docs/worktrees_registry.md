@@ -26,6 +26,20 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_m1_measurement_fixes` | `codex/m1-measurement-fixes` | Изолированные исправления измерителей M1. | Не трогать и не удалять до приёмки владельцем ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `exam/payment-subject-guards` | Неизменяемый приватный M1-экзамен двух защит; production-код уже в `main`, флаг OFF. | Удалить после завершения и смысловой приёмки M1. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_final` | `codex/ai-employee-final` | Единственная интеграционная линия финального ИИ-сотрудника. | Перенести подтверждённые коммиты, проверить, затем влить в `main`. |
+| `/Users/dmitrijfabarisov/Projects/Mango_amo_note_idempotency` | `codex/amo-note-idempotency-timeline` | Идемпотентность AMO note поверх Timeline spine. | Не трогать до решения commit-matrix и переноса принятого коммита. |
+| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_mail_source_contract` | `codex/customer-timeline-mail-source-contract` | Канонический корень почтового источника. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_nightly_contracts` | `codex/customer-timeline-nightly-contracts` | Проверки изменяющей nightly-цепочки. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_family_root_v1` | `codex/family-root-v1` | Устойчивый корень семьи. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_mail_relink_strong_revalidation` | `codex/mail-relink-strong-revalidation` | Сохранение strong mail links при повторной проверке. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченный diff | Owner50, смысловой регрейд `BLOCKED`. | Не переносить и не чистить до исправления и реальной приёмки XLSX. |
+| `/Users/dmitrijfabarisov/Projects/Mango_p0_identity_conflicts` | `codex/p0-identity-conflicts` | Блокировка небезопасного объединения семей. | Не переносить snapshot/stash; принять только проверенный функциональный коммит. |
+| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_fix` | `codex/tallanto-attendance-audit-fixes` | Базовое усиление импорта посещений Tallanto. | Источник последовательной цепочки Tallanto; не удалять до переноса. |
+| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_api_increment` | `codex/tallanto-attendance-api-increment` | API-инкремент посещений и partial-import контракт. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_bot_safe` | `codex/fix-tallanto-attendance-bot-safe-api` | Bot-safe гейт посещений поверх Tallanto chain. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_wappi_widget_coverage` | `codex/wappi-widget-coverage` | Полный режим покрытия Wappi widget. | Источник последовательной Wappi-цепочки; не удалять до переноса. |
+| `/Users/dmitrijfabarisov/Projects/Mango_wappi_amo_talk_authoritative` | `codex/wappi-amo-talk-authoritative` | Точная проверка AMO talk links. | Не трогать до переноса и тестов. |
+| `/Users/dmitrijfabarisov/Projects/Mango_wappi_history_attribution_fix` | `codex/wappi-history-attribution-fix` | Сохранение точной атрибуции Wappi history. | Не трогать до переноса и тестов. |
 
 ## Runtime-истина
 

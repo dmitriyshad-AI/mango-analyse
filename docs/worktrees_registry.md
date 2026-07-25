@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-24.
+Обновлено: 2026-07-25.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -21,25 +21,35 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_arch_audit_20260724` | `codex/customer-timeline-architecture-audit` | Read-only аудит Customer Timeline и подготовка понятного владельцу документа. | Удалить после приёмки документа и переноса нужных выводов в следующие ТЗ. |
+| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_final` | `codex/ai-employee-final` | Единственная интеграционная линия текущего цикла ИИ-сотрудника. | Влить в `main` только после staging E2E и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline` | `codex/ai-employee-timeline`, активная незавершённая работа | Отдельная задача связки Wappi/AMO с customer timeline. | Не трогать и не удалять до завершения задачи владельцем ветки. |
-| `/Users/dmitrijfabarisov/Projects/Mango_m1_measurement_fixes` | `codex/m1-measurement-fixes` | Узкий фикс ложных PII/числовых сигналов экзамена M1; код перенесён в интеграционную ветку. | Не трогать до финального регрейда интеграции. |
+| `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченная уникальная работа | Донор исследования Owner50; целиком не переносится из-за избыточного diff. | Сохранить до точечного переноса полезных правил и проверки реальной витрины. |
 | `/Users/dmitrijfabarisov/Projects/Mango_payment_subject_guards` | `exam/payment-subject-guards` | Неизменяемый приватный M1-экзамен двух защит; production-код уже в `main`, флаг OFF. | Удалить после завершения и смысловой приёмки M1. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
-| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_final` | `codex/ai-employee-final` | Единственная интеграционная линия финального ИИ-сотрудника. | Перенести подтверждённые коммиты, проверить, затем влить в `main`. |
-| `/Users/dmitrijfabarisov/Projects/Mango_amo_note_idempotency` | `codex/amo-note-idempotency-timeline` | Идемпотентность AMO note поверх Timeline spine. | Не трогать до решения commit-matrix и переноса принятого коммита. |
-| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_mail_source_contract` | `codex/customer-timeline-mail-source-contract` | Канонический корень почтового источника. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_nightly_contracts` | `codex/customer-timeline-nightly-contracts` | Проверки изменяющей nightly-цепочки. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_family_root_v1` | `codex/family-root-v1` | Устойчивый корень семьи. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_mail_relink_strong_revalidation` | `codex/mail-relink-strong-revalidation` | Сохранение strong mail links при повторной проверке. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченный diff | Owner50, смысловой регрейд `BLOCKED`. | Не переносить и не чистить до исправления и реальной приёмки XLSX. |
-| `/Users/dmitrijfabarisov/Projects/Mango_p0_identity_conflicts` | `codex/p0-identity-conflicts` | Блокировка небезопасного объединения семей. | Не переносить snapshot/stash; принять только проверенный функциональный коммит. |
-| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_fix` | `codex/tallanto-attendance-audit-fixes` | Базовое усиление импорта посещений Tallanto. | Источник последовательной цепочки Tallanto; не удалять до переноса. |
-| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_api_increment` | `codex/tallanto-attendance-api-increment` | API-инкремент посещений и partial-import контракт. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_tallanto_attendance_bot_safe` | `codex/fix-tallanto-attendance-bot-safe-api` | Bot-safe гейт посещений поверх Tallanto chain. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_wappi_widget_coverage` | `codex/wappi-widget-coverage` | Полный режим покрытия Wappi widget. | Источник последовательной Wappi-цепочки; не удалять до переноса. |
-| `/Users/dmitrijfabarisov/Projects/Mango_wappi_amo_talk_authoritative` | `codex/wappi-amo-talk-authoritative` | Точная проверка AMO talk links. | Не трогать до переноса и тестов. |
-| `/Users/dmitrijfabarisov/Projects/Mango_wappi_history_attribution_fix` | `codex/wappi-history-attribution-fix` | Сохранение точной атрибуции Wappi history. | Не трогать до переноса и тестов. |
+
+## Удалено 2026-07-25
+
+После проверки чистоты, отсутствия процессов и смыслового поглощения веткой
+`codex/ai-employee-final` удалены 14 старых worktree и их локальные ветки:
+
+- `Mango_amo_note_idempotency`;
+- `Mango_customer_timeline_arch_audit_20260724`;
+- `Mango_customer_timeline_mail_source_contract`;
+- `Mango_customer_timeline_nightly_contracts`;
+- `Mango_family_root_v1`;
+- `Mango_m1_measurement_fixes`;
+- `Mango_mail_relink_strong_revalidation`;
+- `Mango_p0_identity_conflicts`;
+- `Mango_tallanto_attendance_api_increment`;
+- `Mango_tallanto_attendance_bot_safe`;
+- `Mango_tallanto_attendance_fix`;
+- `Mango_wappi_amo_talk_authoritative`;
+- `Mango_wappi_history_attribution_fix`;
+- `Mango_wappi_widget_coverage`.
+
+Также удалены две пустые локальные ветки без worktree, обе указывали точно на
+`main`: `codex/amo-note-idempotency` и
+`codex/fix-tallanto-attendance-bot-safe`.
 
 ## Runtime-истина
 

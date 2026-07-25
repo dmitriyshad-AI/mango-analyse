@@ -78,7 +78,14 @@ def classify_answer_safety(
     haystack = "\n".join(texts)
     normalized = _normalize(haystack)
     current_norm = _normalize(current)
-    current_benign_refund = is_benign_hypothetical_refund(current_norm)
+    # A message can *look* like a benign presale question in isolation (e.g. "как
+    # оформить возврат?" matches the process-question frame) while the recent
+    # conversation already shows a post-payment signal (e.g. a prior client turn
+    # "я уже оплатил"). is_benign_hypothetical_refund(haystack) already carries
+    # that structural payment-provenance check (REFUND_POST_PAYMENT markers via
+    # _refund_frame), so the single-message reading must not override it: only
+    # treat the current message as benign presale when the haystack agrees.
+    current_benign_refund = is_benign_hypothetical_refund(current_norm) and is_benign_hypothetical_refund(haystack)
     evidence: dict[str, str] = {}
     codes: list[str] = []
 

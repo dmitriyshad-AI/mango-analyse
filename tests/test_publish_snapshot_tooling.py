@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from mango_mvp.customer_timeline import CustomerIdentity, CustomerTimelineSQLiteStore, IdentityStatus
+from mango_mvp.customer_timeline.nightly_service import run_nightly_service, service_config_from_json
 from scripts.publish_snapshot import build_snapshot, flip, preflight, reader_smoke, rollback
 from scripts.publish_snapshot import common as publish_common
 from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified, run_command
@@ -436,6 +439,192 @@ def test_preflight_blocks_dirty_reader_worktree(tmp_path: Path) -> None:
 
     assert ok is False
     assert report["readers"][0]["git_status_clean"] is False
+
+
+_NIGHTLY_NOW = datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc)
+
+
+def _run_ok_nightly_service(tmp_path: Path) -> tuple[Path, Path, dict]:
+    """Runs the real nightly_service pipeline for one required step and
+    returns (staging_db_path, nightly_manifest_path, service_report).
+
+    Deliberately drives the real customer_timeline nightly_service module
+    (not a hand-crafted fake manifest) so the preflight nightly-manifest gate
+    is proven against the actual manifest/service_report schema it will see
+    in production, including the real publish_dir layout
+    (allowed_root/"nightly_service"/"published", matching
+    build_customer_timeline_nightly_dv2_sources.py and
+    run_customer_timeline_codex_task.py's NIGHTLY_SERVICE_ROOT convention)
+    that PublishConfig.nightly_manifest_path derives by default.
+    """
+    staging_root = tmp_path / "nightly_staging"
+    db_path = staging_root / "customer_timeline_staging.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=staging_root) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:preflight-nightly-1",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Preflight Nightly Fixture",
+                first_seen_at=_NIGHTLY_NOW,
+                last_seen_at=_NIGHTLY_NOW,
+                touch_count=1,
+                created_at=_NIGHTLY_NOW,
+                updated_at=_NIGHTLY_NOW,
+            )
+        )
+    source_path = staging_root / "source.jsonl"
+    source_path.write_text(
+        json.dumps(
+            {
+                "source_id": "preflight-nightly-event-1",
+                "customer_id": "customer:preflight-nightly-1",
+                "event_type": "system_note",
+                "event_at": _NIGHTLY_NOW.isoformat(),
+                "updated_at": _NIGHTLY_NOW.isoformat(),
+                "direction": "system",
+                "summary": "Preflight nightly integration seed.",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    service_config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(staging_root),
+        "out_root": str(staging_root / "nightly_service_runs"),
+        "publish_dir": str(staging_root / "nightly_service" / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "local_jsonl",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "journal_path": str(staging_root / "nightly_service_runs" / "journal.jsonl"),
+                    "safety_margin_seconds": 60,
+                    "sources": [
+                        {
+                            "name": "local_jsonl",
+                            "source_system": "preflight_nightly_test_source",
+                            "path": str(source_path),
+                            "source_ref": "test:preflight-nightly",
+                            "normalizer": "jsonl",
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    service_config_path = staging_root / "service_config.json"
+    service_config_path.write_text(json.dumps(service_config_payload, ensure_ascii=False), encoding="utf-8")
+    report = run_nightly_service(service_config_from_json(service_config_path))
+    manifest_path = staging_root / "nightly_service" / "published" / "latest_customer_timeline_snapshot.json"
+    return db_path, manifest_path, report
+
+
+def test_preflight_nightly_manifest_gate_passes_for_a_clean_successful_night(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    assert manifest_path.exists()
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    nightly = report["nightly_manifest"]
+    assert nightly["reasons"] == []
+    assert nightly["ok"] is True
+    assert nightly["latest_published"] is True
+    assert nightly["failed_required_steps"] == []
+    assert nightly["sha256_match"] is True
+    assert nightly["size_match"] is True
+    assert nightly["fresh"] is True
+    assert nightly["count_mismatches"] == {}
+    assert ok is True
+
+
+def test_preflight_nightly_manifest_gate_blocks_stale_manifest(tmp_path: Path) -> None:
+    """ТЗ 7.1.6 negative case: a stale manifest must fail preflight (fail-closed)."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["published_at"] = "2020-01-01T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    nightly = report["nightly_manifest"]
+    assert nightly["fresh"] is False
+    assert "nightly_manifest_stale" in nightly["reasons"]
+    assert nightly["ok"] is False
+    assert ok is False
+
+
+def test_preflight_nightly_manifest_gate_blocks_partial_required_failure(tmp_path: Path) -> None:
+    """ТЗ 7.1.6 negative case: the service report the manifest points at
+    recording a required-step failure must fail preflight (fail-closed),
+    even though the copied latest_customer_timeline_snapshot.json itself
+    looks superficially fine."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    service_report_path = Path(manifest["service_report_path"])
+    service_report = json.loads(service_report_path.read_text(encoding="utf-8"))
+    service_report["failed_required_steps"] = ["local_jsonl"]
+    service_report["partial_failure"] = True
+    service_report["overall_status"] = "partial"
+    service_report["snapshot_manifest"]["latest_published"] = False
+    service_report_path.write_text(json.dumps(service_report, ensure_ascii=False), encoding="utf-8")
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    nightly = report["nightly_manifest"]
+    assert nightly["failed_required_steps"] == ["local_jsonl"]
+    assert nightly["latest_published"] is False
+    assert "nightly_failed_required_steps" in nightly["reasons"]
+    assert "nightly_partial_failure" in nightly["reasons"]
+    assert "nightly_latest_published_not_true" in nightly["reasons"]
+    assert nightly["ok"] is False
+    assert ok is False
+
+
+def test_preflight_nightly_manifest_gate_blocks_sha256_mismatch(tmp_path: Path) -> None:
+    """ТЗ 7.1.6 negative case: staging DB drifted after nightly fingerprinted
+    it (sha256 no longer matches the verified manifest) must fail preflight."""
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    with sqlite3.connect(staging_db) as con:
+        con.execute(
+            "UPDATE customer_identities SET display_name = ? WHERE customer_id = ?",
+            ("Tampered After Nightly Verified It", "customer:preflight-nightly-1"),
+        )
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    cfg_path = _config(tmp_path, prod, staging_db)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    nightly = report["nightly_manifest"]
+    assert nightly["sha256_match"] is False
+    assert "nightly_manifest_sha256_mismatch" in nightly["reasons"]
+    assert nightly["ok"] is False
+    assert ok is False
 
 
 def test_publish_worktree_status_allows_data_untracked() -> None:

@@ -90,6 +90,25 @@ class PublishConfig:
     def control_customers(self) -> tuple[Mapping[str, Any], ...]:
         return tuple(item for item in (self.raw.get("control_customers") or ()) if isinstance(item, Mapping))
 
+    @property
+    def nightly_manifest_path(self) -> Path:
+        raw = self.raw.get("nightly_manifest_path")
+        if raw:
+            return Path(str(raw)).expanduser().resolve(strict=False)
+        # Matches the layout nightly_service/build_customer_timeline_nightly_dv2_sources.py
+        # always builds: publish_dir = allowed_root / "nightly_service" / "published",
+        # where allowed_root = timeline_db.parent (see run_customer_timeline_codex_task.py
+        # NIGHTLY_SERVICE_ROOT / STAGING_ROOT convention).
+        return (
+            self.staging_db.parent / "nightly_service" / "published" / "latest_customer_timeline_snapshot.json"
+        ).resolve(strict=False)
+
+    @property
+    def max_manifest_age_hours(self) -> float:
+        # Same threshold as run_customer_timeline_codex_task.py TASK_SUCCESS_STALE_HOURS
+        # (nightly runs ~once/24h; 30h gives one missed-cron cycle of slack before alerting).
+        return float(self.raw.get("max_manifest_age_hours") or 30.0)
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)

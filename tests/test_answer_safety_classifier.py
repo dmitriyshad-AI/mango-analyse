@@ -157,6 +157,112 @@ def test_answer_safety_presale_refund_policy_question_is_not_full_p0() -> None:
         assert decision.manager_only is False
 
 
+def test_answer_safety_post_payment_refund_process_question_is_p0() -> None:
+    """D-087 defect: prior client turn confirms payment ("я уже оплатил"), current
+    turn asks the refund process question with presale-shaped wording ("как
+    оформить возврат?"). In isolation the current message matches the benign
+    presale process frame, but the recent-turn haystack already carries the
+    REFUND_POST_PAYMENT structural signal ("оплатил") — that must win."""
+    decision = classify_answer_safety(
+        client_message="Как оформить возврат?",
+        context={
+            "recent_messages": [
+                "Клиент: Я уже оплатил.",
+                "Ответ: Отлично, доступ откроем к началу занятий.",
+            ],
+        },
+    )
+
+    assert "refund" in decision.risk_codes
+    assert decision.primary_risk == "refund"
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert decision.zero_collect_required is True
+    assert decision.blocks_autonomy is True
+
+
+@pytest.mark.parametrize(
+    ("prev_client_turn", "current_message"),
+    (
+        ("Клиент: Я уже оплатил.", "Как оформить возврат?"),
+        ("Клиент: Оплатила курс вчера.", "Какая процедура возврата?"),
+        ("Клиент: Мы оплатили обучение.", "Нужно писать заявление на возврат?"),
+        ("Клиент: С меня списали оплату за курс.", "Подскажите порядок возврата."),
+        ("Клиент: Оплатил, верните деньги.", "Оплатил, верните деньги."),
+    ),
+)
+def test_answer_safety_post_payment_refund_class_stays_p0(prev_client_turn: str, current_message: str) -> None:
+    decision = classify_answer_safety(
+        client_message=current_message,
+        context={"recent_messages": [prev_client_turn, "Ответ: Хорошо."]},
+    )
+
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert decision.zero_collect_required is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "До оплаты хочу понять условия возврата.",
+        "Если оплачу и передумаю до начала, деньги вернут?",
+    ),
+)
+def test_answer_safety_presale_refund_benign_exception_survives_post_payment_fix(message: str) -> None:
+    """The two benign pre-sale exceptions named in the D-087 fix spec must stay non-P0."""
+    decision = classify_answer_safety(client_message=message)
+
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+    assert decision.zero_collect_required is False
+
+
+def test_answer_safety_presale_refund_with_unrelated_recent_context_stays_non_p0() -> None:
+    """A haystack that mentions something else entirely (no payment signal) must
+    not be swept into P0 just because recent_messages is non-empty."""
+    decision = classify_answer_safety(
+        client_message="Перед оплатой хочу понять условия возврата.",
+        context={
+            "recent_messages": [
+                "Клиент: А какое расписание по субботам?",
+                "Ответ: Занятия по субботам в 10:00.",
+            ],
+        },
+    )
+
+    assert decision.risk_codes == ()
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+
+
+def test_answer_safety_active_payment_dispute_latch_survives_post_payment_presale_wording() -> None:
+    """An already-active hard P0 latch (payment_dispute) must not be lifted just
+    because a later client turn re-asks the refund question in presale-shaped
+    wording — the active latch/dispute is not cleared by D-087."""
+    decision = classify_answer_safety(
+        client_message="Как оформить возврат?",
+        context={
+            "recent_messages": [
+                "Клиент: Я оплатил, но в системе нет моего платежа, деньги списали!",
+                "Ответ: Приняли вопрос по оплате. Передам его менеджеру.",
+            ],
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["payment_dispute"],
+                    "primary_risk": "payment_dispute",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert "payment_dispute" in decision.risk_codes
+
+
 def test_answer_safety_presale_refund_followup_overrides_stale_refund_context_and_latch() -> None:
     decision = classify_answer_safety(
         client_message="В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?",

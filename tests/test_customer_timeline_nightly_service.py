@@ -1212,6 +1212,224 @@ def test_nightly_service_runs_terminal_bot_safe_rebuild(
     assert report["steps"][0]["summary"]["customers_with_summary"] == 2
 
 
+def _service_report_path_on_disk(report: dict) -> Path:
+    return Path(report["out_root"]) / f"run_{report['run_id']}" / "service_report.json"
+
+
+def test_nightly_service_local_freshness_monitor_exception_is_reported_and_next_step_still_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    source_path = tmp_path / "source.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "source_id": "nightly-event-after-monitor-crash",
+                "customer_id": "customer:nightly-1",
+                "event_type": "system_note",
+                "event_at": "2026-07-03T03:00:00+00:00",
+                "updated_at": "2026-07-03T03:00:00+00:00",
+                "direction": "system",
+                "summary": "Идёт после упавшего монитора.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_local_freshness_monitor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom token=SECRET_ABC123")),
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "local_freshness_monitor",
+                "enabled": True,
+                "required": False,
+                "config": {"paths": []},
+            },
+            {
+                "name": "local_jsonl",
+                "kind": "nightly_incremental",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service" / "journal.jsonl"),
+                    "safety_margin_seconds": 60,
+                    "sources": [
+                        {
+                            "name": "local_jsonl",
+                            "source_system": "nightly_test_source",
+                            "path": str(source_path),
+                            "source_ref": "test:nightly-after-crash",
+                            "normalizer": "jsonl",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "monitor_exception_optional_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["steps"][0]["status"] == "skipped_optional_failed"
+    assert report["steps"][0]["error_type"] == "RuntimeError"
+    assert report["steps"][0]["reason"] == "step_exception:RuntimeError"
+    assert "boom" not in json.dumps(report)
+    assert "SECRET_ABC123" not in json.dumps(report)
+    # the next, independent stage still ran despite the optional stage's exception.
+    assert report["steps"][1]["status"] == "ok"
+    assert report["steps"][1]["summary"]["changed_customer_count"] == 1
+    assert report["overall_status"] == "ok"
+    assert report["failed_required_steps"] == []
+    assert report["snapshot_manifest"]["latest_published"] is True
+    # the service report is always written to disk, even though a stage raised.
+    service_report_path = _service_report_path_on_disk(report)
+    assert service_report_path.exists()
+    on_disk_text = service_report_path.read_text(encoding="utf-8")
+    assert json.loads(on_disk_text)["steps"][0]["error_type"] == "RuntimeError"
+    assert "boom" not in on_disk_text
+    assert "SECRET_ABC123" not in on_disk_text
+
+
+def test_nightly_service_local_freshness_monitor_exception_blocks_latest_publish_when_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_local_freshness_monitor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "local_freshness_monitor",
+                "enabled": True,
+                "required": True,
+                "config": {"paths": []},
+            }
+        ],
+    }
+    config_path = tmp_path / "monitor_exception_required_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed"
+    assert report["steps"][0]["error_type"] == "RuntimeError"
+    assert report["failed_required_steps"] == ["wappi_history_incremental"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+    assert not (tmp_path / "published" / "latest_customer_timeline_snapshot.json").exists()
+    # even a required-stage exception must not skip writing the service report.
+    assert _service_report_path_on_disk(report).exists()
+
+
+def test_nightly_service_mango_processed_sweep_exception_is_reported_and_next_step_still_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_mango_processed_sweep",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom secret=XYZ789")),
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "required": False,
+                "config": {},
+            },
+            {
+                "name": "freshness_after_sweep_crash",
+                "kind": "local_freshness_monitor",
+                "enabled": True,
+                "required": True,
+                "config": {"paths": [], "empty_status": "ok"},
+            },
+        ],
+    }
+    config_path = tmp_path / "sweep_exception_optional_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["steps"][0]["status"] == "skipped_optional_failed"
+    assert report["steps"][0]["error_type"] == "RuntimeError"
+    assert "boom" not in json.dumps(report)
+    assert "secret=XYZ789" not in json.dumps(report)
+    # the next, independent stage still ran despite the optional stage's exception.
+    assert report["steps"][1]["status"] == "ok"
+    assert report["overall_status"] == "ok"
+    assert report["snapshot_manifest"]["latest_published"] is True
+    assert _service_report_path_on_disk(report).exists()
+
+
+def test_nightly_service_mango_processed_sweep_exception_blocks_latest_publish_when_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_mango_processed_sweep",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "tenant_id": "foton",
+        "steps": [
+            {
+                "name": "mango_processed_sweep",
+                "kind": "mango_processed_sweep",
+                "enabled": True,
+                "required": True,
+                "config": {},
+            }
+        ],
+    }
+    config_path = tmp_path / "sweep_exception_required_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed"
+    assert report["steps"][0]["error_type"] == "RuntimeError"
+    assert report["failed_required_steps"] == ["mango_processed_sweep"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+    assert _service_report_path_on_disk(report).exists()
+
+
 def test_launchd_install_scripts_are_dry_run_by_default(tmp_path: Path) -> None:
     plist = tmp_path / "service.plist"
     plist.write_text("<plist/>", encoding="utf-8")

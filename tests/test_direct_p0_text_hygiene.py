@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import mango_mvp.channels.subscription_llm as subscription_llm
+from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.subscription_llm import DIRECT_PATH_ENV, SubscriptionDraftResult, SubscriptionLlmDraftProvider
 from mango_mvp.channels.subscription_llm_parts.text_hygiene import scrub_direct_path_p0_text
 from mango_mvp.channels.tone_block import close_detect_enabled
@@ -156,6 +157,70 @@ def test_direct_p0_text_hygiene_provider_level_scrubs_refund_sales_tail() -> Non
     assert "записаться" not in lowered
     assert "менеджер" in lowered
     assert result.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
+
+
+def test_build_draft_live_path_flags_post_payment_refund_followup_as_p0() -> None:
+    """D-087 live-path regression: prev client turn confirms payment ("я уже
+    оплатил"), current turn asks the refund process question ("как оформить
+    возврат?"). The underlying model draft is deliberately benign/non-P0 here
+    so the assertion proves the *deterministic* live path (build_draft ->
+    direct path -> answer safety), not the model, is what forces manager_only.
+    """
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Чтобы оформить возврат, напишите заявление в свободной форме.",
+        )
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "recent_messages": [
+            "Клиент: Я уже оплатил.",
+            "Ответ: Отлично, доступ откроем к началу занятий.",
+        ],
+    }
+
+    result = provider.build_draft("Как оформить возврат?", context=context)
+
+    # The deterministic P0 pre-gate must catch this before the model draft is
+    # ever used: the stubbed runner is not called at all.
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert "zero_collect_refund_guarded" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+    # Cross-check with the same context/message classify_answer_safety() sees
+    # inside the gate, spelling out the exact contract required by D-087.
+    decision = classify_answer_safety(client_message="Как оформить возврат?", context=context)
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert decision.zero_collect_required is True
+
+
+def test_build_draft_live_path_keeps_presale_refund_benign_exception_self_answer() -> None:
+    """Neighbor of the D-087 fix: a genuine pre-sale refund-terms question with
+    no payment history must still be allowed to stay a self-answer route."""
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="До оплаты можно уточнить условия возврата заранее.",
+        )
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+    }
+
+    result = provider.build_draft("До оплаты хочу понять условия возврата.", context=context)
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+
+    decision = classify_answer_safety(client_message="До оплаты хочу понять условия возврата.", context=context)
+    assert decision.p0_required is False
+    assert decision.manager_only is False
 
 
 def _paid_operation_context_result() -> SubscriptionDraftResult:

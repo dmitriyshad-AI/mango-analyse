@@ -138,13 +138,27 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 )
                 continue
             if step.kind == "local_freshness_monitor":
-                step_report = run_local_freshness_monitor(
-                    step,
-                    timeline_db=timeline_db,
-                    allowed_root=allowed_root,
-                    tenant_id=config.tenant_id,
-                    actor=config.actor,
-                )
+                try:
+                    step_report = run_local_freshness_monitor(
+                        step,
+                        timeline_db=timeline_db,
+                        allowed_root=allowed_root,
+                        tenant_id=config.tenant_id,
+                        actor=config.actor,
+                    )
+                except Exception as exc:  # service-level fail-soft: report and keep manifest writing.
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
                 status = "ok" if step_report.get("status") == "ok" else (
@@ -166,12 +180,26 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 )
                 continue
             if step.kind == "mango_processed_sweep":
-                step_report = run_mango_processed_sweep(
-                    step,
-                    timeline_db=timeline_db,
-                    allowed_root=allowed_root,
-                    tenant_id=config.tenant_id,
-                )
+                try:
+                    step_report = run_mango_processed_sweep(
+                        step,
+                        timeline_db=timeline_db,
+                        allowed_root=allowed_root,
+                        tenant_id=config.tenant_id,
+                    )
+                except Exception as exc:  # service-level fail-soft: report and keep manifest writing.
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
                 status = "ok" if step_report.get("status") == "ready" else (

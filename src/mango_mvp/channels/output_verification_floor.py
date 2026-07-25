@@ -652,8 +652,6 @@ def _active_hard_p0_latch_reason(context: Mapping[str, Any] | None, *, current_t
                 current_text=current_text,
             )
             if bool(latch.get("had_hard_p0_claim")):
-                if suppress_refund_latch:
-                    continue
                 return primary or _first_p0_latch_reason(codes)
             hard = codes.intersection(_ACTIVE_HARD_P0_LATCH_CODES)
             if hard:

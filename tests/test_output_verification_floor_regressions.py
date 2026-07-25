@@ -977,6 +977,19 @@ def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_l
     }
     assert p0_pre_gate("Понял, спасибо. Посмотрю программу и расписание", context=neutral_followup_context) is None
 
+    hard_refund_context = {
+        "recent_messages": ["Клиент: если передумаем до начала, деньги вернут?"],
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": True,
+            }
+        },
+    }
+    assert p0_pre_gate("В целом, просто заранее спрашиваю про возврат", context=hard_refund_context) == "refund"
+
     active_refund_context = {
         "dialogue_memory_view": {
             "p0_latch": {

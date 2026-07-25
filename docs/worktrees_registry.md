@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-25.
+Обновлено: 2026-07-26.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -21,10 +21,20 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
-| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_final` | `codex/ai-employee-final` | Единственная интеграционная линия текущего цикла ИИ-сотрудника. | Влить в `main` только после staging E2E и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline` | `codex/ai-employee-timeline`, активная незавершённая работа | Отдельная задача связки Wappi/AMO с customer timeline. | Не трогать и не удалять до завершения задачи владельцем ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченная уникальная работа | Донор исследования Owner50; целиком не переносится из-за избыточного diff. | Сохранить до точечного переноса полезных правил и проверки реальной витрины. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
+
+## Удалено 2026-07-26
+
+Интеграционная ветка `codex/ai-employee-final@fcf62571` влита в `main` чистым
+fast-forward после независимой проверки девяти дублирующих изменений и полного
+`pytest` (`4309 passed, 2 skipped`). Worktree `Mango_ai_employee_final` снят,
+локальная ветка удалена через `-d`; audit pack перенесён в каноническую папку.
+
+На зеркале Yandex удалена расходная remote-ветка
+`exam/payment-subject-guards`; её точная вершина `6295d550` остаётся достижима
+по существующему тегу `exam-payment-subject-guards-v4`.
 
 ## Удалено 2026-07-25
 

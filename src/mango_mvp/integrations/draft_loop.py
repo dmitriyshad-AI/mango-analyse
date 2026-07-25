@@ -1236,8 +1236,9 @@ class AmoWappiDraftLoop:
             if inbound_new and not dry_run:
                 self.state.save()
             reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+            outcome = "manual_review" if reason == "auto_pair_contact_changed" else "pair_missing"
             for item in inbound_new:
-                message_outcomes[item.message_id] = "pair_missing"
+                message_outcomes[item.message_id] = outcome
             if dry_run:
                 return {
                     "processed": len(inbound_new),

@@ -2080,6 +2080,7 @@ def test_auto_pair_contact_change_is_blocked(tmp_path: Path) -> None:
     summary = loop.run_once(dry_run=True)
 
     assert summary["bot_calls"] == 0
+    assert summary["message_outcomes"] == {"profile-foton\tchat-1\tm1": "manual_review"}
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(row["event"] == "auto_pair_identity_conflict" for row in rows)
     assert any(

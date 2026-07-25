@@ -181,6 +181,10 @@ def classify_answer_safety(
 
     codes = tuple(dict.fromkeys(code for code in codes if code))
     hard_codes = tuple(code for code in codes if code in HARD_P0_CODES)
+    if hard_codes:
+        # A semantic plan may repair stale metadata, but it cannot downgrade
+        # a hard P0 signal that survived the evidence checks above.
+        semantic_non_p0 = False
     primary = _primary_risk(codes, current_codes=current_codes)
     p0 = bool(hard_codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
     if semantic_non_p0 and not codes_from_current_message(current):

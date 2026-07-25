@@ -181,6 +181,25 @@ def test_answer_safety_post_payment_refund_process_question_is_p0() -> None:
     assert decision.blocks_autonomy is True
 
 
+def test_answer_safety_post_payment_refund_cannot_be_downgraded_by_presale_plan() -> None:
+    decision = classify_answer_safety(
+        client_message="Как оформить возврат?",
+        context={
+            "recent_messages": ["Клиент: Я уже оплатил.", "Ответ: Хорошо."],
+            "conversation_intent_plan": {
+                "primary_intent": "refund",
+                "refund_frame": "presale_policy",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert decision.semantic_non_p0 is False
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+    assert decision.risk_codes == ("refund",)
+
+
 @pytest.mark.parametrize(
     ("prev_client_turn", "current_message"),
     (

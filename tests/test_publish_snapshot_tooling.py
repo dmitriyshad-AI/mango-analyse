@@ -620,6 +620,25 @@ def test_preflight_blocks_schema_drift_between_staging_and_prod(tmp_path: Path) 
     assert diff["left_schema_sha256"] != diff["right_schema_sha256"]
 
 
+def test_preflight_honors_schema_gate_when_every_other_gate_is_green(monkeypatch, tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    prod_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging_db, _manifest_path, nightly_report = _run_ok_nightly_service(tmp_path)
+    assert nightly_report["overall_status"] == "ok"
+    cfg_path = _config(tmp_path, prod, staging_db)
+    forced_diff = {"ok": False, "reason": "schema_changed_conscious_apply_required"}
+    monkeypatch.setattr(preflight, "schema_diff", lambda _left, _right: forced_diff)
+
+    report, ok = preflight.build_report(cfg_path)
+
+    assert report["nightly_manifest"]["ok"] is True
+    assert report["quick_check"] == {"prod": "ok", "staging": "ok"}
+    assert all(sidecar["ok"] for sidecar in report["wal_sidecars"].values())
+    assert report["schema_diff"] == forced_diff
+    assert ok is False
+
+
 def test_preflight_nightly_manifest_gate_blocks_future_dated_manifest(tmp_path: Path) -> None:
     """Находка 5б: a manifest published_at ahead of "now" beyond clock-drift
     tolerance (clock skew, or a forged/tampered manifest) must fail

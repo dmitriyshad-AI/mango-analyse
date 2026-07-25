@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline import (
     canonical_readonly_timeline_safety_contract,
 )
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids, tallanto_match_class
+from mango_mvp.customer_timeline.ids import customer_entity_ref
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
@@ -490,6 +491,86 @@ def test_canonical_family_phone_splits_single_row_with_multiple_tallanto_ids(tmp
     )
     assert len(split_mappings) == 3
     assert len({item["old_customer_id"] for item in split_mappings}) == 1
+
+
+def test_customer_entity_ref_is_idempotent_and_collapses_double_prefix() -> None:
+    """Direct contract test for the ТЗ 3.5 P0 fix: customer_entity_ref must be
+    safe to call both at write time (build a ref from a customer_id) and read
+    time (normalize a ref before matching it against real customer_ids), and
+    must never leave a customer:customer:* double prefix in place."""
+    assert customer_entity_ref("abc123") == "customer:abc123"
+    assert customer_entity_ref("customer:abc123") == "customer:abc123"
+    assert customer_entity_ref("customer:customer:abc123") == "customer:abc123"
+    assert customer_entity_ref("customer:customer:customer:abc123") == "customer:abc123"
+    with pytest.raises(ValueError):
+        customer_entity_ref("")
+
+
+def test_canonical_family_phone_conflict_refs_never_double_prefixed(tmp_path: Path) -> None:
+    """Adversarial regression for ТЗ 3.5 (P0, незакрытый класс до этого фикса):
+    a phone shared by two distinct Tallanto student ids must (a) stay split
+    across two customer records (item 3 of the family contract) and (b) never
+    write a customer:customer:* entity_ref, which would silently detach the
+    shared_family_phone conflict from its real customer_id in every downstream
+    reader (item 6)."""
+    config = _config(tmp_path)
+    runtime_root = tmp_path / "runtime_source"
+    _write_csv(
+        runtime_root / "master_contacts_ru.csv",
+        [
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent-one@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_multiple",
+                "Количество кандидатов Tallanto": "2",
+                "ID Tallanto": "student-1",
+                "Краткая история общения": "Первый ребенок интересуется математикой.",
+                "Рекомендуемый продукт": "Фотон математика",
+            },
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent-two@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_multiple",
+                "Количество кандидатов Tallanto": "2",
+                "ID Tallanto": "student-2",
+                "Краткая история общения": "Второй ребенок интересуется русским.",
+                "Рекомендуемый продукт": "Фотон русский",
+            },
+        ],
+    )
+
+    build_canonical_readonly_customer_timeline(config)
+    with sqlite3.connect(config.timeline_db) as con:
+        identities = [
+            str(row[0]) for row in con.execute("SELECT customer_id FROM customer_identities ORDER BY customer_id")
+        ]
+        conflicts = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM timeline_conflicts WHERE conflict_type = 'shared_family_phone'")
+        ]
+
+    # Item 3: two distinct Tallanto student ids sharing one phone are never merged.
+    assert len(identities) == 2
+    assert len(set(identities)) == 2
+
+    # Item 6 (ТЗ 3.5 P0): no double customer:customer: prefix anywhere, and every
+    # customer ref in the conflict resolves to one of the two real customer_ids
+    # (not some third, unmatched string).
+    assert len(conflicts) == 1
+    refs = conflicts[0]["entity_refs"]
+    assert not any(ref.startswith("customer:customer:") for ref in refs)
+    customer_refs = {ref for ref in refs if ref.startswith("customer:")}
+    assert customer_refs == set(identities)
 
 
 def test_canonical_no_exact_tallanto_match_is_partial_not_strong(tmp_path: Path) -> None:

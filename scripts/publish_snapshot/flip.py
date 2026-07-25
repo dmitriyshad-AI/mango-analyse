@@ -76,12 +76,28 @@ def _non_ignored_holders(prod_db: Path, cfg) -> tuple[list[str], list[str]]:
     )
 
 
-def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, bool]:
+def flip(config_path: Path, *, snapshot_db: Path, execute: bool, restart_readers: bool = False) -> tuple[dict, bool]:
+    """Atomically swap prod_db to snapshot_db.
+
+    Service restart is a separate, explicit decision from the data swap (see
+    Foton/codex_artifacts/ETAP6_publish_plan.md and master TZ 11.6): readers are
+    always stopped before the swap (to release locks), but a reader's
+    ``start_command`` only runs when the caller passes ``restart_readers=True``.
+    Without that flag, flip leaves every reader stopped after a successful swap,
+    e.g. to keep the Wappi draft loop off until OWNER-GATE 5A is granted.
+    """
     cfg = load_config(config_path)
     report = report_base(cfg, "flip")
     prod_db = cfg.prod_db
     snapshot_db = snapshot_db.expanduser().resolve(strict=True)
-    report.update({"execute": execute, "prod_db": str(prod_db), "snapshot_db": str(snapshot_db)})
+    report.update(
+        {
+            "execute": execute,
+            "restart_readers": restart_readers,
+            "prod_db": str(prod_db),
+            "snapshot_db": str(snapshot_db),
+        }
+    )
     if not execute:
         report["status"] = "dry_run"
         return report, True
@@ -102,6 +118,14 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             result = run_command(render_command(command, {"db": prod_db}), cwd=worktree, timeout=int(reader.get("stop_timeout_seconds") or 120))
             result["name"] = reader.get("name")
             stop_results.append(result)
+    failed_stops = [result for result in stop_results if result.get("rc") != 0]
+    if failed_stops:
+        return {
+            **report,
+            "status": "blocked_reader_stop",
+            "stop_results": stop_results,
+            "failed_stops": failed_stops,
+        }, False
     holders, ignored_holders = _non_ignored_holders(prod_db, cfg)
     if holders:
         return {
@@ -138,7 +162,6 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
     async_backup_dir = async_root / backup_dir.name
     async_backup_db = async_backup_dir / prod_db.name
     async_backup_copy = copy_verified(backup_db, async_backup_db)
-    removed_sidecars = remove_sidecars(prod_db, execute=True)
     tmp_target = prod_db.with_suffix(prod_db.suffix + ".new")
     shutil.copy2(snapshot_db, tmp_target)
     pre_replace_holders, pre_replace_ignored_holders = _non_ignored_holders(prod_db, cfg)
@@ -159,8 +182,8 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "prod_checkpoint": prod_checkpoint,
             "snapshot_checkpoint": snapshot_checkpoint,
             "snapshot_removed_sidecars": snapshot_removed_sidecars,
-            "removed_sidecars": removed_sidecars,
         }, False
+    removed_sidecars = remove_sidecars(prod_db, execute=True)
     replacement = replace_sqlite_verified(tmp_target, prod_db)
     if not replacement["ok"]:
         return {
@@ -185,8 +208,13 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
 
     start_results = []
     post_start_process_checks = []
+    skipped_start = []
     for reader in cfg.readers:
         command = reader.get("start_command")
+        if not restart_readers:
+            if command:
+                skipped_start.append({"name": reader.get("name"), "reason": "restart_readers_flag_not_set"})
+            continue
         if command:
             worktree = Path(str(reader.get("worktree") or Path.cwd())).expanduser().resolve(strict=False)
             result = run_command(render_command(command, {"db": prod_db}), cwd=worktree, timeout=int(reader.get("start_timeout_seconds") or 120))
@@ -209,6 +237,7 @@ def flip(config_path: Path, *, snapshot_db: Path, execute: bool) -> tuple[dict, 
             "status": "ok" if ok else "failed",
             "stop_results": stop_results,
             "start_results": start_results,
+            "skipped_start": skipped_start,
             "post_start_process_checks": post_start_process_checks,
             "backup_db": str(backup_db),
             "backup_copy": backup_copy,
@@ -234,8 +263,17 @@ def main() -> int:
     add_common_args(parser)
     parser.add_argument("--snapshot-db", type=Path, required=True)
     parser.add_argument("--execute", action="store_true", help="Actually stop readers and replace prod DB.")
+    parser.add_argument(
+        "--restart-readers",
+        action="store_true",
+        help=(
+            "Restart configured reader services (e.g. Wappi draft loop) after a successful flip. "
+            "Default (omitted) stops readers for the swap and leaves them stopped afterward -- pass "
+            "this flag only when starting that service is separately approved (e.g. OWNER-GATE 5A)."
+        ),
+    )
     args = parser.parse_args()
-    report, ok = flip(args.config, snapshot_db=args.snapshot_db, execute=args.execute)
+    report, ok = flip(args.config, snapshot_db=args.snapshot_db, execute=args.execute, restart_readers=args.restart_readers)
     return finish_cli(report, args.out, ok=ok)
 
 

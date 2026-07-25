@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from mango_mvp.customer_timeline.channel_preview_from_pack import redact_text
 from mango_mvp.customer_timeline.contracts import BotContextChunk, now_utc
-from mango_mvp.customer_timeline.ids import stable_chunk_id, stable_digest
+from mango_mvp.customer_timeline.ids import customer_entity_ref, stable_chunk_id, stable_digest
 from mango_mvp.customer_timeline.next_step_resolver import (
     CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
     PERSON_NAME_RE as NEXT_STEP_PERSON_NAME_RE,
@@ -1109,16 +1109,20 @@ def _open_conflicts_by_customer(db_path: Path, tenant_id: str) -> dict[str, tupl
 
 
 def _customer_ids_from_conflict(conflict: Mapping[str, Any]) -> tuple[str, ...]:
+    # Refs are normalized through customer_entity_ref() so an accidental
+    # customer:customer:* double prefix (ТЗ 3.5 P0 class) still resolves to
+    # the real customer_id instead of silently dropping the conflict for
+    # that customer (see canonical_readonly_import shared_family_phone refs).
     refs = conflict.get("entity_refs")
     candidates: list[str] = []
     if isinstance(refs, (list, tuple, set)):
         for ref in refs:
             text = str(ref or "")
             if text.startswith("customer:"):
-                candidates.append(text)
+                candidates.append(customer_entity_ref(text))
     customer_id = str(conflict.get("customer_id") or "")
     if customer_id.startswith("customer:"):
-        candidates.append(customer_id)
+        candidates.append(customer_entity_ref(customer_id))
     return tuple(dict.fromkeys(candidates))
 
 

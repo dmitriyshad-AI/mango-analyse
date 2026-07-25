@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from scripts.publish_snapshot import build_snapshot, flip, preflight, reader_smoke, rollback
 from scripts.publish_snapshot import common as publish_common
 from scripts.publish_snapshot.common import backup_plan_report, classify_publish_worktree_status, copy_verified, run_command
@@ -524,6 +526,10 @@ def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Pat
     payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
     cfg.write_text(json.dumps(payload), encoding="utf-8")
     original_sha = flip.sha256_file(prod)
+    wal_path = prod.with_name(prod.name + "-wal")
+    shm_path = prod.with_name(prod.name + "-shm")
+    wal_path.write_bytes(b"wal-must-survive")
+    shm_path.write_bytes(b"shm-must-survive")
     calls = {"count": 0}
 
     def fake_lsof(_path: Path) -> list[str]:
@@ -531,12 +537,15 @@ def test_flip_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Pat
         return [] if calls["count"] == 1 else ["python 123 reopened customer_timeline.sqlite"]
 
     monkeypatch.setattr(flip, "lsof_holders", fake_lsof)
+    monkeypatch.setattr(flip, "wal_checkpoint_truncate", lambda _path: {"status": "test_noop"})
 
     report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
 
     assert ok is False
     assert report["status"] == "blocked_lsof_before_replace"
     assert flip.sha256_file(prod) == original_sha
+    assert wal_path.read_bytes() == b"wal-must-survive"
+    assert shm_path.read_bytes() == b"shm-must-survive"
 
 
 def test_replace_sqlite_retries_only_transient_open(monkeypatch, tmp_path: Path) -> None:
@@ -814,3 +823,187 @@ def test_run_command_reports_timeout_instead_of_raising() -> None:
     assert result["rc"] == 124
     assert result["timed_out"] is True
     assert result["timeout_seconds"] == 0.01
+
+
+def test_flip_default_does_not_restart_readers(tmp_path: Path) -> None:
+    """ETAP6 11.6: flip --execute must not implicitly start a reader service (e.g. Wappi)."""
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [
+        {
+            "name": "wappi_amo_draft_loop_owner_gated",
+            "worktree": str(tmp_path),
+            "process_patterns": ["scripts/run_amo_wappi_draft_loop.py"],
+            "stop_command": ["true"],
+            "start_command": ["true"],
+            "start_timeout_seconds": 1,
+        }
+    ]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+
+    assert ok is True
+    assert report["restart_readers"] is False
+    assert len(report["stop_results"]) == 1
+    assert report["start_results"] == []
+    assert report["post_start_process_checks"] == []
+    assert report["skipped_start"] == [
+        {"name": "wappi_amo_draft_loop_owner_gated", "reason": "restart_readers_flag_not_set"}
+    ]
+
+
+def test_flip_restart_readers_flag_starts_reader(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, ok = flip.flip(cfg, snapshot_db=staging, execute=True, restart_readers=True)
+
+    assert ok is True
+    assert report["restart_readers"] is True
+    assert report["skipped_start"] == []
+    assert len(report["start_results"]) == 1
+    assert report["start_results"][0]["rc"] == 0
+
+
+def _seed_pre_flip_backup(tmp_path: Path, prod: Path, staging: Path) -> tuple[Path, str]:
+    backup_dir = tmp_path / "prod_backups" / "pre_flip_backup_test"
+    backup_dir.mkdir(parents=True)
+    backup_db = backup_dir / prod.name
+    with sqlite3.connect(staging) as source, sqlite3.connect(backup_db) as target:
+        source.backup(target)
+    with sqlite3.connect(backup_db) as con:
+        con.execute("PRAGMA journal_mode=DELETE")
+    publish_common.remove_sidecars(backup_db, execute=True)
+    return backup_db, publish_common.sha256_file(backup_db)
+
+
+def test_rollback_stops_readers_but_does_not_restart_by_default(tmp_path: Path) -> None:
+    """ETAP6 11.5: rollback must stop readers for the swap and must not change Wappi state on its own."""
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
+
+    report, ok = rollback.rollback(cfg, backup_db=backup_db, execute=True, expected_sha256=expected_sha256)
+
+    assert ok is True
+    assert report["restart_readers"] is False
+    assert len(report["stop_results"]) == 1
+    assert report["stop_results"][0]["rc"] == 0
+    assert report["start_results"] == []
+    assert report["skipped_start"] == [{"name": "reader", "reason": "restart_readers_flag_not_set"}]
+
+
+def test_rollback_restart_readers_flag_starts_reader(tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
+
+    report, ok = rollback.rollback(
+        cfg, backup_db=backup_db, execute=True, expected_sha256=expected_sha256, restart_readers=True
+    )
+
+    assert ok is True
+    assert report["restart_readers"] is True
+    assert report["skipped_start"] == []
+    assert len(report["start_results"]) == 1
+    assert report["start_results"][0]["rc"] == 0
+
+
+def test_rollback_blocks_if_lsof_reappears_before_replace(monkeypatch, tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["true"], "start_command": ["true"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
+    original_sha = rollback.sha256_file(prod)
+    wal_path = prod.with_name(prod.name + "-wal")
+    shm_path = prod.with_name(prod.name + "-shm")
+    wal_path.write_bytes(b"wal-must-survive")
+    shm_path.write_bytes(b"shm-must-survive")
+    calls = {"count": 0}
+
+    def fake_lsof(_path: Path) -> list[str]:
+        calls["count"] += 1
+        return [] if calls["count"] == 1 else ["python 123 reopened customer_timeline.sqlite"]
+
+    monkeypatch.setattr(rollback, "lsof_holders", fake_lsof)
+
+    report, ok = rollback.rollback(cfg, backup_db=backup_db, execute=True, expected_sha256=expected_sha256)
+
+    assert ok is False
+    assert report["status"] == "blocked_lsof_before_replace"
+    assert calls["count"] == 2
+    assert rollback.sha256_file(prod) == original_sha
+    assert wal_path.read_bytes() == b"wal-must-survive"
+    assert shm_path.read_bytes() == b"shm-must-survive"
+
+
+@pytest.mark.parametrize("operation", ["flip", "rollback"])
+def test_publish_blocks_when_reader_stop_fails(operation: str, tmp_path: Path) -> None:
+    prod_dir = tmp_path / "prod"
+    staging_dir = tmp_path / "staging"
+    prod_dir.mkdir()
+    staging_dir.mkdir()
+    prod, _prod_customer = seed_timeline_db(prod_dir)
+    staging, _staging_customer = seed_timeline_db(staging_dir)
+    cfg = _config(tmp_path, prod, staging)
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    payload["readers"] = [{"name": "reader", "worktree": str(tmp_path), "stop_command": ["false"]}]
+    cfg.write_text(json.dumps(payload), encoding="utf-8")
+    original_sha = publish_common.sha256_file(prod)
+    wal_path = prod.with_name(prod.name + "-wal")
+    wal_path.write_bytes(b"wal-must-survive")
+
+    if operation == "flip":
+        report, ok = flip.flip(cfg, snapshot_db=staging, execute=True)
+    else:
+        backup_db, expected_sha256 = _seed_pre_flip_backup(tmp_path, prod, staging)
+        report, ok = rollback.rollback(
+            cfg,
+            backup_db=backup_db,
+            execute=True,
+            expected_sha256=expected_sha256,
+        )
+
+    assert ok is False
+    assert report["status"] == "blocked_reader_stop"
+    assert report["failed_stops"][0]["rc"] != 0
+    assert publish_common.sha256_file(prod) == original_sha
+    assert wal_path.read_bytes() == b"wal-must-survive"

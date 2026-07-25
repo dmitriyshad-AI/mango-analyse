@@ -23,7 +23,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
     TimelineEventType,
 )
-from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest
+from mango_mvp.customer_timeline.ids import customer_entity_ref, normalize_email, normalize_key, stable_digest
 from mango_mvp.customer_timeline.safety import customer_timeline_safety_contract, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_sqlite_safety_contract
 from mango_mvp.productization.mail_archive import (
@@ -174,7 +174,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     conflict_type="shared_family_phone",
                     entity_refs=(
                         f"phone_hash:{stable_digest({'phone': phone})[:16]}",
-                        *(f"customer:{customer_id}" for customer_id in customer_ids),
+                        *(customer_entity_ref(customer_id) for customer_id in customer_ids),
                         *(f"tallanto_student:{tallanto_id}" for tallanto_id in tallanto_ids),
                     ),
                     severity="high",

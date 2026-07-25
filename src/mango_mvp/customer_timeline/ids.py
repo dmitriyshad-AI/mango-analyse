@@ -121,6 +121,23 @@ def stable_customer_id(
     )
 
 
+def customer_entity_ref(customer_id: Any) -> str:
+    """Build/normalize a `customer:<id>` ref for timeline_conflicts.entity_refs.
+
+    Idempotent by construction: a bare id gets exactly one `customer:` prefix,
+    an already-prefixed id is returned unchanged, and an accidentally
+    double-prefixed `customer:customer:*` value (ТЗ 3.5 P0 class) collapses
+    back to a single prefix. Safe to call at both write time (building a ref
+    from a customer_id) and read time (normalizing a ref before comparing it
+    against real customer_ids), so one authoritative customer_id never ends
+    up split across two different ref spellings.
+    """
+    text = require_text(customer_id, "customer_id")
+    while text.startswith("customer:customer:"):
+        text = text.removeprefix("customer:")
+    return text if text.startswith("customer:") else f"customer:{text}"
+
+
 def stable_identity_link_id(
     *,
     tenant_id: str,

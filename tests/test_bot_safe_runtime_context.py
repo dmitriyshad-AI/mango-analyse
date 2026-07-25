@@ -11,6 +11,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_SAFE_CRM_CONTEXT_ENV,
     TIMELINE_MEMORY_IN_PROMPT_ENV,
     TIMELINE_MEMORY_SHADOW_ENV,
+    _resolve_customer_id,
     bot_safe_crm_context_enabled,
     build_customer_memory_for_prompt,
     build_bot_safe_crm_context,
@@ -31,6 +32,7 @@ from mango_mvp.customer_timeline.contracts import (
     IdentityStatus,
     TimelineEvent,
 )
+from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     CHANNEL_HISTORY_BOT_VISIBLE_ENV,
@@ -1188,6 +1190,55 @@ def test_bot_safe_crm_context_blocks_ambiguous_identity(tmp_path: Path) -> None:
 
     assert context["found"] is False
     assert "ambiguous_identity" in context["warnings"]
+
+
+def test_resolve_customer_id_treats_shared_link_value_as_ambiguous_not_strong(tmp_path: Path) -> None:
+    """Direct unit test for item 6/7 of the family/identity contract: one
+    authoritative link_value (amo_contact_id) that resolves to two different
+    customer_ids -- neither individually flagged duplicate/ambiguous -- must
+    make the runtime lookup refuse rather than silently pick one customer as
+    a strong match. This is the re-check that runs right before bot-safe
+    context is served, independent of whatever the offline summary build saw.
+    """
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    first = CustomerIdentity(
+        tenant_id="foton",
+        identity_status=IdentityStatus.STRONG,
+        customer_id="customer:shared-link-a",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    second = CustomerIdentity(
+        tenant_id="foton",
+        identity_status=IdentityStatus.STRONG,
+        customer_id="customer:shared-link-b",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store.upsert_customer(first)
+    store.upsert_customer(second)
+    for customer in (first, second):
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type=IdentityLinkType.AMO_CONTACT_ID,
+                link_value="9001",
+                source_system="amocrm_snapshot",
+                source_ref=f"contact:9001:{customer.customer_id}",
+            )
+        )
+    store.close()
+
+    with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
+        customer_id, warnings = _resolve_customer_id(
+            api,
+            BotSafeLookup(tenant_id="foton", amo_contact_id="9001"),
+        )
+
+    assert customer_id == ""
+    assert warnings == ("ambiguous_identity",)
 
 
 def test_bot_safe_crm_context_drops_chunks_with_pii(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.bot_safe_summary import (
     BOT_SAFE_SUMMARY_CHUNK_TYPE,
     BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
     BotSafeSummaryBuildConfig,
+    _customer_ids_from_conflict,
     build_bot_safe_summaries,
     expected_bot_safe_chunk_id,
     _bounded_events_with_attendance,
@@ -542,6 +543,62 @@ def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path
     assert "Уточнить у менеджера" not in dumped
     assert "конфликт идентичности" not in dumped
     assert "отправить договор" not in dumped.casefold()
+
+
+def test_customer_ids_from_conflict_collapses_double_prefixed_ref() -> None:
+    conflict = {
+        "conflict_type": "shared_family_phone",
+        "status": "open",
+        "entity_refs": ["phone_hash:test", "customer:customer:real-id", "customer:other"],
+    }
+
+    assert _customer_ids_from_conflict(conflict) == ("customer:real-id", "customer:other")
+
+
+def test_bot_safe_summary_ambiguous_identity_conflict_survives_double_prefixed_ref(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-double-prefix-conflict",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Согласован следующий шаг: отправить договор и документы на почту.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.record_conflict(
+        customer.tenant_id,
+        conflict_type="ambiguous_identity",
+        entity_refs=("phone_hash:test", f"customer:{customer.customer_id}", "customer:other"),
+        actor="test",
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    next_step = payload["metadata"]["next_step"]
+
+    assert report.next_step_status_counts["needs_manager_review"] == 1
+    assert next_step["status"] == "needs_manager_review"
+    assert next_step["reason_code"] == "ambiguous_identity_open"
 
 
 def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) -> None:

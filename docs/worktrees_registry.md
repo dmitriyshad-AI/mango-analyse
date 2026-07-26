@@ -22,11 +22,16 @@
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_implementation` | `codex/ai-employee-implementation`, исполнитель Claude | Единый изолированный блок Owner50, nightly, linkage, досье и локальных Wappi-черновиков. | После независимого регрейда влить `--ff-only`, снять worktree и удалить ветку через `-d`. |
-| `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline` | `codex/ai-employee-timeline`, активная незавершённая работа | Отдельная задача связки Wappi/AMO с customer timeline. | Не трогать и не удалять до завершения задачи владельцем ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченная уникальная работа | Донор исследования Owner50; целиком не переносится из-за избыточного diff. | Сохранить до точечного переноса полезных правил и проверки реальной витрины. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
 
 ## Удалено 2026-07-26
+
+Ветка `codex/ai-employee-timeline@8210eb87` удалена после проверки, что её
+полезный код поглощён более новыми реализациями в `main`. Три уникальных audit
+pack перемещены в канонический `audits/_inbox`; вершина сохранена тегом
+`archive/ai-employee-timeline-8210eb87`. Ночная служба уже была настроена на
+`Mango analyse`, поэтому перевод runtime не требовался.
 
 Интеграционная ветка `codex/ai-employee-final@fcf62571` влита в `main` чистым
 fast-forward после независимой проверки девяти дублирующих изменений и полного
@@ -70,9 +75,9 @@ fast-forward после независимой проверки девяти д�
 
 - Wappi сейчас остановлен; активные calls A/B запускаются из
   `/Users/dmitrijfabarisov/Projects/Mango analyse`.
-- Текущий процесс customer-timeline nightly запущен из
-  `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_timeline`; этот worktree
-  нельзя снимать до штатного перевода ночной службы.
+- Customer-timeline nightly настроен на `/Users/dmitrijfabarisov/Projects/Mango analyse`.
+  Сейчас процесс не запущен; последний код выхода `1` требует отдельного разбора
+  в текущей задаче AI employee.
 - Точную загруженную ревизию Wappi подтверждают startup manifest, PID/env и
   `scripts/skills/live_truth.py`; один путь в plist сам по себе её не доказывает.
 - Wappi пока читает customer timeline из

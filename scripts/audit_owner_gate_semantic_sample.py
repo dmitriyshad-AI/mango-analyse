@@ -82,16 +82,22 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
+    _family_scope_customer_ids,
+    _guard_local_dossier_output_path,
+    _source_freshness,
     build_manager_dossier_workbook,
     build_owner50_family_workbook,
+    build_customer_dossier,
+    manager_freshness_gate,
     _connect_ro,
 )
+from mango_mvp.customer_timeline.store import customer_entity_ref_values  # noqa: E402
 
 
 def _short_hash(value: str) -> str:
@@ -334,13 +340,11 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
     con.row_factory = sqlite3.Row
     families = con.execute(
         """
-        SELECT customer_id,
-               MIN(brand) AS brand,
-               COUNT(DISTINCT child_key) AS child_count,
-               MIN(family_id) AS family_id
+        SELECT MIN(customer_id) AS customer_id, MIN(brand) AS brand,
+               COUNT(DISTINCT child_key) AS child_count, family_id
         FROM family_links_v1
         WHERE tenant_id = ? AND status != 'excluded'
-        GROUP BY customer_id
+        GROUP BY family_id
         """,
         (tenant_id,),
     ).fetchall()
@@ -382,14 +386,22 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
     for row in channel_rows:
         channel_by_customer[row["customer_id"]].add(row["source_system"])
 
+    event_layers: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        f"SELECT DISTINCT customer_id, event_type FROM timeline_events WHERE tenant_id=? "
+        f"AND customer_id IN ({placeholders}) AND event_type IN ('email_message','mango_call','tallanto_attendance')",
+        (tenant_id, *ids),
+    ).fetchall():
+        event_layers[row["customer_id"]].add(row["event_type"])
+
     conflicted: set[str] = set()
     for row in con.execute(
         "SELECT record_json FROM timeline_conflicts WHERE tenant_id = ? AND status != 'resolved'",
         (tenant_id,),
     ).fetchall():
-        text = row["record_json"] or ""
+        refs = {str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())}
         for cid in ids:
-            if cid in text:
+            if set(customer_entity_ref_values(cid)) & refs:
                 conflicted.add(cid)
 
     population = []
@@ -399,6 +411,7 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
         population.append(
             {
                 "id": cid,
+                "family_id": row["family_id"],
                 "brand": (row["brand"] or "unknown").strip().casefold() or "unknown",
                 "child_bucket": "1" if (row["child_count"] or 0) <= 1 else "2+",
                 "channel": (
@@ -407,6 +420,9 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
                 "has_payment": cid in paying,
                 "has_conflict": cid in conflicted,
                 "has_signal": cid in signalled,
+                "has_mail": "email_message" in event_layers.get(cid, set()),
+                "has_call": "mango_call" in event_layers.get(cid, set()),
+                "has_attendance": "tallanto_attendance" in event_layers.get(cid, set()),
             }
         )
     return population
@@ -483,6 +499,123 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
     )
     print(f"OK: {len(sample)} dossiers written to {local_dir / 'dossiers_sample.xlsx'} (PII, local only, not for git).")
     print(f"Scrubbed selection manifest (no PII): {out_root / 'dossiers_selection_manifest.json'}")
+    return 0
+
+
+_ACCEPTANCE_SHEETS = ("Семьи 30", "Хронология", "Доказательства", "Конфликты", "Owner50")
+
+
+def _write_acceptance_workbook(path: Path, sheets: Mapping[str, tuple[Sequence[str], Sequence[Sequence[Any]]]]) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name in _ACCEPTANCE_SHEETS:
+        headers, rows = sheets.get(name, ((), ()))
+        ws = wb.create_sheet(name)
+        ws.append(tuple(headers))
+        for row in rows:
+            ws.append(tuple(row))
+        ws.freeze_panes = "A2"
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for column in ws.columns:
+            ws.column_dimensions[column[0].column_letter].width = min(80, max(12, *(len(str(c.value or "")) for c in column)))
+    wb.save(path)
+    path.chmod(0o600)
+
+
+def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: Sequence[Mapping[str, Any]]) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], list[list[Any]]]:
+    families: list[list[Any]] = []; chronology: list[list[Any]] = []
+    evidence: list[list[Any]] = []; conflicts: list[list[Any]] = []
+    conflict_rows = con.execute(
+        "SELECT conflict_id,conflict_type,severity,status,created_at,record_json FROM timeline_conflicts "
+        "WHERE tenant_id=? AND status!='resolved' ORDER BY created_at,conflict_id", (tenant_id,)
+    ).fetchall()
+    for number, selected in enumerate(sample, start=1):
+        customer_id = str(selected["id"])
+        family_id = str(selected.get("family_id") or customer_id)
+        members = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
+        placeholders = ",".join("?" for _ in members)
+        dossier = build_customer_dossier(con, tenant_id=tenant_id, customer_id=customer_id)
+        children = con.execute(
+            f"SELECT child_key,canonical_name,grades_json,subjects_json FROM family_links_v1 WHERE tenant_id=? "
+            f"AND customer_id IN ({placeholders}) AND status!='excluded' ORDER BY child_key", (tenant_id, *members)
+        ).fetchall()
+        child_text = "; ".join(f"{row['canonical_name']} — {row['grades_json']} — {row['subjects_json']}" for row in children)
+        opportunity = con.execute(
+            f"SELECT opportunity_id,title,status FROM customer_opportunities WHERE tenant_id=? AND customer_id IN ({placeholders}) "
+            "ORDER BY COALESCE(opened_at,'') DESC,opportunity_id LIMIT 1", (tenant_id, *members)
+        ).fetchone()
+        payment = con.execute(
+            f"SELECT SUM(COALESCE(total_in,0)) total_in,MAX(last_purchase_at) last_at FROM customer_purchases_v1 "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders}) AND period='all_time' AND money_kind='fact'", (tenant_id, *members)
+        ).fetchone()
+        event_rows = con.execute(
+            f"SELECT event_id,customer_id,event_at,event_type,source_system,direction,subject,summary,text_preview,source_ref "
+            f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({placeholders}) AND COALESCE(superseded_by,'')='' "
+            "ORDER BY event_at,event_id", (tenant_id, *members)
+        ).fetchall()
+        attendance = next((row for row in reversed(event_rows) if row["event_type"] == "tallanto_attendance"), None)
+        latest = event_rows[-1] if event_rows else None
+        member_refs = {ref for member in members for ref in customer_entity_ref_values(member)}
+        matched_conflicts = [row for row in conflict_rows if member_refs & {
+            str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())
+        }]
+        families.append([
+            number, family_id, customer_id, dossier.display_name, dossier.phone, dossier.email, dossier.brand,
+            child_text, len(children), opportunity["title"] if opportunity else "", opportunity["status"] if opportunity else "",
+            payment["total_in"] if payment else 0, payment["last_at"] if payment else "",
+            attendance["event_at"] if attendance else "", attendance["subject"] if attendance else "",
+            latest["event_at"] if latest else "", latest["source_system"] if latest else "",
+            dossier.next_step, dossier.next_step_source, "; ".join(row["conflict_type"] for row in matched_conflicts), "", "",
+        ])
+        evidence.extend([
+            [family_id, "Личность", dossier.display_name, "customer_identities", "", "customer_identities", customer_id, "да"],
+            *([family_id, "Ребёнок", row["canonical_name"], "family_links_v1.canonical_name", "", "family_links_v1", row["child_key"], "да"] for row in children),
+            [family_id, "Оплаты", payment["total_in"] if payment else 0, "customer_purchases_v1.total_in", payment["last_at"] if payment else "", "customer_purchases_v1", customer_id, "да"], [family_id, "Следующий шаг", dossier.next_step, dossier.next_step_source, "", "derived_signals", "", "да" if dossier.next_step else "нет"],
+        ])
+        for row in event_rows:
+            chronology.append([family_id, row["customer_id"], row["event_id"], row["event_at"], row["event_type"],
+                               row["source_system"], row["direction"], row["subject"], row["summary"], row["text_preview"], row["source_ref"]])
+        conflicts.extend([[family_id, row["conflict_id"], row["conflict_type"], row["severity"], row["status"],
+                           row["created_at"], row["record_json"], "", ""] for row in matched_conflicts])
+    return families, chronology, evidence, conflicts
+
+
+def cmd_acceptance(args: argparse.Namespace) -> int:
+    db = Path(args.db).expanduser()
+    out_root = Path(args.out_root).expanduser()
+    local_dir = out_root / ".codex_local"
+    local_dir.mkdir(parents=True, exist_ok=True); local_dir.chmod(0o700)
+    out_xlsx = _guard_local_dossier_output_path(local_dir / "acceptance_30_families.xlsx", out_root)
+    with _connect_ro(db) as con:
+        freshness_gate = manager_freshness_gate(_source_freshness(con, tenant_id=args.tenant_id))
+        if not args.skip_freshness_gate and not freshness_gate["passed"]:
+            raise RuntimeError("acceptance freshness gate failed")
+        population = _dossier_population(con, tenant_id=args.tenant_id)
+        sample = stratified_sample(population, count=args.count, seed=args.seed, strata_key=lambda row: (
+            row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"],
+            row["has_signal"], row.get("has_mail", False), row.get("has_call", False), row.get("has_attendance", False)))
+        if len(sample) != args.count: raise RuntimeError(f"acceptance requires {args.count} families, found {len(sample)}")
+        families, chronology, evidence, conflicts = _acceptance_family_data(con, tenant_id=args.tenant_id, sample=sample)
+    owner_tmp = local_dir / ".owner50_acceptance_source.xlsx"
+    build_owner50_family_workbook(timeline_db=db, allowed_root=out_root, out_xlsx=owner_tmp,
+                                  tenant_id=args.tenant_id, enforce_freshness=not args.skip_freshness_gate)
+    selected_family_ids = {str(row[1]) for row in families}; owner_records = _owner50_sheet_rows(owner_tmp, "READY_50")
+    owner_headers = [key for key in owner_records[0] if key != "id"] if owner_records else []; owner_rows = [
+        [row.get(key) for key in owner_headers] for row in owner_records if row["id"] in selected_family_ids]
+    owner_tmp.unlink(missing_ok=True); owner_tmp.with_suffix(".summary.json").unlink(missing_ok=True)
+    sheets = {
+        "Семьи 30": (("№", "family_id", "customer_id", "Родитель", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
+        "Хронология": (("family_id", "customer_id", "event_id", "Дата/время", "Тип события", "Источник", "Направление", "Тема", "Краткое содержание", "Полный текст", "source_ref"), chronology),
+        "Доказательства": (("family_id", "Тип", "Доказательство", "Точное поле", "Дата", "source_system", "event_id/record_id", "Проверяемо"), evidence),
+        "Конфликты": (("family_id", "conflict_id", "Тип", "Критичность", "Статус", "Дата", "Исходная запись", "F1. Статус", "F2. Комментарий"), conflicts),
+        "Owner50": (owner_headers, owner_rows),
+    }
+    _write_acceptance_workbook(out_xlsx, sheets)
+    print(f"OK: {len(families)} families written to {out_xlsx} (PII, local only, not for git).")
     return 0
 
 
@@ -674,6 +807,15 @@ def main() -> int:
              "this to produce a real semantic-review sample.",
     )
     p_dossiers.set_defaults(func=cmd_dossiers)
+
+    p_acceptance = sub.add_parser("acceptance", help="One five-sheet XLSX for manual review of 30 families.")
+    p_acceptance.add_argument("--db", required=True, help="Path to the staging customer_timeline.sqlite.")
+    p_acceptance.add_argument("--out-root", required=True)
+    p_acceptance.add_argument("--tenant-id", default="foton")
+    p_acceptance.add_argument("--seed", type=int, default=20260726)
+    p_acceptance.add_argument("--count", type=int, default=30)
+    p_acceptance.add_argument("--skip-freshness-gate", action="store_true")
+    p_acceptance.set_defaults(func=cmd_acceptance)
 
     p_drafts = sub.add_parser("drafts", help="Sample 50 stratified blind Wappi drafts from a dry-run journal.")
     p_drafts.add_argument("--journal", required=True, help="Path to draft_loop journal.jsonl produced by a dry run.")

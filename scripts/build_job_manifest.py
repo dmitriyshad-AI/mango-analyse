@@ -23,10 +23,25 @@ DEFAULT_SNAPSHOT = "product_data/knowledge_base/kb_release_20260612_v6_7_staging
 DEFAULT_OUT_DIR = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests" / "_jobs"
 SAFE_ENV_NAME_RE = re.compile(r"^(TELEGRAM_[A-Z0-9_]+|DIALOGUE_CONTRACT_DEBUG_TRACE)$")
 SAFE_ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/\\-]{0,128}$")
+GIT_CONTEXT_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
 
 
 class ManifestError(ValueError):
     pass
+
+
+def clean_git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in GIT_CONTEXT_ENV_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def sha256_file(path: Path) -> str:
@@ -40,7 +55,7 @@ def sha256_file(path: Path) -> str:
 
 
 def git_output(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+    return subprocess.check_output(["git", *args], cwd=repo, env=clean_git_env(), text=True).strip()
 
 
 def discover_repo_root(start: Path) -> Path:
@@ -69,7 +84,14 @@ def normalize_rel_path(repo: Path, raw: str, *, label: str) -> str:
 
 
 def ensure_tracked(repo: Path, rel_path: str, *, label: str) -> None:
-    result = subprocess.run(["git", "ls-files", "--error-unmatch", rel_path], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", rel_path],
+        cwd=repo,
+        env=clean_git_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     if result.returncode != 0:
         raise ManifestError(f"{label} is not tracked by git: {rel_path}")
 

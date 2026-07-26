@@ -16,6 +16,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from mango_mvp.utils.http_retry import (
+    bounded_backoff_seconds,
+    categorize_curl_return_code,
+    categorize_status_code,
+    categorize_timeout,
+    categorize_connection_error,
+    safe_error_summary,
+    should_retry,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -81,7 +90,12 @@ class AmoContactRecord:
 
 
 class AmoMcpError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, category: str = "unknown") -> None:
+        super().__init__(message)
+        # D3: safe closed-vocabulary category (mango_mvp.utils.http_retry) --
+        # never derived from the raw response body/URL, always safe to put in
+        # a step report or proof.
+        self.category = category
 
 
 class AmoMcpClient:
@@ -136,6 +150,10 @@ class AmoMcpClient:
         if self.config.transport == "curl":
             return self._post_json_rpc_curl(payload)
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # D3: bounded retry only for 429/5xx/timeout/connection errors; 401/403
+        # and malformed JSON never retry. Exception messages carry only the
+        # safe category/status -- never the connector URL, bearer token, or
+        # response body (a 429/5xx body can echo request details).
         attempts = max(1, self.config.max_retries + 1)
         for attempt in range(1, attempts + 1):
             request = urllib.request.Request(
@@ -154,25 +172,41 @@ class AmoMcpClient:
                 with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                     return json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")
-                if exc.code == 429 and attempt < attempts:
+                exc.read()  # drain the body without ever inspecting/leaking it.
+                category = categorize_status_code(exc.code)
+                if exc.code == 429:
                     retry_after = _parse_retry_after(exc.headers.get("Retry-After"))
-                    time.sleep(retry_after)
+                    if attempt < attempts:
+                        time.sleep(retry_after)
+                        continue
+                elif should_retry(category, attempt=attempt, max_attempts=attempts):
+                    time.sleep(bounded_backoff_seconds(attempt))
                     continue
-                raise AmoMcpError(f"MCP HTTP {exc.code}: {detail[:300]}") from exc
+                raise AmoMcpError(
+                    safe_error_summary(category, source="amo_mcp"),
+                    category=category.category,
+                ) from exc
             except urllib.error.URLError as exc:
+                category = categorize_connection_error()
                 if attempt < attempts:
-                    time.sleep(min(2.0, 0.5 * attempt))
+                    time.sleep(bounded_backoff_seconds(attempt))
                     continue
-                raise AmoMcpError(f"MCP connection failed: {exc.reason}") from exc
+                raise AmoMcpError(
+                    safe_error_summary(category, source="amo_mcp"),
+                    category=category.category,
+                ) from exc
             except socket.timeout as exc:
+                category = categorize_timeout()
                 if attempt < attempts:
-                    time.sleep(min(2.0, 0.5 * attempt))
+                    time.sleep(bounded_backoff_seconds(attempt))
                     continue
-                raise AmoMcpError("MCP connection timed out") from exc
+                raise AmoMcpError(
+                    safe_error_summary(category, source="amo_mcp"),
+                    category=category.category,
+                ) from exc
             except json.JSONDecodeError as exc:
-                raise AmoMcpError("MCP returned invalid JSON") from exc
-        raise AmoMcpError("MCP request failed after retries")
+                raise AmoMcpError("MCP returned invalid JSON", category="invalid_response") from exc
+        raise AmoMcpError("MCP request failed after retries", category="server_error")
 
     def _post_json_rpc_curl(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -206,23 +240,32 @@ class AmoMcpClient:
                 check=False,
             )
             stdout = completed.stdout.decode("utf-8", errors="replace")
-            stderr = completed.stderr.decode("utf-8", errors="replace")
             body_text, _, status_text = stdout.rpartition("\n")
             status_code = int(status_text) if status_text.isdigit() else 0
             if completed.returncode == 0 and status_code == 200:
                 try:
                     return json.loads(body_text)
                 except json.JSONDecodeError as exc:
-                    raise AmoMcpError("MCP returned invalid JSON") from exc
-            if status_code == 429 and attempt < attempts:
-                time.sleep(min(10.0, 1.0 + attempt))
+                    raise AmoMcpError("MCP returned invalid JSON", category="invalid_response") from exc
+            # D3: rc is curl's process return code (connection-level failure,
+            # e.g. timeout/SSL/network unreachable) -- distinct from
+            # status_code (an actual HTTP response, possibly 429/5xx).
+            if status_code:
+                category = categorize_status_code(status_code)
+            else:
+                category = categorize_curl_return_code(completed.returncode)
+            if status_code == 429:
+                if attempt < attempts:
+                    time.sleep(min(10.0, 1.0 + attempt))
+                    continue
+            elif should_retry(category, attempt=attempt, max_attempts=attempts):
+                time.sleep(bounded_backoff_seconds(attempt))
                 continue
-            if completed.returncode in {28, 35, 52, 56} and attempt < attempts:
-                time.sleep(min(2.0, 0.5 * attempt))
-                continue
-            detail = body_text[:300] or stderr[:300] or f"curl exit {completed.returncode}"
-            raise AmoMcpError(f"MCP curl HTTP {status_code}: {detail}")
-        raise AmoMcpError("MCP curl request failed after retries")
+            raise AmoMcpError(
+                safe_error_summary(category, source="amo_mcp_curl"),
+                category=category.category,
+            )
+        raise AmoMcpError("MCP curl request failed after retries", category="server_error")
 
 
 def read_mcp_env(path: Path = DEFAULT_ENV_PATH) -> AmoMcpConfig:

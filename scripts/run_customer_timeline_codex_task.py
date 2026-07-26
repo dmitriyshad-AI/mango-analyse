@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
@@ -56,11 +57,49 @@ REQUIRED_NIGHTLY_STEPS = {
     "mail_archive_incremental",
     "mail_link_enrich",
     "tallanto_money_api_incremental",
+    "tallanto_cards_sync",
     "tallanto_attendance_api_incremental",
     "family_graph_refresh",
     "bot_safe_rebuild",
 }
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
+# B1: this lightweight wrapper deliberately avoids importing mango_mvp (it
+# only needs to preflight-check the config file as raw JSON, not pull in the
+# full nightly step dependency graph), so these two are kept in sync by hand
+# with mango_mvp.customer_timeline.nightly_service.NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
+# and REQUIRED_MANIFEST_SOURCE_STEP_MAP (which build_customer_timeline_nightly_dv2_sources.py
+# writes into the config from the same source of truth).
+EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v3"
+REQUIRED_MANIFEST_SOURCES = frozenset(
+    {
+        "amo_contacts_leads_events",
+        "tallanto_cards",
+        "tallanto_payments_subscriptions",
+        "tallanto_attendance",
+        "calls",
+        "email",
+        "wappi_telegram",
+        "wappi_max",
+        "family_child_graph",
+        "bot_safe_chunks_and_dossier",
+    }
+)
+# B3: keep in sync with
+# mango_mvp.customer_timeline.nightly_service.DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS.
+# Used only as a fallback when the nightly config on disk omits
+# total_runtime_budget_seconds (e.g. an older config not yet self-healed by
+# ensure_nightly_config()).
+DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS = 6.0 * 3600.0
+# B3: bounded wait after SIGTERM before escalating to SIGKILL.
+NIGHTLY_TERM_GRACE_SECONDS = 20.0
+GIT_CONTEXT_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +117,7 @@ def current_runtime() -> Mapping[str, str]:
             check=True,
             capture_output=True,
             text=True,
+            env=repo_python_env(),
         ).stdout.strip(),
         "worktree": str(ROOT),
     }
@@ -109,6 +149,28 @@ def validate_nightly_config(path: Path | None = None) -> str:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return f"nightly config is invalid: {path}"
+    # B1: an old config built before this field (or before
+    # required_manifest_sources) existed must never pass preflight as if it
+    # were current -- that is exactly the "old nightly.json without
+    # required_manifest_sources still validates" false-green bug. Checked
+    # first, ahead of any other field, so a stale config is rejected
+    # regardless of what else it happens to still get right.
+    if payload.get("config_schema_version") != EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION:
+        return (
+            "nightly config schema version is stale: "
+            f"{payload.get('config_schema_version')!r} != {EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION!r}"
+        )
+    required_sources_raw = payload.get("required_manifest_sources")
+    required_sources = (
+        {str(item) for item in required_sources_raw} if isinstance(required_sources_raw, list) else set()
+    )
+    if required_sources != REQUIRED_MANIFEST_SOURCES:
+        missing_sources = sorted(REQUIRED_MANIFEST_SOURCES - required_sources)
+        extra_sources = sorted(required_sources - REQUIRED_MANIFEST_SOURCES)
+        return (
+            "nightly config required_manifest_sources mismatch: "
+            f"missing={','.join(missing_sources) or '-'} extra={','.join(extra_sources) or '-'}"
+        )
     if Path(str(payload.get("timeline_db") or "")).expanduser().resolve(strict=False) != STAGING_TIMELINE_DB.resolve(
         strict=False
     ):
@@ -155,6 +217,21 @@ def validate_nightly_config(path: Path | None = None) -> str:
     attendance_db = Path(str(attendance_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
     if attendance_config.get("apply") is not True or attendance_db != STAGING_TIMELINE_DB.resolve(strict=False):
         return "tallanto_attendance_api_incremental must apply to persistent staging DB"
+    cards_step = steps["tallanto_cards_sync"]
+    cards_config = cards_step.get("config")
+    if cards_step.get("kind") != "tallanto_cards" or not isinstance(cards_config, Mapping):
+        return "tallanto_cards_sync has invalid kind or config"
+    cards_db = Path(str(cards_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
+    if cards_db != STAGING_TIMELINE_DB.resolve(strict=False):
+        return "tallanto_cards_sync must target persistent staging DB"
+    raw_steps = payload.get("steps") or ()
+    positions_by_name = {
+        str(step.get("name") or ""): index
+        for index, step in enumerate(raw_steps)
+        if isinstance(step, Mapping)
+    }
+    if positions_by_name["tallanto_cards_sync"] >= positions_by_name["tallanto_attendance_api_incremental"]:
+        return "nightly config requires tallanto_cards_sync before tallanto_attendance_api_incremental"
     calls_config = steps["calls_and_amo_incremental"].get("config")
     if not isinstance(calls_config, Mapping):
         return "calls_and_amo_incremental has no config"
@@ -249,8 +326,12 @@ def path_is_within(path: Path, root: Path) -> bool:
 
 
 def repo_python_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in GIT_CONTEXT_ENV_KEYS:
+        env.pop(key, None)
     existing = os.environ.get("PYTHONPATH", "")
-    return {**os.environ, "PYTHONPATH": os.pathsep.join(part for part in (str(ROOT / "src"), existing) if part)}
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (str(ROOT / "src"), existing) if part)
+    return env
 
 
 def ensure_nightly_config() -> str:
@@ -534,6 +615,95 @@ def write_summary(
     return path
 
 
+@dataclass(frozen=True)
+class BoundedRunResult:
+    rc: int
+    stdout: str
+    timed_out: bool
+
+
+def nightly_runtime_budget_seconds(path: Path | None = None) -> float:
+    """B3: read the total wall-clock budget for one nightly run straight out
+    of the same JSON config the nightly service itself reads (so it is part
+    of NightlyServiceConfig.total_runtime_budget_seconds and therefore of
+    service_config_fingerprint -- a budget change forces a fresh run instead
+    of resuming under stale timing assumptions). Falls back to a safe
+    generous default for a config that predates this field.
+    """
+    path = path or NIGHTLY_DV2_CONFIG
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS
+    try:
+        return float(payload.get("total_runtime_budget_seconds", DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS
+
+
+def _safe_getpgid(pid: int) -> Optional[int]:
+    try:
+        return os.getpgid(pid)
+    except ProcessLookupError:
+        return None
+
+
+def _safe_killpg(pgid: Optional[int], sig: int) -> None:
+    if pgid is None:
+        return
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def run_with_runtime_budget(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    budget_seconds: float,
+    term_grace_seconds: float = NIGHTLY_TERM_GRACE_SECONDS,
+) -> BoundedRunResult:
+    """B3: run `command` as the leader of its own process group and enforce
+    a hard wall-clock budget from *outside* the process -- never by
+    interrupting a Python thread inside it. subprocess.run(..., timeout=...)
+    alone is not enough here: on timeout it only ever targets the single
+    direct child pid, so a step that itself shells out to another process
+    (Tallanto/Mango importer scripts) would be orphaned and keep running.
+    start_new_session=True makes the child (pid == its own new pgid) the
+    group leader, so any descendant it spawns without its own setsid() call
+    inherits that same pgid; killing the *group* (os.killpg) reaches all of
+    them. On timeout: SIGTERM the whole group, wait a bounded grace period,
+    then SIGKILL the whole group.
+    """
+    proc = subprocess.Popen(
+        list(command),
+        cwd=str(cwd),
+        env=dict(env),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        stdout, _ = proc.communicate(timeout=budget_seconds)
+        return BoundedRunResult(rc=proc.returncode, stdout=stdout or "", timed_out=False)
+    except subprocess.TimeoutExpired:
+        pass
+    pgid = _safe_getpgid(proc.pid)
+    _safe_killpg(pgid, signal.SIGTERM)
+    try:
+        stdout, _ = proc.communicate(timeout=term_grace_seconds)
+    except subprocess.TimeoutExpired:
+        _safe_killpg(pgid, signal.SIGKILL)
+        try:
+            stdout, _ = proc.communicate(timeout=term_grace_seconds)
+        except subprocess.TimeoutExpired:
+            stdout = ""
+    return BoundedRunResult(rc=proc.returncode, stdout=stdout or "", timed_out=True)
+
+
 def run_task(task: str, *, tallanto_phone_limit: int) -> int:
     nightly_stop_reason = ensure_nightly_config() if task == "nightly-warehouse" else None
     spec = build_task_spec(
@@ -548,18 +718,37 @@ def run_task(task: str, *, tallanto_phone_limit: int) -> int:
     payload: Mapping[str, Any] = {}
     rc = 78 if spec.stop_reason else 0
     combined = ""
+    timed_out = False
+    runtime_budget_seconds: Optional[float] = None
     if spec.command and not spec.stop_reason:
-        proc = subprocess.run(
-            spec.command,
-            cwd=ROOT,
-            env=repo_python_env(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-        rc = proc.returncode
-        combined = proc.stdout or ""
+        if task == "nightly-warehouse":
+            # B3: this is the "external wrapper waits forever" gap -- nightly
+            # chains several steps that call out to external
+            # APIs/subprocesses in-process (no per-step timeout of their
+            # own, e.g. the Wappi history step), so only a wrapper-level,
+            # process-group-wide budget can guarantee this task ever returns.
+            runtime_budget_seconds = nightly_runtime_budget_seconds()
+            result = run_with_runtime_budget(
+                spec.command,
+                cwd=ROOT,
+                env=repo_python_env(),
+                budget_seconds=runtime_budget_seconds,
+            )
+            rc = result.rc
+            combined = result.stdout
+            timed_out = result.timed_out
+        else:
+            proc = subprocess.run(
+                spec.command,
+                cwd=ROOT,
+                env=repo_python_env(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            rc = proc.returncode
+            combined = proc.stdout or ""
     else:
         combined = json.dumps(
             {
@@ -584,7 +773,17 @@ def run_task(task: str, *, tallanto_phone_limit: int) -> int:
             payload = json.loads(spec.expected_output.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             payload = {}
-    status, reason = status_from_payload(payload, rc, spec.stop_reason)
+    # B3: a timeout always reports as "stopped"/timeout, regardless of
+    # whatever partial JSON the killed process happened to print before it
+    # was terminated -- latest was never reached (see
+    # run_nightly_service/atomic_publish_latest), and progress.json from the
+    # in-flight run is left exactly as the process last wrote it.
+    effective_stop_reason = spec.stop_reason
+    if timed_out:
+        effective_stop_reason = (
+            f"nightly_runtime_budget_exceeded_seconds={runtime_budget_seconds:.0f}"
+        )
+    status, reason = status_from_payload(payload, rc, effective_stop_reason)
     finished = datetime.now(timezone.utc)
     extra_metrics = [task_success_age_metric(task, status=status, finished=finished)]
     if task == "nightly-warehouse":

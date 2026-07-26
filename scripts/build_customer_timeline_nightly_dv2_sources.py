@@ -31,6 +31,10 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
 )
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
+from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
+    NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
+    REQUIRED_MANIFEST_SOURCE_STEP_MAP,
+)
 
 DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse")
 MANGO_READY_PACKAGE_DB = (
@@ -558,7 +562,7 @@ def build_service_config(
                 "widget_link_db": str(allowed_root / "wappi_amo_links.sqlite"),
                 "apply": True,
                 "require_nonempty_profiles": True,
-                "require_widget_linkage": False,
+                "require_widget_linkage": True,
                 "refresh_widget_links": True,
                 "chat_limit_per_profile": 5000,
                 "messages_per_chat": 100,
@@ -644,6 +648,23 @@ def build_service_config(
             },
         }
     )
+    steps.insert(
+        next(index for index, step in enumerate(steps) if step.get("name") == "tallanto_attendance_api_incremental"),
+        {
+            "name": "tallanto_cards_sync",
+            "kind": "tallanto_cards",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "out_root": str(out_root / "tallanto_cards_sync"),
+                "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
+                "tenant_id": "foton",
+                "max_pages": 20,
+            },
+        },
+    )
     steps.append(
         {
             "name": "family_graph_refresh",
@@ -685,12 +706,24 @@ def build_service_config(
         ]
     )
     return {
+        # B1: explicit config schema version. validate_nightly_config() in
+        # scripts/run_customer_timeline_codex_task.py rejects any on-disk
+        # config whose version does not match, so a config written by an
+        # older copy of this builder (e.g. before required_manifest_sources
+        # existed) is rebuilt by ensure_nightly_config() instead of silently
+        # passing preflight.
+        "config_schema_version": NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
         "timeline_db": str(timeline_db),
         "allowed_root": str(allowed_root),
         "out_root": str(out_root / "nightly_service_runs"),
         "publish_dir": str(allowed_root / "nightly_service" / "published"),
         "tenant_id": "foton",
         "steps": steps,
+        # B2/B1: the 10 mandatory business sources the nightly manifest must
+        # attest to -- sourced from nightly_service.REQUIRED_MANIFEST_SOURCE_STEP_MAP
+        # itself (not a hand-copied literal) so this list can never silently
+        # drift out of sync with the gate that enforces it.
+        "required_manifest_sources": list(REQUIRED_MANIFEST_SOURCE_STEP_MAP.keys()),
     }
 
 

@@ -13,17 +13,36 @@ from urllib import parse as url_parse
 from urllib import request as url_request
 
 from mango_mvp.amocrm_runtime.config import get_settings
+from mango_mvp.utils.http_retry import (
+    HttpErrorCategory,
+    categorize_connection_error,
+    categorize_invalid_response,
+    categorize_status_code,
+    categorize_timeout,
+    bounded_backoff_seconds,
+    safe_error_summary,
+    should_retry,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
 settings = get_settings()
 _APPROVED_TALLANTO_HOSTS = frozenset({"kmipt.tallanto.com"})
+# D3: bounded retry attempts for 429/5xx/timeout/connection errors. 401/403 and
+# structurally invalid responses never retry regardless of this budget (see
+# categorize_status_code/categorize_invalid_response -- both mark
+# retryable=False).
+_HTTP_MAX_ATTEMPTS = 4
 
 
 class TallantoApiError(ValueError):
-    def __init__(self, message: str, *, status_code: int = 400):
+    def __init__(self, message: str, *, status_code: int = 400, category: str = "unknown"):
         super().__init__(message)
         self.status_code = status_code
+        # D3: safe closed-vocabulary category (see mango_mvp.utils.http_retry)
+        # -- never derived from the raw response body/URL, always safe to put
+        # in a step report or proof.
+        self.category = category
 
 
 @dataclass(frozen=True)
@@ -94,21 +113,18 @@ def _http_json_request(
         payload = url_parse.urlencode(form_items, doseq=True).encode("utf-8")
         request_headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-    def safe_error_text(value: object) -> str:
-        text = str(value or "")
-        for name, secret in request_headers.items():
-            if secret and ("token" in name.casefold() or "authorization" in name.casefold()):
-                text = text.replace(secret, "[REDACTED]")
-        return text
-
     request = url_request.Request(
         url,
         data=payload,
         headers=request_headers,
         method=method.upper(),
     )
-    attempts = 4
-    retry_delay_seconds = 2.0
+    # D3: bounded retry only for 429/5xx/timeout/connection errors (see
+    # mango_mvp.utils.http_retry.categorize_status_code); 401/403 and
+    # malformed JSON responses raise on the first attempt, no retry budget
+    # spent. Exception messages carry only the safe category/status -- never
+    # the request URL, query string, auth headers, or response body.
+    attempts = _HTTP_MAX_ATTEMPTS
     for attempt in range(1, attempts + 1):
         try:
             with url_request.urlopen(request, timeout=timeout_seconds) as response:
@@ -120,28 +136,46 @@ def _http_json_request(
                     return decoded
                 return {"data": decoded}
         except url_error.HTTPError as exc:
-            details = safe_error_text(exc.read().decode("utf-8", errors="replace"))
-            reason = safe_error_text(exc.reason)
-            should_retry = exc.code in {429, 500, 502, 503, 504}
-            if should_retry and attempt < attempts:
-                time.sleep(retry_delay_seconds * attempt)
+            # Body is read only to classify the safe category locally (e.g.
+            # Tallanto's SugarCRM-style "not found" shape, always a 400, not
+            # a real 404) -- it is never placed into the exception message,
+            # a report, or a proof.
+            raw_body = exc.read()
+            category = categorize_status_code(exc.code)
+            if category.category == "client_error" and _looks_like_tallanto_not_found_body(raw_body):
+                category = HttpErrorCategory("not_found", retryable=False, status_code=exc.code)
+            if should_retry(category, attempt=attempt, max_attempts=attempts):
+                time.sleep(bounded_backoff_seconds(attempt))
                 continue
             raise TallantoApiError(
-                f"HTTP {exc.code} from Tallanto: {details or reason}",
+                safe_error_summary(category, source="tallanto_api"),
                 status_code=502,
+                category=category.category,
             ) from exc
-        except (url_error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
-            if attempt >= attempts:
-                reason = safe_error_text(getattr(exc, "reason", exc))
+        except (TimeoutError, socket.timeout) as exc:
+            category = categorize_timeout()
+            if not should_retry(category, attempt=attempt, max_attempts=attempts):
                 raise TallantoApiError(
-                    f"Failed to reach Tallanto: {reason}",
+                    safe_error_summary(category, source="tallanto_api"),
                     status_code=502,
+                    category=category.category,
                 ) from exc
-            time.sleep(retry_delay_seconds * attempt)
+            time.sleep(bounded_backoff_seconds(attempt))
+        except (url_error.URLError, ssl.SSLError) as exc:
+            category = categorize_connection_error()
+            if not should_retry(category, attempt=attempt, max_attempts=attempts):
+                raise TallantoApiError(
+                    safe_error_summary(category, source="tallanto_api"),
+                    status_code=502,
+                    category=category.category,
+                ) from exc
+            time.sleep(bounded_backoff_seconds(attempt))
         except json.JSONDecodeError as exc:
+            category = categorize_invalid_response()
             raise TallantoApiError(
-                f"Invalid JSON response from Tallanto endpoint {url}.",
+                safe_error_summary(category, source="tallanto_api"),
                 status_code=502,
+                category=category.category,
             ) from exc
 
 
@@ -224,8 +258,31 @@ def _build_phone_candidates(value: str) -> list[str]:
 
 
 def _is_not_found_error(exc: Exception) -> bool:
+    # D3: the safe category set on the exception (see _http_json_request) is
+    # the primary signal now that error messages no longer echo the response
+    # body. The string check stays for messages built by hand (tests, or any
+    # older TallantoApiError constructed directly with a descriptive string).
+    if getattr(exc, "category", None) == "not_found":
+        return True
     message = str(exc).casefold()
     return "entry does not exist" in message or "not find by id" in message
+
+
+def _looks_like_tallanto_not_found_body(raw_body: bytes) -> bool:
+    """Best-effort, PII-free check of the SugarCRM-style "not found" shape
+    Tallanto returns as an HTTP 400 (not a real 404): a JSON object whose
+    name/description says the entry does not exist. Used only to pick a safe
+    category (see categorize_status_code override below) -- the body itself
+    is never placed into an exception message or report.
+    """
+    try:
+        decoded = json.loads(raw_body.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(decoded, dict):
+        return False
+    text = f"{decoded.get('name', '')} {decoded.get('description', '')}".casefold()
+    return "entry does not exist" in text or "not find by id" in text
 
 
 class TallantoApiClient:

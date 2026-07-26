@@ -705,6 +705,166 @@ def test_attendance_api_marks_technical_time_when_class_date_is_missing(tmp_path
     assert "Точная дата занятия" in summary
 
 
+# --- D4: expected unmatched / identity conflict / infrastructure error are
+# three distinct, never-silenced buckets; all block freshness until there is
+# a durable retry queue. ---
+
+
+def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    # Deliberately do not seed any tallanto/amo identity link for contact
+    # "101": the Contact fetch still returns it (so resolution was actually
+    # attempted with full data), it just has nothing to resolve to yet.
+    CustomerTimelineSQLiteStore(db, allowed_root=tmp_path).close()
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["identity_unmatched_expected"] == 1
+    assert report["counts"].get("identity_conflict", 0) == 0
+    assert report["counts"].get("identity_infrastructure_gap", 0) == 0
+    assert report["unresolved_count"] == 1
+    assert report["unresolved_breakdown"] == {
+        "identity_conflict": 0,
+        "identity_infrastructure_gap": 0,
+        "identity_unmatched_expected": 1,
+        "blocking_count": 1,
+        "expected_unmatched_blocks_freshness": True,
+        "input_fully_processed": True,
+    }
+    assert report["status"] == "partial"
+    assert report["validation_ok"] is False
+    assert report["validation_errors"] == ["identity_unmatched_expected"]
+    assert report["cursor_after"] == report["cursor_before"]
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 0
+        # Still visible, never silenced: recorded as a (low severity) conflict.
+        assert con.execute(
+            "SELECT conflict_type, severity FROM timeline_conflicts"
+        ).fetchone() == ("tallanto_attendance_api_identity_unmatched_expected", "low")
+        # No strong link and no event were fabricated for the unresolved contact.
+        assert con.execute("SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'").fetchone()[0] == 0
+        assert con.execute(
+            "SELECT count(*) FROM identity_links WHERE link_value='101' AND link_type='tallanto_student_id'"
+        ).fetchone()[0] == 0
+
+    _seed_customer(db, tmp_path, "customer:later-linked")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        for link_type, value in (
+            (IdentityLinkType.TALLANTO_STUDENT_ID, "101"),
+            (IdentityLinkType.AMO_CONTACT_ID, "amo-101"),
+        ):
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id="customer:later-linked",
+                    link_type=link_type,
+                    link_value=value,
+                    source_system="test",
+                    source_ref=f"test:{value}",
+                )
+            )
+
+    retried = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 5, tzinfo=timezone.utc),
+    )
+    assert retried["counts"]["created"] == 1
+    assert retried["cursor_after"] != retried["cursor_before"]
+
+
+def test_attendance_api_infrastructure_gap_blocks_freshness_and_cursor(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+
+    class InfrastructureGapApi(FakeAttendanceApi):
+        def request(self, *, module, http_method, query_items, **kwargs):
+            if module == "Contact":
+                # The Contact fetch itself came back incomplete for this
+                # run -- contact "101" (referenced by the relationship
+                # below) is never returned, unlike a genuine "nothing links
+                # here yet" case where the contact row is present.
+                return {"entry_list": [], "result_count": 0, "total_count": 0}
+            return super().request(module=module, http_method=http_method, query_items=query_items, **kwargs)
+
+    CustomerTimelineSQLiteStore(db, allowed_root=tmp_path).close()
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=InfrastructureGapApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["identity_infrastructure_gap"] == 1
+    assert report["counts"].get("identity_conflict", 0) == 0
+    assert report["counts"].get("identity_unmatched_expected", 0) == 0
+    assert report["unresolved_breakdown"]["blocking_count"] == 1
+    assert report["status"] == "partial"
+    assert report["validation_ok"] is False
+    assert report["validation_errors"] == ["identity_infrastructure_gap"]
+    assert report["cursor_after"] == report["cursor_before"]
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT conflict_type, severity FROM timeline_conflicts"
+        ).fetchone() == ("tallanto_attendance_api_identity_infrastructure_gap", "medium")
+
+
+def test_attendance_api_conflict_never_creates_a_strong_link(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_customer(db, tmp_path, "customer:tallanto")
+    _seed_customer(db, tmp_path, "customer:amo")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:tallanto",
+                link_type=IdentityLinkType.TALLANTO_STUDENT_ID,
+                link_value="101",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:101",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:amo",
+                link_type=IdentityLinkType.AMO_CONTACT_ID,
+                link_value="amo-101",
+                source_system="amo",
+                source_ref="amo:amo-101",
+            )
+        )
+    links_before = _identity_link_count(db)
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["identity_conflict"] == 1
+    # No new identity link (strong or otherwise) was written for the
+    # conflicting contact -- conflict never merges/links, only the
+    # pre-existing two customers' own links remain.
+    assert _identity_link_count(db) == links_before
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'").fetchone()[0] == 0
+
+
+def _identity_link_count(db: Path) -> int:
+    with sqlite3.connect(db) as con:
+        return int(con.execute("SELECT count(*) FROM identity_links").fetchone()[0])
+
+
 def _seed_tallanto_customer(db: Path, root: Path) -> None:
     _seed_customer(db, root, "customer:student")
     with CustomerTimelineSQLiteStore(db, allowed_root=root) as store:

@@ -260,5 +260,96 @@ def test_mcp_client_retries_socket_timeout(monkeypatch: pytest.MonkeyPatch) -> N
     assert calls["count"] == 2
 
 
+# --- D3: bounded retry policy also covers 5xx (not just 429/timeout), and
+# 401/403 never retries regardless of attempts remaining. ---
+
+
+def test_mcp_client_retries_transient_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            result = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"_embedded": {"users": []}})}],
+                    "isError": False,
+                },
+            }
+            return json.dumps(result).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise urllib.error.HTTPError(
+                request.full_url, 500, "internal error", hdrs=None, fp=io.BytesIO(b"boom")
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(step1.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(step1.time, "sleep", lambda seconds: None)
+    client = step1.AmoMcpClient(
+        step1.AmoMcpConfig(connector_url="https://connector.test", bearer_token="token", max_retries=1)
+    )
+
+    assert client.amo_api_get(path="users", limit=1)["_embedded"]["users"] == []
+    assert calls["count"] == 2
+
+
+def test_mcp_client_persistent_500_exhausts_bounded_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        raise urllib.error.HTTPError(
+            request.full_url, 500, "internal error", hdrs=None, fp=io.BytesIO(b"boom")
+        )
+
+    monkeypatch.setattr(step1.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(step1.time, "sleep", lambda seconds: None)
+    client = step1.AmoMcpClient(
+        step1.AmoMcpConfig(connector_url="https://connector.test", bearer_token="token", max_retries=2)
+    )
+
+    with pytest.raises(step1.AmoMcpError) as error:
+        client.amo_api_get(path="users", limit=1)
+    assert calls["count"] == 3  # max_retries=2 -> 3 attempts total, never unbounded.
+    assert error.value.category == "server_error"
+    assert "boom" not in str(error.value)
+
+
+@pytest.mark.parametrize("status_code", (401, 403))
+def test_mcp_client_auth_error_fails_immediately_without_retry(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        raise urllib.error.HTTPError(
+            request.full_url, status_code, "forbidden", hdrs=None, fp=io.BytesIO(b"secret leak attempt")
+        )
+
+    monkeypatch.setattr(step1.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(step1.time, "sleep", lambda seconds: pytest.fail("auth errors must not retry"))
+    client = step1.AmoMcpClient(
+        step1.AmoMcpConfig(connector_url="https://connector.test", bearer_token="token", max_retries=3)
+    )
+
+    with pytest.raises(step1.AmoMcpError) as error:
+        client.amo_api_get(path="users", limit=1)
+    assert calls["count"] == 1
+    assert error.value.category == "auth"
+    assert "secret leak attempt" not in str(error.value)
+    assert "token" not in str(error.value)
+
+
 def rows(path: Path) -> list[dict[str, str]]:
     return list(csv.DictReader(path.open(encoding="utf-8-sig")))

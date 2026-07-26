@@ -80,15 +80,20 @@ def test_tallanto_client_rejects_nonlocal_rest_path(rest_path):
 
 
 def test_tallanto_http_error_does_not_expose_token(monkeypatch):
+    # D3: error messages never echo the response body at all any more (not
+    # even redacted) -- a 400/5xx body can contain customer PII the old
+    # token-only redaction never touched. Only a safe, closed-vocabulary
+    # category/status ever reaches the exception message.
     token = "must-not-leak"
+    other_pii = "+79991234567 ivan@example.com"
 
     def fake_urlopen(*_args, **_kwargs):
         raise url_error.HTTPError(
-            "https://kmipt.tallanto.com/service/api/rest.php",
+            "https://kmipt.tallanto.com/service/api/rest.php?token=" + token,
             400,
             "bad request",
             {},
-            io.BytesIO(f"server echoed {token}".encode()),
+            io.BytesIO(f"server echoed {token} {other_pii}".encode()),
         )
 
     monkeypatch.setattr(tallanto_api_module.url_request, "urlopen", fake_urlopen)
@@ -99,7 +104,11 @@ def test_tallanto_http_error_does_not_expose_token(monkeypatch):
             headers={"X-Auth-Token": token},
         )
     assert token not in str(error.value)
-    assert "[REDACTED]" in str(error.value)
+    assert other_pii not in str(error.value)
+    assert "server echoed" not in str(error.value)
+    assert error.value.category == "client_error"
+    assert "category=client_error" in str(error.value)
+    assert "status=400" in str(error.value)
 
 
 def test_tallanto_phone_lookup_uses_existing_contact_phone_fields_only():
@@ -370,3 +379,90 @@ def test_tallanto_http_json_request_retries_rate_limit(monkeypatch):
     )
     assert payload == {"ok": True}
     assert calls["count"] == 3
+
+
+# --- D3: bounded retry policy (429 -> success; persistent 5xx -> bounded
+# failure; auth -> immediate failure, no retry budget spent). ---
+
+
+def test_tallanto_http_json_request_persistent_500_exhausts_retries_and_is_categorized(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls["count"] += 1
+        raise url_error.HTTPError(
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"boom"}'),
+        )
+
+    monkeypatch.setattr(tallanto_api_module.url_request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tallanto_api_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(TallantoApiError) as error:
+        tallanto_api_module._http_json_request(
+            method="GET",
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            headers={"X-Auth-Token": "token"},
+        )
+    # Bounded: exactly _HTTP_MAX_ATTEMPTS tries, never an infinite/unbounded loop.
+    assert calls["count"] == tallanto_api_module._HTTP_MAX_ATTEMPTS
+    assert error.value.category == "server_error"
+    assert "boom" not in str(error.value)
+
+
+@pytest.mark.parametrize("status_code", (401, 403))
+def test_tallanto_http_json_request_auth_error_fails_immediately_without_retry(monkeypatch, status_code):
+    calls = {"count": 0}
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls["count"] += 1
+        raise url_error.HTTPError(
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            code=status_code,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"forbidden"}'),
+        )
+
+    monkeypatch.setattr(tallanto_api_module.url_request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        tallanto_api_module.time,
+        "sleep",
+        lambda *_a, **_k: pytest.fail("auth errors must not sleep/retry"),
+    )
+
+    with pytest.raises(TallantoApiError) as error:
+        tallanto_api_module._http_json_request(
+            method="GET",
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            headers={"X-Auth-Token": "token"},
+        )
+    # Immediate: exactly one attempt, no retry budget spent on a credential problem.
+    assert calls["count"] == 1
+    assert error.value.category == "auth"
+
+
+def test_tallanto_http_json_request_classifies_not_found_body_without_leaking_it(monkeypatch):
+    def fake_urlopen(*_args, **_kwargs):
+        raise url_error.HTTPError(
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"name":"Not find by id","description":"Entry does not exist"}'),
+        )
+
+    monkeypatch.setattr(tallanto_api_module.url_request, "urlopen", fake_urlopen)
+
+    with pytest.raises(TallantoApiError) as error:
+        tallanto_api_module._http_json_request(
+            method="GET",
+            url="https://kmipt.tallanto.com/service/api/rest.php",
+            headers={"X-Auth-Token": "token"},
+        )
+    assert error.value.category == "not_found"
+    assert tallanto_api_module._is_not_found_error(error.value) is True
+    assert "Entry does not exist" not in str(error.value)

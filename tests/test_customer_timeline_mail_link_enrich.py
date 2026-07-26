@@ -194,23 +194,30 @@ def _seed_pending_event_with_archive_db(
 
 
 def _write_archive(tmp_path: Path, *, sha: str, email: str, text: str) -> tuple[Path, Path]:
+    # NOTE: source_file/archive_db are fixed (non-sha-parameterized) paths by
+    # design: production has exactly one stage2 delta file and one shared
+    # archive db per allowed_root, and several tests call this helper more
+    # than once against the same tmp_path to seed multiple messages into one
+    # shared archive (mirrors real multi-message archives). mkdir(exist_ok)
+    # + CREATE TABLE IF NOT EXISTS make repeated calls safe/idempotent; the
+    # single-call tests are unaffected since both are no-ops on first call.
     handoff = tmp_path / "handoff"
     source_file = handoff / "stage2_delta_ingest" / "stage2_delta_full_events.jsonl"
-    source_file.parent.mkdir(parents=True)
+    source_file.parent.mkdir(parents=True, exist_ok=True)
     source_file.write_text("", encoding="utf-8")
     archive_db = handoff / "archive" / "mail_archive.sqlite"
-    archive_db.parent.mkdir(parents=True)
+    archive_db.parent.mkdir(parents=True, exist_ok=True)
     text_path = handoff / "archive" / f"{sha}.txt"
     text_path.write_text(text, encoding="utf-8")
     with sqlite3.connect(archive_db) as con:
         con.executescript(
             """
-            CREATE TABLE messages (
+            CREATE TABLE IF NOT EXISTS messages (
               sha256 TEXT PRIMARY KEY,
               subject TEXT,
               extracted_text_path TEXT
             );
-            CREATE TABLE message_participants (
+            CREATE TABLE IF NOT EXISTS message_participants (
               message_sha256 TEXT,
               header_name TEXT,
               display_name TEXT,
@@ -484,6 +491,128 @@ def test_mail_link_enrich_resolves_shared_family_phone_only_with_external_strong
         assert event[0] is None
         assert event[1] == "ambiguous"
         assert json.loads(event[2])["metadata"]["pending_reason"] == "phone_multiple_customers"
+
+
+def test_mail_link_enrich_never_promotes_name_match_to_strong_without_exact_email_or_phone(tmp_path: Path) -> None:
+    """BLOK C2 lock-in: a sender display_name that exactly (let alone fuzzily)
+    matches a known customer's display_name must never by itself produce a
+    strong/family_strong link. Only exact email, exact phone, an already-proven
+    family chain, or an intersection of exact keys may do that (см. ТЗ: «Нечёткое
+    имя — НЕ strong»). The message below carries the identical display_name as an
+    existing strong customer but an unrelated, unlinked email and no phone at all,
+    so it must stay unlinked."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:knownname",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Иванова Мария Петровна",
+                primary_email="realparent@example.com",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:knownname",
+                link_type="email",
+                link_value="realparent@example.com",
+                source_system="test",
+                source_ref="test",
+                confidence=0.95,
+            )
+        )
+    sha = "b" * 64
+    handoff = tmp_path / "handoff"
+    source_file = handoff / "stage2_delta_ingest" / "stage2_delta_full_events.jsonl"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("", encoding="utf-8")
+    archive_db = handoff / "archive" / "mail_archive.sqlite"
+    archive_db.parent.mkdir(parents=True)
+    text_path = handoff / "archive" / f"{sha}.txt"
+    text_path.write_text("Здравствуйте, интересует Фотон для ребёнка.", encoding="utf-8")
+    with sqlite3.connect(archive_db) as con:
+        con.executescript(
+            """
+            CREATE TABLE messages (sha256 TEXT PRIMARY KEY, subject TEXT, extracted_text_path TEXT);
+            CREATE TABLE message_participants (
+              message_sha256 TEXT, header_name TEXT, display_name TEXT, email_normalized TEXT, domain TEXT
+            );
+            """
+        )
+        con.execute("INSERT INTO messages VALUES (?, ?, ?)", (sha, "Запись в Фотон", str(text_path)))
+        con.execute(
+            "INSERT INTO message_participants VALUES (?, 'from', ?, ?, 'unlinked.example')",
+            (sha, "Иванова Мария Петровна", "unlinked-sender@unlinked.example"),
+        )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out", apply=True)
+    )
+
+    assert report["counts"].get("planned.strong", 0) == 0
+    assert report["counts"].get("planned.family_strong", 0) == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?", (sha,)
+        ).fetchone()
+    assert event["customer_id"] is None
+    assert event["match_status"] != "strong_unique"
+
+
+def test_mail_link_enrich_apply_rerun_on_same_input_is_idempotent(tmp_path: Path) -> None:
+    """BLOK C2 idempotency: revalidating an already-linked mail event on an
+    unchanged DB must not flip customer_id/match_status or create new chunks."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    sha = "e" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="unknown@example.com",
+        text="Здравствуйте, интересует Фотон.\n\n+7 916 123-45-67",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    first = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out1", apply=True)
+    )
+    assert first["counts"]["planned.strong"] == 1
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        after_first = dict(
+            con.execute(
+                "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?", (sha,)
+            ).fetchone()
+        )
+        chunks_after_first = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+
+    second = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out2",
+            apply=True,
+            revalidate_existing_strong=True,
+        )
+    )
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        after_second = dict(
+            con.execute(
+                "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?", (sha,)
+            ).fetchone()
+        )
+        chunks_after_second = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+
+    assert second["target_events"] == 1
+    assert after_second == after_first
+    assert chunks_after_second == chunks_after_first
+    assert second["safety"]["allowed_for_bot_changed"] is False
+    assert second["safety"]["mail_stage2_allowed_for_bot_changed"] is False
 
 
 @pytest.mark.parametrize("match_class", ("inferred", "manual"))
@@ -814,6 +943,33 @@ def test_mail_link_enrich_promotes_unique_tallanto_email_without_phone(tmp_path:
 
     assert report["counts"]["planned.strong"] == 1
     assert report["counts"]["reason.strong_external_email_identity_link"] == 1
+    assert report["breakdown"]["exact_tallanto"] == 1
+
+
+def test_mail_link_enrich_breakdown_counts_exact_amo_email_separately(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path, email_source_system="amocrm_snapshot")
+    sha = "9" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
+    )
+
+    assert report["counts"]["planned.strong"] == 1
+    assert report["breakdown"]["exact_amo"] == 1
+    assert report["breakdown"]["exact_tallanto"] == 0
 
 
 def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_path: Path) -> None:
@@ -898,10 +1054,191 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
 
     assert report["counts"]["planned.family_strong"] == 1
     assert report["counts"]["reason.strong_tallanto_family_identity_link"] == 1
+    assert report["breakdown"]["family"] == 1
     with sqlite3.connect(db_path) as con:
         event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
     assert event["customer_id"] is None
     assert event["metadata"]["family_id"].startswith("family:")
+
+
+# --- D2 rule 4: an email shared by two *different* families is an evidenced
+# conflict, not a first-match; D2 rule 7: exact_amo/exact_tallanto/
+# thread_propagation/ambiguous/unmatched breakdown. ---
+
+
+def test_mail_link_enrich_two_families_sharing_one_email_is_conflict_not_first_match(tmp_path: Path) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    shared_email = "shared-office@example.com"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index, (customer_id, family_id) in enumerate(
+            (("customer:family-a", "family:A"), ("customer:family-b", "family:B")), start=1
+        ):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.STRONG,
+                    display_name=f"Family {index}",
+                    primary_email=shared_email,
+                )
+            )
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="email",
+                    link_value=shared_email,
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{index}",
+                    match_class="strong_unique",
+                    confidence=1.0,
+                )
+            )
+        con = store._con
+        con.executemany(
+            "INSERT INTO family_members_v1 "
+            "(tenant_id,family_id,customer_id,membership_status,confidence,reason,created_at,updated_at,record_hash,record_json) "
+            "VALUES ('foton',?,?,'confident','high','test','2026-07-24T00:00:00+00:00',"
+            "'2026-07-24T00:00:00+00:00','test','{}')",
+            (("family:A", "customer:family-a"), ("family:B", "customer:family-b")),
+        )
+        con.commit()
+    sha = "c" * 64
+    source_file, _ = _write_archive(
+        tmp_path,
+        sha=sha,
+        email=shared_email,
+        text="Здравствуйте, интересует обучение.",
+    )
+    _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            apply=True,
+        )
+    )
+
+    assert report["counts"]["planned.blocked"] == 1
+    assert report["counts"]["reason.email_multiple_families_conflict"] == 1
+    assert report["breakdown"]["ambiguous"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    # Never a first-match: no customer picked for either family.
+    assert event["customer_id"] is None
+    assert event["customer_id"] not in {"customer:family-a", "customer:family-b"}
+
+
+def test_mail_link_enrich_breakdown_separates_exact_amo_from_exact_tallanto(tmp_path: Path) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:amo-parent",
+                identity_status=IdentityStatus.STRONG,
+                display_name="AMO Parent",
+                primary_email="amo-parent@example.com",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:amo-parent",
+                link_type="email",
+                link_value="amo-parent@example.com",
+                source_system="amocrm_snapshot",
+                source_ref="amo:parent",
+                match_class="strong_unique",
+                confidence=1.0,
+            )
+        )
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:tallanto-parent",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Tallanto Parent",
+                primary_email="tallanto-parent@example.com",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:tallanto-parent",
+                link_type="email",
+                link_value="tallanto-parent@example.com",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:parent",
+                match_class="strong_unique",
+                confidence=1.0,
+            )
+        )
+    amo_sha = "d" * 64
+    amo_file, _ = _write_archive(tmp_path, sha=amo_sha, email="amo-parent@example.com", text="Вопрос про Фотон.")
+    _seed_pending_event(db_path, tmp_path, sha=amo_sha, source_file=amo_file, subject="Фотон")
+    tallanto_sha = "e" * 64
+    tallanto_file, _ = _write_archive(
+        tmp_path, sha=tallanto_sha, email="tallanto-parent@example.com", text="Вопрос про занятия."
+    )
+    _seed_pending_event(db_path, tmp_path, sha=tallanto_sha, source_file=tallanto_file, subject="Фотон")
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out",
+            aggregate_only=True,
+        )
+    )
+
+    assert report["breakdown"]["exact_amo"] == 1
+    assert report["breakdown"]["exact_tallanto"] == 1
+    assert report["breakdown"]["ambiguous"] == 0
+    assert report["breakdown"]["unmatched"] == 0
+    assert sum(report["breakdown"].values()) == report["target_events"]
+
+
+def test_mail_link_enrich_thread_propagation_is_its_own_breakdown_bucket(tmp_path: Path) -> None:
+    # Re-uses the already-covered "strong contact confirms rfc thread"
+    # fixture pattern (see test_mail_link_enrich_uses_rfc_thread_when_
+    # contact_confirms_customer) purely to assert the new D2 rule 7
+    # breakdown bucketing: a thread_header_identity_link decision must land
+    # in breakdown["thread_propagation"], not exact_amo/exact_tallanto.
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _seed_customer_with_links(db_path, tmp_path)
+    anchor_sha = "6" * 64
+    target_sha = "7" * 64
+    archive_db = _write_thread_archive(
+        tmp_path,
+        target_sha=target_sha,
+        reference_messages=[(anchor_sha, "anchor@example.test")],
+    )
+    with sqlite3.connect(archive_db) as con:
+        con.execute(
+            "INSERT INTO message_participants VALUES (?, 'from', 'Parent', 'parent@example.com', 'example.com')",
+            (target_sha,),
+        )
+    _seed_linked_mail_event(db_path, tmp_path, sha=anchor_sha, customer_id="customer:email")
+    _seed_pending_event_with_archive_db(
+        db_path,
+        tmp_path,
+        sha=target_sha,
+        archive_db=archive_db,
+        subject="Re: Запись",
+    )
+
+    report = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out")
+    )
+
+    assert report["counts"]["planned.strong"] == 1
+    assert report["counts"]["reason.strong_thread_header_identity_link"] == 1
+    assert report["breakdown"]["thread_propagation"] == 1
 
 
 def test_mail_link_enrich_uses_historical_tallanto_email_for_same_student(tmp_path: Path) -> None:

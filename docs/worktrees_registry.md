@@ -20,7 +20,7 @@
 
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main` (текущий HEAD) | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных. | Основной worktree для последовательной разработки и runtime. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main`, после проверенной интеграции A-F главным Codex | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных; Wappi остановлен владельцем. | Оставить на `main`; runtime/live включать только отдельным этапом после реального staging и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_ai_employee_implementation` | `codex/ai-employee-implementation`, исполнитель Claude | Единый изолированный блок Owner50, nightly, linkage, досье и локальных Wappi-черновиков. | После независимого регрейда влить `--ff-only`, снять worktree и удалить ветку через `-d`. |
 | `/Users/dmitrijfabarisov/Projects/Mango_owner50_family_xlsx` | `codex/owner50-family-xlsx`, незакоммиченная уникальная работа | Донор исследования Owner50; целиком не переносится из-за избыточного diff. | Сохранить до точечного переноса полезных правил и проверки реальной витрины. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |

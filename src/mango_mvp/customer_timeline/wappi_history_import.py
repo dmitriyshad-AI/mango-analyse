@@ -779,33 +779,63 @@ def collect_wappi_widget_links(
         "request_limit_hit": limit_hit,
         "accounting_complete": accounting_complete,
         "linkage_complete": linkage_complete,
-        "complete": accounting_complete and not limit_hit and technical_failures == 0,
+        "complete": (
+            accounting_complete
+            and linkage_complete
+            and not limit_hit
+            and technical_failures == 0
+        ),
     }
 
 
 def load_wappi_widget_links(db_path: Path | None) -> Mapping[tuple[str, str, str], Mapping[str, Any]]:
+    """Strictly read-only snapshot of the locally persisted `wappi_amo_links` cache
+    (BLOK A2). Opens the file `mode=ro` with `PRAGMA query_only = ON` via the same
+    `open_readonly_sqlite` helper this module already uses for the Timeline DB: no
+    CREATE/ALTER/INSERT/commit is ever issued, so a caller such as the offline
+    unmatched-link report can never mutate the cache file (mtime/size/hash stay
+    fixed -- см. test_load_wappi_widget_links_is_strictly_read_only_and_leaves_file_untouched).
+
+    `db_path is None` or a cache file that has not been created yet both mean
+    "nothing collected so far" and yield an empty mapping -- the same state
+    `collect_wappi_widget_links` starts from before its first run. A file that does
+    exist but has no readable `wappi_amo_links` table (wrong path, empty/corrupt
+    file, or a pre-migration schema) is a genuine diagnostic problem and raises
+    instead of silently creating or migrating schema.
+    """
     if db_path is None or not Path(db_path).exists():
         return {}
-    result: dict[tuple[str, str, str], Mapping[str, Any]] = {}
-    with sqlite3.connect(Path(db_path)) as con:
-        _ensure_wappi_widget_link_schema(con)
-        con.commit()
-        for channel, profile_id, chat_id, contact_id, lead_ids_json, status, source, last_timestamp, matched_points in con.execute(
+    resolved = Path(db_path)
+    con: sqlite3.Connection | None = None
+    try:
+        con = open_readonly_sqlite(resolved)
+        rows = con.execute(
             """
             SELECT channel, profile_id, chat_id, contact_id, lead_ids_json, status,
                    resolution_source, last_timestamp, matched_points
             FROM wappi_amo_links
             """
-        ):
-            lead_ids = json.loads(str(lead_ids_json or "[]"))
-            result[(str(channel), str(profile_id), str(chat_id))] = {
-                "status": str(status),
-                "contact_id": str(contact_id or ""),
-                "lead_ids": tuple(str(item) for item in lead_ids),
-                "resolution_source": str(source or ""),
-                "last_timestamp": int(last_timestamp or 0),
-                "matched_points": int(matched_points or 0),
-            }
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(
+            f"Wappi widget link cache at {resolved} has no readable wappi_amo_links "
+            "table (missing table/column or not a SQLite file); read-only load "
+            "never creates or migrates schema"
+        ) from exc
+    finally:
+        if con is not None:
+            con.close()
+    result: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    for row in rows:
+        lead_ids = json.loads(str(row["lead_ids_json"] or "[]"))
+        result[(str(row["channel"]), str(row["profile_id"]), str(row["chat_id"]))] = {
+            "status": str(row["status"]),
+            "contact_id": str(row["contact_id"] or ""),
+            "lead_ids": tuple(str(item) for item in lead_ids),
+            "resolution_source": str(row["resolution_source"] or ""),
+            "last_timestamp": int(row["last_timestamp"] or 0),
+            "matched_points": int(row["matched_points"] or 0),
+        }
     return result
 
 
@@ -3873,18 +3903,26 @@ def file_sha256(path: Path | None) -> str | None:
 
 
 def git_worktree_provenance(root: Path) -> Mapping[str, Any]:
+    git_env = dict(os.environ)
+    for key in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ):
+        git_env.pop(key, None)
     try:
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
             check=True,
             capture_output=True,
             timeout=10,
+            env=git_env,
         ).stdout
         diff = subprocess.run(
             ["git", "-C", str(root), "diff", "--binary", "HEAD"],
             check=True,
             capture_output=True,
             timeout=30,
+            env=git_env,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return {"dirty": None, "tracked_diff_sha256": None}

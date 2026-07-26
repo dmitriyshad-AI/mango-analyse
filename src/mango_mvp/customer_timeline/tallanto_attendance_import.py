@@ -29,6 +29,17 @@ from mango_mvp.deal_aware.stage1_snapshot import read_writeoff_xlsx
 
 SOURCE_SYSTEM = "tallanto_attendance"
 API_SOURCE_SYSTEM = "tallanto_attendance_api"
+# D4: severity for each unresolved reason recorded via record_conflict.
+# identity_conflict is a real contradiction (two different existing
+# customers); identity_infrastructure_gap means this run's own Contact fetch
+# came back incomplete; identity_unmatched_expected is normal steady-state
+# noise (nothing links this contact anywhere yet) and never blocks freshness
+# on its own -- see run_tallanto_attendance_api_increment.
+_UNRESOLVED_SEVERITY_BY_REASON: dict[str, str] = {
+    "identity_conflict": "high",
+    "identity_infrastructure_gap": "medium",
+    "identity_unmatched_expected": "low",
+}
 _STAGING_COMPONENTS = (".codex_local", "staging")
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _RELATIONSHIP_FIELDS = (
@@ -195,10 +206,22 @@ def run_tallanto_attendance_api_increment(
                 continue
         customer_id = tallanto_customer or amo_customer
         if not customer_id:
-            counters["identity_unmatched"] += 1
+            # D4: split the old single "identity_unmatched" bucket in two.
+            # - identity_unmatched_expected: the Contact fetch *did* return
+            #   this contact_id (resolution was actually attempted with full
+            #   data) and it genuinely has no tallanto/amo link yet -- normal
+            #   steady-state noise (e.g. a brand-new student not yet linked
+            #   anywhere else), not a defect in this run.
+            # - identity_infrastructure_gap: the Contact fetch never returned
+            #   this contact_id at all, so resolution could not even be
+            #   attempted -- a data-completeness problem with this run, not
+            #   an "expected" unmatched identity.
+            reason = "identity_unmatched_expected" if contact_id in contact_rows else "identity_infrastructure_gap"
+            counters[reason] += 1
+            counters["identity_unmatched"] += 1  # backward-compatible total of both buckets.
             unresolved.append(
                 _unresolved_relationship(
-                    "identity_unmatched",
+                    reason,
                     relationship,
                     amo_contact_id=amo_contact_id,
                     tallanto_customer=tallanto_customer,
@@ -226,13 +249,18 @@ def run_tallanto_attendance_api_increment(
     counters["relationships_from_class_overlap"] = len(overlap_relations)
     counters["relationships_unique"] = len(relationships)
     counters["events_resolved"] = len(events)
-    validation_errors = []
-    if counters["identity_conflict"]:
-        validation_errors.append("identity_conflict")
-    if counters["identity_unmatched"]:
-        validation_errors.append("identity_unmatched")
+    # Without a durable retry queue, advancing past an unmatched relationship
+    # would lose it permanently once the identity appears later.
+    blocking_reasons = (
+        "identity_conflict",
+        "identity_infrastructure_gap",
+        "identity_unmatched_expected",
+    )
+    blocking_unresolved_count = sum(counters[reason] for reason in blocking_reasons)
+    validation_errors = [reason for reason in blocking_reasons if counters[reason]]
     unresolved_count = len(unresolved)
-    run_status = "partial" if unresolved_count else "completed"
+    run_status = "partial" if blocking_unresolved_count else "completed"
+    cursor_may_advance = config.apply and not blocking_unresolved_count
 
     if config.apply:
         with CustomerTimelineSQLiteStore(db, allowed_root=root) as store:
@@ -265,14 +293,14 @@ def run_tallanto_attendance_api_increment(
                                 f"tallanto:class-contact:{item['relationship_id']}",
                                 f"tallanto:contact:{item['contact_id']}",
                             ),
-                            severity="high" if item["reason"] == "identity_conflict" else "medium",
+                            severity=_UNRESOLVED_SEVERITY_BY_REASON.get(item["reason"], "medium"),
                             summary="Tallanto attendance relationship requires identity resolution",
                             metadata=item,
                             actor=config.actor,
                             ingestion_run_id=run.run_id,
                         )
                         counters[f"unresolved_{result.status}"] += 1
-                    if not unresolved:
+                    if cursor_may_advance:
                         store.upsert_ingestion_cursor(
                             config.tenant_id,
                             API_SOURCE_SYSTEM,
@@ -309,12 +337,23 @@ def run_tallanto_attendance_api_increment(
         "validation_ok": not validation_errors,
         "validation_errors": validation_errors,
         "unresolved_count": unresolved_count,
+        # D4: exact numbers + reasons behind the "fresh despite unmatched"
+        # decision -- never silenced, always visible even when run_status
+        # ends up "completed".
+        "unresolved_breakdown": {
+            "identity_conflict": counters["identity_conflict"],
+            "identity_infrastructure_gap": counters["identity_infrastructure_gap"],
+            "identity_unmatched_expected": counters["identity_unmatched_expected"],
+            "blocking_count": blocking_unresolved_count,
+            "expected_unmatched_blocks_freshness": True,
+            "input_fully_processed": True,
+        },
         "apply": config.apply,
         "cursor_before": cursor_before.isoformat(),
-        "cursor_after": upper_bound.isoformat() if config.apply and not unresolved else cursor_before.isoformat(),
+        "cursor_after": upper_bound.isoformat() if cursor_may_advance else cursor_before.isoformat(),
         "class_overlap_before": overlap_start.isoformat(),
         "class_overlap_after": (
-            run_started.isoformat() if config.apply and not unresolved else overlap_start.isoformat()
+            run_started.isoformat() if cursor_may_advance else overlap_start.isoformat()
         ),
         "counts": dict(counters),
         "safety": {

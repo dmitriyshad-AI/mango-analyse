@@ -8,12 +8,13 @@ import sqlite3
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.amo_incremental import AmoIncrementalConfig, run_amo_incremental
 from mango_mvp.customer_timeline.nightly_incremental import (
@@ -31,23 +32,68 @@ from mango_mvp.customer_timeline.tallanto_attendance_import import (
     run_tallanto_attendance_api_increment,
     run_tallanto_attendance_import,
 )
+from mango_mvp.customer_timeline.tallanto_cards_sync import (
+    TallantoCardsSyncConfig,
+    run_tallanto_cards_sync,
+)
 from mango_mvp.customer_timeline.wappi_history_import import (
     WappiFetchLimits,
     WappiHistoryImportConfig,
     run_wappi_history_import,
 )
 
+GIT_CONTEXT_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
 
 def _repo_python_env(repo_root: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    for key in GIT_CONTEXT_ENV_KEYS:
+        env.pop(key, None)
     src = str(repo_root.resolve(strict=False) / "src")
     existing = os.environ.get("PYTHONPATH", "")
-    return {**os.environ, "PYTHONPATH": os.pathsep.join(part for part in (src, existing) if part)}
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (src, existing) if part)
+    return env
 
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
 
 
 NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
+
+# B1: schema version of the *input* nightly service JSON config (as opposed
+# to NIGHTLY_SERVICE_SCHEMA_VERSION above, which stamps the *output* run
+# report). scripts/run_customer_timeline_codex_task.py:validate_nightly_config
+# rejects any on-disk config whose "config_schema_version" does not match
+# this constant, so a config produced by an older builder (e.g. one written
+# before required_manifest_sources existed) fails validation instead of
+# silently passing, and ensure_nightly_config() rebuilds it. Bump this
+# whenever a field validate_nightly_config() now requires is added.
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v3"
+
+# B3: safe default total wall-clock budget for one full nightly run. Enforced
+# by the *external* process-group wrapper
+# (scripts/run_customer_timeline_codex_task.py:run_with_runtime_budget), not
+# by this module -- run_nightly_service has no general way to bound a hang
+# inside a step that never shells out to a subprocess (e.g. an API call with
+# no read timeout). Carried on NightlyServiceConfig purely so a change to the
+# budget is part of service_config_fingerprint() and therefore forces a fresh
+# run instead of resuming under stale timing assumptions.
+DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS = 6.0 * 3600.0
+
+# B4: how long a source's ingestion cursor may go without a fresh check-in
+# (ingestion_cursors.updated_at, refreshed on every clean run even when zero
+# new records were found -- see CustomerTimelineSQLiteStore.upsert_ingestion_cursor)
+# before a "successful no-op" stops counting as proof the source is healthy.
+# Set generously above the ~24h nightly cadence so one missed/late run does
+# not immediately flip a healthy, quiet source to "stale".
+SOURCE_PROOF_STALE_AFTER_HOURS = 36.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +109,7 @@ class NightlyServiceStep:
     amo_incremental_config: Optional[AmoIncrementalConfig] = None
     attendance_config: Optional[TallantoAttendanceImportConfig] = None
     tallanto_money_api_config: Optional[Mapping[str, Any]] = None
+    tallanto_cards_config: Optional[TallantoCardsSyncConfig] = None
     tallanto_attendance_api_config: Optional[TallantoAttendanceApiIncrementConfig] = None
     wappi_history_config: Optional[WappiHistoryImportConfig] = None
     family_graph_config: Optional[FamilyGraphConfig] = None
@@ -80,6 +127,18 @@ class NightlyServiceConfig:
     tenant_id: str = "foton"
     lock_timeout_seconds: float = 30.0
     actor: str = "customer_timeline_nightly_service"
+    # B2: bounds any single step's external subprocess call so a stalled
+    # external read (Tallanto API importer, Mango sweep producer) cannot hang
+    # the whole nightly run forever. Backward compatible: old configs get the
+    # same generous default and behave exactly as before for fast steps.
+    step_timeout_seconds: float = 1800.0
+    # B2: opt-in list of business-source labels (see
+    # REQUIRED_MANIFEST_SOURCE_STEP_MAP) that must show status "ok" in this
+    # run before the manifest is allowed to publish as latest. Empty by
+    # default so existing narrow/test configs are unaffected.
+    required_manifest_sources: Sequence[str] = ()
+    # B3: see DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS above.
+    total_runtime_budget_seconds: float = DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS
 
 
 def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
@@ -94,32 +153,79 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
     publish_dir.chmod(0o700)
     if timeline_db.exists():
         timeline_db.chmod(0o600)
-    run_dir = out_root / f"run_{run_id}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    run_dir.chmod(0o700)
-    report: dict[str, Any] = {
-        "schema_version": NIGHTLY_SERVICE_SCHEMA_VERSION,
-        "run_id": run_id,
-        "started_at": started.isoformat(),
-        "timeline_db": str(timeline_db),
-        "allowed_root": str(allowed_root),
-        "out_root": str(out_root),
-        "publish_dir": str(publish_dir),
-        "tenant_id": config.tenant_id,
-        "steps": [],
-        "safety": {
-            "writes_prod_db": False,
-            "writes_crm": False,
-            "writes_tallanto": False,
-            "sends_messages": False,
-            "writes_staging_db": True,
-            "installs_launchd": False,
-        },
-    }
+    # B2: fingerprint of the full normalized, immutable service config (every
+    # step field, target DB/allowed/out/publish paths, tenant, required
+    # sources, timeouts -- never secrets or env *values*, only env *paths*).
+    # Computed once and reused for both resume matching and progress.json, so
+    # a config edit (even one that only touches a single step's parameters)
+    # is guaranteed to invalidate any interrupted run instead of silently
+    # resuming under stale assumptions.
+    config_fingerprint = service_config_fingerprint(
+        config,
+        timeline_db=timeline_db,
+        allowed_root=allowed_root,
+        out_root=out_root,
+        publish_dir=publish_dir,
+    )
     with service_lock(timeline_db, timeout_seconds=config.lock_timeout_seconds) as lock_info:
+        # B2 resume: reuse an interrupted run's directory/run_id and carry its
+        # already-"ok" leading steps forward instead of redoing them from
+        # step 1. Selection happens only now, *after* the lock is held, so
+        # two concurrent starts can never both pick the same run (the loser
+        # blocks on the lock above and re-evaluates from scratch once it
+        # acquires it, by which point a finished run has a service_report.json
+        # and is no longer resumable). See find_resumable_run for the full
+        # eligibility rules (fingerprint match, leading "ok" prefix, DB
+        # checkpoint + quick_check match).
+        resumed_run_id, resumed_run_dir, resumed_steps = find_resumable_run(
+            out_root, config_fingerprint, timeline_db=timeline_db
+        )
+        if resumed_run_id is not None and resumed_run_dir is not None:
+            run_id = resumed_run_id
+            run_dir = resumed_run_dir
+        else:
+            run_dir = out_root / f"run_{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir.chmod(0o700)
+        report: dict[str, Any] = {
+            "schema_version": NIGHTLY_SERVICE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "started_at": started.isoformat(),
+            "timeline_db": str(timeline_db),
+            "allowed_root": str(allowed_root),
+            "out_root": str(out_root),
+            "publish_dir": str(publish_dir),
+            "tenant_id": config.tenant_id,
+            "resumed_from_run_id": resumed_run_id,
+            "steps": list(resumed_steps),
+            "safety": {
+                "writes_prod_db": False,
+                "writes_crm": False,
+                "writes_tallanto": False,
+                "sends_messages": False,
+                "writes_staging_db": True,
+                "installs_launchd": False,
+            },
+        }
         report["lock"] = lock_info
         failed_required_steps: list[str] = []
+        skip_count = len(resumed_steps)
         for index, step in enumerate(config.steps, start=1):
+            if index <= skip_count:
+                continue
+            # B2 progress: durable checkpoint reflecting every step completed
+            # so far (plus a lightweight DB+WAL stat checkpoint), written
+            # atomically before the next step starts (and once more after the
+            # loop) so a killed/hung process leaves a resumable, inspectable
+            # trail instead of silence.
+            write_progress(
+                run_dir,
+                run_id=run_id,
+                total_steps=len(config.steps),
+                completed_steps=report["steps"],
+                config_fingerprint=config_fingerprint,
+                timeline_db=timeline_db,
+            )
             step_started = time.monotonic()
             if not step.enabled:
                 status = "failed_required_disabled" if step.required else "skipped_disabled"
@@ -186,6 +292,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         timeline_db=timeline_db,
                         allowed_root=allowed_root,
                         tenant_id=config.tenant_id,
+                        step_timeout_seconds=config.step_timeout_seconds,
                     )
                 except Exception as exc:  # service-level fail-soft: report and keep manifest writing.
                     if step.required:
@@ -376,6 +483,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         timeline_db=timeline_db,
                         allowed_root=allowed_root,
                         tenant_id=config.tenant_id,
+                        step_timeout_seconds=config.step_timeout_seconds,
                     )
                 except Exception as exc:
                     if step.required:
@@ -407,6 +515,51 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                             "status": step_report.get("summary", {}).get("status"),
                             "records_loaded": step_report.get("summary", {}).get("records_loaded"),
                             "api": step_report.get("api"),
+                            "safety": step_report.get("safety"),
+                        },
+                        "duration_seconds": round(time.monotonic() - step_started, 3),
+                    }
+                )
+                continue
+            if step.kind == "tallanto_cards":
+                try:
+                    if step.tallanto_cards_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_tallanto_cards_sync(step.tallanto_cards_config)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason=f"step_exception:{type(exc).__name__}",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                            error=exc,
+                        )
+                    )
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if step_report.get("validation_ok") else (
+                    "partial" if step_report.get("apply_blocked") else "failed"
+                )
+                if status != "ok" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append(
+                    {
+                        "index": index,
+                        "name": step.name,
+                        "kind": step.kind,
+                        "status": status,
+                        "required": step.required,
+                        "report_path": str(step_path),
+                        "summary": {
+                            "checked": step_report.get("checked"),
+                            "updated": step_report.get("updated"),
+                            "unchanged": step_report.get("unchanged"),
+                            "unmatched": step_report.get("unmatched"),
+                            "blocked_reason": step_report.get("blocked_reason"),
                             "safety": step_report.get("safety"),
                         },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
@@ -633,10 +786,53 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     "duration_seconds": round(time.monotonic() - step_started, 3),
                 }
             )
+        write_progress(
+            run_dir,
+            run_id=run_id,
+            total_steps=len(config.steps),
+            completed_steps=report["steps"],
+            config_fingerprint=config_fingerprint,
+            timeline_db=timeline_db,
+        )
+        # B5: PRAGMA quick_check runs exactly once here, right before the
+        # publish decision (the only other place it runs is find_resumable_run,
+        # at most once, before accepting a resume). Built before the required
+        # sources check below so that check can use real DB-observed counts
+        # and cursors (manifest["source_counts"]/["ingestion_cursors"]) as
+        # proof, instead of trusting each step's self-reported status alone.
         manifest = build_snapshot_manifest(timeline_db, tenant_id=config.tenant_id)
+        # B4 fail-loud: the 10 mandatory business sources are checked against
+        # *proof* -- real timeline_events counts/ingestion_cursors freshness
+        # and each step's own reported numbers -- not merely whether a
+        # mapped step's name/status says "ok" (opt-in via
+        # config.required_manifest_sources). This is what stops one shared
+        # step (e.g. wappi_history_incremental) from silently vouching for
+        # two independent sources (Telegram and MAX) when only one of them
+        # actually has fresh data, and what stops a step that always
+        # self-reports "ok" from covering for a source whose cursor has not
+        # moved in weeks.
+        required_sources_check = check_required_manifest_sources(
+            report["steps"],
+            config.required_manifest_sources,
+            source_counts=manifest["source_counts"],
+            ingestion_cursors=manifest["ingestion_cursors"],
+            mail_link_enrich=manifest["mail_link_enrich"],
+            now=datetime.now(timezone.utc),
+        )
+        report["required_sources_check"] = required_sources_check
+        failed_required_steps.extend(
+            f"required_manifest_source:{label}" for label in required_sources_check["missing"]
+        )
+        # B5: a corrupted staging DB must never publish "latest", even if
+        # every individual step reported ok -- integrity of the file the bot
+        # reads for freshness is a harder requirement than any one step's
+        # self-reported status.
+        if manifest.get("quick_check") != "ok":
+            failed_required_steps.append("timeline_db_quick_check")
         manifest["run_id"] = run_id
         manifest["service_report_path"] = str(run_dir / "service_report.json")
         manifest["published_at"] = datetime.now(timezone.utc).isoformat()
+        manifest["required_sources_check"] = required_sources_check
         failed_required_steps = list(dict.fromkeys(failed_required_steps))
         report["failed_required_steps"] = failed_required_steps
         report["partial_failure"] = bool(failed_required_steps)
@@ -646,7 +842,16 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         latest_path = publish_dir / "latest_customer_timeline_snapshot.json"
         latest_published = not failed_required_steps
         if latest_published:
-            shutil.copyfile(manifest_path, latest_path)
+            # B5: never shutil.copyfile() straight over the readable "latest"
+            # path -- that writes into the destination in place, so a reader
+            # (or a crash mid-copy) can observe a truncated/corrupt file.
+            # Write to a temp file in the same directory, fsync it, then
+            # os.replace() it over the destination so "latest" is always
+            # either the previous good snapshot or the new one, never
+            # something in between. When latest_published is False, this
+            # branch never runs at all, so a partial run leaves the previous
+            # "latest" byte-for-byte untouched.
+            atomic_publish_latest(manifest_path, latest_path)
         report["snapshot_manifest"] = {
             "path": str(manifest_path),
             "latest_path": str(latest_path) if latest_published else None,
@@ -692,6 +897,13 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
         tenant_id=tenant_id,
         lock_timeout_seconds=float(payload.get("lock_timeout_seconds", 30.0)),
         actor=str(payload.get("actor") or "customer_timeline_nightly_service"),
+        step_timeout_seconds=float(payload.get("step_timeout_seconds", 1800.0)),
+        required_manifest_sources=tuple(
+            str(item) for item in payload.get("required_manifest_sources") or ()
+        ),
+        total_runtime_budget_seconds=float(
+            payload.get("total_runtime_budget_seconds", DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS)
+        ),
     )
     validated_service_paths(config)
     return config
@@ -721,6 +933,7 @@ def service_step_from_json(
     amo_incremental_config = None
     attendance_config = None
     tallanto_money_api_config = None
+    tallanto_cards_config = None
     tallanto_attendance_api_config = None
     wappi_history_config = None
     family_graph_config = None
@@ -813,6 +1026,21 @@ def service_step_from_json(
             apply=bool(raw_config.get("apply", True)),
             actor=str(raw_config.get("actor") or actor),
         )
+    elif kind == "tallanto_cards":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        tallanto_cards_config = TallantoCardsSyncConfig(
+            timeline_db=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            out_root=Path(str(raw_config["out_root"])),
+            tallanto_env_file=Path(str(raw_config["tallanto_env_file"])).expanduser(),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            select_fields=tuple(str(item) for item in raw_config.get("select_fields") or ()),
+            max_pages=int(raw_config.get("max_pages", 5)),
+            safety_margin_seconds=int(raw_config.get("safety_margin_seconds", 300)),
+            actor=str(raw_config.get("actor") or actor),
+        )
     elif kind == "tallanto_money_api":
         raw_config = payload.get("config")
         if not isinstance(raw_config, Mapping):
@@ -888,6 +1116,7 @@ def service_step_from_json(
         amo_incremental_config=amo_incremental_config,
         attendance_config=attendance_config,
         tallanto_money_api_config=tallanto_money_api_config,
+        tallanto_cards_config=tallanto_cards_config,
         tallanto_attendance_api_config=tallanto_attendance_api_config,
         wappi_history_config=wappi_history_config,
         family_graph_config=family_graph_config,
@@ -965,6 +1194,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
             if step.tallanto_attendance_api_config is not None:
                 guard_customer_timeline_output_path(step.tallanto_attendance_api_config.timeline_db, allowed_root)
                 guard_customer_timeline_output_path(step.tallanto_attendance_api_config.allowed_root, allowed_root)
+            if step.tallanto_cards_config is not None:
+                guard_customer_timeline_output_path(step.tallanto_cards_config.timeline_db, allowed_root)
+                guard_customer_timeline_output_path(step.tallanto_cards_config.allowed_root, allowed_root)
+                guard_customer_timeline_output_path(step.tallanto_cards_config.out_root, allowed_root)
             if step.wappi_history_config is not None:
                 guard_customer_timeline_output_path(step.wappi_history_config.timeline_db, allowed_root)
                 if step.wappi_history_config.widget_link_db is not None:
@@ -986,11 +1219,19 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
 
 
 def amo_incremental_report_ok(report: Mapping[str, Any]) -> bool:
+    if report.get("validation_ok") is not True or report.get("complete") is not True or report.get("apply_blocked"):
+        return False
     safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
     if any(safety.get(key) is not False for key in ("amo_write", "tallanto_write", "crm_write")):
         return False
     fetch = report.get("fetch") if isinstance(report.get("fetch"), Mapping) else {}
-    if any(isinstance(item, Mapping) and item.get("page_cap_hit") for item in fetch.values()):
+    if len(fetch) != 3 or any(
+        not isinstance(item, Mapping)
+        or item.get("complete") is not True
+        or item.get("page_cap_hit")
+        or item.get("pagination_drift_detected")
+        for item in fetch.values()
+    ):
         return False
     reports = [report.get("second_run")]
     first = report.get("first_run") if isinstance(report.get("first_run"), Mapping) else {}
@@ -1095,6 +1336,7 @@ def run_tallanto_money_api_step(
     timeline_db: Path,
     allowed_root: Path,
     tenant_id: str,
+    step_timeout_seconds: float = 1800.0,
 ) -> Mapping[str, Any]:
     config = dict(step.tallanto_money_api_config or {})
     importer_script = Path(str(config.get("importer_script") or "")).expanduser().resolve(strict=False)
@@ -1130,6 +1372,7 @@ def run_tallanto_money_api_step(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        timeout=step_timeout_seconds,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Tallanto money API importer failed with rc={proc.returncode}")
@@ -1151,6 +1394,7 @@ def run_mango_processed_sweep(
     timeline_db: Path,
     allowed_root: Path,
     tenant_id: str,
+    step_timeout_seconds: float = 1800.0,
 ) -> Mapping[str, Any]:
     config = dict(step.mango_sweep_config or {})
     out_jsonl = guard_customer_timeline_output_path(
@@ -1263,6 +1507,7 @@ def run_mango_processed_sweep(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
+        timeout=step_timeout_seconds,
     )
     producer_report: Mapping[str, Any] = {}
     if report_out.exists():
@@ -1656,5 +1901,616 @@ def service_lock(db_path: Path, *, timeout_seconds: float) -> Iterator[Mapping[s
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Write JSON atomically: temp file in the same directory, flush+fsync,
+    then os.replace() over the destination. Used for progress.json (B2),
+    per-step reports, and the numbered snapshot manifest (B5) so a killed
+    process never leaves a half-written file at the final path -- readers
+    always see either the previous complete file or the new complete one.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_publish_latest(source_path: Path, dest_path: Path) -> None:
+    """B5: promote a just-written, self-consistent manifest to be the
+    "latest" snapshot bots/tools read for freshness, without ever letting a
+    concurrent reader (or a mid-write crash) observe a truncated file.
+    shutil.copyfile() writes directly into the destination path; a temp file
+    in the same directory, fsynced then os.replace()-ed over the
+    destination, keeps dest_path always either the previous good file or the
+    new one, never something in between.
+    """
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{dest_path.name}.", suffix=".tmp", dir=str(dest_path.parent))
+    try:
+        with os.fdopen(fd, "wb") as tmp_handle, source_path.open("rb") as src_handle:
+            shutil.copyfileobj(src_handle, tmp_handle)
+            tmp_handle.flush()
+            os.fsync(tmp_handle.fileno())
+        os.replace(tmp_name, dest_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+# B2: business-source label -> the step name(s) that must report status "ok"
+# in a given run for that source to count as fresh. A label mapped to a step
+# name that no current step config uses is reported missing instead of being
+# silently accepted.
+REQUIRED_MANIFEST_SOURCE_STEP_MAP: Mapping[str, tuple[str, ...]] = {
+    "amo_contacts_leads_events": ("amo_incremental_shadow",),
+    "tallanto_cards": ("tallanto_cards_sync",),
+    "tallanto_payments_subscriptions": ("tallanto_money_api_incremental",),
+    "tallanto_attendance": ("tallanto_attendance_api_incremental",),
+    "calls": ("mango_processed_sweep", "calls_and_amo_incremental"),
+    "email": ("mail_archive_incremental", "mail_link_enrich"),
+    "wappi_telegram": ("wappi_history_incremental",),
+    "wappi_max": ("wappi_history_incremental",),
+    "family_child_graph": ("family_graph_refresh",),
+    "bot_safe_chunks_and_dossier": ("bot_safe_rebuild",),
+}
+
+
+def _fingerprint_value(value: Any) -> Any:
+    """Recursively turn a (possibly frozen, possibly nested) dataclass /
+    Path / Mapping / sequence into a plain JSON-safe structure for hashing.
+    Generic over every field of NightlyServiceConfig and every step config
+    dataclass, so a new field added to any of them is automatically covered
+    by service_config_fingerprint() without having to remember to update a
+    hand-written field list. Only ever sees paths, ids, booleans, numbers and
+    already-safe raw JSON step config dicts -- never secret *values* (secrets
+    live in env files referenced only by path).
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _fingerprint_value(getattr(value, field.name)) for field in dataclass_fields(value)}
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _fingerprint_value(item) for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_fingerprint_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def service_config_fingerprint(
+    config: NightlyServiceConfig,
+    *,
+    timeline_db: Path,
+    allowed_root: Path,
+    out_root: Path,
+    publish_dir: Path,
+) -> str:
+    """B2: fingerprint of the full normalized, immutable service config used
+    to gate resume. Covers target DB path, allowed/out/publish roots,
+    tenant, required sources, every timeout, and *every field* of every
+    step (not just name/kind/required/enabled) -- so changing a source path,
+    a step parameter, a timeout, or the required-sources set forbids
+    resuming on top of a run started under the old assumptions. The four
+    path fields use the already-guarded/resolved values (not the raw config
+    fields) so equivalent paths reached via different relative forms hash
+    the same. Never includes secrets or env *values* -- only paths to env
+    files, which is all these dataclasses ever carry.
+    """
+    payload = dict(_fingerprint_value(config))
+    payload["timeline_db"] = str(timeline_db)
+    payload["allowed_root"] = str(allowed_root)
+    payload["out_root"] = str(out_root)
+    payload["publish_dir"] = str(publish_dir)
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _file_state(path: Path) -> Mapping[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "inode": stat.st_ino,
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def db_lightweight_checkpoint(db_path: Path) -> Mapping[str, Any]:
+    """B2: cheap (no sqlite connection) fingerprint of the target DB's
+    on-disk state -- resolved path, inode, size, mtime_ns for the main file
+    and its -wal sidecar. Recomputed on every write_progress() call (i.e.
+    effectively after every step), so the *last* progress.json written
+    before a crash always reflects DB state as of the last recorded step.
+    Deliberately not a full PRAGMA quick_check (too expensive to run after
+    every step); see db_quick_check_ok for the one-time checks around resume
+    accept and publish.
+    """
+    resolved = Path(db_path).resolve(strict=False)
+    return {
+        "path": str(resolved),
+        "main": _file_state(resolved),
+        "wal": _file_state(Path(str(resolved) + "-wal")),
+    }
+
+
+def db_quick_check_ok(db_path: Path) -> bool:
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as con:
+            con.execute("PRAGMA query_only=ON")
+            result = str(con.execute("PRAGMA quick_check").fetchone()[0])
+    except sqlite3.Error:
+        return False
+    return result == "ok"
+
+
+def check_required_manifest_sources(
+    steps_report: Sequence[Mapping[str, Any]],
+    required_labels: Sequence[str],
+    *,
+    source_counts: Sequence[Mapping[str, Any]] = (),
+    ingestion_cursors: Sequence[Mapping[str, Any]] = (),
+    mail_link_enrich: Optional[Mapping[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Mapping[str, Any]:
+    """B4: decide each required source's freshness from *proof* -- real
+    DB-observed timeline_events counts/max_event_at and ingestion_cursors
+    freshness, plus each step's own reported numbers -- never from a bare
+    step name/status lookup. This is what stops one shared step (e.g.
+    wappi_history_incremental) from silently vouching for two independent
+    business sources (Telegram and MAX) when only one of them actually has
+    fresh data, and what stops a step that always self-reports "ok" from
+    covering for a source whose underlying cursor has gone stale.
+    """
+    ctx = _SourceProofContext(
+        steps_by_name={str(item.get("name")): item for item in steps_report},
+        source_counts=source_counts,
+        cursors=ingestion_cursors,
+        mail_link_enrich=mail_link_enrich or {},
+        now=now or datetime.now(timezone.utc),
+    )
+    missing: list[str] = []
+    proofs: dict[str, Mapping[str, Any]] = {}
+    detail: dict[str, Any] = {}
+    for label in required_labels:
+        builder = SOURCE_PROOF_BUILDERS.get(label)
+        if builder is None:
+            proof = _proof(
+                label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                reason=f"unknown required_manifest_sources label: {label}",
+            )
+        else:
+            proof = builder(ctx)
+        proofs[label] = proof
+        satisfied = proof["status"] == "ok"
+        detail[label] = {
+            "steps": list(REQUIRED_MANIFEST_SOURCE_STEP_MAP.get(label, ())),
+            "proof": proof,
+            "satisfied": satisfied,
+        }
+        if not satisfied:
+            missing.append(label)
+    return {
+        "schema_version": "customer_timeline_required_manifest_sources_v2",
+        "required": list(required_labels),
+        "missing": missing,
+        "satisfied": [label for label in required_labels if label not in missing],
+        "detail": detail,
+        "proofs": proofs,
+    }
+
+
+@dataclass(frozen=True)
+class _SourceProofContext:
+    steps_by_name: Mapping[str, Mapping[str, Any]]
+    source_counts: Sequence[Mapping[str, Any]]
+    cursors: Sequence[Mapping[str, Any]]
+    mail_link_enrich: Mapping[str, Any]
+    now: datetime
+
+
+def _step_status(ctx: "_SourceProofContext", name: str) -> Optional[str]:
+    step = ctx.steps_by_name.get(name)
+    return str(step.get("status")) if step is not None else None
+
+
+def _proof(
+    label: str,
+    ctx: "_SourceProofContext",
+    *,
+    status: str,
+    records: int,
+    cursor_or_max_event_at: Optional[str],
+    reason: str,
+) -> Mapping[str, Any]:
+    return {
+        "source_label": label,
+        "checked_at": ctx.now.isoformat(),
+        "status": status,
+        "records_seen_or_written": records,
+        "cursor_or_max_event_at": cursor_or_max_event_at,
+        "source_specific_reason": reason,
+    }
+
+
+def _parse_iso_or_none(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _max_iso(*values: Optional[str]) -> Optional[str]:
+    parsed = [(parsed_value, raw) for raw in values if raw for parsed_value in (_parse_iso_or_none(raw),) if parsed_value]
+    if not parsed:
+        return None
+    return max(parsed, key=lambda item: item[0])[1]
+
+
+def _cursor_row(cursors: Sequence[Mapping[str, Any]], source_system: str) -> Optional[Mapping[str, Any]]:
+    for row in cursors:
+        if str(row.get("source_system")) == source_system:
+            return row
+    return None
+
+
+def _count_row(counts: Sequence[Mapping[str, Any]], source_system: str) -> tuple[int, Optional[str]]:
+    for row in counts:
+        if str(row.get("source_system")) == source_system:
+            max_event_at = row.get("max_event_at")
+            return int(row.get("count") or 0), (str(max_event_at) if max_event_at else None)
+    return 0, None
+
+
+def _cursor_is_fresh(cursor: Optional[Mapping[str, Any]], *, now: datetime) -> bool:
+    if cursor is None:
+        return False
+    checked = _parse_iso_or_none(cursor.get("updated_at"))
+    if checked is None:
+        return False
+    age_hours = (now - checked).total_seconds() / 3600.0
+    return 0 <= age_hours <= SOURCE_PROOF_STALE_AFTER_HOURS
+
+
+def _proof_amo_contacts_leads_events(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "amo_contacts_leads_events"
+    status = _step_status(ctx, "amo_incremental_shadow")
+    if status is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step amo_incremental_shadow did not run in this run")
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
+                      reason=f"amo_incremental_shadow step status={status}")
+    contacts, contacts_ts = _count_row(ctx.source_counts, "amocrm_snapshot")
+    events, events_ts = _count_row(ctx.source_counts, "amocrm_event")
+    return _proof(
+        label, ctx, status="ok", records=contacts + events,
+        cursor_or_max_event_at=_max_iso(contacts_ts, events_ts),
+        reason="amo_incremental_shadow ok; timeline_events counts for amocrm_snapshot+amocrm_event",
+    )
+
+
+def _proof_tallanto_cards(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "tallanto_cards"
+    status = _step_status(ctx, "tallanto_cards_sync")
+    records, event_ts = _count_row(ctx.source_counts, "tallanto_snapshot")
+    cursor = _cursor_row(ctx.cursors, "tallanto_cards_daily")
+    cursor_ts = str(cursor["last_cursor_ts"]) if cursor and cursor.get("last_cursor_ts") else event_ts
+    if status is None:
+        return _proof(
+            label, ctx, status="missing", records=records, cursor_or_max_event_at=cursor_ts,
+            reason="step tallanto_cards_sync did not run in this run",
+        )
+    if status != "ok":
+        return _proof(
+            label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+            reason=f"tallanto_cards_sync step status={status}",
+        )
+    if not records or not _cursor_is_fresh(cursor, now=ctx.now):
+        return _proof(
+            label, ctx, status="stale", records=records, cursor_or_max_event_at=cursor_ts,
+            reason="tallanto_snapshot is empty or tallanto_cards_daily cursor is stale",
+        )
+    return _proof(
+        label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
+        reason="tallanto_cards_sync ok; tallanto snapshot present and cursor fresh",
+    )
+
+
+def _proof_tallanto_payments_subscriptions(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "tallanto_payments_subscriptions"
+    status = _step_status(ctx, "tallanto_money_api_incremental")
+    if status is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step tallanto_money_api_incremental did not run in this run")
+    records, event_ts = _count_row(ctx.source_counts, "tallanto_crm_call")
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=event_ts,
+                      reason=f"tallanto_money_api_incremental step status={status}")
+    return _proof(
+        label, ctx, status="ok", records=records, cursor_or_max_event_at=event_ts,
+        reason="tallanto_money_api_incremental ok; timeline_events count for tallanto_crm_call",
+    )
+
+
+def _proof_tallanto_attendance(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "tallanto_attendance"
+    status = _step_status(ctx, "tallanto_attendance_api_incremental")
+    if status is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step tallanto_attendance_api_incremental did not run in this run")
+    records, event_ts = _count_row(ctx.source_counts, "tallanto_attendance_api")
+    cursor = _cursor_row(ctx.cursors, "tallanto_attendance_api")
+    cursor_ts = str(cursor["last_cursor_ts"]) if cursor and cursor.get("last_cursor_ts") else event_ts
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+                      reason=f"tallanto_attendance_api_incremental step status={status}")
+    if not _cursor_is_fresh(cursor, now=ctx.now):
+        return _proof(
+            label, ctx, status="stale", records=records, cursor_or_max_event_at=cursor_ts,
+            reason=(
+                "ingestion_cursors.tallanto_attendance_api.updated_at is missing or older than "
+                f"{SOURCE_PROOF_STALE_AFTER_HOURS:.0f}h"
+            ),
+        )
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
+                  reason="tallanto_attendance_api_incremental ok; ingestion cursor fresh")
+
+
+def _proof_calls(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "calls"
+    sweep_status = _step_status(ctx, "mango_processed_sweep")
+    incremental_status = _step_status(ctx, "calls_and_amo_incremental")
+    if sweep_status is None or incremental_status is None:
+        missing_steps = [
+            name
+            for name, status in (
+                ("mango_processed_sweep", sweep_status),
+                ("calls_and_amo_incremental", incremental_status),
+            )
+            if status is None
+        ]
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="steps did not run in this run: " + ",".join(missing_steps))
+    records, event_ts = _count_row(ctx.source_counts, "mango_processed_summary")
+    cursor = _cursor_row(ctx.cursors, "mango_processed_summary")
+    cursor_ts = str(cursor["last_cursor_ts"]) if cursor and cursor.get("last_cursor_ts") else event_ts
+    if sweep_status != "ok" or incremental_status != "ok":
+        return _proof(
+            label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+            reason=f"mango_processed_sweep status={sweep_status}; calls_and_amo_incremental status={incremental_status}",
+        )
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
+                  reason="mango_processed_sweep and calls_and_amo_incremental both ok")
+
+
+def _proof_email(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "email"
+    archive_status = _step_status(ctx, "mail_archive_incremental")
+    enrich_status = _step_status(ctx, "mail_link_enrich")
+    if archive_status is None or enrich_status is None:
+        missing_steps = [
+            name
+            for name, status in (
+                ("mail_archive_incremental", archive_status),
+                ("mail_link_enrich", enrich_status),
+            )
+            if status is None
+        ]
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="steps did not run in this run: " + ",".join(missing_steps))
+    records, event_ts = _count_row(ctx.source_counts, "mail_archive_stage2")
+    cursor = _cursor_row(ctx.cursors, "mail_archive_stage2")
+    cursor_ts = str(cursor["last_cursor_ts"]) if cursor and cursor.get("last_cursor_ts") else event_ts
+    if archive_status != "ok":
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+                      reason=f"mail_archive_incremental step status={archive_status}")
+    if enrich_status != "ok":
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+                      reason=f"mail_link_enrich step status={enrich_status}")
+    enrich_metrics_status = str(ctx.mail_link_enrich.get("status") or "")
+    if enrich_metrics_status != "ok":
+        return _proof(
+            label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
+            reason=f"mail_link_enrich manifest metrics unavailable: status={enrich_metrics_status or 'unknown'}",
+        )
+    return _proof(
+        label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
+        reason="mail_archive_incremental and mail_link_enrich both ok; archive+link-enrich metrics present",
+    )
+
+
+def _proof_wappi_channel(ctx: "_SourceProofContext", *, label: str, source_system: str) -> Mapping[str, Any]:
+    status = _step_status(ctx, "wappi_history_incremental")
+    if status is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step wappi_history_incremental did not run in this run")
+    records, event_ts = _count_row(ctx.source_counts, source_system)
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=event_ts,
+                      reason=f"wappi_history_incremental step status={status}")
+    if records <= 0:
+        return _proof(
+            label, ctx, status="missing", records=records, cursor_or_max_event_at=event_ts,
+            reason=f"wappi_history_incremental ok, but timeline_events has zero {source_system} rows",
+        )
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=event_ts,
+                  reason=f"wappi_history_incremental ok; timeline_events count for {source_system}")
+
+
+def _proof_wappi_telegram(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    return _proof_wappi_channel(ctx, label="wappi_telegram", source_system="wappi_telegram")
+
+
+def _proof_wappi_max(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    return _proof_wappi_channel(ctx, label="wappi_max", source_system="wappi_max")
+
+
+def _proof_family_child_graph(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "family_child_graph"
+    step = ctx.steps_by_name.get("family_graph_refresh")
+    if step is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step family_graph_refresh did not run in this run")
+    status = str(step.get("status"))
+    summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+    quick_check = summary.get("quick_check")
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
+                      reason=f"family_graph_refresh step status={status}; quick_check={quick_check}")
+    records = 0
+    for key in ("edges_written", "pairs_written", "family_edges", "written", "rows_written"):
+        candidate = summary.get(key)
+        if isinstance(candidate, int):
+            records = candidate
+            break
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=None,
+                  reason=f"family_graph_refresh ok; quick_check={quick_check}")
+
+
+def _proof_bot_safe_chunks_and_dossier(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "bot_safe_chunks_and_dossier"
+    step = ctx.steps_by_name.get("bot_safe_rebuild")
+    if step is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step bot_safe_rebuild did not run in this run")
+    status = str(step.get("status"))
+    summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+    if status != "ok":
+        return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
+                      reason=f"bot_safe_rebuild step status={status}")
+    records = int(summary.get("customers_with_summary") or 0)
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=None,
+                  reason="bot_safe_rebuild ok; customers_with_summary from step summary")
+
+
+SOURCE_PROOF_BUILDERS: Mapping[str, Callable[["_SourceProofContext"], Mapping[str, Any]]] = {
+    "amo_contacts_leads_events": _proof_amo_contacts_leads_events,
+    "tallanto_cards": _proof_tallanto_cards,
+    "tallanto_payments_subscriptions": _proof_tallanto_payments_subscriptions,
+    "tallanto_attendance": _proof_tallanto_attendance,
+    "calls": _proof_calls,
+    "email": _proof_email,
+    "wappi_telegram": _proof_wappi_telegram,
+    "wappi_max": _proof_wappi_max,
+    "family_child_graph": _proof_family_child_graph,
+    "bot_safe_chunks_and_dossier": _proof_bot_safe_chunks_and_dossier,
+}
+
+
+def find_resumable_run(
+    out_root: Path,
+    config_fingerprint: str,
+    *,
+    timeline_db: Path,
+) -> tuple[Optional[str], Optional[Path], list[Mapping[str, Any]]]:
+    """Find the newest interrupted run_dir under out_root that can be resumed.
+
+    Must be called only while holding the service lock (see
+    run_nightly_service) so two concurrent starts can never both pick the
+    same run. A run is resumable only if:
+
+    - it never finished (no service_report.json). A finished run -- even one
+      that ended "partial" -- is never reused: every step is designed to be
+      idempotent, so a fresh run is always safe and simplest.
+    - it left a progress.json whose config_fingerprint matches the full
+      normalized *current* service config exactly (target DB, allowed/out/
+      publish roots, tenant, required sources, every timeout, and every
+      field of every step -- not just step name/kind/required/enabled).
+    - it has at least one leading step recorded with status "ok". Only that
+      leading "ok" prefix is trusted; anything after the first non-"ok"
+      entry is re-attempted rather than carried forward.
+    - its saved db_checkpoint (lightweight stat of the DB file + WAL, taken
+      right after that leading "ok" prefix completed) matches the DB file's
+      *current* on-disk state exactly, and the DB currently passes
+      PRAGMA quick_check (run at most once here, only when there is an
+      otherwise-eligible candidate to accept). A progress.json predating
+      this checkpoint field, any stat mismatch, or a failed quick_check all
+      mean "something touched the DB since" and force a fresh, independently
+      idempotent run instead of resuming on top of an unknown DB state.
+    """
+    if not out_root.is_dir():
+        return None, None, []
+    for candidate in sorted((path for path in out_root.glob("run_*") if path.is_dir()), reverse=True):
+        if (candidate / "service_report.json").exists():
+            continue
+        progress_path = candidate / "progress.json"
+        if not progress_path.exists():
+            continue
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(progress, Mapping) or progress.get("config_fingerprint") != config_fingerprint:
+            continue
+        run_id = str(progress.get("run_id") or "")
+        completed = progress.get("steps")
+        if not run_id or not isinstance(completed, list):
+            continue
+        resumable_prefix: list[Mapping[str, Any]] = []
+        for item in completed:
+            if isinstance(item, Mapping) and item.get("status") == "ok":
+                resumable_prefix.append(item)
+            else:
+                break
+        if not resumable_prefix:
+            continue
+        saved_checkpoint = progress.get("db_checkpoint")
+        if not isinstance(saved_checkpoint, Mapping):
+            continue  # pre-checkpoint progress.json: fail safe, do not resume
+        if saved_checkpoint != db_lightweight_checkpoint(timeline_db):
+            continue
+        if not db_quick_check_ok(timeline_db):
+            continue
+        return run_id, candidate, resumable_prefix
+    return None, None, []
+
+
+def write_progress(
+    run_dir: Path,
+    *,
+    run_id: str,
+    total_steps: int,
+    completed_steps: Sequence[Mapping[str, Any]],
+    config_fingerprint: str,
+    timeline_db: Path,
+) -> None:
+    completed_count = len(completed_steps)
+    payload = {
+        "schema_version": "customer_timeline_nightly_service_progress_v2",
+        "run_id": run_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "total_steps": total_steps,
+        "completed_steps": completed_count,
+        "next_step_index": completed_count + 1 if completed_count < total_steps else None,
+        "config_fingerprint": config_fingerprint,
+        "steps": list(completed_steps),
+        # B2: lightweight (stat-only) DB+WAL checkpoint taken *now*, i.e.
+        # reflecting DB state as of the most recently completed step in
+        # `steps` above. Compared byte-for-byte against a fresh checkpoint at
+        # resume time; see find_resumable_run.
+        "db_checkpoint": db_lightweight_checkpoint(timeline_db),
+    }
+    write_json(run_dir / "progress.json", payload)

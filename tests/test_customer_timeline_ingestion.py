@@ -118,6 +118,7 @@ def test_tallanto_normalizer_keeps_additional_contact_links() -> None:
                 "phone_extra": "+7 916 444-55-66",
                 "primary_email": "primary@example.com",
                 "email_extra": "parent@example.com | second@example.com",
+                "amo_contact_id": "12345",
             },
         )
     )
@@ -134,6 +135,24 @@ def test_tallanto_normalizer_keeps_additional_contact_links() -> None:
         ("email", "parent@example.com"),
         ("email", "second@example.com"),
     }
+    assert any(
+        link.link_type.value == "amo_contact_id" and link.link_value == "12345"
+        for link in batch.identity_links
+    )
+
+
+@pytest.mark.parametrize("amo_contact_id", ("", "-", "abc", "0", "-1"))
+def test_tallanto_normalizer_ignores_invalid_amo_contact_id(amo_contact_id: str) -> None:
+    batch = TallantoSnapshotNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref="contacts.jsonl:1",
+            observed_at=NOW,
+            payload={"tallanto_id": "s-invalid-amo", "amo_contact_id": amo_contact_id},
+        )
+    )
+
+    assert all(link.link_type.value != "amo_contact_id" for link in batch.identity_links)
 
 
 def test_tallanto_sequential_shared_contact_demotes_prior_links(tmp_path: Path) -> None:

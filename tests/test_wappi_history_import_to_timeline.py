@@ -35,6 +35,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     close_resolved_wappi_pending_conflicts,
     confirm_wappi_widget_candidates_from_amo_talks,
     enrich_wappi_widget_links_from_timeline_amo_events,
+    git_worktree_provenance,
     hydrate_wappi_widget_contacts,
     is_personal_wappi_dialog,
     load_existing_wappi_event_customers,
@@ -55,6 +56,17 @@ from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.amo_wappi_phase1 import WappiClientConfig, WappiPhase1Client
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopPair, WappiHistoryMessage
+
+
+def test_git_worktree_provenance_ignores_parent_git_context(monkeypatch, tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing-git-dir"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "wrong-worktree"))
+
+    proof = git_worktree_provenance(root)
+
+    assert proof["dirty"] is not None
+    assert proof["tracked_diff_sha256"] is not None
 
 
 @pytest.mark.parametrize("flag", ("IsBot", "IsDeleted", "IsFake", "IsSelf", "IsSupport"))
@@ -2684,6 +2696,7 @@ def test_wappi_widget_coverage_reports_detailed_lookup_statuses(tmp_path: Path) 
 
     assert report["accounting_complete"] is True
     assert report["linkage_complete"] is False
+    assert report["complete"] is False
     assert report["counts"] == {
         "auth_error": 1,
         "http_5xx": 1,
@@ -2837,6 +2850,85 @@ def test_wappi_widget_coverage_accounts_for_profiles_after_budget_exhaustion(tmp
     assert report["accounting_complete"] is False
     assert report["request_limit_hit"] is True
     assert report["profiles"]["telegram:p-two"]["catalog_error"] == "request_limit"
+
+
+def test_wappi_widget_coverage_resumes_after_request_cap_without_duplicate_lookups(tmp_path: Path) -> None:
+    """BLOK A4: hitting the request/page cap mid-run must leave a resumable partial
+    (accounting_complete True but linkage_complete/complete False), never a false
+    "success". A second call with the same cache and a normal budget must finish
+    the remainder from the incomplete page -- re-listing the catalogue is fine, but
+    re-looking-up an already-resolved chat through the widget is not: that would be
+    a duplicate authoritative lookup, not a resume."""
+
+    class TrackingWidgetClient(FakeWidgetWappiClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.find_calls: list[str] = []
+
+        def find_amocrm_contact(self, **kwargs: Any) -> Mapping[str, Any]:
+            self.find_calls.append(str(kwargs["chat_id"]))
+            return super().find_amocrm_contact(**kwargs)
+
+    chat_ids = [str(index) for index in range(1, 6)]
+    chats = {"p-tg": [{"id": chat_id, "type": "user"} for chat_id in chat_ids]}
+    widget_results = {
+        ("telegram", chat_id): {
+            "contact": {"id": 100 + int(chat_id)},
+            "leads": [{"id": 900 + int(chat_id)}],
+        }
+        for chat_id in chat_ids
+    }
+    client = TrackingWidgetClient(chats, {}, widget_results)
+    link_db = tmp_path / "links.sqlite"
+    shared_kwargs = dict(
+        client=client,
+        profiles=(WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),),
+        runtime_profiles={("telegram", "p-tg"): {"uuid": "p-tg", "platform": "tg"}},
+        crm_id="crm-id",
+        db_path=link_db,
+    )
+
+    first = collect_wappi_widget_links(
+        **shared_kwargs,
+        limits=WappiFetchLimits(
+            chat_limit_per_profile=10,
+            messages_per_chat=0,
+            request_limit_total=4,
+            page_size=2,
+            sleep_seconds=0,
+        ),
+    )
+
+    assert first["accounting_complete"] is True
+    assert first["linkage_complete"] is False
+    assert first["request_limit_hit"] is True
+    assert first["complete"] is False
+    assert len(client.find_calls) == 1
+
+    second = collect_wappi_widget_links(
+        **shared_kwargs,
+        limits=WappiFetchLimits(
+            chat_limit_per_profile=10,
+            messages_per_chat=0,
+            request_limit_total=20,
+            page_size=2,
+            sleep_seconds=0,
+        ),
+    )
+
+    assert second["accounting_complete"] is True
+    assert second["linkage_complete"] is True
+    assert second["complete"] is True
+    assert second["request_limit_hit"] is False
+    # Exactly one authoritative widget lookup per chat across both runs combined --
+    # the resumed run picked up the incomplete remainder without re-asking the
+    # widget about the chat the first run already resolved.
+    assert sorted(client.find_calls) == sorted(chat_ids)
+    assert len(client.find_calls) == len(chat_ids)
+
+    links = load_wappi_widget_links(link_db)
+    assert len(links) == len(chat_ids)
+    assert all(link["status"] == "resolved" for link in links.values())
 
 
 def test_wappi_widget_coverage_only_cli_flag(tmp_path: Path) -> None:

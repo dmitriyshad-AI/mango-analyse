@@ -7,7 +7,8 @@ import plistlib
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,16 @@ from mango_mvp.customer_timeline.nightly_service import (
 
 
 NOW = datetime(2026, 7, 3, 3, 20, tzinfo=timezone.utc)
+
+
+def test_repo_python_env_removes_parent_git_context(monkeypatch, tmp_path) -> None:
+    for key in nightly_service_module.GIT_CONTEXT_ENV_KEYS:
+        monkeypatch.setenv(key, f"hostile-{key.lower()}")
+
+    env = nightly_service_module._repo_python_env(tmp_path)
+
+    assert all(key not in env for key in nightly_service_module.GIT_CONTEXT_ENV_KEYS)
+    assert str(tmp_path / "src") in env["PYTHONPATH"].split(os.pathsep)
 
 
 def seed_customer(db_path: Path, allowed_root: Path) -> None:
@@ -352,9 +363,14 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
     def fake_run(config):
         captured["config"] = config
         return {
+            "validation_ok": True,
+            "complete": True,
             "cursor_before": {"amo_leads_updated_at": "2026-07-01T00:00:00+00:00"},
             "cursor_after": {"amo_leads_updated_at": "2026-07-02T00:00:00+00:00"},
-            "fetch": {"amo_leads_updated_at": {"page_cap_hit": False}},
+            "fetch": {
+                key: {"page_cap_hit": False, "complete": True, "pagination_drift_detected": False}
+                for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
+            },
             "repeat_run_duplicates": 0,
             "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
             "first_run": {"cards": {"source_errors": []}, "events": {"source_errors": []}},
@@ -395,6 +411,25 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
     assert report["steps"][0]["summary"]["repeat_run_duplicates"] == 0
     assert captured["config"].timeline_db == db_path
     assert captured["config"].copy_db is False
+
+
+def test_amo_incremental_report_ok_rejects_partial_or_drifting_fetch() -> None:
+    base = {
+        "validation_ok": True,
+        "complete": True,
+        "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
+        "fetch": {
+            key: {"complete": True, "page_cap_hit": False, "pagination_drift_detected": False}
+            for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
+        },
+        "first_run": {"cards": {"source_errors": []}, "events": {"source_errors": []}},
+        "second_run": {"source_errors": []},
+    }
+    assert nightly_service_module.amo_incremental_report_ok(base) is True
+    assert nightly_service_module.amo_incremental_report_ok({**base, "validation_ok": False}) is False
+    drift = json.loads(json.dumps(base))
+    drift["fetch"]["amo_events_created_at"]["pagination_drift_detected"] = True
+    assert nightly_service_module.amo_incremental_report_ok(drift) is False
 
 
 def test_nightly_service_runs_required_tallanto_attendance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1428,6 +1463,544 @@ def test_nightly_service_mango_processed_sweep_exception_blocks_latest_publish_w
     assert report["failed_required_steps"] == ["mango_processed_sweep"]
     assert report["snapshot_manifest"]["latest_published"] is False
     assert _service_report_path_on_disk(report).exists()
+
+
+# --- BLOCK B: bounded timeout, resume, idempotent repeat, fail-loud manifest ---
+
+
+def test_nightly_service_step_timeout_stops_hanging_external_script(tmp_path: Path) -> None:
+    """B2 proof 1: a step's external subprocess cannot hang the run forever."""
+    importer = tmp_path / "repo" / "scripts" / "import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "timeout_service_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "nightly_service"),
+                "publish_dir": str(tmp_path / "published"),
+                "step_timeout_seconds": 0.5,
+                "steps": [
+                    {
+                        "name": "tallanto_money_api_incremental",
+                        "kind": "tallanto_money_api",
+                        "required": True,
+                        "config": {
+                            "importer_script": str(importer),
+                            "tallanto_env_file": str(env_file),
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "apply": True,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    started = time.monotonic()
+    report = run_nightly_service(service_config_from_json(config_path))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 4.0, "step must not block for the full 5s external sleep"
+    assert report["steps"][0]["status"] == "failed"
+    assert "TimeoutExpired" in report["steps"][0]["reason"]
+    assert report["overall_status"] == "partial"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_resumes_from_last_completed_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2 proof 2: an interrupted run is resumed, not restarted from step 1."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    out_root = tmp_path / "nightly_service"
+    source_path = tmp_path / "source.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "source_id": "resume-event-1",
+                "customer_id": "customer:nightly-1",
+                "event_type": "system_note",
+                "event_at": "2026-07-03T03:00:00+00:00",
+                "updated_at": "2026-07-03T03:00:00+00:00",
+                "direction": "system",
+                "summary": "Событие после resume.",
+            }
+        ],
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(out_root),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [
+            {
+                "name": "amo_incremental_shadow",
+                "kind": "amo_incremental",
+                "required": True,
+                "config": {
+                    "out_root": str(tmp_path / "amo_incremental"),
+                    "mcp_env": str(tmp_path / "amo.env"),
+                },
+            },
+            {
+                "name": "local_jsonl",
+                "kind": "nightly_incremental",
+                "required": True,
+                "config": {
+                    "journal_path": str(out_root / "journal.jsonl"),
+                    "safety_margin_seconds": 60,
+                    "sources": [
+                        {
+                            "name": "local_jsonl",
+                            "source_system": "nightly_test_source",
+                            "path": str(source_path),
+                            "source_ref": "test:nightly-resume",
+                            "normalizer": "jsonl",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "resume_service_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    config = service_config_from_json(config_path)
+    resolved_db, resolved_root, resolved_out, resolved_publish = nightly_service_module.validated_service_paths(config)
+    config_fingerprint = nightly_service_module.service_config_fingerprint(
+        config,
+        timeline_db=resolved_db,
+        allowed_root=resolved_root,
+        out_root=resolved_out,
+        publish_dir=resolved_publish,
+    )
+
+    # Seed a crashed prior run: step 1 completed ok, step 2 never started.
+    prior_run_id = "20260101T000000Z"
+    prior_run_dir = out_root / f"run_{prior_run_id}"
+    prior_run_dir.mkdir(parents=True)
+    prior_step_report = {
+        "index": 1,
+        "name": "amo_incremental_shadow",
+        "kind": "amo_incremental",
+        "status": "ok",
+        "required": True,
+        "report_path": str(prior_run_dir / "01_amo_incremental_shadow.json"),
+        "summary": {"repeat_run_duplicates": 0},
+        "duration_seconds": 1.2,
+    }
+    (prior_run_dir / "progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "customer_timeline_nightly_service_progress_v2",
+                "run_id": prior_run_id,
+                "total_steps": 2,
+                "completed_steps": 1,
+                "config_fingerprint": config_fingerprint,
+                "steps": [prior_step_report],
+                # B2: matches the DB's real on-disk state right now (nothing
+                # has touched db_path since seed_customer() above), proving
+                # resume is accepted when the checkpoint genuinely matches.
+                "db_checkpoint": nightly_service_module.db_lightweight_checkpoint(resolved_db),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_called(amo_config):  # pragma: no cover - proves resume skips completed steps
+        raise AssertionError("amo_incremental_shadow must be skipped on resume")
+
+    monkeypatch.setattr(nightly_service_module, "run_amo_incremental", fail_if_called)
+
+    report = run_nightly_service(config)
+
+    assert report["run_id"] == prior_run_id
+    assert report["resumed_from_run_id"] == prior_run_id
+    assert report["steps"][0] == prior_step_report
+    assert report["steps"][1]["name"] == "local_jsonl"
+    assert report["steps"][1]["status"] == "ok"
+    assert report["overall_status"] == "ok"
+    assert (prior_run_dir / "service_report.json").exists()
+
+
+def test_nightly_service_second_run_over_fixtures_has_no_duplicate_events(tmp_path: Path) -> None:
+    """B2 proof 3: a second, fully-completed run over the same fixtures is a
+    clean independent run (not a resume) and writes zero duplicate rows."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+
+    first = run_nightly_service(config)
+    second = run_nightly_service(config)
+
+    assert first["overall_status"] == "ok"
+    assert second["overall_status"] == "ok"
+    assert second["resumed_from_run_id"] is None
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE source_system = 'nightly_test_source'"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_nightly_service_fails_loud_when_required_manifest_source_is_missing(tmp_path: Path) -> None:
+    """B2 proof 4: no false PASS when a mandatory business source is missing.
+
+    Before this fix, a config that never ran the Wappi step still reported
+    overall_status "ok" and published "latest" -- the exact silent-success
+    behaviour the launchd job was observed exhibiting.
+    """
+    # family_graph with apply=True requires the DB under .codex_local/staging
+    # (see family_graph._guard_db); mirrors the other real (non-mocked)
+    # family_graph test in this file.
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    config_path = tmp_path / "required_sources_config.json"
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(staging),
+        "out_root": str(staging / "nightly_service"),
+        "publish_dir": str(staging / "published"),
+        "required_manifest_sources": ["family_child_graph", "wappi_telegram"],
+        "steps": [
+            {
+                "name": "family_graph_refresh",
+                "kind": "family_graph",
+                "required": True,
+                "config": {
+                    "timeline_db": str(db_path),
+                    "allowed_root": str(staging),
+                    "apply": True,
+                },
+            }
+        ],
+    }
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["steps"][0]["name"] == "family_graph_refresh"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["overall_status"] == "partial"
+    assert "required_manifest_source:wappi_telegram" in report["failed_required_steps"]
+    assert report["required_sources_check"]["missing"] == ["wappi_telegram"]
+    assert report["required_sources_check"]["satisfied"] == ["family_child_graph"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_wappi_proof_is_independent_per_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4 proof 1: wappi_history_incremental=ok must not vouch for both
+    Telegram and MAX -- each channel needs its own evidence in
+    timeline_events, so a channel with zero rows is reported missing even
+    though the shared step succeeded (the exact false-green this fixes)."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    telegram_source = tmp_path / "wappi_telegram.jsonl"
+    write_jsonl(
+        telegram_source,
+        [
+            {
+                "source_id": "tg-event-1",
+                "customer_id": "customer:nightly-1",
+                "event_type": "telegram_message",
+                "event_at": "2026-07-03T03:00:00+00:00",
+                "updated_at": "2026-07-03T03:00:00+00:00",
+                "direction": "inbound",
+                "summary": "Здравствуйте, расскажите про лагерь.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_wappi_history_import",
+        lambda config: {"validation_ok": True, "summary": {"records_built": 0}},
+    )
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "required_manifest_sources": ["wappi_telegram", "wappi_max"],
+        "steps": [
+            {
+                "name": "wappi_history_incremental",
+                "kind": "wappi_history",
+                "required": True,
+                "config": {
+                    "env_file": str(tmp_path / "wappi.env"),
+                    "phase1_config": str(tmp_path / "phase1.json"),
+                },
+            },
+            {
+                "name": "telegram_seed",
+                "kind": "nightly_incremental",
+                "required": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service" / "telegram_journal.jsonl"),
+                    "safety_margin_seconds": 0,
+                    "sources": [
+                        {
+                            "name": "telegram_seed",
+                            "source_system": "wappi_telegram",
+                            "path": str(telegram_source),
+                            "source_ref": "test:wappi-telegram-seed",
+                            "normalizer": "jsonl",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    config_path = tmp_path / "wappi_proof_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proofs = report["required_sources_check"]["proofs"]
+    assert proofs["wappi_telegram"]["status"] == "ok"
+    assert proofs["wappi_telegram"]["records_seen_or_written"] >= 1
+    assert proofs["wappi_max"]["status"] == "missing"
+    assert report["required_sources_check"]["missing"] == ["wappi_max"]
+    assert report["overall_status"] == "partial"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def _seed_tallanto_attendance_cursor(db_path: Path, *, updated_at: datetime) -> None:
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO ingestion_cursors (tenant_id, source_system, last_cursor_ts, updated_at, metadata_json)
+            VALUES ('foton', 'tallanto_attendance_api', ?, ?, '{}')
+            ON CONFLICT(tenant_id, source_system) DO UPDATE SET
+              last_cursor_ts = excluded.last_cursor_ts, updated_at = excluded.updated_at
+            """,
+            (updated_at.isoformat(), updated_at.isoformat()),
+        )
+        con.commit()
+
+
+def _tallanto_attendance_config(tmp_path: Path, db_path: Path) -> dict:
+    return {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "required_manifest_sources": ["tallanto_attendance"],
+        "steps": [
+            {
+                "name": "tallanto_attendance_api_incremental",
+                "kind": "tallanto_attendance_api",
+                "required": True,
+                "config": {
+                    "tallanto_env_file": "~/.mango_secrets/tallanto_readonly.env",
+                    "initial_since": "2026-07-13T00:00:00+03:00",
+                    "apply": True,
+                },
+            }
+        ],
+    }
+
+
+def test_nightly_service_required_source_proof_passes_on_fresh_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4 proof 2: a source with zero new records this run but a freshly
+    refreshed ingestion cursor still counts as proven-healthy -- the gate
+    reads the real cursor (ground truth), not merely the step's own
+    self-reported "ok"."""
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_cursor(db_path, updated_at=datetime.now(timezone.utc))
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(
+        json.dumps(_tallanto_attendance_config(tmp_path, db_path)), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {
+            "validation_ok": True,
+            "cursor_before": config.initial_since.isoformat(),
+            "cursor_after": config.initial_since.isoformat(),
+            "counts": {},
+            "safety": {"writes_tallanto": False},
+        },
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proof = report["required_sources_check"]["proofs"]["tallanto_attendance"]
+    assert proof["status"] == "ok", proof
+    assert report["required_sources_check"]["missing"] == []
+    assert report["overall_status"] == "ok"
+    assert report["snapshot_manifest"]["latest_published"] is True
+
+
+def test_nightly_service_required_source_proof_fails_on_stale_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4 proof 3: the mirror image of the fresh case -- a step that
+    self-reports "ok" every night but whose ingestion cursor has not
+    actually moved in a long time must be caught as stale, not waved
+    through on the step's say-so alone."""
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_cursor(
+        db_path, updated_at=datetime.now(timezone.utc) - timedelta(hours=48)
+    )
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(
+        json.dumps(_tallanto_attendance_config(tmp_path, db_path)), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {
+            "validation_ok": True,
+            "cursor_before": config.initial_since.isoformat(),
+            "cursor_after": config.initial_since.isoformat(),
+            "counts": {},
+            "safety": {"writes_tallanto": False},
+        },
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proof = report["required_sources_check"]["proofs"]["tallanto_attendance"]
+    assert proof["status"] == "stale", proof
+    assert report["required_sources_check"]["missing"] == ["tallanto_attendance"]
+    assert report["overall_status"] == "partial"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_email_proof_fails_when_mail_archive_missing(tmp_path: Path) -> None:
+    """B4 proof 4: the email source needs a genuine mail archive ingest, not
+    just an ok mail_link_enrich step -- a missing archive input must fail
+    the email proof."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_payload = {
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "nightly_service"),
+        "publish_dir": str(tmp_path / "published"),
+        "required_manifest_sources": ["email"],
+        "steps": [
+            {
+                "name": "mail_archive_incremental",
+                "kind": "nightly_incremental",
+                "required": True,
+                "config": {
+                    "journal_path": str(tmp_path / "nightly_service" / "mail_journal.jsonl"),
+                    "safety_margin_seconds": 0,
+                    "sources": [
+                        {
+                            "name": "mail_archive_stage2_incremental",
+                            "source_system": "mail_archive_stage2",
+                            "path": str(tmp_path / "missing_mail_archive.jsonl"),
+                            "source_ref": "test:mail-archive-missing",
+                            "normalizer": "mail_archive_stage2",
+                            "required": True,
+                        }
+                    ],
+                },
+            },
+            {
+                "name": "mail_link_enrich",
+                "kind": "mail_link_enrich",
+                "required": True,
+                "config": {},
+            },
+        ],
+    }
+    config_path = tmp_path / "email_proof_config.json"
+    config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proof = report["required_sources_check"]["proofs"]["email"]
+    assert proof["status"] != "ok", proof
+    assert report["required_sources_check"]["missing"] == ["email"]
+    assert report["overall_status"] == "partial"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_blocks_latest_when_quick_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B5 proof 1: a corrupted staging DB must never publish "latest", even
+    when every individual step reports ok, and any previously published
+    "latest" is left byte-for-byte untouched."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+    latest_path = tmp_path / "published" / "latest_customer_timeline_snapshot.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_text("OLD-LATEST-BYTES", encoding="utf-8")
+    real_manifest = nightly_service_module.build_snapshot_manifest
+
+    def corrupted_manifest(*args, **kwargs):
+        manifest = dict(real_manifest(*args, **kwargs))
+        manifest["quick_check"] = "corruption detected: *** in database main ***"
+        return manifest
+
+    monkeypatch.setattr(nightly_service_module, "build_snapshot_manifest", corrupted_manifest)
+
+    report = run_nightly_service(config)
+
+    assert report["overall_status"] == "partial"
+    assert "timeline_db_quick_check" in report["failed_required_steps"]
+    assert report["snapshot_manifest"]["latest_published"] is False
+    assert latest_path.read_text(encoding="utf-8") == "OLD-LATEST-BYTES"
+
+
+def test_nightly_service_latest_publish_survives_interruption_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B5 proof 2: if the process dies between writing the temp file and the
+    final os.replace() for latest_customer_timeline_snapshot.json, the
+    previous "latest" must be left exactly as it was -- never a truncated or
+    half-written file at that path -- and no temp file litter remains."""
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config = service_config_from_json(write_service_config(tmp_path))
+    latest_path = tmp_path / "published" / "latest_customer_timeline_snapshot.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_text("OLD-LATEST-BYTES", encoding="utf-8")
+
+    real_replace = nightly_service_module.os.replace
+
+    def flaky_replace(src, dst):
+        if Path(dst) == latest_path:
+            raise OSError("simulated interruption before replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(nightly_service_module.os, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="simulated interruption"):
+        run_nightly_service(config)
+
+    assert latest_path.read_text(encoding="utf-8") == "OLD-LATEST-BYTES"
+    leftover_tmp = [
+        p for p in latest_path.parent.iterdir() if p.name.startswith(f".{latest_path.name}.")
+    ]
+    assert leftover_tmp == [], f"temp file(s) left behind: {leftover_tmp}"
 
 
 def test_launchd_install_scripts_are_dry_run_by_default(tmp_path: Path) -> None:

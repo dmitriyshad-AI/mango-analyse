@@ -625,6 +625,22 @@ class TallantoSnapshotNormalizer:
                 last_seen_at=event_at,
             )
         )
+        amo_contact_id = optional_text(first_value(payload, ("amo_contact_id", "amo_id")))
+        if amo_contact_id and amo_contact_id.isdigit() and int(amo_contact_id) > 0:
+            links.append(
+                IdentityLink(
+                    tenant_id=self.tenant_id,
+                    customer_id=customer.customer_id,
+                    link_type="amo_contact_id",
+                    link_value=amo_contact_id,
+                    source_system=self.source_system,
+                    source_ref=source_ref,
+                    match_class=IdentityMatchClass.STRONG_UNIQUE,
+                    confidence=1.0,
+                    first_seen_at=event_at,
+                    last_seen_at=event_at,
+                )
+            )
         opportunity = CustomerOpportunity(
             tenant_id=self.tenant_id,
             customer_id=customer.customer_id,

@@ -6,7 +6,9 @@ from scripts import build_job_manifest
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+    return subprocess.check_output(
+        ["git", *args], cwd=repo, env=build_job_manifest.clean_git_env(), text=True
+    ).strip()
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -101,3 +103,20 @@ def test_manifest_rejects_absolute_and_parent_paths(tmp_path):
             pass
         else:
             raise AssertionError(f"bad path accepted: {bad}")
+
+
+def test_temporary_repo_ignores_hostile_parent_git_context(tmp_path, monkeypatch):
+    sentinel_root = tmp_path / "sentinel"
+    sentinel_root.mkdir()
+    sentinel = _repo(sentinel_root)
+    sentinel_head = _git(sentinel, "rev-parse", "HEAD")
+    monkeypatch.setenv("GIT_DIR", str(sentinel / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(sentinel))
+
+    isolated_root = tmp_path / "isolated"
+    isolated_root.mkdir()
+    isolated = _repo(isolated_root)
+
+    assert isolated != sentinel
+    assert _git(isolated, "rev-parse", "HEAD")
+    assert _git(sentinel, "rev-parse", "HEAD") == sentinel_head

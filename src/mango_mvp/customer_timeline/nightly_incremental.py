@@ -23,6 +23,7 @@ from mango_mvp.customer_timeline.ids import normalize_key, require_text, stable_
 from mango_mvp.customer_timeline.ingestion import (
     AmoSnapshotNormalizer,
     MangoCallSummaryNormalizer,
+    TallantoSnapshotNormalizer,
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineNormalizer,
@@ -386,6 +387,12 @@ def normalizer_for_source(source: IncrementalSourceConfig) -> TimelineNormalizer
         return MangoCallSummaryNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "mail_archive_stage2":
         return MailArchiveStage2IncrementalNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "tallanto_snapshot":
+        # BLOCK C: reuses the existing TallantoSnapshotNormalizer / import
+        # contract (mango_mvp.customer_timeline.ingestion) -- see
+        # mango_mvp.customer_timeline.tallanto_cards_sync, the real daily
+        # Tallanto Contact sync step that feeds this source kind.
+        return TallantoSnapshotNormalizer(tenant_id=source.tenant_id)
     if source.normalizer == "jsonl":
         return JsonlTimelineNormalizer(source.source_system)
     raise ValueError(f"unsupported incremental normalizer: {source.normalizer}")

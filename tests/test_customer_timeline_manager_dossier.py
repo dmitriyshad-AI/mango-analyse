@@ -4,10 +4,12 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openpyxl import load_workbook
 
+from mango_mvp.customer_timeline import manager_dossier as manager_dossier_module
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     CustomerOpportunity,
@@ -20,14 +22,22 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEventType,
 )
 from mango_mvp.customer_timeline.manager_dossier import (
-    _enrich_owner50_selected_rows,
+    OWNER50_REQUIRED_COLUMNS,
+    OWNER50_CONTROL_COLUMNS,
+    _owner50_event_p0_is_stale_and_resolved,
+    _owner50_family_rows,
     _product_interest_values,
     _season_purchase_matches,
     build_customer_dossier,
+    build_evidence_record,
     build_manager_dossier_workbook,
     build_owner50_family_workbook,
+    classify_family,
+    dedupe_family_payment_rows,
     load_canonical_call_client_texts,
     manager_outreach_eligibility,
+    owner50_action_text,
+    resolve_evidence_source,
 )
 from mango_mvp.customer_timeline.freshness import manager_freshness_gate
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
@@ -108,36 +118,6 @@ def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence
     text = "\n".join(row.text for row in dossier.chronology)
     assert "Списание за занятие: Физика 8 класс" in text
     assert "посетил" not in text.casefold()
-
-
-def test_owner50_counts_only_explicitly_confirmed_attendance(tmp_path: Path) -> None:
-    db = _timeline_db(tmp_path)
-    _seed_customer_with_call_and_opportunity(db, tmp_path)
-    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
-        for suffix, hours, confirmed in (("visit", 1, True), ("no-show", 2, False)):
-            store.upsert_event(
-                TimelineEvent(
-                    tenant_id="foton",
-                    customer_id="customer:1",
-                    event_type=TimelineEventType.TALLANTO_ATTENDANCE,
-                    event_at=NOW + timedelta(hours=hours),
-                    source_system="tallanto_attendance_api",
-                    source_id=f"attendance-{suffix}",
-                    direction=TimelineDirection.SYSTEM,
-                    subject="Физика 8 класс",
-                    summary=suffix,
-                    match_status="strong_unique",
-                    record={"attendance_confirmed": confirmed},
-                    created_at=NOW,
-                )
-            )
-
-    rows = [{"member_ids": ("customer:1",), "email": ""}]
-    with sqlite3.connect(db) as con:
-        con.row_factory = sqlite3.Row
-        _enrich_owner50_selected_rows(con, rows, tenant_id="foton")
-
-    assert rows[0]["attendance"] == f"Последнее подтверждённое посещение: {(NOW + timedelta(hours=1)).isoformat()}"
 
 
 def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
@@ -271,6 +251,20 @@ def test_manager_outreach_eligibility_blocks_safety_risks(tmp_path: Path) -> Non
             as_of=NOW + timedelta(days=1),
         )
         assert eligible["eligible"] is True
+        identity_record = json.loads(
+            con.execute("SELECT record_json FROM customer_identities WHERE customer_id='customer:1'").fetchone()[0]
+        )
+        for alias, expected_brand in (("МФТИ", "unpk"), ("ЦДПО", "foton")):
+            identity_record["metadata"]["brands"] = [alias]
+            con.execute(
+                "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:1'",
+                (json.dumps(identity_record, ensure_ascii=False),),
+            )
+            alias_result = manager_outreach_eligibility(
+                con, tenant_id="foton", customer_id="customer:1", as_of=NOW + timedelta(days=1),
+            )
+            assert "brand_not_exactly_one_known" not in alias_result["reasons"]
+            assert alias_result["brand"] == expected_brand
         con.execute("UPDATE timeline_events SET superseded_by='replacement' WHERE event_id=?", (event_id,))
         superseded = manager_outreach_eligibility(
             con,
@@ -345,7 +339,7 @@ def test_manager_outreach_eligibility_blocks_p0_optout_and_meaningful_outbound(t
                 source_system="mail_archive_stage2",
                 source_id="old-optout",
                 direction=TimelineDirection.INBOUND,
-                summary="Прошу больше не пишите мне.",
+                summary="Прошу больше со мной не связываться.",
                 match_status="strong_unique",
                 created_at=NOW,
             )
@@ -443,6 +437,7 @@ def test_manager_dossier_workbook_stays_under_allowed_root_and_writes_summary(tm
     assert summary["pains_total"] == 1
     assert summary["safety"]["write_crm"] is False
     assert out.exists()
+    assert out.stat().st_mode & 0o777 == 0o600
     summary_path = out.with_suffix(".summary.json")
     assert json.loads(summary_path.read_text(encoding="utf-8"))["customers"] == 1
     wb = load_workbook(out, read_only=True)
@@ -1075,10 +1070,7 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
 @pytest.fixture
 def owner50_workbook(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     db = _timeline_db(tmp_path)
-    _seed_owner50_member(
-        db, tmp_path, family_id="family:shared", customer_id="customer:a",
-        signal_type="deal_stalling", membership_reason="exact_tallanto_parent_name_and_phone_or_email",
-    )
+    _seed_owner50_member(db, tmp_path, family_id="family:shared", customer_id="customer:a", signal_type="deal_stalling")
     _seed_owner50_member(db, tmp_path, family_id="family:shared", customer_id="customer:b", signal_type="callback_due")
     out = tmp_path / ".codex_local" / "owner50.xlsx"
     summary = dict(
@@ -1087,6 +1079,7 @@ def owner50_workbook(tmp_path: Path) -> tuple[Path, dict[str, object]]:
             allowed_root=tmp_path,
             out_xlsx=out,
             as_of=NOW,
+            enforce_freshness=False,
         )
     )
     return out, summary
@@ -1094,57 +1087,26 @@ def owner50_workbook(tmp_path: Path) -> tuple[Path, dict[str, object]]:
 
 def test_owner50_deduplicates_family_and_uses_best_family_signal(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
     out, summary = owner50_workbook
-    rows = list(load_workbook(out, read_only=True)["Кому писать"].iter_rows(values_only=True))
+    assert out.stat().st_mode & 0o777 == 0o600
+    rows = list(load_workbook(out, read_only=True)["READY_50"].iter_rows(values_only=True))
 
     assert summary["families"] == 1
     assert len(rows) == 2
-    columns = {name: index for index, name in enumerate(rows[0])}
-    assert rows[1][columns["family_id"]] == "family:shared"
-    assert rows[1][columns["Сигнал"]] == "callback_due"
-    assert rows[1][columns["Телефон"]] == "+79000000002"
-    assert rows[1][columns["Email"]] == "customer-b@example.com"
-    assert rows[1][columns["Формула ранга"]] == (
-        "tier=0; due=1; fresh_intent=0; specific_offer=1; child_fit=1; payment_history=1"
-    )
-
-
-def test_owner50_offer_column_never_echoes_raw_amo_deal_title(tmp_path: Path) -> None:
-    """БЛОК 7: продукт для Owner50 -- только из принятой KB, не из названия
-    старой сделки AMO. `row["offer"]` (колонка "Актуальное предложение") is a
-    fixed, KB-deflecting string in `_owner50_family_rows`; it must never leak
-    a raw `customer_opportunities.title` (a free-text AMO deal name a
-    manager may have typed months ago, e.g. an expired promo), even though
-    that same title is legitimately shown elsewhere as dated CRM history.
-    """
-    db = _timeline_db(tmp_path)
-    stale_deal_title = "Скидка -50% Новогодняя акция 2024 -- ЗАБРОНИРОВАНО"
-    _seed_owner50_member(
-        db,
-        tmp_path,
-        family_id="family:stale-deal-name",
-        customer_id="customer:z",
-        signal_type="callback_due",
-        deal_title=stale_deal_title,
-    )
-    out = tmp_path / ".codex_local" / "owner50_stale_title.xlsx"
-
-    build_owner50_family_workbook(timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW)
-
-    rows = list(load_workbook(out, read_only=True)["Кому писать"].iter_rows(values_only=True))
-    columns = {name: index for index, name in enumerate(rows[0])}
-    offer = rows[1][columns["Актуальное предложение"]]
-
-    assert stale_deal_title not in offer
-    assert offer == "Уточнить актуальный интерес; затем подобрать продукт из действующей базы знаний."
-    # The raw deal title is legitimate as dated *history*, just not as the offer.
-    assert stale_deal_title in rows[1][columns["Исторический интерес"]]
+    assert rows[1][1] == "family:shared"
+    assert rows[1][9] == "callback_due"
+    assert rows[1][5] == "+79000000002"
+    assert rows[1][6] == "customer-b@example.com"
+    assert rows[1][7] == "Email"
+    assert rows[1][8] == (NOW - timedelta(days=10)).isoformat()
+    assert rows[1][11] == "Проверить историю и написать клиенту."
+    assert rows[1][16] == "tier=0; due=1; fresh_intent=0; specific_offer=1; child_fit=1; payment_history=1"
 
 
 def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
     out, _ = owner50_workbook
     wb = load_workbook(out, read_only=True)
-    families = {row[1] for row in list(wb["Кому писать"].iter_rows(values_only=True))[1:]}
-    evidence = list(wb["Доказательства"].iter_rows(values_only=True))[1:]
+    families = {row[1] for row in list(wb["READY_50"].iter_rows(values_only=True))[1:]}
+    evidence = list(wb["EVIDENCE"].iter_rows(values_only=True))[1:]
 
     assert families
     assert families == {row[0] for row in evidence}
@@ -1153,14 +1115,39 @@ def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Pa
     assert any(str(row[4]).startswith("customer_opportunities:") for row in evidence)
     assert any(str(row[4]).startswith("family_links_v1:") for row in evidence)
     assert any(row[4] == "customer_purchases_v1" for row in evidence)
+    payment = next(row for row in evidence if row[4] == "customer_purchases_v1")
+    assert "customer:a [all_time]" in payment[3]
+    assert "customer:b [all_time]" in payment[3]
+    # требование аудиторов BLOCKED #1 (fail-open доказательств): "Проверяемо" (resolvable)
+    # теперь честно отражает разрешение в known_records, а не просто "поля не пустые" -- у
+    # этой READY-семьи signal/event/offer резолвятся в реальные строки БД.
+    resolvable_kinds = {row[2] for row in evidence if row[8] is True}
+    assert {"signal", "event", "offer"}.issubset(resolvable_kinds)
 
 
-def test_owner50_workbook_has_exactly_three_owner_sheets(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
+def test_owner50_workbook_has_exactly_five_owner_sheets(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
+    """Требование аудиторов BLOCKED #5 (25.07): пять отдельных рабочих листов с литеральными
+    именами READY_50/CANDIDATES/EXCLUDED/EVIDENCE/CONTROL -- заменяет прежние три листа
+    ("Кому писать"/"Доказательства"/"Контроль")."""
     out, summary = owner50_workbook
     wb = load_workbook(out, read_only=True)
 
-    assert wb.sheetnames == ["Кому писать", "Доказательства", "Контроль"]
-    assert summary["sheets"] == ("Кому писать", "Доказательства", "Контроль")
+    assert wb.sheetnames == ["READY_50", "CANDIDATES", "EXCLUDED", "EVIDENCE", "CONTROL"]
+    assert summary["sheets"] == ("READY_50", "CANDIDATES", "EXCLUDED", "EVIDENCE", "CONTROL")
+    assert tuple(row.value for row in wb["READY_50"][1]) == OWNER50_REQUIRED_COLUMNS
+    # требование архитектора #10 (лист кандидатов неполноценный): CANDIDATES/EXCLUDED несут
+    # бренд/контакт/детей/сигнал/действие, не только family_id и причину -- см.
+    # OWNER50_CONTROL_COLUMNS.
+    assert tuple(row.value for row in wb["CANDIDATES"][1]) == OWNER50_CONTROL_COLUMNS
+    assert tuple(row.value for row in wb["EXCLUDED"][1]) == OWNER50_CONTROL_COLUMNS
+    assert summary["required_business_columns"] == OWNER50_REQUIRED_COLUMNS
+    # требование аудиторов BLOCKED #5 (лист CONTROL несёт свежесть/counts/версию базы):
+    # CONTROL -- теперь мета-лист сборки, не построчные причины.
+    control_meta = {row[0]: row[1] for row in wb["CONTROL"].iter_rows(values_only=True, min_row=2) if row[0]}
+    assert control_meta["ready_50"] == summary["families"]
+    assert control_meta["tenant_id"] == "foton"
+    assert "freshness_gate_passed" in control_meta
+    assert "price_axes_catalog_version" in control_meta
 
 
 def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
@@ -1197,6 +1184,105 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         customer_id="customer:e",
         signal_type="deal_stalling",
     )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:optout",
+        customer_id="customer:f",
+        signal_type="client_returned",
+        event_summary="Прошу больше со мной не связываться.",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:ambiguous-event",
+        customer_id="customer:j",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:brand-conflict",
+        customer_id="customer:k",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:superseded",
+        customer_id="customer:l",
+        signal_type="deal_stalling",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:partial-identity",
+        customer_id="customer:m",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:outflow",
+        customer_id="customer:n",
+        signal_type="client_returned",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:test-opportunity",
+        customer_id="customer:s",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:graduate-word",
+        customer_id="customer:v",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:cross-brand-signal",
+        customer_id="customer:w",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:test-signal",
+        customer_id="customer:x",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:risky-signal-text",
+        customer_id="customer:signal-risk",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:cross-brand-event",
+        customer_id="customer:event-brand",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:test-event",
+        customer_id="customer:event-test",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:empty-event",
+        customer_id="customer:empty-event",
+        signal_type="callback_due",
+    )
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
     try:
         store.upsert_event(
@@ -1220,8 +1306,89 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
             "UPDATE family_members_v1 SET membership_status='conflict', confidence='low' WHERE customer_id='customer:d'"
         )
         con.execute(
+            "UPDATE family_links_v1 SET status='ambiguous', confidence='low' WHERE customer_id='customer:d'"
+        )
+        con.execute(
             "UPDATE customer_opportunities SET status='closed', closed_at=? WHERE customer_id='customer:e'",
             ((NOW - timedelta(days=1)).isoformat(),),
+        )
+        con.execute(
+            "UPDATE timeline_events SET match_status='ambiguous' WHERE customer_id='customer:j'"
+        )
+        con.execute(
+            "UPDATE timeline_events SET superseded_by='replacement' WHERE customer_id='customer:l'"
+        )
+        con.execute(
+            "UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer:m'"
+        )
+        con.execute(
+            "UPDATE customer_purchases_v1 SET total_out=1000 WHERE customer_id='customer:n'"
+        )
+        test_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_opportunities WHERE customer_id='customer:s'"
+            ).fetchone()[0]
+        )
+        test_record["metadata"] = {"tags": ["test"]}
+        con.execute(
+            "UPDATE customer_opportunities SET record_json=? WHERE customer_id='customer:s'",
+            (json.dumps(test_record, ensure_ascii=False),),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET canonical_name='Выпускница' WHERE customer_id='customer:v'"
+        )
+        cross_brand_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM derived_signals WHERE customer_id='customer:w'"
+            ).fetchone()[0]
+        )
+        cross_brand_record["recommended_action"] = "Предложить программу УНПК."
+        con.execute(
+            "UPDATE derived_signals SET record_json=? WHERE customer_id='customer:w'",
+            (json.dumps(cross_brand_record, ensure_ascii=False),),
+        )
+        test_signal_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM derived_signals WHERE customer_id='customer:x'"
+            ).fetchone()[0]
+        )
+        test_signal_record["metadata"] = {"tags": ["test"]}
+        con.execute(
+            "UPDATE derived_signals SET record_json=? WHERE customer_id='customer:x'",
+            (json.dumps(test_signal_record, ensure_ascii=False),),
+        )
+        risky_signal_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM derived_signals WHERE customer_id='customer:signal-risk'"
+            ).fetchone()[0]
+        )
+        risky_signal_record["evidence_text"] = "Клиент ждёт обещанный звонок."
+        risky_signal_record["recommended_action"] = "Больше не пишите клиенту."
+        con.execute(
+            "UPDATE derived_signals SET record_json=? WHERE customer_id='customer:signal-risk'",
+            (json.dumps(risky_signal_record, ensure_ascii=False),),
+        )
+        con.execute(
+            "UPDATE timeline_events SET summary='Обсуждали программу УНПК.' "
+            "WHERE customer_id='customer:event-brand'"
+        )
+        con.execute(
+            "UPDATE timeline_events SET summary='Тестовый клиент для проверки импорта.' "
+            "WHERE customer_id='customer:event-test'"
+        )
+        con.execute(
+            "UPDATE timeline_events SET summary='', text_preview='', subject='' "
+            "WHERE customer_id='customer:empty-event'"
+        )
+        brand_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id='customer:k'"
+            ).fetchone()[0]
+        )
+        brand_record["metadata"]["brands"] = ["unpk"]
+        con.execute(
+            "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:k'",
+            (json.dumps(brand_record, ensure_ascii=False),),
         )
         con.commit()
     out = tmp_path / ".codex_local" / "owner50_excluded.xlsx"
@@ -1231,113 +1398,1660 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         allowed_root=tmp_path,
         out_xlsx=out,
         as_of=NOW,
+        enforce_freshness=False,
     )
     wb = load_workbook(out, read_only=True)
-    control = "\n".join(str(row[2]) for row in list(wb["Контроль"].iter_rows(values_only=True))[1:])
+    control_rows = list(wb["EXCLUDED"].iter_rows(values_only=True))[1:]
+    candidate_rows = list(wb["CANDIDATES"].iter_rows(values_only=True))[1:]
+    control = "\n".join(str(row[2]) for row in control_rows)
 
-    assert summary["families"] == 0
-    assert list(wb["Кому писать"].iter_rows(values_only=True))[1:] == []
+    ready_rows = list(wb["READY_50"].iter_rows(values_only=True))[1:]
+    assert summary["families"] == 1
+    assert {row[1] for row in ready_rows} == {"family:risky-signal-text"}
     assert {
         "structured_no_contact",
         "staff_test_system",
         "grade_11_or_graduate",
         "durable_p0_history",
+        "durable_opt_out",
         "active_access_or_learning",
         "family_ambiguous",
-        "active_deal_missing",
+        "child_ambiguous",
+        "brand_ambiguous",
+        "identity_not_strong",
+        "payment_outflow_history",
     }.issubset(
         set(control.replace(",", "").split())
     )
-
-
-@pytest.fixture
-def owner50_universe(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
-    """Two family_members_v1 families: one with an active signal, one with none."""
-    db = _timeline_db(tmp_path)
-    _seed_owner50_member(db, tmp_path, family_id="family:ready", customer_id="customer:ready", signal_type="callback_due")
-    _seed_owner50_member(db, tmp_path, family_id="family:silent", customer_id="customer:silent", signal_type="callback_due")
-    with sqlite3.connect(db) as con:
-        con.execute("DELETE FROM derived_signals WHERE tenant_id='foton' AND customer_id='customer:silent'")
-        con.commit()
-    out = tmp_path / ".codex_local" / "owner50_universe.xlsx"
-    summary = dict(
-        build_owner50_family_workbook(timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW)
-    )
-    return db, out, summary
-
-
-def test_owner50_classifies_every_family_before_applying_limit(
-    owner50_universe: tuple[Path, Path, dict[str, object]],
-) -> None:
-    """Universe = every family_members_v1 family, including ones with no active signal."""
-    db, out, _ = owner50_universe
-    with sqlite3.connect(db) as con:
-        all_families = {
-            str(row[0])
-            for row in con.execute("SELECT DISTINCT family_id FROM family_members_v1 WHERE tenant_id='foton'")
-        }
-    control_families = {
-        row[0]
-        for row in list(load_workbook(out, read_only=True)["Контроль"].iter_rows(values_only=True))[1:]
+    assert ("family:graduate-word", "excluded", "grade_11_or_graduate") in {
+        row[:3] for row in control_rows
     }
+    assert ("family:cross-brand-signal", "excluded", "brand_ambiguous") in {
+        row[:3] for row in control_rows
+    }
+    assert ("family:test-signal", "excluded", "staff_test_system") in {
+        row[:3] for row in control_rows
+    }
+    assert not any(row[0] == "family:risky-signal-text" for row in control_rows), (
+        "manager-authored recommended_action is not a customer P0/opt-out"
+    )
+    assert ("family:cross-brand-event", "excluded", "brand_ambiguous") in {
+        row[:3] for row in control_rows
+    }
+    assert ("family:test-event", "excluded", "staff_test_system") in {
+        row[:3] for row in control_rows
+    }
+    assert ("family:ambiguous-event", "candidate", "signal_evidence_ambiguous") in {row[:3] for row in candidate_rows}
+    assert ("family:superseded", "candidate", "signal_evidence_superseded") in {row[:3] for row in candidate_rows}
+    assert ("family:closed-deal", "candidate", "active_deal_missing") in {row[:3] for row in candidate_rows}
+    assert ("family:empty-event", "candidate", "signal_evidence_text_missing") in {row[:3] for row in candidate_rows}
 
-    assert all_families == {"family:ready", "family:silent"}
-    assert control_families == all_families
 
-
-def test_owner50_candidate_does_not_pad_ready_quota(tmp_path: Path) -> None:
+def test_owner50_bulk_selection_has_constant_query_count(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
-    _seed_owner50_member(db, tmp_path, family_id="family:one", customer_id="customer:one", signal_type="callback_due")
-    _seed_owner50_member(db, tmp_path, family_id="family:two", customer_id="customer:two", signal_type="callback_due")
-    out = tmp_path / ".codex_local" / "owner50_limit.xlsx"
+    for index in range(20):
+        _seed_owner50_member(
+            db,
+            tmp_path,
+            family_id=f"family:{index:02d}",
+            customer_id=f"customer:{index:02d}",
+            signal_type="callback_due",
+        )
+    queries: list[str] = []
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        con.set_trace_callback(
+            lambda sql: queries.append(sql)
+            if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+            else None
+        )
+        candidates, _ = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert len(candidates) == 20
+    assert len(queries) <= 10
+
+
+def test_owner50_signal_budget_ignores_unlinked_signal_noise(tmp_path: Path, monkeypatch) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:linked",
+        customer_id="customer:linked",
+        signal_type="callback_due",
+    )
+    with sqlite3.connect(db) as con:
+        template = con.execute(
+            "SELECT * FROM derived_signals WHERE customer_id='customer:linked'"
+        ).fetchone()
+        placeholders = ",".join("?" for _ in template)
+        for index in range(3):
+            row = list(template)
+            row[0] = f"signal:unlinked:{index}"
+            row[2] = f"customer:unlinked:{index}"
+            row[11] = (NOW + timedelta(days=index + 1)).isoformat()
+            con.execute(f"INSERT INTO derived_signals VALUES ({placeholders})", row)
+        con.commit()
+        monkeypatch.setattr(manager_dossier_module, "OWNER50_SIGNAL_SCAN_LIMIT", 1)
+        con.row_factory = sqlite3.Row
+        candidates, _ = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert [row["family_id"] for row in candidates] == ["family:linked"]
+
+
+def test_owner50_accepts_only_evidence_backed_brand_child_and_channels(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:child-brand",
+        customer_id="customer:g",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:offer-grade",
+        customer_id="customer:h",
+        signal_type="client_returned",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:max-channel",
+        customer_id="customer:i",
+        signal_type="deal_stalling",
+        # deal_stalling НЕ входит в OWNER50_PRODUCT_OPTIONAL_SIGNALS -- продукт решает
+        # READY/CANDIDATE. Требование архитектора #10 (по итогам ревью 25.07): без явных
+        # маркеров формата/периода в тексте продукт больше не резолвится догадкой.
+        offer_title="Курс математики 8 класс, онлайн, годовой курс",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:active-foreign-offer",
+        customer_id="customer:r",
+        signal_type="callback_due",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer:h",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amo",
+                source_id="closed-unpk",
+                title="UNPK 11 класс",
+                status="closed",
+                opened_at=NOW - timedelta(days=100),
+                closed_at=NOW - timedelta(days=90),
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        raw = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id='customer:g'"
+            ).fetchone()[0]
+        )
+        raw["metadata"]["brands"] = ["Фотон"]
+        con.execute(
+            "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:g'",
+            (json.dumps(raw, ensure_ascii=False),),
+        )
+        con.execute("DELETE FROM family_links_v1 WHERE customer_id='customer:h'")
+        con.execute(
+            "UPDATE timeline_events SET event_type='channel_message', source_system='wappi_max' "
+            "WHERE customer_id='customer:i'"
+        )
+        foreign_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_opportunities WHERE customer_id='customer:r'"
+            ).fetchone()[0]
+        )
+        foreign_record["product_context"] = {"products_of_interest": ["УНПК 8 класс"]}
+        con.execute(
+            "UPDATE customer_opportunities SET title='УНПК 8 класс', record_json=? WHERE customer_id='customer:r'",
+            (json.dumps(foreign_record, ensure_ascii=False),),
+        )
+        con.commit()
+    out = tmp_path / ".codex_local" / "owner50_fallbacks.xlsx"
 
     summary = build_owner50_family_workbook(
-        timeline_db=db, allowed_root=tmp_path, out_xlsx=out, limit=1, as_of=NOW,
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        as_of=NOW,
+        enforce_freshness=False,
+    )
+    rows = {
+        row[1]: row
+        for row in list(load_workbook(out, read_only=True)["READY_50"].iter_rows(values_only=True))[1:]
+    }
+
+    assert summary["families"] == 2
+    assert rows["family:child-brand"][2] == "foton"
+    assert "family:offer-grade" not in rows
+    assert rows["family:max-channel"][7] == "MAX"
+    evidence = list(load_workbook(out, read_only=True)["EVIDENCE"].iter_rows(values_only=True))[1:]
+    assert not any(row[0] == "family:offer-grade" and row[2] == "child" for row in evidence)
+    control = list(load_workbook(out, read_only=True)["EXCLUDED"].iter_rows(values_only=True))[1:]
+    candidate_rows = list(load_workbook(out, read_only=True)["CANDIDATES"].iter_rows(values_only=True))[1:]
+    assert any(row[:3] == ("family:active-foreign-offer", "excluded", "brand_ambiguous") for row in control)
+    assert any(row[:3] == ("family:offer-grade", "candidate", "target_child_unproven") for row in candidate_rows)
+
+
+def test_owner50_never_substitutes_another_family_member_contact(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:contact",
+        customer_id="customer:o",
+        signal_type="client_returned",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:contact",
+        customer_id="customer:p",
+        signal_type="callback_due",
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "UPDATE customer_identities SET primary_phone='', primary_email='' WHERE customer_id='customer:o'"
+        )
+        con.execute("DELETE FROM derived_signals WHERE customer_id='customer:p'")
+        con.commit()
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert candidates == []
+    assert ("family:contact", "excluded", "contact_missing", "У уверенного члена семьи нет телефона или email") in {
+        row[:4] for row in control
+    }
+
+
+def test_owner50_rejects_bad_signal_evidence_without_family_fallback(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:no-fallback",
+        customer_id="customer:t",
+        signal_type="deal_stalling",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:no-fallback",
+        customer_id="customer:u",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:no-fallback",
+        customer_id="customer:ambig",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:no-fallback",
+        customer_id="customer:missing",
+        signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:season-foreign",
+        customer_id="customer:y",
+        signal_type="season_return_candidate",
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        con.execute(
+            "UPDATE timeline_events SET superseded_by='replacement', summary='Хочу возврат денег.' "
+            "WHERE customer_id='customer:u'"
+        )
+        con.execute(
+            "UPDATE timeline_events SET match_status='ambiguous' WHERE customer_id='customer:ambig'"
+        )
+        missing_record = json.loads(
+            con.execute(
+                "SELECT record_json FROM derived_signals WHERE customer_id='customer:missing'"
+            ).fetchone()[0]
+        )
+        missing_record.pop("event_id", None)
+        con.execute(
+            "UPDATE derived_signals SET event_id='', record_json=? WHERE customer_id='customer:missing'",
+            (json.dumps(missing_record, ensure_ascii=False),),
+        )
+        con.execute(
+            "UPDATE derived_signals SET event_id='foreign-event' WHERE customer_id='customer:y'"
+        )
+        con.commit()
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert candidates == []
+    assert any(row[:3] == ("family:no-fallback", "excluded", "durable_p0_history") for row in control)
+    assert any(row[:3] == ("family:season-foreign", "candidate", "signal_evidence_not_owned") for row in control)
+
+
+def test_owner50_deal_signal_requires_its_linked_active_deal(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:linked-deal",
+        customer_id="customer:z",
+        signal_type="deal_stalling",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_opportunity(
+            CustomerOpportunity(
+                tenant_id="foton",
+                customer_id="customer:z",
+                opportunity_type=OpportunityType.AMO_DEAL,
+                source_system="amo",
+                source_id="another-active-deal",
+                title="Другой активный курс 8 класс",
+                status="active",
+                opened_at=NOW - timedelta(days=2),
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        linked_id = con.execute(
+            "SELECT opportunity_id FROM derived_signals WHERE customer_id='customer:z'"
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE customer_opportunities SET status='closed', closed_at=? WHERE opportunity_id=?",
+            ((NOW - timedelta(days=1)).isoformat(), linked_id),
+        )
+        con.commit()
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert candidates == []
+    assert any(row[:3] == ("family:linked-deal", "candidate", "active_deal_missing") for row in control)
+
+
+def test_owner50_fails_closed_when_scan_budget_is_exceeded(tmp_path: Path, monkeypatch) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db,
+        tmp_path,
+        family_id="family:event-budget",
+        customer_id="customer:q",
+        signal_type="callback_due",
+    )
+    event_limit = manager_dossier_module.OWNER50_EVENT_SCAN_LIMIT
+    monkeypatch.setattr(manager_dossier_module, "OWNER50_EVENT_SCAN_LIMIT", 0)
+
+    with sqlite3.connect(db) as con, pytest.raises(RuntimeError, match="event budget exceeded"):
+        con.row_factory = sqlite3.Row
+        _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+    monkeypatch.setattr(manager_dossier_module, "OWNER50_EVENT_SCAN_LIMIT", event_limit)
+    monkeypatch.setattr(manager_dossier_module, "OWNER50_RELATED_SCAN_LIMIT", 0)
+    with sqlite3.connect(db) as con, pytest.raises(RuntimeError, match="members budget exceeded"):
+        con.row_factory = sqlite3.Row
+        _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+
+def test_owner50_caps_at_50_without_padding(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    for index in range(52):
+        _seed_owner50_member(
+            db,
+            tmp_path,
+            family_id=f"family:cap:{index:02d}",
+            customer_id=f"customer:cap:{index:02d}",
+            signal_type="callback_due",
+        )
+    out = tmp_path / ".codex_local" / "owner50_cap.xlsx"
+
+    summary = build_owner50_family_workbook(
+        timeline_db=db,
+        allowed_root=tmp_path,
+        out_xlsx=out,
+        limit=999,
+        as_of=NOW,
+        enforce_freshness=False,
     )
     wb = load_workbook(out, read_only=True)
-    ready_rows = list(wb["Кому писать"].iter_rows(values_only=True))[1:]
-    control_status = {row[0]: row[1] for row in list(wb["Контроль"].iter_rows(values_only=True))[1:]}
+    # требование аудиторов BLOCKED #5: READY, не попавшие в топ-50 ("outside_limit"), теперь
+    # живут на листе CANDIDATES (они не исключены -- им просто не хватило места).
+    candidates_rows = list(wb["CANDIDATES"].iter_rows(values_only=True))[1:]
 
-    assert summary["families"] == 1
-    assert summary["candidate_families"] == 2
-    assert len(ready_rows) == 1
-    assert control_status == {"family:one": "selected", "family:two": "outside_limit"}
-
-
-def test_owner50_excluded_family_has_honest_reason(
-    owner50_universe: tuple[Path, Path, dict[str, object]],
-) -> None:
-    _, out, _ = owner50_universe
-    control = {
-        row[0]: (row[1], row[2])
-        for row in list(load_workbook(out, read_only=True)["Контроль"].iter_rows(values_only=True))[1:]
-    }
-
-    status, reason = control["family:silent"]
-    assert status == "excluded"
-    assert reason == "no_active_outreach_signal"
+    assert summary["candidate_families"] == 52
+    assert summary["families"] == 50
+    assert summary["effective_limit"] == 50
+    assert summary["ready_total"] == 52
+    assert summary["ready_audit_population_complete"] is False
+    assert sum(row[1] == "outside_limit" for row in candidates_rows) == 2
+    control_meta = {row[0]: row[1] for row in wb["CONTROL"].iter_rows(values_only=True, min_row=2) if row[0]}
+    assert control_meta["ready_total"] == 52
+    assert control_meta["ready_audit_population_complete"] is False
 
 
-def test_owner50_evidence_sources_resolve_to_real_rows(
-    owner50_universe: tuple[Path, Path, dict[str, object]],
-) -> None:
-    db, out, _ = owner50_universe
-    evidence = list(load_workbook(out, read_only=True)["Доказательства"].iter_rows(values_only=True))[1:]
-    resolvers = {
-        "derived_signals": "SELECT created_at FROM derived_signals WHERE tenant_id='foton' AND signal_id=?",
-        "timeline_events": "SELECT event_at, source_system FROM timeline_events WHERE tenant_id='foton' AND event_id=?",
-        "customer_opportunities": "SELECT opened_at FROM customer_opportunities WHERE tenant_id='foton' AND opportunity_id=?",
-        "family_links_v1": "SELECT created_at FROM family_links_v1 WHERE tenant_id='foton' AND family_id=?",
-    }
-    assert evidence
+def test_owner50_family_rows_wires_classify_family_into_ready_candidate_excluded(tmp_path: Path) -> None:
+    """Требование архитектора #1/#9: classify_family подключён в финал _owner50_family_rows.
+    READY идёт в candidates (лист READY_50); CANDIDATE никогда не туда -- только в control со
+    статусом "candidate" (лист CANDIDATES); EXCLUDED -- в control со статусом "excluded" (лист
+    EXCLUDED). Все три категории видны раздельно на выходе одной и той же функции, а не только
+    у изолированного classify_family."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:ready", customer_id="customer:ready", signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:stale", customer_id="customer:stale", signal_type="callback_due",
+    )
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:blocked", customer_id="customer:blocked", signal_type="callback_due",
+        event_summary="Хочу возврат денег за курс.",
+    )
     with sqlite3.connect(db) as con:
-        for _family_id, _rank, _kind, _text, source in evidence:
-            if source == "customer_purchases_v1":
-                continue
-            table, _, ref_id = source.partition(":")
-            resolved = con.execute(resolvers[table], (ref_id,)).fetchone()
-            assert resolved is not None, f"unresolved evidence source: {source}"
-            assert all(value for value in resolved), f"evidence source missing date/system: {source}"
+        con.execute(
+            "UPDATE derived_signals SET created_at=? WHERE customer_id='customer:stale'",
+            ((NOW - timedelta(days=45)).isoformat(),),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert [row["family_id"] for row in candidates] == ["family:ready"]
+    assert candidates[0]["status"] == "READY"
+    assert candidates[0]["action_text"]
+    control_index = {(family_id, status, code) for family_id, status, code, *_rest in control}
+    assert ("family:stale", "candidate", "stale_signal") in control_index
+    assert ("family:blocked", "excluded", "durable_p0_history") in control_index
+    assert "family:stale" not in {row["family_id"] for row in candidates}
+
+    out = tmp_path / ".codex_local" / "owner50_tiers.xlsx"
+    summary = build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW, enforce_freshness=False,
+    )
+    assert summary["families"] == 1
+    assert summary["candidate_queue_families"] == 1
+    assert summary["excluded_families"] == 1
+    wb = load_workbook(out, read_only=True)
+    ready_rows = list(wb["READY_50"].iter_rows(values_only=True))[1:]
+    assert {row[1] for row in ready_rows} == {"family:ready"}
+    # требование архитектора #8: последняя колонка -- готовая фраза "действие + кому + срок".
+    assert ready_rows[0][-1]
+    candidate_rows = list(wb["CANDIDATES"].iter_rows(values_only=True))[1:]
+    excluded_rows = list(wb["EXCLUDED"].iter_rows(values_only=True))[1:]
+    assert any(row[:3] == ("family:stale", "candidate", "stale_signal") for row in candidate_rows)
+    assert any(row[:3] == ("family:blocked", "excluded", "durable_p0_history") for row in excluded_rows)
+    # требование архитектора #9: доказательства несут дату+source_system+event_id отдельно.
+    evidence_rows = list(wb["EVIDENCE"].iter_rows(values_only=True))[1:]
+    signal_evidence = next(row for row in evidence_rows if row[2] == "signal")
+    assert signal_evidence[6] == "mail_archive_stage2"  # source_system
+    assert signal_evidence[7]  # event_id непустой
+    assert signal_evidence[5]  # дата непустая
+
+
+def test_owner50_signal_expiry_is_not_manager_due_date(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:no-manager-due", customer_id="customer:no-manager-due",
+        signal_type="callback_due",
+    )
+    with sqlite3.connect(db) as con:
+        signal_row = con.execute(
+            "SELECT signal_id, record_json, expires_at FROM derived_signals WHERE customer_id='customer:no-manager-due'",
+        ).fetchone()
+        record = json.loads(signal_row[1])
+        record.pop("follow_up_due_at", None)
+        con.execute(
+            "UPDATE derived_signals SET record_json=? WHERE signal_id=?",
+            (json.dumps(record, ensure_ascii=False), signal_row[0]),
+        )
+        assert signal_row[2]  # срок жизни сигнала остался, но это не deadline менеджера
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:no-manager-due" not in {row["family_id"] for row in candidates}
+    assert ("family:no-manager-due", "candidate", "next_step_missing_or_vague") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_stale_freshness_gate_stops_entire_build_no_workbook_written(tmp_path: Path) -> None:
+    """Требование аудиторов BLOCKED #3 (25.07): непройденный manager_freshness_gate должен
+    остановить ВЕСЬ build (raise), а не молча пометить каждую семью EXCLUDED и всё равно
+    записать workbook. Эта БД не содержит ingestion_cursors/ingestion_runs -- гейт заведомо не
+    проходит; enforce_freshness намеренно НЕ передан False (прод-дефолт True)."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:would-be-ready", customer_id="customer:would-be-ready",
+        signal_type="callback_due",
+    )
+    out = tmp_path / ".codex_local" / "owner50_stale.xlsx"
+
+    with pytest.raises(RuntimeError, match="freshness gate failed"):
+        build_owner50_family_workbook(
+            timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW,
+        )
+
+    assert not out.exists()
+
+
+def test_owner50_family_without_any_signal_is_classified_not_silently_dropped(tmp_path: Path) -> None:
+    """Требование аудиторов BLOCKED #4 (25.07): семья, у которой нет НИ ОДНОГО активного
+    канонического сигнала (никогда не проходила старый SQL-предфильтр по derived_signals),
+    раньше не попадала НИКУДА -- ни в candidates, ни в control, ни на один лист. Теперь она
+    обязана получить статус (candidate с кодом no_active_outreach_signal, как решил бы
+    classify_family для одинокого Г5) -- каждая семья тенанта классифицируется."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:has-signal", customer_id="customer:has-signal",
+        signal_type="callback_due",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id="customer:no-signal", identity_status=IdentityStatus.STRONG,
+                display_name="Родитель без сигнала", primary_phone="+79000007777",
+                primary_email="no-signal@example.com", source_ref="amocrm:contact:customer:no-signal",
+                metadata={"brands": ["foton"]},
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        # family_links_v1 уже создана предыдущим _seed_owner50_member (CREATE TABLE IF NOT
+        # EXISTS) -- добавляем ещё одну семью БЕЗ единого derived_signals, но с чистым
+        # брендом/классом 1-10, чтобы дойти именно до ветки "нет сигнала", а не отвалиться
+        # раньше по другой (не связанной с этим тестом) причине.
+        con.execute(
+            "INSERT OR REPLACE INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:no-signal", "customer:no-signal", "confident", "high", "test",
+                NOW.isoformat(), NOW.isoformat(), "hash-no-signal", "{}",
+            ),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:no-signal", "customer:no-signal", "child:no-signal", "Ребёнок без сигнала", "[]",
+                json.dumps(["7"]), json.dumps(["математика"], ensure_ascii=False), "foton", "confident", "high",
+                "test", "[]", 1, NOW.isoformat(), "hash-child-no-signal", "{}",
+            ),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:has-signal" in {row["family_id"] for row in candidates}
+    assert "family:no-signal" not in {row["family_id"] for row in candidates}
+    # раньше family:no-signal не появлялась бы вообще нигде в control -- молча исчезала.
+    assert ("family:no-signal", "candidate", "no_active_outreach_signal") in {row[:3] for row in control}
+
+
+def _synthetic_price_axes_catalog(*, brand: str = "foton", grade_min: int = 5, grade_max: int = 11) -> dict[str, object]:
+    return {
+        "entries": [
+            {
+                "entry_id": f"synthetic:{brand}:{grade_min}-{grade_max}:online:year",
+                "brand": brand,
+                "format": "online",
+                "period": "year",
+                "grade_min": grade_min,
+                "grade_max": grade_max,
+                "grade_values": list(range(grade_min, grade_max + 1)),
+                "product_code": "regular_course",
+                "tariff_id": "",
+                "schedule": "",
+                "subjects": ["math", "physics", "informatics", "russian", "ai"],
+                "amount": 47250,
+                "client_safe_text": "Тест: онлайн-курс, годовой.",
+            }
+        ]
+    }
+
+
+def test_owner50_product_confirmed_via_injected_catalog_entry_id_only(tmp_path: Path) -> None:
+    """Требование архитектора #3: продукт подтверждается ТОЛЬКО по точному entry_id
+    действующего price_axes_catalog (передан явно через параметр -- тест не зависит от
+    содержимого реального продуктового каталога на диске). deal_stalling НЕ входит в
+    OWNER50_PRODUCT_OPTIONAL_SIGNALS -- продукт напрямую решает READY vs CANDIDATE, а
+    неизвестный класс (нет entry в каталоге) -- CANDIDATE, никогда не выдуманный READY."""
+    db = _timeline_db(tmp_path)
+    # требование архитектора #10 (по итогам ревью 25.07): продукт резолвится ТОЛЬКО по
+    # формату/периоду, явно упомянутым в тексте предложения -- offer_title обязан нести
+    # реальные маркеры ("онлайн"/"годовой"), догадка по каноническим комбинациям убрана.
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:in-catalog", customer_id="customer:in-catalog",
+        signal_type="deal_stalling", grade="8", offer_title="Курс математики, 8 класс, онлайн, годовой курс",
+    )
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:out-of-catalog", customer_id="customer:out-of-catalog",
+        signal_type="deal_stalling", grade="3", offer_title="Курс математики, 3 класс, онлайн, годовой курс",
+    )
+    catalog = _synthetic_price_axes_catalog(brand="foton", grade_min=5, grade_max=11)
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW, price_axes_catalog=catalog)
+
+    ready_ids = {row["family_id"] for row in candidates}
+    assert "family:in-catalog" in ready_ids
+    ready_row = next(row for row in candidates if row["family_id"] == "family:in-catalog")
+    assert ready_row["product_entry_id"] == "synthetic:foton:5-11:online:year"
+    assert "family:out-of-catalog" not in ready_ids
+    assert ("family:out-of-catalog", "candidate", "product_not_confirmed_by_kb") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_does_not_retarget_an_older_child_signal_to_a_younger_sibling(tmp_path: Path) -> None:
+    """Смешанная семья "11 + младший" не исключается, но сигнал старшего ребёнка
+    нельзя молча переадресовать младшему только потому, что ему подходит продукт."""
+    db = _timeline_db(tmp_path)
+    # offer_title несёт явные маркеры формата/периода ("онлайн"/"годовой") -- требование
+    # архитектора #10: продукт больше не резолвится догадкой по каноническим комбинациям.
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:mixed", customer_id="customer:mixed-a",
+        signal_type="deal_stalling", grade="11",
+        offer_title="Курс математики, онлайн, годовой курс",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id="customer:mixed-b", identity_status=IdentityStatus.STRONG,
+                display_name="Родитель customer:mixed-b", primary_phone="+79000009999",
+                primary_email="mixed-b@example.com", source_ref="amocrm:contact:customer:mixed-b",
+                metadata={"brands": ["foton"]},
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:mixed", "customer:mixed-b", "confident", "high", "test",
+                NOW.isoformat(), NOW.isoformat(), "hash-mixed-b", "{}",
+            ),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:mixed", "customer:mixed-b", "child:mixed-b", "Младший", "[]",
+                json.dumps(["6"]), json.dumps(["математика"], ensure_ascii=False), "foton", "confident", "high",
+                "test", "[]", 1, NOW.isoformat(), "hash-child-mixed-b", "{}",
+            ),
+        )
+        con.commit()
+
+    catalog = {
+        "entries": [
+            {
+                "entry_id": "grade-6-only", "brand": "foton", "format": "online", "period": "year",
+                "grade_min": 6, "grade_max": 6, "grade_values": [6], "product_code": "regular_course",
+                "tariff_id": "", "schedule": "", "subjects": ["math"], "amount": 10000,
+                "client_safe_text": "6 класс",
+            },
+            {
+                "entry_id": "grade-11-only", "brand": "foton", "format": "online", "period": "year",
+                "grade_min": 11, "grade_max": 11, "grade_values": [11], "product_code": "regular_course",
+                "tariff_id": "", "schedule": "", "subjects": ["math"], "amount": 20000,
+                "client_safe_text": "11 класс",
+            },
+        ]
+    }
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW, price_axes_catalog=catalog)
+
+    assert not any(row[:3] == ("family:mixed", "excluded", "grade_11_or_graduate") for row in control)
+    assert "family:mixed" not in {row["family_id"] for row in candidates}
+    assert ("family:mixed", "candidate", "target_child_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_ready_offer_uses_kb_text_and_carries_target_child(tmp_path: Path) -> None:
+    """E2 (26.07): для READY с подтверждённым продуктом "Предложение" -- ТОЛЬКО текст выбранного
+    price_axes_catalog entry (client_safe_text), никогда старое название сделки AMO (то же
+    название есть в offers, но не в "Предложение"); строка несёт конкретного адресата
+    (target_child_key/name/grade). E4 (26.07): evidence "product"/"child"/"payment" резолвятся
+    в реальные записи (раньше все три были структурно нерезолвируемыми)."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:kb-offer", customer_id="customer:kb-offer",
+        signal_type="deal_stalling", grade="8",
+        offer_title="Курс математики, 8 класс, онлайн, годовой курс",
+    )
+    catalog = _synthetic_price_axes_catalog(brand="foton", grade_min=5, grade_max=11)
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW, price_axes_catalog=catalog)
+
+    assert "family:kb-offer" in {row["family_id"] for row in candidates}
+    ready_row = next(row for row in candidates if row["family_id"] == "family:kb-offer")
+    assert ready_row["offer"] == "Тест: онлайн-курс, годовой."
+    assert ready_row["offer"] != "Курс математики, 8 класс, онлайн, годовой курс"
+    assert ready_row["target_child_key"] == "child:customer:kb-offer"
+    assert ready_row["target_child_name"] == "Ребёнок customer:kb-offer"
+    assert ready_row["target_child_grade"] == "8"
+
+    product_evidence = next(item for item in ready_row["evidence"] if item["kind"] == "product")
+    assert product_evidence["resolvable"] is True
+    assert product_evidence["event_id"] == ready_row["product_entry_id"]
+    child_evidence = next(item for item in ready_row["evidence"] if item["kind"] == "child")
+    assert child_evidence["resolvable"] is True
+    payment_evidence = next(item for item in ready_row["evidence"] if item["kind"] == "payment")
+    assert payment_evidence["resolvable"] is True  # ровно один вклад (один customer, all_time)
+
+
+def test_owner50_two_different_children_with_confirmed_grades_is_target_child_ambiguous(tmp_path: Path) -> None:
+    """E2 (26.07): семья с ДВУМЯ РАЗНЫМИ верифицированными не-выпускниками, у каждого класс
+    известен однозначно (по одному значению в истории у каждого) -- но продукт всё равно нельзя
+    адресовать никому из них без доказательства, кому именно. deal_stalling НЕ входит в
+    OWNER50_PRODUCT_OPTIONAL_SIGNALS -- продукт обязателен -> CANDIDATE "target_child_ambiguous",
+    а не молчаливое "берём младшего" (это и есть отменённая эвристика "минимум из истории",
+    только на уровне выбора МЕЖДУ детьми, а не внутри истории одного ребёнка)."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:two-kids", customer_id="customer:two-kids",
+        signal_type="deal_stalling", grade="5",
+        offer_title="Курс математики, онлайн, годовой курс",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:two-kids", "customer:two-kids", "child:two-kids-b", "Второй ребёнок", "[]",
+                json.dumps(["9"]), json.dumps(["математика"], ensure_ascii=False), "foton", "confident", "high",
+                "test", "[]", 1, NOW.isoformat(), "hash-child-two-kids-b", "{}",
+            ),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(
+            con, tenant_id="foton", as_of=NOW,
+            price_axes_catalog=_synthetic_price_axes_catalog(brand="foton", grade_min=1, grade_max=11),
+        )
+
+    assert "family:two-kids" not in {row["family_id"] for row in candidates}
+    assert ("family:two-kids", "candidate", "target_child_ambiguous") in {row[:3] for row in control}
+
+
+def test_owner50_single_child_conflicting_grade_history_falls_back_to_offer_not_minimum(tmp_path: Path) -> None:
+    """E2 (26.07): один ребёнок упомянут в истории то с классом 5, то с классом 8 (grades_json --
+    множество БЕЗ дат, family_graph.py только добавляет в set) -- запрещённая догадка "минимум
+    из истории" выбрала бы grade-5. Правильно: класс этого ребёнка неизвестен (два разных
+    значения), продукт резолвится по классу, явно названному в тексте предложения (8-й), адресат
+    (target_child) остаётся пустым (не выдумываем, КАКОЙ это ребёнок)."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:grade-history", customer_id="customer:grade-history",
+        signal_type="deal_stalling", grade="5",
+        offer_title="Курс математики, 8 класс, онлайн, годовой курс",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET grades_json=? WHERE customer_id='customer:grade-history'",
+            (json.dumps(["5", "8"]),),
+        )
+        con.commit()
+    catalog = {
+        "entries": [
+            {
+                "entry_id": "grade-5-only", "brand": "foton", "format": "online", "period": "year",
+                "grade_min": 5, "grade_max": 5, "grade_values": [5], "product_code": "regular_course",
+                "tariff_id": "", "schedule": "", "subjects": ["math"], "amount": 10000,
+                "client_safe_text": "5 класс",
+            },
+            {
+                "entry_id": "grade-8-only", "brand": "foton", "format": "online", "period": "year",
+                "grade_min": 8, "grade_max": 8, "grade_values": [8], "product_code": "regular_course",
+                "tariff_id": "", "schedule": "", "subjects": ["math"], "amount": 15000,
+                "client_safe_text": "8 класс",
+            },
+        ]
+    }
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW, price_axes_catalog=catalog)
+
+    assert "family:grade-history" not in {row["family_id"] for row in candidates}
+    assert ("family:grade-history", "candidate", "target_child_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_brand_unproven_reaches_candidate_not_excluded_via_full_workbook(tmp_path: Path) -> None:
+    """E1 (26.07): семья без единого распознанного бренда обязана
+    получить CANDIDATE "brand_unproven" (Г2: 0 брендов -> CANDIDATE, не EXCLUDED). Раньше рабочий
+    SQL-путь (_owner50_family_rows) сам жёстко исключал такую семью ДО того, как classify_family
+    вообще её видел. Этот тест идёт через ПОЛНЫЙ build_owner50_family_workbook (не только
+    classify_family/_owner50_family_rows по отдельности), включая запись в XLSX-листы."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:brand-unproven", customer_id="customer:brand-unproven",
+        signal_type="client_returned",
+    )
+    with sqlite3.connect(db) as con:
+        raw = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id='customer:brand-unproven'"
+            ).fetchone()[0]
+        )
+        raw["metadata"]["brands"] = ["неизвестный бренд"]
+        con.execute(
+            "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:brand-unproven'",
+            (json.dumps(raw, ensure_ascii=False),),
+        )
+        con.execute(
+            "UPDATE family_links_v1 SET brand='неизвестный бренд' WHERE customer_id='customer:brand-unproven'"
+        )
+        con.commit()
+    out = tmp_path / ".codex_local" / "owner50_brand_unproven.xlsx"
+
+    summary = build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW, enforce_freshness=False,
+    )
+
+    wb = load_workbook(out, read_only=True)
+    ready_ids = {row[1] for row in list(wb["READY_50"].iter_rows(values_only=True))[1:]}
+    candidate_rows = list(wb["CANDIDATES"].iter_rows(values_only=True))[1:]
+    excluded_rows = list(wb["EXCLUDED"].iter_rows(values_only=True))[1:]
+
+    assert "family:brand-unproven" not in ready_ids
+    assert any(row[0] == "family:brand-unproven" and row[2] == "brand_unproven" for row in candidate_rows)
+    assert not any(row[0] == "family:brand-unproven" for row in excluded_rows)
+    assert summary["candidate_queue_reason_counts"].get("brand_unproven", 0) >= 1
+
+
+def test_owner50_fake_client_name_ochno_dva_predmeta_never_ready(tmp_path: Path) -> None:
+    """E5 (26.07), синтетическая регрессия владельца #1: "очно два предмета" читается как
+    название сделки/шага, не как имя человека. READY требует структурного person-contact origin
+    (стабильный AMO-контакт или Tallanto person ID) -- проверка идёт по структурному
+    record.source_ref, а не по смыслу текста display_name (никакого нового regex понимания)."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:fake-name-1", customer_id="customer:fake-name-1",
+        signal_type="client_returned", display_name="очно два предмета", source_ref="",
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:fake-name-1" not in {row["family_id"] for row in candidates}
+    assert ("family:fake-name-1", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_fake_client_name_lvsh_2_chast_never_ready(tmp_path: Path) -> None:
+    """E5 (26.07), синтетическая регрессия владельца #2: "лвш 2 часть"."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:fake-name-2", customer_id="customer:fake-name-2",
+        signal_type="client_returned", display_name="лвш 2 часть", source_ref="",
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:fake-name-2" not in {row["family_id"] for row in candidates}
+    assert ("family:fake-name-2", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_fake_client_name_os_ot_roditelya_never_ready(tmp_path: Path) -> None:
+    """E5 (26.07), синтетическая регрессия владельца #3: "ОС от родителя + предложить 26/27
+    уч.г." -- следующий шаг менеджера, не имя клиента."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:fake-name-3", customer_id="customer:fake-name-3",
+        signal_type="client_returned", display_name="ОС от родителя + предложить 26/27 уч.г.", source_ref="",
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:fake-name-3" not in {row["family_id"] for row in candidates}
+    assert ("family:fake-name-3", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_refund_mention_excludes_regardless_of_age_without_structural_resolution(tmp_path: Path) -> None:
+    """Требование аудиторов BLOCKED #2 (отменяет прежнее требование архитектора #6): без
+    ДОКАЗАННОГО структурного статуса резолюции refund-упоминание исключает семью НАВСЕГДА,
+    независимо от возраста -- эвристика "после жалобы было ещё какое-то событие = закрыто"
+    удалена целиком, потому что она ничего не доказывает о РЕЗУЛЬТАТЕ жалобы."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:old-refund", customer_id="customer:old-refund",
+        signal_type="callback_due", event_summary="Обычная переписка про расписание.",
+    )
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:recent-refund", customer_id="customer:recent-refund",
+        signal_type="callback_due", event_summary="Хочу возврат денег за курс.",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton", customer_id="customer:old-refund",
+                event_type=TimelineEventType.EMAIL_MESSAGE, event_at=NOW - timedelta(days=800),
+                source_system="mail_archive_stage2", source_id="old-refund-event",
+                direction=TimelineDirection.INBOUND, summary="Хочу возврат денег за курс.",
+                match_status="strong_unique", created_at=NOW - timedelta(days=800),
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    ready_ids = {row["family_id"] for row in candidates}
+    # СТАРЫЙ (800 дней) refund БЕЗ структурного статуса резолюции -- ВСЁ РАВНО исключает.
+    assert "family:old-refund" not in ready_ids
+    assert ("family:old-refund", "excluded", "durable_p0_history") in {row[:3] for row in control}
+    assert "family:recent-refund" not in ready_ids
+    assert ("family:recent-refund", "excluded", "durable_p0_history") in {row[:3] for row in control}
+
+
+def test_refund_forgiveness_requires_explicit_structural_resolution_status() -> None:
+    """Требование аудиторов BLOCKED #2: единственное, что может простить refund-упоминание --
+    ЯВНЫЙ структурный статус резолюции на самой записи (record/metadata.resolution_status).
+    Более позднее событие (даже содержательное) -- НЕ доказательство результата жалобы и
+    больше не участвует в решении вообще (эвристика удалена, а не ослаблена)."""
+    old_refund_unresolved = {"event_at": (OWNER50_CLASSIFY_NOW - timedelta(days=800)).isoformat()}
+    meaningful_later_event = {
+        "event_at": (OWNER50_CLASSIFY_NOW - timedelta(days=5)).isoformat(),
+        "event_type": "email_message",
+        "summary": "Клиент уточнил расписание на новый сезон.",
+    }
+
+    # Без структурного статуса -- НЕ прощается, даже с содержательным более поздним событием.
+    still_unresolved = _owner50_event_p0_is_stale_and_resolved(
+        old_refund_unresolved, codes=["refund"],
+        all_events=[old_refund_unresolved, meaningful_later_event], as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert still_unresolved is False
+
+    # Явный структурный статус в record (формат _owner50_event) -- прощает.
+    old_refund_resolved = {
+        "event_at": (OWNER50_CLASSIFY_NOW - timedelta(days=800)).isoformat(),
+        "record": {"resolution_status": "resolved"},
+    }
+    resolved_via_record = _owner50_event_p0_is_stale_and_resolved(
+        old_refund_resolved, codes=["refund"], all_events=[old_refund_resolved], as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert resolved_via_record is True
+
+    # Тот же статус в metadata (альтернативное вложение _owner50_event) -- тоже прощает.
+    old_refund_resolved_metadata = {
+        "event_at": (OWNER50_CLASSIFY_NOW - timedelta(days=800)).isoformat(),
+        "metadata": {"resolution_status": "closed"},
+    }
+    resolved_via_metadata = _owner50_event_p0_is_stale_and_resolved(
+        old_refund_resolved_metadata, codes=["refund"],
+        all_events=[old_refund_resolved_metadata], as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert resolved_via_metadata is True
+
+    # Серьёзные коды (не чистый refund) НЕ прощаются, даже со структурным статусом.
+    legal_with_status = {
+        "event_at": (OWNER50_CLASSIFY_NOW - timedelta(days=800)).isoformat(),
+        "record": {"resolution_status": "resolved"},
+    }
+    legal_never_forgiven = _owner50_event_p0_is_stale_and_resolved(
+        legal_with_status, codes=["refund", "legal"], all_events=[legal_with_status], as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert legal_never_forgiven is False
+
+
+def test_owner50_objection_downgrades_family_to_candidate(tmp_path: Path) -> None:
+    """Требование архитектора #7: свежее возражение (после сигнала-основания, без более
+    свежего клиентского позитива) откатывает семью в CANDIDATE -- customer_objections_v1
+    теперь читается в _owner50_snapshot и доходит до classify_family."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:objecting", customer_id="customer:objecting",
+        signal_type="callback_due",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_objections_v1 (
+              tenant_id TEXT NOT NULL, customer_id TEXT NOT NULL, source_event_id TEXT NOT NULL,
+              source_channel TEXT NOT NULL, objection_type TEXT NOT NULL, quote_preview TEXT NOT NULL,
+              budget_hint_rub INTEGER, price_sensitivity TEXT NOT NULL, extracted_at TEXT NOT NULL,
+              extractor_version TEXT NOT NULL, speaker TEXT NOT NULL DEFAULT 'unknown',
+              direction TEXT NOT NULL DEFAULT 'unknown', confidence TEXT NOT NULL DEFAULT 'low',
+              PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO customer_objections_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "customer:objecting", "event:objection-1", "email", "price",
+                "Дорого, надо подумать.", 30000, "high",
+                (NOW - timedelta(days=1)).isoformat(),
+                "test", "client", "inbound", "high",
+            ),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:objecting" not in {row["family_id"] for row in candidates}
+    assert ("family:objecting", "candidate", "late_objection_no_fresh_positive") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_objection_from_another_family_member_also_downgrades(tmp_path: Path) -> None:
+    """Требование архитектора #7 (ужесточено по итогам ревью 25.07): раньше свежесть
+    возражения проверялась только у ВЛАДЕЛЬЦА сигнала (objections_by_customer.get(customer_id)).
+    Свежий негатив ДРУГОГО родителя той же семьи игнорировался. family["objections"] уже
+    отсортирован DESC по всей семье в _owner50_snapshot -- берём самое свежее возражение
+    ЛЮБОГО члена, не только текущего сигнала."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:two-parents", customer_id="customer:signal-owner",
+        signal_type="callback_due",
+    )
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id="customer:other-parent", identity_status=IdentityStatus.STRONG,
+                display_name="Другой родитель", primary_phone="+79000008888",
+                primary_email="other-parent@example.com", source_ref="amocrm:contact:customer:other-parent",
+                metadata={"brands": ["foton"]},
+            )
+        )
+    finally:
+        store.close()
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:two-parents", "customer:other-parent", "confident", "high", "test",
+                NOW.isoformat(), NOW.isoformat(), "hash-other-parent", "{}",
+            ),
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_objections_v1 (
+              tenant_id TEXT NOT NULL, customer_id TEXT NOT NULL, source_event_id TEXT NOT NULL,
+              source_channel TEXT NOT NULL, objection_type TEXT NOT NULL, quote_preview TEXT NOT NULL,
+              budget_hint_rub INTEGER, price_sensitivity TEXT NOT NULL, extracted_at TEXT NOT NULL,
+              extractor_version TEXT NOT NULL, speaker TEXT NOT NULL DEFAULT 'unknown',
+              direction TEXT NOT NULL DEFAULT 'unknown', confidence TEXT NOT NULL DEFAULT 'low',
+              PRIMARY KEY (tenant_id, customer_id, source_event_id, objection_type)
+            )
+            """
+        )
+        # Возражение принадлежит customer:other-parent -- НЕ владельцу сигнала
+        # (customer:signal-owner) -- и оно свежее оплаты семьи (2026-06-01, см.
+        # _seed_owner50_member), поэтому обязано перекрыть READY в CANDIDATE.
+        con.execute(
+            "INSERT INTO customer_objections_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "customer:other-parent", "event:objection-other", "email", "price",
+                "Слишком дорого, надо подумать.", 30000, "high",
+                (NOW - timedelta(days=1)).isoformat(),
+                "test", "client", "inbound", "high",
+            ),
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:two-parents" not in {row["family_id"] for row in candidates}
+    assert ("family:two-parents", "candidate", "late_objection_no_fresh_positive") in {
+        row[:3] for row in control
+    }
+
+
+# ---------------------------------------------------------------------------
+# classify_family -- ported from codex_artifacts/TEST_owner50_classification.py
+# (исполнитель прогнал 10/10 как отдельный файл против OWNER50_classifier.py; здесь тот же
+# набор проверок против встроенной в manager_dossier.py версии). Синтетика: все имена, id и
+# суммы придуманы для этого файла, реальных ПДн нет. score_family/select_owner50_families
+# (и их тесты) убраны по итогам ревью 25.07 -- параллельный, невызываемый из рабочего пути
+# путь ранжирования (см. rank_key в _owner50_family_rows -- единственная формула в проде).
+#
+# Отличие от исходного артефакта: тест graduate/grade-recompute адаптирован под решение
+# владельца 25.07 -- "все дети выпускники" -> EXCLUDED с кодом "grade_11_or_graduate" (тот
+# же код, что и у SQL-предфильтра), НЕ CANDIDATE, как было в более ранней правке Fable #4.
+# ---------------------------------------------------------------------------
+
+OWNER50_CLASSIFY_NOW = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+
+
+def _owner50_golden_family(**overrides: Any) -> dict[str, Any]:
+    """Минимальная синтетическая семья, гарантированно READY под classify_family.
+    Каждый тест меняет РОВНО то, что проверяет, остальное остаётся золотым эталоном --
+    так падение теста однозначно указывает на конкретное правило."""
+    family: dict[str, Any] = {
+        "family_id": "family:golden",
+        "identity": {
+            "customer_id": "customer:golden",
+            "identity_status": "strong",
+            "display_name": "Родитель Голден",
+        },
+        "brands": {"foton"},
+        "unrecognized_brand_present": False,
+        "family_conflict": False,
+        "family_attribution_by_tag": False,
+        "contact_missing": False,
+        "children": [
+            {"child_key": "child:1", "name": "Аня", "grade_current": 8},
+        ],
+        "payment": {
+            "customer_id": "customer:golden",
+            "total_in": 45000,
+            "total_out": 0,
+            "deals_cnt": 1,
+            "last_purchase_at": OWNER50_CLASSIFY_NOW - timedelta(days=200),
+            "period": "all_time",
+        },
+        "interest_quote": None,
+        "signal": {
+            "signal_type": "callback_due",
+            "created_at": OWNER50_CLASSIFY_NOW - timedelta(days=2),
+            "evidence_text": "Обещали перезвонить по подбору курса 22.07.",
+            "event_id": "evt:signal-golden",
+            "source_system": "amocrm_event",
+        },
+        "next_step": {
+            "action": "Выполнить обещанный звонок от 22.07, срок сегодня-завтра",
+            "due": "2026-07-25",
+        },
+        "product": None,  # callback_due -- продукт не обязателен (OWNER50_PRODUCT_OPTIONAL_SIGNALS)
+        "last_objection": None,
+        "events_by_id": {"evt:signal-golden": {"source_system": "amocrm_event"}},
+        "open_p0": False,
+        "opt_out": False,
+        "identity_conflict": False,
+        "recent_meaningful_outbound_after_evidence": False,
+        "active_recent_manager_work": False,
+        "active_risk_signals": (),
+        "stale_data": False,
+        "last_touch_at": None,
+    }
+    family.update(overrides)
+    return family
+
+
+def test_golden_family_is_actually_ready() -> None:
+    """Санити-проверка самого эталона -- если это падает, остальные тесты ничего не
+    доказывают (потому что каждый из них меняет золотую семью)."""
+    result = classify_family(_owner50_golden_family(), as_of=OWNER50_CLASSIFY_NOW)
+    assert result["status"] == "READY"
+    assert result["reasons"] == ()
+    assert result["missing"] == ()
+
+
+def test_ready_requires_one_proven_child_key() -> None:
+    missing_child = classify_family(
+        _owner50_golden_family(children=[]), as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert missing_child["status"] == "CANDIDATE"
+    assert "target_child_unproven" in missing_child["missing"]
+
+    empty_key = classify_family(
+        _owner50_golden_family(children=[{"child_key": "", "name": "Аня", "grade_current": 8}]),
+        as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert empty_key["status"] == "CANDIDATE"
+    assert "target_child_unproven" in empty_key["missing"]
+
+
+def test_graduate_and_younger_sibling_not_excluded_but_all_graduates_are() -> None:
+    mixed = _owner50_golden_family(
+        children=[
+            {"child_key": "child:older", "name": "Игорь", "grade_current": 11},
+            {"child_key": "child:younger", "name": "Соня", "grade_current": 6},
+        ]
+    )
+    mixed_result = classify_family(mixed, as_of=OWNER50_CLASSIFY_NOW)
+    assert mixed_result["status"] == "READY"
+    assert "grade_11_or_graduate" not in mixed_result["reasons"]
+
+    only_graduate = _owner50_golden_family(
+        children=[{"child_key": "child:only", "name": "Игорь", "grade_current": 11}]
+    )
+    graduate_result = classify_family(only_graduate, as_of=OWNER50_CLASSIFY_NOW)
+    # решение владельца 25.07 (отменяет более раннюю правку Fable #4): все верифицированные
+    # дети -- 11 класс/выпускники -> EXCLUDED, не CANDIDATE. Тот же код, что и в
+    # SQL-предфильтре _owner50_family_rows -- один источник правды на обоих слоях.
+    assert graduate_result["status"] == "EXCLUDED"
+    assert "grade_11_or_graduate" in graduate_result["reasons"]
+
+
+def test_unknown_brand_is_candidate_conflicting_brand_is_excluded() -> None:
+    unknown_brand = _owner50_golden_family(brands=set())
+    unknown_result = classify_family(unknown_brand, as_of=OWNER50_CLASSIFY_NOW)
+    assert unknown_result["status"] == "CANDIDATE"
+    assert "brand_unproven" in unknown_result["missing"]
+
+    unrecognized_result = classify_family(
+        _owner50_golden_family(brands={"неизвестный бренд"}), as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert unrecognized_result["status"] == "CANDIDATE"
+    assert "brand_unproven" in unrecognized_result["missing"]
+
+    conflicting_brand = _owner50_golden_family(brands={"foton", "unpk"})
+    conflict_result = classify_family(conflicting_brand, as_of=OWNER50_CLASSIFY_NOW)
+    assert conflict_result["status"] == "EXCLUDED"
+    assert "brand_ambiguous" in conflict_result["reasons"]
+
+    assert classify_family(_owner50_golden_family(brands={"МФТИ"}), as_of=OWNER50_CLASSIFY_NOW)["status"] == "READY"
+    assert classify_family(_owner50_golden_family(brands={"ЦДПО"}), as_of=OWNER50_CLASSIFY_NOW)["status"] == "READY"
+    alias_conflict = classify_family(
+        _owner50_golden_family(brands={"МФТИ", "ЦДПО"}), as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert alias_conflict["status"] == "EXCLUDED"
+    assert "brand_ambiguous" in alias_conflict["reasons"]
+
+
+def test_objection_before_positive_is_ready_objection_after_is_candidate() -> None:
+    # требование E3 (26.07, отменяет более раннюю версию этого теста): client_returned сам по
+    # себе больше НЕ позитив -- см. test_client_returned_alone_does_not_override_a_late_objection
+    # ниже, который проверяет именно этот гейт. Единственные позитивы, способные перекрыть
+    # возражение, -- подтверждённая оплата или доказанная свежая interest_quote; здесь эталон --
+    # interest_quote, привязанная к реальному событию золотой семьи (events_by_id уже несёт
+    # evt:signal-golden), датирована NOW-2 дня -- как и позитив в исходном сценарии теста.
+    positive_interest = {
+        "text": "Хотим записаться в этом месяце.",
+        "quoted_at": (OWNER50_CLASSIFY_NOW - timedelta(days=2)).isoformat(),
+        "event_id": "evt:signal-golden",
+        "source_system": "amocrm_event",
+        "direction": "inbound",
+    }
+
+    # Возражение NOW-10 дней -- СТАРШЕ позитива.
+    objection_before = _owner50_golden_family(
+        interest_quote=dict(positive_interest),
+        last_objection={"text": "Дорого, надо подумать.", "at": OWNER50_CLASSIFY_NOW - timedelta(days=10)},
+    )
+    before_result = classify_family(objection_before, as_of=OWNER50_CLASSIFY_NOW)
+    assert before_result["status"] == "READY"
+    assert "late_objection_no_fresh_positive" not in before_result["missing"]
+
+    # Возражение NOW-1 день -- СВЕЖЕЕ позитива (интерес NOW-2 дня).
+    objection_after = _owner50_golden_family(
+        interest_quote=dict(positive_interest),
+        last_objection={"text": "Дорого, надо подумать.", "at": OWNER50_CLASSIFY_NOW - timedelta(days=1)},
+    )
+    after_result = classify_family(objection_after, as_of=OWNER50_CLASSIFY_NOW)
+    assert after_result["status"] == "CANDIDATE"
+    assert "late_objection_no_fresh_positive" in after_result["missing"]
+
+
+def test_client_returned_alone_does_not_override_a_late_objection() -> None:
+    """Требование E3 (26.07): client_returned САМ ПО СЕБЕ не доказывает, что клиент передумал
+    после возражения -- клиент мог написать снова и с новой претензией. Сигнал client_returned
+    датирован NOW-1 день (свежее возражения NOW-2 дня), но золотая семья по умолчанию несёт
+    только старую оплату (NOW-200 дней) и никакой interest_quote -- значит настоящего позитива,
+    способного перекрыть возражение, нет вообще, статус обязан остаться CANDIDATE."""
+    family = _owner50_golden_family(
+        signal=dict(_owner50_golden_family()["signal"], signal_type="client_returned",
+                    created_at=OWNER50_CLASSIFY_NOW - timedelta(days=1)),
+        last_objection={"text": "Дорого, надо подумать.", "at": OWNER50_CLASSIFY_NOW - timedelta(days=2)},
+    )
+    result = classify_family(family, as_of=OWNER50_CLASSIFY_NOW)
+    assert result["status"] == "CANDIDATE"
+    assert "late_objection_no_fresh_positive" in result["missing"]
+
+
+def test_stale_positive_signal_never_overrides_a_fresh_objection() -> None:
+    """Требование архитектора #7: callback_due/deal_stalling -- НЕ новый позитив, способный
+    перекрыть возражение (обещание перезвонить и зависшая сделка не доказывают, что клиент
+    передумал). Возражение датировано NOW-5 дней -- строго МЕЖДУ сигналом (NOW-2 дня, позже
+    возражения по времени) и оплатой (NOW-200 дней, раньше возражения). Если бы
+    signal.created_at засчитывался как позитив для этих типов (старое, неверное поведение),
+    возражение оказалось бы "до позитива" и статус остался бы READY; по требованию #7 сигнал
+    НЕ считается, остаётся только старая оплата -- возражение свежее её, поэтому CANDIDATE."""
+    for stale_signal_type in ("callback_due", "deal_stalling"):
+        family = _owner50_golden_family(
+            signal=dict(_owner50_golden_family()["signal"], signal_type=stale_signal_type),
+            last_objection={"text": "Дорого, надо подумать.", "at": OWNER50_CLASSIFY_NOW - timedelta(days=5)},
+        )
+        result = classify_family(family, as_of=OWNER50_CLASSIFY_NOW)
+        assert result["status"] == "CANDIDATE", stale_signal_type
+        assert "late_objection_no_fresh_positive" in result["missing"], stale_signal_type
+
+
+def test_product_must_be_kb_verified_not_from_history() -> None:
+    # deal_stalling НЕ входит в OWNER50_PRODUCT_OPTIONAL_SIGNALS -- продукт решает исход.
+    stalling_signal = {
+        "signal_type": "deal_stalling",
+        "created_at": OWNER50_CLASSIFY_NOW - timedelta(days=1),
+        "evidence_text": "Сделка зависла на этапе счёта.",
+        "event_id": "evt:deal",
+        "source_system": "amocrm_event",
+    }
+    stalling_events = {"evt:deal": {"source_system": "amocrm_event"}}
+    stalling_next_step = {"action": "Вернуться к зависшей сделке: счёт по курсу физики", "due": "2026-07-26"}
+
+    from_history = _owner50_golden_family(
+        signal=dict(stalling_signal),
+        events_by_id=dict(stalling_events),
+        next_step=dict(stalling_next_step),
+        product={
+            "name": "Курс физики (упомянут в переписке 2024 года)",
+            "brand": "foton",
+            "verified": False,
+            "source": "amo_history_text",
+        },
+    )
+    history_result = classify_family(from_history, as_of=OWNER50_CLASSIFY_NOW)
+    assert history_result["status"] == "CANDIDATE"
+    assert history_result["missing"] == ("product_not_confirmed_by_kb",)
+
+    from_kb = _owner50_golden_family(
+        signal=dict(stalling_signal),
+        events_by_id=dict(stalling_events),
+        next_step=dict(stalling_next_step),
+        product={
+            "name": "Курс физики, 8 класс",
+            "brand": "foton",
+            "verified": True,
+            "source": "kb_price_axes_catalog:synthetic:foton:physics:8",
+            "entry_id": "synthetic:foton:physics:8",
+            "seats_available": True,
+        },
+    )
+    kb_result = classify_family(from_kb, as_of=OWNER50_CLASSIFY_NOW)
+    assert kb_result["status"] == "READY"
+    assert kb_result["missing"] == ()
+
+    # Ловушка §5.2 #1: подтверждённый продукт, но мест нет (например ЛВШ лето-2026).
+    sold_out = _owner50_golden_family(
+        signal=dict(stalling_signal),
+        events_by_id=dict(stalling_events),
+        next_step=dict(stalling_next_step),
+        product={
+            "name": "ЛВШ лето-2026",
+            "brand": "foton",
+            "verified": True,
+            "source": "kb_price_axes_catalog",
+            "seats_available": False,
+        },
+    )
+    sold_out_result = classify_family(sold_out, as_of=OWNER50_CLASSIFY_NOW)
+    assert "product_not_confirmed_by_kb" in sold_out_result["missing"]
+
+    # Ловушка §5.2 #2: продукт верифицирован, но бренд не совпадает с брендом семьи.
+    wrong_brand = _owner50_golden_family(
+        signal=dict(stalling_signal),
+        events_by_id=dict(stalling_events),
+        next_step=dict(stalling_next_step),
+        product={
+            "name": "Смена Подлипки (август)",
+            "brand": "unpk",
+            "verified": True,
+            "source": "kb_price_axes_catalog",
+            "seats_available": True,
+        },
+    )
+    wrong_brand_result = classify_family(wrong_brand, as_of=OWNER50_CLASSIFY_NOW)
+    assert "product_not_confirmed_by_kb" in wrong_brand_result["missing"]
+
+
+def test_payments_are_not_double_counted_fact_plus_all_time() -> None:
+    rows = [
+        {
+            "customer_id": "customer:a", "period": "all_time", "money_kind": "fact",
+            "total_in": 50000, "total_out": 0, "deals_cnt": 1, "last_purchase_at": OWNER50_CLASSIFY_NOW - timedelta(days=100),
+        },
+        {
+            "customer_id": "customer:a", "period": "2025-26", "money_kind": "fact",
+            "total_in": 20000, "total_out": 0, "deals_cnt": 1, "last_purchase_at": OWNER50_CLASSIFY_NOW - timedelta(days=400),
+        },
+        {
+            "customer_id": "customer:b", "period": "all_time", "money_kind": "fact",
+            "total_in": 15000, "total_out": 0, "deals_cnt": 1, "last_purchase_at": OWNER50_CLASSIFY_NOW - timedelta(days=50),
+        },
+    ]
+
+    deduped = dedupe_family_payment_rows(rows)
+
+    assert deduped["customer:a"]["total_in"] == 50000  # НЕ 70000 -- all_time уже включает узкий период
+    assert deduped["customer:a"]["period_used"] == "all_time"
+    assert deduped["customer:a"]["rows_used"] == 1
+    assert deduped["customer:b"]["total_in"] == 15000
+
+    # Суммирование ЧЕРЕЗ РАЗНЫХ членов семьи (a + b) -- это НЕ повторный счёт, так уже
+    # считает существующий код (_owner50_family_rows).
+    family_total_in = sum(row["total_in"] for row in deduped.values())
+    assert family_total_in == 65000
+
+
+def test_evidence_resolves_to_its_source_system_and_flags_dangling_refs() -> None:
+    events_by_id = {"evt:call-1": {"source_system": "tallanto_crm_call", "event_at": OWNER50_CLASSIFY_NOW.isoformat()}}
+    known_records = {"evt:call-1": {"source_system": "tallanto_crm_call", "at": OWNER50_CLASSIFY_NOW.isoformat()}}
+
+    # требование аудиторов BLOCKED #1 (fail-open доказательств): resolvable=True ТОЛЬКО когда
+    # event_id реально найден в known_records с совпадающим source_system+датой -- не просто
+    # потому что поля заполнены.
+    record = build_evidence_record(
+        kind="signal", text="Клиент просил перезвонить.", event_id="evt:call-1",
+        source_system="tallanto_crm_call", at=OWNER50_CLASSIFY_NOW, known_records=known_records,
+    )
+    assert record["resolvable"] is True
+    assert resolve_evidence_source("evt:call-1", events_by_id) == "tallanto_crm_call"
+    assert resolve_evidence_source("evt:missing-entirely", events_by_id) is None
+
+    # fail CLOSED: те же полностью заполненные поля, но БЕЗ known_records (нечем проверить) --
+    # НЕ resolvable. Раньше (BLOCKED) это было бы True просто потому, что строки не пустые.
+    unverifiable = build_evidence_record(
+        kind="signal", text="Клиент просил перезвонить.", event_id="evt:call-1",
+        source_system="tallanto_crm_call", at=OWNER50_CLASSIFY_NOW,
+    )
+    assert unverifiable["resolvable"] is False
+    assert "not_found_in_database" in unverifiable["missing_fields"]
+
+    # тот же event_id, но известная запись несёт ДРУГОЙ source_system -- не резолвится.
+    wrong_source = build_evidence_record(
+        kind="signal", text="Клиент просил перезвонить.", event_id="evt:call-1",
+        source_system="amocrm_event", at=OWNER50_CLASSIFY_NOW, known_records=known_records,
+    )
+    assert wrong_source["resolvable"] is False
+
+    # event_id, которого нет в known_records вовсе (выдуманный/повисший) -- не резолвится.
+    fabricated = build_evidence_record(
+        kind="signal", text="Клиент просил перезвонить.", event_id="evt:fabricated",
+        source_system="tallanto_crm_call", at=OWNER50_CLASSIFY_NOW, known_records=known_records,
+    )
+    assert fabricated["resolvable"] is False
+
+    incomplete = build_evidence_record(kind="signal", text="", event_id="", source_system="", at=None)
+    assert incomplete["resolvable"] is False
+    assert set(incomplete["missing_fields"]) == {"event_id", "source_system", "at", "text"}
+
+    # Сигнал семьи ссылается на event_id, которого нет в её собственном индексе событий
+    # ("повисшая" ссылка) -- ГОТОВАЯ строка обязана откатиться в КАНДИДАТ, а не остаться READY.
+    dangling_reference = _owner50_golden_family(events_by_id={"evt:unrelated": {"source_system": "amocrm_event"}})
+    dangling_result = classify_family(dangling_reference, as_of=OWNER50_CLASSIFY_NOW)
+    assert dangling_result["status"] == "CANDIDATE"
+    assert dangling_result["missing"] == ("no_active_outreach_signal",)
+
+
+def test_grade_recompute_from_recorded_grade_and_fixed_year_reaches_graduate_threshold() -> None:
+    # as_of = OWNER50_CLASSIFY_NOW = 2026-07-24 -> текущий учебный год (§5.5, старт 1
+    # сентября) = 2025. Зафиксирован 9-классником 2023-10-01 -> учебный год фиксации = 2023.
+    # Пересчёт: 9 + (2025 - 2023) = 11 -> уже выпускник по порогу classify_family.
+    now_grown_up = _owner50_golden_family(
+        children=[
+            {
+                "child_key": "child:recomputed",
+                "name": "Игорь",
+                "grade_recorded": 9,
+                "grade_fixed_at": datetime(2023, 10, 1, tzinfo=timezone.utc),
+            }
+        ]
+    )
+    grown_up_result = classify_family(now_grown_up, as_of=OWNER50_CLASSIFY_NOW)
+    # решение владельца 25.07 (отменяет более раннюю правку Fable #4): выпускник -- EXCLUDED,
+    # не CANDIDATE, даже когда класс пересчитан (не указан явно в данных).
+    assert grown_up_result["status"] == "EXCLUDED"
+    assert "grade_11_or_graduate" in grown_up_result["reasons"]
+    # E2: пересчитанный класс обязан быть помечен как предположение даже для EXCLUDED.
+    assert any("пересчёт" in note for note in grown_up_result["assumptions"])
+
+    # Тот же горизонт пересчёта (+2 года), но стартовая точка ниже -> ещё не выпускник.
+    still_at_school = _owner50_golden_family(
+        children=[
+            {
+                "child_key": "child:recomputed",
+                "name": "Игорь",
+                "grade_recorded": 6,
+                "grade_fixed_at": datetime(2023, 10, 1, tzinfo=timezone.utc),
+            }
+        ]
+    )
+    still_result = classify_family(still_at_school, as_of=OWNER50_CLASSIFY_NOW)
+    assert still_result["status"] == "READY"
+    assert any("пересчёт" in note for note in still_result["assumptions"])
+
+
+def test_signal_source_system_mismatch_is_not_resolved() -> None:
+    """Требование архитектора #2: сигнал разрешается ТОЛЬКО если событие существует И его
+    source_system совпадает с тем, что заявляет сам сигнал -- иначе это привязка к чужому
+    событию (например, ошибка импорта), а не подтверждённое основание."""
+    mismatched = _owner50_golden_family(
+        events_by_id={"evt:signal-golden": {"source_system": "wappi_telegram"}},  # не amocrm_event
+    )
+    result = classify_family(mismatched, as_of=OWNER50_CLASSIFY_NOW)
+    assert result["status"] == "CANDIDATE"
+    assert result["missing"] == ("no_active_outreach_signal",)
+
+
+def test_interest_quote_without_event_provenance_does_not_count_as_fresh() -> None:
+    """Требование архитектора #2: интерес засчитывается ТОЛЬКО при event_id+source_system,
+    разрешённых в реальное событие с совпадающим source_system -- голая цитата "из воздуха"
+    (без привязки к событию) не заменяет ни оплату, ни доказуемый сигнал."""
+    unprovenanced = _owner50_golden_family(
+        payment=None,
+        interest_quote={
+            "text": "Интересует курс математики.",
+            "quoted_at": OWNER50_CLASSIFY_NOW - timedelta(days=30),
+            "event_id": "",
+            "source_system": "",
+        },
+    )
+    unprovenanced_result = classify_family(unprovenanced, as_of=OWNER50_CLASSIFY_NOW)
+    assert unprovenanced_result["status"] == "CANDIDATE"
+    assert "no_payment_or_interest_evidence" in unprovenanced_result["missing"]
+
+    provenanced = _owner50_golden_family(
+        payment=None,
+        interest_quote={
+            "text": "Интересует курс математики.",
+            "quoted_at": OWNER50_CLASSIFY_NOW - timedelta(days=30),
+            "event_id": "evt:interest-1",
+            "source_system": "amocrm_event",
+            "direction": "inbound",
+        },
+        events_by_id={
+            "evt:signal-golden": {"source_system": "amocrm_event"},
+            "evt:interest-1": {"source_system": "amocrm_event"},
+        },
+    )
+    provenanced_result = classify_family(provenanced, as_of=OWNER50_CLASSIFY_NOW)
+    assert provenanced_result["status"] == "READY"
+    assert "no_payment_or_interest_evidence" not in provenanced_result["missing"]
+
+    outbound = _owner50_golden_family(
+        payment=None,
+        interest_quote={**provenanced["interest_quote"], "direction": "outbound"},
+        events_by_id=provenanced["events_by_id"],
+    )
+    outbound_result = classify_family(outbound, as_of=OWNER50_CLASSIFY_NOW)
+    assert outbound_result["status"] == "CANDIDATE"
+    assert "no_payment_or_interest_evidence" in outbound_result["missing"]
+
+    unresolved = _owner50_golden_family(
+        payment=None,
+        interest_quote=provenanced["interest_quote"],
+        events_by_id={"evt:signal-golden": {"source_system": "amocrm_event"}},
+    )
+    unresolved_result = classify_family(unresolved, as_of=OWNER50_CLASSIFY_NOW)
+    assert unresolved_result["status"] == "CANDIDATE"
+    assert "no_payment_or_interest_evidence" in unresolved_result["missing"]
+
+
+def test_future_dated_payment_and_interest_are_not_fresh() -> None:
+    """Требование архитектора #5: дата в будущем -- НЕ "свежо" (похоже на ошибку данных, не
+    на доказательство), ни для оплаты, ни для цитаты интереса."""
+    future_payment = _owner50_golden_family(
+        payment={
+            "customer_id": "customer:golden", "total_in": 45000, "total_out": 0, "deals_cnt": 1,
+            "last_purchase_at": OWNER50_CLASSIFY_NOW + timedelta(days=5), "period": "all_time",
+        },
+        interest_quote=None,
+    )
+    future_payment_result = classify_family(future_payment, as_of=OWNER50_CLASSIFY_NOW)
+    assert "no_payment_or_interest_evidence" in future_payment_result["missing"]
+
+    future_interest = _owner50_golden_family(
+        payment=None,
+        interest_quote={
+            "text": "Интересует курс математики.",
+            "quoted_at": OWNER50_CLASSIFY_NOW + timedelta(days=5),
+            "event_id": "evt:signal-golden",
+            "source_system": "amocrm_event",
+            "direction": "inbound",
+        },
+    )
+    future_interest_result = classify_family(future_interest, as_of=OWNER50_CLASSIFY_NOW)
+    assert "no_payment_or_interest_evidence" in future_interest_result["missing"]
+
+
+def test_future_dated_signal_is_not_treated_as_freshest_possible() -> None:
+    """Требование архитектора #5 (ужесточено по итогам ревью 25.07): _owner50_days_since
+    клэмпит отрицательную разницу к 0.0 -- без явной проверки сигнал с датой создания в
+    будущем читался бы как "0 дней назад", то есть МАКСИМАЛЬНО свежий, хотя это похоже на
+    ошибку данных. golden-семья по умолчанию свежая (signal.created_at = NOW-2 дня);
+    здесь та же семья, но created_at в будущем."""
+    future_signal = _owner50_golden_family(
+        signal=dict(_owner50_golden_family()["signal"], created_at=OWNER50_CLASSIFY_NOW + timedelta(days=5)),
+    )
+    result = classify_family(future_signal, as_of=OWNER50_CLASSIFY_NOW)
+    assert result["status"] == "CANDIDATE"
+    assert "signal_date_in_future" in result["missing"]
+    assert "stale_signal" not in result["missing"]  # отдельная причина, не подменяет "старый"
+
+
+def test_owner50_action_text_combines_action_who_and_deadline() -> None:
+    """Требование архитектора #8: READY = одна фраза "действие + повод/продукт или
+    уточнение + срок" (правка Fable #1, "тест 5 секунд")."""
+    text = owner50_action_text(_owner50_golden_family())
+    assert text.startswith("Выполнить обещанный звонок")
+    assert "до 2026-07-25" in text
+    assert "Родитель Голден" in text
+
+    assert owner50_action_text(_owner50_golden_family(next_step=None)) == ""
+
+
+def test_owner50_rebuild_is_deterministic_same_rows_and_order(tmp_path: Path) -> None:
+    """A3 (ТЗ Owner50): повторная сборка очереди по НЕИЗМЕННОЙ БД обязана давать те же
+    строки в том же порядке на READY_50/CANDIDATES/EXCLUDED -- иначе менеджер не может
+    доверять рангу между запусками. family:det-a и family:det-c намеренно одинаковы по
+    тиру/сигналу/оплате/дате основания -- различить их может только финальный tie-break
+    rank_key по family_id, поэтому тест одновременно проверяет и повторяемость, и сам
+    tie-break."""
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(db, tmp_path, family_id="family:det-a", customer_id="customer:det-a", signal_type="callback_due")
+    _seed_owner50_member(db, tmp_path, family_id="family:det-b", customer_id="customer:det-b", signal_type="client_returned")
+    _seed_owner50_member(db, tmp_path, family_id="family:det-c", customer_id="customer:det-c", signal_type="callback_due")
+    _seed_owner50_member(db, tmp_path, family_id="family:det-stale", customer_id="customer:det-stale", signal_type="callback_due")
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:det-excluded", customer_id="customer:det-excluded",
+        signal_type="callback_due", event_summary="Хочу возврат денег за курс.",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE derived_signals SET created_at=? WHERE customer_id='customer:det-stale'",
+            ((NOW - timedelta(days=45)).isoformat(),),
+        )
+        con.commit()
+
+    def build(name: str) -> tuple[list[tuple], list[tuple], list[tuple]]:
+        out = tmp_path / ".codex_local" / name
+        build_owner50_family_workbook(
+            timeline_db=db, allowed_root=tmp_path, out_xlsx=out, as_of=NOW, enforce_freshness=False,
+        )
+        wb = load_workbook(out, read_only=True)
+        return (
+            list(wb["READY_50"].iter_rows(values_only=True)),
+            list(wb["CANDIDATES"].iter_rows(values_only=True)),
+            list(wb["EXCLUDED"].iter_rows(values_only=True)),
+        )
+
+    first_ready, first_candidates, first_excluded = build("owner50_det_1.xlsx")
+    second_ready, second_candidates, second_excluded = build("owner50_det_2.xlsx")
+
+    assert first_ready == second_ready
+    assert first_candidates == second_candidates
+    assert first_excluded == second_excluded
+    # sanity: the run actually exercised more than a trivial single-row case, and the
+    # tie-break is observable (det-a before det-c, both otherwise-identical callback_due).
+    ready_family_order = [row[1] for row in first_ready[1:]]
+    assert ready_family_order.index("family:det-a") < ready_family_order.index("family:det-c")
+    assert len(first_ready) > 2
+    assert any(row[0] == "family:det-stale" for row in first_candidates)
+    assert any(row[0] == "family:det-excluded" for row in first_excluded)
 
 
 def _timeline_db(tmp_path: Path) -> Path:
@@ -1443,10 +3157,15 @@ def _seed_owner50_member(
     no_contact: bool = False,
     grade: str = "8",
     event_summary: str = "Клиент подтвердил интерес к курсу.",
-    membership_reason: str = "exact_amo_parent_name_and_phone_or_email",
-    deal_title: str = "Курс математики 8 класс",
+    offer_title: str = "Курс математики 8 класс",
+    # E5 (26.07): по умолчанию -- настоящий person-contact origin (структурный source_ref вида
+    # "amocrm:contact:<id>", как реально штампует ingestion.py для AMO-контактов). Синтетические
+    # регрессии E5 передают source_ref явно (например "amocrm:lead:..." или "" -- сделка/шаг без
+    # происхождения), чтобы доказать, что такие записи НЕ становятся READY-клиентом.
+    source_ref: str | None = None,
 ) -> None:
     number = ord(customer_id[-1].casefold()) - ord("a") + 1 if customer_id[-1].isalpha() else 9
+    resolved_source_ref = f"amocrm:contact:{customer_id}" if source_ref is None else source_ref
     event = TimelineEvent(
         tenant_id="foton",
         customer_id=customer_id,
@@ -1465,9 +3184,9 @@ def _seed_owner50_member(
         opportunity_type=OpportunityType.AMO_DEAL,
         source_system="amo",
         source_id=f"lead-{customer_id}",
-        title=deal_title,
+        title=offer_title,
         status="active",
-        product_context={"products_of_interest": [deal_title]},
+        product_context={"products_of_interest": [offer_title]},
         opened_at=NOW - timedelta(days=30),
     )
     store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
@@ -1480,7 +3199,8 @@ def _seed_owner50_member(
                 display_name=display_name or f"Родитель {customer_id}",
                 primary_phone=f"+790000000{number:02d}",
                 primary_email=f"{customer_id.replace(':', '-')}@example.com",
-                metadata={"brands": ["foton"], "no_contact": no_contact},
+                source_ref=resolved_source_ref or None,
+                metadata={"brands": ["foton"], "no_contact": no_contact, "source_ref": resolved_source_ref},
             )
         )
         store.upsert_opportunity(opportunity)
@@ -1502,6 +3222,16 @@ def _seed_owner50_member(
     finally:
         store.close()
     with sqlite3.connect(db) as con:
+        signal_row = con.execute(
+            "SELECT signal_id, record_json FROM derived_signals WHERE customer_id=?",
+            (customer_id,),
+        ).fetchone()
+        signal_record = json.loads(signal_row[1])
+        signal_record["follow_up_due_at"] = (NOW + timedelta(days=1)).isoformat()
+        con.execute(
+            "UPDATE derived_signals SET record_json=? WHERE signal_id=?",
+            (json.dumps(signal_record, ensure_ascii=False), signal_row[0]),
+        )
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS family_links_v1 (
@@ -1517,7 +3247,7 @@ def _seed_owner50_member(
         )
         con.execute(
             "INSERT OR REPLACE INTO family_members_v1 VALUES (?,?,?,?,?,?,?,?,?,?)",
-            ("foton", family_id, customer_id, "confident", "high", membership_reason, NOW.isoformat(), NOW.isoformat(), f"hash-{customer_id}", "{}"),
+            ("foton", family_id, customer_id, "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), f"hash-{customer_id}", "{}"),
         )
         con.execute(
             "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1539,7 +3269,7 @@ def _seed_owner50_member(
         )
         con.execute(
             "INSERT OR REPLACE INTO customer_purchases_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ("foton", customer_id, "all_time", "fact", 50000, 0, 1, "2026-06-01", "[]", "ok", "test"),
+            ("foton", customer_id, "all_time", "fact", 50000, 0, 1, "2026-06-01", "[]", "computed", "test"),
         )
         con.commit()
 

@@ -12,6 +12,7 @@ from mango_mvp.customer_timeline.amo_incremental import (
     event_summary,
     fetch_cards_source,
     fetch_collection,
+    fetch_endpoint_checkpointed,
     fetch_events_source,
     load_amo_link_index,
     run_amo_incremental,
@@ -120,6 +121,8 @@ def test_run_amo_incremental_page_cap_writes_nothing_and_keeps_cursors(
     assert report["apply_blocked"] is True
     assert report["cursor_after"] == report["cursor_before"]
     assert report["safety"]["staging_db_write"] is False
+    checkpoint = tmp_path / "out" / "amo_incremental_checkpoint.json"
+    assert checkpoint.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
         assert con.execute(
@@ -693,3 +696,318 @@ def test_fetch_events_source_sets_opportunity_for_lead_events_only() -> None:
     by_id = {row["event_id"]: row for row in rows}
     assert by_id["21"]["opportunity_id"] == "opportunity:lead-501"
     assert by_id["22"]["opportunity_id"] is None
+
+
+# --- D1: page_cap_hit must never advance the cursor / count as ok, and must
+# be resolved by continuing via bounded checkpoint windows across multiple
+# runs (not aborting forever, not silently truncating). ---
+
+
+class BigBacklogAmoClient:
+    """Serves a large, purely in-memory paginated 'leads' backlog (page size
+    == the caller's page_limit, matching real AMO's page-size semantics) and
+    empty contacts/events collections. No real API/network calls anywhere.
+    """
+
+    def __init__(self, *, total_leads: int, linked_lead_id: int | None = None, linked_contact_id: str | None = None):
+        self.total_leads = total_leads
+        self.linked_lead_id = linked_lead_id
+        self.linked_contact_id = linked_contact_id
+        self.calls: list[tuple[str, int]] = []
+
+    def amo_api_get(self, *, path, params=None, limit=50):
+        page = int((params or {}).get("page") or 1)
+        self.calls.append((path, page))
+        if path != "leads":
+            return {"_embedded": {path: []}}
+        per_page = max(1, int(limit))
+        start = (page - 1) * per_page
+        end = min(start + per_page, self.total_leads)
+        items = []
+        for index in range(start, end):
+            lead_id = index + 1
+            item = {
+                "id": lead_id,
+                "name": f"Lead {lead_id}",
+                "created_at": 1782250000 + index,
+                "updated_at": 1782250000 + index,
+            }
+            if self.linked_lead_id is not None and lead_id == self.linked_lead_id:
+                item["_embedded"] = {"contacts": [{"id": self.linked_contact_id}]}
+            items.append(item)
+        payload = {"_embedded": {"leads": items}}
+        if end < self.total_leads:
+            payload["_links"] = {"next": {"href": f"/api/v4/leads?page={page + 1}"}}
+        return payload
+
+
+def test_run_amo_incremental_checkpoint_completes_large_backlog_across_bounded_runs(tmp_path, monkeypatch) -> None:
+    """D1: a backlog far larger than one run's page budget (>20 pages / 1000
+    deals) must be walked via bounded checkpoint windows across multiple
+    runs -- writing nothing and never advancing the cursor until the whole
+    fixed universe has been read -- instead of aborting forever or silently
+    truncating. Uses only an in-memory fake client; no real API calls.
+    """
+    db_path = tmp_path / "staging.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:seed",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Seed parent",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:seed",
+                link_type="amo_contact_id",
+                link_value="30",
+                source_system="test",
+                source_ref="test",
+            )
+        )
+
+    client = BigBacklogAmoClient(total_leads=1000, linked_lead_id=1, linked_contact_id="30")
+    monkeypatch.setattr(amo_incremental_module, "read_mcp_env", lambda _path: object())
+    monkeypatch.setattr(amo_incremental_module, "AmoMcpClient", lambda _config: client)
+
+    config = AmoIncrementalConfig(
+        source_db=db_path,
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        out_root=tmp_path / "out",
+        mcp_env=tmp_path / "amo.env",
+        copy_db=False,
+        max_pages=5,
+        page_limit=40,
+        sleep_sec=0.0,
+        since=NOW,
+    )
+
+    reports = []
+    for _ in range(8):  # 1000/40=25 pages, 5 pages/run -> exactly 5 runs expected; generous safety bound
+        report = run_amo_incremental(config)
+        reports.append(report)
+        if "apply_blocked" in report:
+            with sqlite3.connect(db_path) as con:
+                assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+        else:
+            break
+    else:
+        pytest.fail("checkpoint cycle did not complete within the safety bound of 8 runs")
+
+    assert len(reports) == 5, "1000 leads at 40/page (25 pages) over 5 pages/run must take exactly 5 runs"
+    for blocked in reports[:-1]:
+        assert blocked["apply_blocked"] is True
+        assert blocked["validation_ok"] is False
+        assert blocked["cursor_after"] == blocked["cursor_before"]
+        assert blocked["checkpoint"]["pending_endpoints"] == ["amo_leads_updated_at"]
+
+    final = reports[-1]
+    assert "apply_blocked" not in final
+    assert final["fetch"]["amo_leads_updated_at"]["fetched"] == 1000
+    assert final["fetch"]["amo_leads_updated_at"]["pages"] == 25
+    assert final["checkpoint"]["cleared"] is True
+    # NOTE: 999 of the 1000 leads never resolve to a known customer in this
+    # fixture, which triggers the pre-existing (unrelated to D1)
+    # preserve_cursor safety behavior in normalize_cards_source/
+    # run_amo_incremental -- the leads cursor intentionally does not advance
+    # while unmatched leads exist, so they remain eligible for a future
+    # retry instead of being silently skipped past. That is orthogonal to
+    # what this test proves (bounded checkpoint pagination completeness).
+    with sqlite3.connect(db_path) as con:
+        # The one lead wired to a known contact (id=1, fetched on page 1
+        # during run 1, carried through the checkpoint over 4 more runs)
+        # is only imported once the whole universe is confirmed read.
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE source_system='amocrm_snapshot'"
+        ).fetchone()[0] == 1
+
+    lead_page_calls = [page for path, page in client.calls if path == "leads"]
+    assert lead_page_calls == [
+        1, 2, 3, 4, 5,
+        5, 6, 7, 8, 9, 10,
+        10, 11, 12, 13, 14, 15,
+        15, 16, 17, 18, 19, 20,
+        20, 21, 22, 23, 24, 25,
+    ]
+    assert sum(path == "contacts" for path, _page in client.calls) == 1
+    assert sum(path == "events" for path, _page in client.calls) == 1
+    for source_path in (tmp_path / "out" / "amo_incremental_sources").glob("*.jsonl"):
+        assert source_path.stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / "out" / "amo_incremental_checkpoint.json").exists()
+
+
+def test_fetch_endpoint_checkpointed_blocks_duplicate_ids(tmp_path) -> None:
+    class DuplicateClient:
+        def amo_api_get(self, *, path, params=None, limit=50):
+            return {"_embedded": {"leads": [{"id": "same"}, {"id": "same"}]}}
+
+    config = AmoIncrementalConfig(
+        source_db=tmp_path / "source.sqlite", out_root=tmp_path / "out",
+        mcp_env=tmp_path / "amo.env", max_pages=1, sleep_sec=0.0,
+    )
+    next_checkpoint: dict = {}
+
+    _items, stats = fetch_endpoint_checkpointed(
+        DuplicateClient(), key="amo_leads_updated_at", path="leads", embedded_key="leads",
+        params={"order[id]": "asc"}, lower_bound=NOW, config=config,
+        checkpoint={}, next_checkpoint=next_checkpoint,
+    )
+
+    assert stats["complete"] is False
+    assert stats["pagination_drift_detected"] is True
+    assert next_checkpoint == {}
+
+
+def test_fetch_endpoint_checkpointed_resumes_on_match_and_restarts_on_fingerprint_change(tmp_path) -> None:
+    """D1: a saved checkpoint must only be resumed when the universe
+    fingerprint (endpoint + lower_bound) still matches. A lower_bound change
+    (the cursor moved to a different window) must discard the old,
+    incomplete checkpoint and start that endpoint over at page 1 -- an
+    incomplete checkpoint from a stale window must never be silently
+    continued into a different one.
+    """
+
+    class TwoItemPagedClient:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def amo_api_get(self, *, path, params=None, limit=50):
+            page = int((params or {}).get("page") or 1)
+            self.calls.append(page)
+            items = [{"id": f"{page}-{i}", "updated_at": 1782250000} for i in range(2)]
+            payload = {"_embedded": {"leads": items}}
+            if page < 3:
+                payload["_links"] = {"next": {"href": "/api/v4/leads?page=next"}}
+            return payload
+
+    config = AmoIncrementalConfig(
+        source_db=tmp_path / "source.sqlite",
+        out_root=tmp_path / "out",
+        mcp_env=tmp_path / "amo.env",
+        max_pages=1,
+        sleep_sec=0.0,
+    )
+    client = TwoItemPagedClient()
+    old_lower_bound = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    first_checkpoint: dict = {}
+    items1, stats1 = fetch_endpoint_checkpointed(
+        client,
+        key="amo_leads_updated_at",
+        path="leads",
+        embedded_key="leads",
+        params={},
+        lower_bound=old_lower_bound,
+        config=config,
+        checkpoint={},
+        next_checkpoint=first_checkpoint,
+    )
+    assert stats1["complete"] is False
+    assert client.calls == [1]
+    saved_checkpoint = {"endpoints": first_checkpoint}
+
+    # A DIFFERENT lower_bound (the universe moved) must not resume the
+    # checkpoint above: it must restart at page 1, not the stale next_page.
+    new_lower_bound = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    mismatched_next: dict = {}
+    items2, stats2 = fetch_endpoint_checkpointed(
+        client,
+        key="amo_leads_updated_at",
+        path="leads",
+        embedded_key="leads",
+        params={},
+        lower_bound=new_lower_bound,
+        config=config,
+        checkpoint=saved_checkpoint,
+        next_checkpoint=mismatched_next,
+    )
+    assert stats2["start_page_this_run"] == 1
+    assert stats2["carried_over_from_checkpoint"] == 0
+    assert client.calls == [1, 1]
+
+    # The SAME lower_bound as the original call must resume at the saved
+    # next_page, carrying the previously-fetched items forward.
+    matching_next: dict = {}
+    items3, stats3 = fetch_endpoint_checkpointed(
+        client,
+        key="amo_leads_updated_at",
+        path="leads",
+        embedded_key="leads",
+        params={},
+        lower_bound=old_lower_bound,
+        config=config,
+        checkpoint=saved_checkpoint,
+        next_checkpoint=matching_next,
+    )
+    assert stats3["start_page_this_run"] == 2
+    assert stats3["carried_over_from_checkpoint"] == 2
+    assert len(items3) == 4
+    assert client.calls == [1, 1, 1, 2]
+
+
+def test_fetch_endpoint_checkpointed_restarts_when_boundary_page_changes(tmp_path) -> None:
+    class MutableClient:
+        def __init__(self) -> None:
+            self.items = [
+                {"id": "a", "updated_at": 1782250000},
+                {"id": "b", "updated_at": 1782250001},
+                {"id": "c", "updated_at": 1782250002},
+            ]
+            self.calls: list[int] = []
+
+        def amo_api_get(self, *, path, params=None, limit=2):
+            page = int((params or {}).get("page") or 1)
+            self.calls.append(page)
+            start = (page - 1) * limit
+            rows = self.items[start : start + limit]
+            payload = {"_embedded": {"leads": rows}}
+            if start + limit < len(self.items):
+                payload["_links"] = {"next": {"href": "next"}}
+            return payload
+
+    client = MutableClient()
+    config = AmoIncrementalConfig(
+        source_db=tmp_path / "source.sqlite",
+        out_root=tmp_path / "out",
+        mcp_env=tmp_path / "amo.env",
+        max_pages=1,
+        page_limit=2,
+        sleep_sec=0.0,
+    )
+    lower_bound = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    next_checkpoint: dict = {}
+    fetch_endpoint_checkpointed(
+        client,
+        key="amo_leads_updated_at",
+        path="leads",
+        embedded_key="leads",
+        params={},
+        lower_bound=lower_bound,
+        config=config,
+        checkpoint={},
+        next_checkpoint=next_checkpoint,
+    )
+
+    client.items.insert(0, {"id": "x", "updated_at": 1782249999})
+    restarted_checkpoint: dict = {}
+    items, stats = fetch_endpoint_checkpointed(
+        client,
+        key="amo_leads_updated_at",
+        path="leads",
+        embedded_key="leads",
+        params={},
+        lower_bound=lower_bound,
+        config=config,
+        checkpoint={"endpoints": next_checkpoint},
+        next_checkpoint=restarted_checkpoint,
+    )
+
+    assert stats["checkpoint_reset_reason"] == "pagination_universe_changed"
+    assert stats["start_page_this_run"] == 1
+    assert stats["carried_over_from_checkpoint"] == 0
+    assert [item["id"] for item in items] == ["x", "a"]
+    assert client.calls == [1, 1, 1]

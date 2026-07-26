@@ -5,6 +5,8 @@ import os
 import sys
 import json
 import sqlite3
+import textwrap
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -76,6 +78,8 @@ def test_mail_builder_fails_before_writing_when_archive_input_is_missing(tmp_pat
 
 def valid_nightly_payload(staging_root: Path) -> dict:
     return {
+        "config_schema_version": module.EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION,
+        "required_manifest_sources": sorted(module.REQUIRED_MANIFEST_SOURCES),
         "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
         "allowed_root": str(staging_root),
         "steps": [
@@ -133,6 +137,18 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     ),
                     "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
                     "apply": True,
+                },
+            },
+            {
+                "name": "tallanto_cards_sync",
+                "kind": "tallanto_cards",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "allowed_root": str(staging_root),
+                    "out_root": str(staging_root / "tallanto_cards_sync"),
+                    "tallanto_env_file": str(staging_root / "tallanto.env"),
                 },
             },
             {
@@ -421,6 +437,122 @@ def test_run_task_does_not_execute_command_after_preflight_stop(tmp_path, monkey
     assert calls == []
 
 
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_run_with_runtime_budget_kills_process_group_including_grandchild(tmp_path) -> None:
+    """B3 proof: a hung nightly subprocess is bounded from the *outside* by
+    killing its whole process group, not just its direct pid -- so a
+    grandchild it shelled out to (e.g. a step's own external importer call)
+    is reaped too, not left running as an orphan. Both the direct child and
+    the grandchild install a SIGTERM-ignore handler, so only the SIGKILL
+    escalation (not the initial SIGTERM) can end them; if the group kill
+    were scoped to the direct pid only, the grandchild would still be alive
+    after this call returns.
+    """
+    pid_file = tmp_path / "pids.txt"
+    script = tmp_path / "hang_with_grandchild.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            import os, signal, subprocess, sys, time
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            with open({str(pid_file)!r}, "a") as fh:
+                fh.write(str(os.getpid()) + "\\n")
+            child = subprocess.Popen([
+                sys.executable, "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ])
+            with open({str(pid_file)!r}, "a") as fh:
+                fh.write(str(child.pid) + "\\n")
+            child.wait()
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = module.run_with_runtime_budget(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        env=os.environ,
+        budget_seconds=0.3,
+        term_grace_seconds=0.5,
+    )
+
+    assert result.timed_out is True
+    pids = [int(line) for line in pid_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(pids) == 2, "both the direct child and the grandchild must have started"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and any(_pid_is_alive(pid) for pid in pids):
+        time.sleep(0.1)
+    alive = [pid for pid in pids if _pid_is_alive(pid)]
+    assert alive == [], f"process(es) survived the process-group kill: {alive}"
+
+
+def test_repo_python_env_removes_parent_git_context(monkeypatch) -> None:
+    for key in module.GIT_CONTEXT_ENV_KEYS:
+        monkeypatch.setenv(key, f"hostile-{key.lower()}")
+
+    env = module.repo_python_env()
+
+    assert all(key not in env for key in module.GIT_CONTEXT_ENV_KEYS)
+    assert str(module.ROOT / "src") in env["PYTHONPATH"].split(os.pathsep)
+
+
+def test_current_runtime_ignores_parent_git_context(monkeypatch, tmp_path) -> None:
+    expected = module.current_runtime()
+    for key in module.GIT_CONTEXT_ENV_KEYS:
+        monkeypatch.setenv(key, str(tmp_path / f"hostile-{key.lower()}"))
+
+    assert module.current_runtime() == expected
+
+
+def test_nightly_task_timeout_reports_stopped_and_leaves_latest_untouched(tmp_path, monkeypatch) -> None:
+    """B3 proof: run_task() enforces the runtime budget for nightly-warehouse
+    specifically (not the unbounded subprocess.run other tasks still use),
+    reports a clear timeout stop reason (not a bare "ok" or a misleading
+    command_rc), and never touches the previous "latest" snapshot."""
+    monkeypatch.setattr(module, "LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr(module, "TASK_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(module, "FOTON_DAILY", tmp_path / "daily")
+    monkeypatch.setattr(module, "ensure_nightly_config", lambda: "")
+    latest_path = tmp_path / "published" / "latest_customer_timeline_snapshot.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_text("OLD-LATEST-BYTES", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "build_task_spec",
+        lambda *args, **kwargs: module.TaskSpec(
+            task="nightly-warehouse",
+            command=("python3", "nightly.py"),
+            expected_output=latest_path,
+            stop_reason=kwargs["nightly_stop_reason"],
+        ),
+    )
+    monkeypatch.setattr(module, "nightly_runtime_budget_seconds", lambda *a, **kw: 42.0)
+
+    def fake_bounded_run(command, **kwargs):
+        assert kwargs["budget_seconds"] == 42.0
+        return module.BoundedRunResult(rc=-15, stdout="", timed_out=True)
+
+    monkeypatch.setattr(module, "run_with_runtime_budget", fake_bounded_run)
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("nightly-warehouse must use run_with_runtime_budget, not subprocess.run")
+    ))
+
+    rc = module.run_task("nightly-warehouse", tallanto_phone_limit=1)
+
+    assert rc != 0
+    assert latest_path.read_text(encoding="utf-8") == "OLD-LATEST-BYTES"
+
+
 def test_nightly_self_heal_fails_loud_without_staging_db(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     base_config = staging_root / "nightly_service/base.json"
@@ -462,6 +594,107 @@ def test_nightly_self_heal_can_rebuild_without_optional_base_config(tmp_path, mo
 
     assert reason == ""
     assert len(calls) == 1
+
+
+def test_nightly_config_rejects_stale_schema_version(tmp_path, monkeypatch) -> None:
+    """B1: a config predating config_schema_version (or stamped with an old
+    one) must not pass preflight just because every other field happens to
+    still be correct."""
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    del payload["config_schema_version"]
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    reason = module.validate_nightly_config(config)
+
+    assert "schema version" in reason
+
+
+def test_nightly_config_rejects_missing_required_manifest_sources(tmp_path, monkeypatch) -> None:
+    """B1: this is the exact bug report -- an old nightly.json written before
+    required_manifest_sources existed (so the key is simply absent) must be
+    rejected, not silently treated as "no required sources" and pass."""
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    del payload["required_manifest_sources"]
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    reason = module.validate_nightly_config(config)
+
+    assert "required_manifest_sources" in reason
+
+
+def test_nightly_config_rejects_incomplete_required_manifest_sources(tmp_path, monkeypatch) -> None:
+    """B1: the check is an *exact* set match, not "at least these" -- a
+    config missing even one of the 10 mandatory labels fails."""
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    payload["required_manifest_sources"] = [
+        label for label in payload["required_manifest_sources"] if label != "wappi_max"
+    ]
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    reason = module.validate_nightly_config(config)
+
+    assert "wappi_max" in reason
+
+
+def _write_ready_package_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as con:
+        con.execute(
+            "CREATE TABLE call_records (id TEXT PRIMARY KEY, analysis_status TEXT, analysis_json TEXT)"
+        )
+        con.commit()
+
+
+def test_nightly_self_heal_rebuilds_stale_on_disk_config(tmp_path, monkeypatch) -> None:
+    """B1: ensure_nightly_config() self-heals a config that already exists on
+    disk but is stale (old schema version / missing required_manifest_sources)
+    -- no manual deletion needed, matching how it already self-heals a
+    missing config."""
+    staging_root = tmp_path / ".codex_local/staging"
+    staging_root.mkdir(parents=True)
+    timeline_db = staging_root / "customer_timeline_staging.sqlite"
+    timeline_db.write_bytes(b"sqlite")
+    ready_package_db = tmp_path / "drop" / "mango_calls_ready.sqlite"
+    _write_ready_package_db(ready_package_db)
+    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
+    dv2_config = staging_root / "nightly_service/dv2.json"
+    dv2_config.parent.mkdir(parents=True)
+    stale_payload = valid_nightly_payload(staging_root)
+    del stale_payload["config_schema_version"]
+    del stale_payload["required_manifest_sources"]
+    dv2_config.write_text(json.dumps(stale_payload), encoding="utf-8")
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", timeline_db)
+    monkeypatch.setattr(module, "NIGHTLY_DV2_CONFIG", dv2_config)
+    monkeypatch.setattr(module, "NIGHTLY_BASE_CONFIG", staging_root / "nightly_service/base.json")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        dv2_config.write_text(json.dumps(valid_nightly_payload(staging_root)), encoding="utf-8")
+        return module.subprocess.CompletedProcess(command, 0, stdout="{}")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    reason_before = module.validate_nightly_config(dv2_config)
+    reason_after = module.ensure_nightly_config()
+
+    assert "schema version" in reason_before
+    assert reason_after == ""
+    assert len(calls) == 1
+    assert module.validate_nightly_config(dv2_config) == ""
 
 
 def test_nightly_self_heal_rebuilds_and_validates_persistent_config(tmp_path, monkeypatch) -> None:
@@ -517,6 +750,14 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert amo["required"] is True
     assert amo["config"]["page_limit"] == 50
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
+    wappi = steps["wappi_history_incremental"]
+    assert wappi["config"]["require_widget_linkage"] is True
+    cards = steps["tallanto_cards_sync"]
+    assert cards["kind"] == "tallanto_cards"
+    assert cards["required"] is True
+    assert list(steps).index("tallanto_cards_sync") < list(steps).index(
+        "tallanto_attendance_api_incremental"
+    )
     attendance_api = steps["tallanto_attendance_api_incremental"]
     assert attendance_api["kind"] == "tallanto_attendance_api"
     assert attendance_api["required"] is True

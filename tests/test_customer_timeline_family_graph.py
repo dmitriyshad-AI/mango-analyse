@@ -486,6 +486,54 @@ def test_family_root_rerun_is_idempotent(tmp_path: Path) -> None:
     assert after == before
 
 
+def test_family_links_and_child_attribution_rerun_is_idempotent(tmp_path: Path) -> None:
+    """BLOK C3 idempotency: rebuilding the family graph twice on an unchanged input
+    must not change family_links_v1 (child_key rows) or event_child_attribution_v1,
+    and two distinct children must keep two distinct, stable child_key values across
+    both runs (complements test_family_root_rerun_is_idempotent, which only covers
+    family_members_v1/family_id)."""
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:siblings-rerun", phone="+79000000771")
+    _seed_event(
+        db_path,
+        tmp_path,
+        customer_id="customer:siblings-rerun",
+        source_id="call-rerun-1",
+        summary="Обсуждали занятия для Никиты.",
+    )
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:siblings-rerun", phone="+79000000771")
+    _insert_field(profiles_db, profile_id="customer:siblings-rerun", field="child_name", value="Кулаков Никита", child_key="child_1")
+    _insert_field(profiles_db, profile_id="customer:siblings-rerun", field="child_name", value="Кулакова Дарья", child_key="child_2")
+    config = FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, profiles_db=profiles_db, apply=True)
+
+    first_report = build_family_graph(config)
+    with sqlite3.connect(db_path) as con:
+        family_links_before = con.execute(
+            "SELECT * FROM family_links_v1 ORDER BY customer_id, child_key"
+        ).fetchall()
+        attribution_before = con.execute(
+            "SELECT * FROM event_child_attribution_v1 ORDER BY event_id"
+        ).fetchall()
+
+    second_report = build_family_graph(config)
+    with sqlite3.connect(db_path) as con:
+        family_links_after = con.execute(
+            "SELECT * FROM family_links_v1 ORDER BY customer_id, child_key"
+        ).fetchall()
+        attribution_after = con.execute(
+            "SELECT * FROM event_child_attribution_v1 ORDER BY event_id"
+        ).fetchall()
+
+    assert first_report["family_links_total"] == 2
+    assert second_report["family_links_total"] == 2
+    assert family_links_before  # fixture sanity: rows actually exist
+    assert family_links_after == family_links_before
+    assert attribution_after == attribution_before
+    child_keys = {row[3] for row in family_links_before}
+    assert len(child_keys) == 2  # the two siblings never collapse onto one child_key
+
+
 def test_family_root_rejects_conflicting_tallanto_student_id(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     for customer_id, phone in (("customer:left", "+79000000001"), ("customer:right", "+79000000002")):

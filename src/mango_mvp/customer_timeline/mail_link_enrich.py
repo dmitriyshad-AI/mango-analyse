@@ -107,6 +107,12 @@ class LinkDecision:
     brand_context_authorized: bool = False
     customer_brand: str = "unknown"
     family_id: str = ""
+    # D2 rule 7: which trusted source produced a "strong"/"family_strong"
+    # decision (e.g. "amocrm_snapshot", "tallanto_snapshot",
+    # "tallanto_historical_snapshot") -- used only to build the
+    # exact_amo/exact_tallanto/thread_propagation/ambiguous/unmatched
+    # breakdown in the report, never persisted onto the event itself.
+    source_system_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -210,6 +216,10 @@ def run_mail_link_enrich(config: MailLinkEnrichConfig) -> Mapping[str, Any]:
         "fallback_archive_db_count": len(config.fallback_archive_dbs),
         "historical_tallanto_identity": historical_identity_summary,
         "counts": dict(counters),
+        # D2 rule 7: exact AMO / exact Tallanto / thread propagation /
+        # ambiguous / unmatched breakdown, separate from the much more
+        # granular `counts.reason.*`/`counts.planned.*` keys above.
+        "breakdown": _mail_link_enrich_breakdown(decisions),
         "apply": apply_report,
         "before": before,
         "after": after,
@@ -437,6 +447,7 @@ def _plan_event(
                 contact_phone=phone,
                 contact_source=contact.contact_source,
                 candidate_customer_ids=candidates,
+                source_system_hint=_source_hint_from_systems(phone_resolution.get("external_strong_source_systems", ())),
             )
         if phone_resolution["status"] in {"ambiguous", "blocked"} and trusted_email_id in phone_ids:
             return LinkDecision(
@@ -448,6 +459,7 @@ def _plan_event(
                 contact_phone=phone,
                 contact_source=contact.contact_source,
                 candidate_customer_ids=candidates,
+                source_system_hint=_source_hint_from_systems(trusted_email_sources),
             )
         if phone_resolution["status"] in {"ambiguous", "blocked"}:
             return LinkDecision(
@@ -478,6 +490,7 @@ def _plan_event(
                 contact_phone=phone or None,
                 contact_source=contact.contact_source,
                 candidate_customer_ids=tuple(email_resolution["candidate_customer_ids"]),
+                source_system_hint=_source_hint_from_systems(trusted_email_sources),
             )
         if email_resolution["status"] in {"strong", "weak", "ambiguous", "blocked"}:
             thread_decision = _compatible_thread_decision(
@@ -492,6 +505,26 @@ def _plan_event(
             )
             if thread_decision is not None:
                 return thread_decision
+        # D2 rule 4: an email shared by candidates who resolve to more than
+        # one distinct known family is a positive, evidenced conflict --
+        # more specific/actionable than the generic "weak_email" fallback
+        # below, and (like weak_email) it never picks a customer_id, so it
+        # is never a first-match. Emails whose candidates have no family
+        # evidence at all fall through to the existing weak_email outcome
+        # unchanged (we do not invent a conflict from missing data).
+        if email_resolution["status"] == "ambiguous" and _spans_multiple_known_families(
+            email_resolution["candidate_customer_ids"], family_ids or {}
+        ):
+            return LinkDecision(
+                "blocked",
+                "email_multiple_families_conflict",
+                customer_id=None,
+                method="email_identity_link_ambiguous_families",
+                contact_email=email,
+                contact_phone=phone or None,
+                contact_source=contact.contact_source,
+                candidate_customer_ids=tuple(email_resolution["candidate_customer_ids"]),
+            )
         if email_resolution["status"] != "unmatched":
             return LinkDecision(
                 "weak_email",
@@ -597,6 +630,7 @@ def _thread_anchor_decision(
         method="thread_header_identity_link",
         contact_source="rfc_message_thread",
         candidate_customer_ids=tuple(customer_ids),
+        source_system_hint="thread",
     )
 
 
@@ -1254,6 +1288,72 @@ def _family_customer_for_candidates(
     return "", next(iter(families))
 
 
+def _source_hint_from_systems(systems: Sequence[str]) -> str:
+    """Pick one representative trusted source system label for the D2 rule 7
+    breakdown (exact_amo / exact_tallanto). Prefers the more specific/fresh
+    sources first; falls back to whatever is present so the hint is never
+    silently empty when a strong source system exists.
+    """
+    values = set(systems)
+    for preferred in ("amocrm_snapshot", "tallanto_snapshot", "tallanto_historical_snapshot", "master_contacts_snapshot"):
+        if preferred in values:
+            return preferred
+    return next(iter(sorted(values)), "")
+
+
+def _spans_multiple_known_families(candidate_customer_ids: Sequence[str], family_ids: Mapping[str, str]) -> bool:
+    """True only when candidates carry *positive* evidence of 2+ distinct
+    known families -- never when family membership is simply unknown for
+    some/all candidates (that stays the existing, more conservative
+    weak_email outcome; D2 rule 4 asks for a conflict only when we actually
+    know it spans multiple families, not merely because we cannot prove it
+    is one).
+    """
+    known_families = {family_ids[customer_id] for customer_id in candidate_customer_ids if family_ids.get(customer_id)}
+    return len(known_families) > 1
+
+
+def _decision_provenance(decision: LinkDecision) -> str:
+    """D2 rule 7: exact_amo / exact_tallanto / thread_propagation / family /
+    ambiguous / unmatched / other breakdown bucket for one decision.
+    """
+    if decision.outcome == "family_strong":
+        return "family"
+    if decision.outcome == "strong":
+        if decision.method == "thread_header_identity_link":
+            return "thread_propagation"
+        hint = decision.source_system_hint
+        if hint == "amocrm_snapshot":
+            return "exact_amo"
+        if hint in {"tallanto_snapshot", "tallanto_historical_snapshot", "master_contacts_snapshot"}:
+            return "exact_tallanto"
+        return "other_strong"
+    if decision.outcome in {"weak_email", "blocked"}:
+        return "ambiguous"
+    if decision.outcome == "unmatched":
+        return "unmatched"
+    return "not_revalidated"
+
+
+def _mail_link_enrich_breakdown(decisions: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """D2 rule 7: report breakdown separated by provenance, computed from the
+    already-built per-event decision reports (decision["provenance"], set in
+    _decision_report) so it always matches exactly what was decided/applied.
+    """
+    counts: Counter[str] = Counter(str(item.get("provenance") or "other") for item in decisions)
+    keys = (
+        "exact_amo",
+        "exact_tallanto",
+        "thread_propagation",
+        "family",
+        "ambiguous",
+        "unmatched",
+        "other_strong",
+        "not_revalidated",
+    )
+    return {key: int(counts.get(key, 0)) for key in keys}
+
+
 def _load_persisted_family_ids(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, str]:
     exists = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='family_members_v1'"
@@ -1399,6 +1499,9 @@ def _decision_report(row: sqlite3.Row, decision: LinkDecision) -> dict[str, Any]
         "brand_context_authorized": decision.brand_context_authorized,
         "customer_brand": decision.customer_brand,
         "family_id": decision.family_id,
+        # D2 rule 7: exact_amo / exact_tallanto / thread_propagation / family
+        # / ambiguous / unmatched breakdown bucket for this one decision.
+        "provenance": _decision_provenance(decision),
     }
 
 

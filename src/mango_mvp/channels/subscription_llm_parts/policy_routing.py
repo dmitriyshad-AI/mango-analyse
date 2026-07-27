@@ -41,6 +41,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     semantic_reading_transition_metadata,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
+    INTENT_MODEL_LED_ENV,
     MEMORY_PROVENANCE_ENV,
     PRESALE_PII_MEMORY_ENV,
     _active_brand,
@@ -1449,7 +1450,11 @@ def _conversation_intent_plan_with_model_led(
     if not model_intent:
         return plan, {}
     prefilter = _intent_model_led_keyword_prefilter_intents(plan)
-    if not prefilter:
+    if not prefilter and _explicit_truthy_setting(
+        context,
+        INTENT_MODEL_LED_ENV,
+        aliases=("intent_model_led", "intent_model_led_enabled", "model_intent_enabled"),
+    ) is not True:
         return plan, {}
     original_intent = str(plan.get("primary_intent") or "").strip()
     if model_intent not in INTENT_MODEL_LED_TARGETS and original_intent not in INTENT_MODEL_LED_TARGETS:

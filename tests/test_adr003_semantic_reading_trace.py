@@ -26,7 +26,11 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     append_reading_trace_record,
     semantic_reading_trace_record,
 )
-from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV
+from mango_mvp.channels.subscription_llm_parts.support import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    INTENT_MODEL_LED_ENV,
+)
 
 
 def _semantic_result(*, primary_intent: str = "faq", sense: str = "place") -> SubscriptionDraftResult:
@@ -199,6 +203,84 @@ def test_off_topic_model_intent_remains_metadata_only_for_conversation_plan() ->
 
     assert updated == plan
     assert trace["skip_reason"] == "off_topic_metadata_only"
+
+
+def test_high_confidence_model_intent_does_not_require_keyword_permission() -> None:
+    plan = {
+        "primary_intent": "general_consultation",
+        "topic_id": "theme:000_general",
+        "keyword_signals": [],
+    }
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "address",
+                "scope": "venue",
+                "sense": "venue",
+                "confidence": 0.94,
+            }
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+        client_message="Подскажите, куда нам приезжать?",
+    )
+
+    assert updated["primary_intent"] == "address"
+    assert updated["topic_id"] == "theme:015_address"
+    assert trace["applied"] is True
+    assert trace["keyword_prefilter"] == []
+
+
+def test_pilot_profile_without_explicit_flag_preserves_keyword_permission() -> None:
+    plan = {
+        "primary_intent": "general_consultation",
+        "topic_id": "theme:000_general",
+        "keyword_signals": [],
+    }
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "address",
+                "confidence": 0.94,
+            }
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION},
+        client_message="Подскажите, куда нам приезжать?",
+    )
+
+    assert updated == plan
+    assert trace == {}
+
+
+def test_low_confidence_model_intent_without_keywords_cannot_change_plan() -> None:
+    plan = {"primary_intent": "general_consultation", "keyword_signals": []}
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "schedule",
+                "confidence": 0.4,
+            }
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+        client_message="Подскажите подробнее.",
+    )
+
+    assert updated == plan
+    assert trace["skip_reason"] == "low_confidence"
 
 
 def test_intent_actions_explicit_inline_check_availability_preserves_live_availability_floor() -> None:

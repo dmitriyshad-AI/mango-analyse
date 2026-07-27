@@ -135,6 +135,53 @@ def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
     assert result["frame_decision_shadow"]["turn_count"] == 1
 
 
+def test_report_counts_model_led_application_without_keyword_prefilter(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    dialog = _dialog(include_frame=True)
+    dialog["turns"][0]["bot_intent_model_led"] = {
+        "applied": True,
+        "applied_primary_intent": "address",
+        "keyword_prefilter": [],
+    }
+    dialog["turns"].append(
+        {
+            "turn": 2,
+            "bot_intent_model_led": {"applied": False, "skip_reason": "low_confidence"},
+        }
+    )
+    _write_jsonl(on_transcripts, [dialog])
+
+    result = report.build_report(on_transcripts=on_transcripts)
+
+    assert result["intent_model_led"] == {
+        "trace_turns": 2,
+        "applied_turns": 1,
+        "applied_without_keyword_prefilter": 1,
+        "applied_without_keyword_prefilter_examples": [
+            {"dialog_id": "d1", "turn": 1, "intent": "address", "confidence": None}
+        ],
+        "skip_reasons": {"low_confidence": 1},
+    }
+    required = report.build_report(
+        on_transcripts=on_transcripts,
+        require_intent_model_led_application=True,
+    )
+    assert required["acceptance"]["flags"]["intent_model_led_application_proven"] is True
+
+
+def test_report_rejects_intent_model_led_exam_without_application(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        require_intent_model_led_application=True,
+    )
+
+    assert result["acceptance"]["flags"]["intent_model_led_application_proven"] is False
+    assert result["acceptance"]["status"] == "needs_review"
+
+
 def test_report_frame_emission_excludes_p0_preblock_timeout_and_model_not_called_from_denominator(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     dialog = _dialog(include_frame=True)

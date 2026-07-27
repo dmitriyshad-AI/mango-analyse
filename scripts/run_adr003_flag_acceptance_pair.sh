@@ -21,10 +21,10 @@ cd "$ROOT"
 TARGET_FLAG="${TARGET_FLAG:-}"
 TARGET_FLAG_VALUE="${TARGET_FLAG_VALUE:-1}"
 case "$TARGET_FLAG" in
-  TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING)
+  TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING|TELEGRAM_INTENT_MODEL_LED)
     ;;
   *)
-    echo "TARGET_FLAG must be one of TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX, TELEGRAM_DIALOG_SUMMARY_ROLLING" >&2
+    echo "TARGET_FLAG must be one of TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX, TELEGRAM_DIALOG_SUMMARY_ROLLING, TELEGRAM_INTENT_MODEL_LED" >&2
     exit 2
     ;;
 esac
@@ -59,6 +59,7 @@ base_env=(
   env
   -u TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX
   -u TELEGRAM_DIALOG_SUMMARY_ROLLING
+  -u TELEGRAM_INTENT_MODEL_LED
   -u TELEGRAM_SEMANTIC_READING_CLASSES
   -u TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW
   -u TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW
@@ -74,6 +75,7 @@ base_env=(
 package_flags_off=(
   TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX=0
   TELEGRAM_DIALOG_SUMMARY_ROLLING=0
+  TELEGRAM_INTENT_MODEL_LED=0
 )
 
 validate_leg() {
@@ -182,12 +184,17 @@ run_leg() {
 
 run_report() {
   echo "== Report =="
+  local extra_args=()
+  if [[ "$TARGET_FLAG" == "TELEGRAM_INTENT_MODEL_LED" ]]; then
+    extra_args+=(--require-intent-model-led-application)
+  fi
   PYTHONPATH="$ROOT/src" python3 scripts/report_adr003_semantic_frame_eval.py \
     --off-transcripts "$OUT/B/dynamic_dialog_transcripts.jsonl" \
     --off-summary "$OUT/B/dynamic_summary.json" \
     --on-transcripts "$OUT/ON/dynamic_dialog_transcripts.jsonl" \
     --on-summary "$OUT/ON/dynamic_summary.json" \
-    --out-dir "$OUT/REPORT"
+    --out-dir "$OUT/REPORT" \
+    "${extra_args[@]}"
 }
 
 mkdir -p "$OUT"

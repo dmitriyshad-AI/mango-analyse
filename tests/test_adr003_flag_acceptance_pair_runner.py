@@ -19,7 +19,7 @@ def test_adr003_flag_acceptance_runner_shell_syntax() -> None:
 def test_adr003_flag_acceptance_runner_allows_only_package_flags() -> None:
     text = _runner_text()
 
-    assert "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
+    assert "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX|TELEGRAM_DIALOG_SUMMARY_ROLLING|TELEGRAM_INTENT_MODEL_LED" in text
     assert "TARGET_FLAG must be one of" in text
 
 
@@ -28,12 +28,21 @@ def test_adr003_flag_acceptance_runner_isolates_sibling_package_flags() -> None:
 
     assert "-u TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX" in text
     assert "-u TELEGRAM_DIALOG_SUMMARY_ROLLING" in text
+    assert "-u TELEGRAM_INTENT_MODEL_LED" in text
     assert "package_flags_off=(" in text
     assert "TELEGRAM_TEXT_HYGIENE_PAYMENT_FIX=0" in text
     assert "TELEGRAM_DIALOG_SUMMARY_ROLLING=0" in text
+    assert "TELEGRAM_INTENT_MODEL_LED=0" in text
     assert "-u TELEGRAM_SEMANTIC_READING_CLASSES" in text
     assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1" in text
     assert "--allow-non-pilot-profile" in text
+
+
+def test_adr003_flag_acceptance_runner_requires_model_led_application() -> None:
+    text = _runner_text()
+
+    assert '[[ "$TARGET_FLAG" == "TELEGRAM_INTENT_MODEL_LED" ]]' in text
+    assert "--require-intent-model-led-application" in text
     assert 'run_leg B "${base_env[@]}" "${package_flags_off[@]}"' in text
     assert '"$TARGET_FLAG=$TARGET_FLAG_VALUE"' in text
 

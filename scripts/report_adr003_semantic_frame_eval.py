@@ -61,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--off-summary", type=Path, default=None)
     parser.add_argument("--posthoc-transcripts", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--require-intent-model-led-application", action="store_true")
     args = parser.parse_args(argv)
 
     report = build_report(
@@ -69,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         off_transcripts=args.off_transcripts,
         off_summary=args.off_summary,
         posthoc_transcripts=args.posthoc_transcripts,
+        require_intent_model_led_application=args.require_intent_model_led_application,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     json_path = args.out_dir / "adr003_semantic_frame_eval_report.json"
@@ -86,6 +88,7 @@ def build_report(
     off_transcripts: Path | None = None,
     off_summary: Path | None = None,
     posthoc_transcripts: Path | None = None,
+    require_intent_model_led_application: bool = False,
 ) -> dict[str, Any]:
     on_dialogs = _load_transcripts(on_transcripts)
     off_dialogs = _load_transcripts(off_transcripts) if off_transcripts else []
@@ -117,6 +120,7 @@ def build_report(
         if posthoc_dialogs
         else {"status": "not_provided"},
         "reader_agreement": _reader_agreement_metrics(on_dialogs),
+        "intent_model_led": _intent_model_led_metrics(on_dialogs),
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
@@ -127,7 +131,10 @@ def build_report(
             "off": len(off_summary_data.get("hard_gate_failure_dialogs") or []) if off_summary_data else None,
         },
     }
-    report["acceptance"] = _acceptance(report)
+    report["acceptance"] = _acceptance(
+        report,
+        require_intent_model_led_application=require_intent_model_led_application,
+    )
     report["decision_readiness"] = _decision_readiness(report)
     return report
 
@@ -162,6 +169,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         else {}
     )
     paired = report.get("paired_dialogs") if isinstance(report.get("paired_dialogs"), Mapping) else {}
+    model_led = report.get("intent_model_led") if isinstance(report.get("intent_model_led"), Mapping) else {}
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -194,6 +202,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Inline vs posthoc mismatch count: `{inline_posthoc.get('mismatch_count', 'n/a')}`",
         f"- Reader agreement compared turns: `{(report.get('reader_agreement') or {}).get('compared_turns', 'n/a')}`",
         f"- Reader agreement mismatch count: `{(report.get('reader_agreement') or {}).get('mismatch_count', 'n/a')}`",
+        f"- Model-led intent applied without keyword permission: `{model_led.get('applied_without_keyword_prefilter', 0)}`",
+        f"- Model-led intent skip reasons: `{model_led.get('skip_reasons', {})}`",
         f"- LLM call mode: `{llm.get('mode', 'unknown')}`",
         f"- LLM raw total delta: `{llm.get('raw_total_delta', 'n/a')}`",
         f"- LLM expected extra calls: `{llm.get('extra_total', 'n/a')}`",
@@ -282,6 +292,41 @@ def _turn_map(dialogs: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int], Map
             turn_no = int(turn.get("turn") or index)
             result[(dialog_id, turn_no)] = turn
     return result
+
+
+def _intent_model_led_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    traces = 0
+    applied = 0
+    applied_without_prefilter = 0
+    applied_examples: list[dict[str, Any]] = []
+    skip_reasons: Counter[str] = Counter()
+    for (dialog_id, turn_number), turn in _turn_map(dialogs).items():
+        trace = turn.get("bot_intent_model_led")
+        if not isinstance(trace, Mapping) or not trace:
+            continue
+        traces += 1
+        if trace.get("applied") is True:
+            applied += 1
+            prefilter = trace.get("keyword_prefilter")
+            if not isinstance(prefilter, Sequence) or isinstance(prefilter, (str, bytes)) or not prefilter:
+                applied_without_prefilter += 1
+                applied_examples.append(
+                    {
+                        "dialog_id": dialog_id,
+                        "turn": turn_number,
+                        "intent": str(trace.get("applied_primary_intent") or ""),
+                        "confidence": trace.get("confidence"),
+                    }
+                )
+        else:
+            skip_reasons[str(trace.get("skip_reason") or "unspecified")] += 1
+    return {
+        "trace_turns": traces,
+        "applied_turns": applied,
+        "applied_without_keyword_prefilter": applied_without_prefilter,
+        "applied_without_keyword_prefilter_examples": applied_examples[:100],
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+    }
 
 
 def _compare_off_on(off_dialogs: Sequence[Mapping[str, Any]], on_dialogs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1361,7 +1406,11 @@ def _strict_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
+def _acceptance(
+    report: Mapping[str, Any],
+    *,
+    require_intent_model_led_application: bool = False,
+) -> dict[str, Any]:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     frame = report.get("semantic_frame") if isinstance(report.get("semantic_frame"), Mapping) else {}
@@ -1377,6 +1426,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         else {}
     )
     hard = report.get("hard_gate_failures") if isinstance(report.get("hard_gate_failures"), Mapping) else {}
+    model_led = report.get("intent_model_led") if isinstance(report.get("intent_model_led"), Mapping) else {}
     extra_total = llm.get("extra_total")
     extra_frame = llm.get("extra_semantic_frame_shadow")
     frame_present = int(frame.get("present_count") or 0)
@@ -1411,6 +1461,10 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         "semantic_frame_required_fields_complete": frame.get("present_count") == frame.get("complete_required_count"),
         "self_answer_partial_freshness_zero": self_shadow.get("partial_freshness_self_candidates", 0) == 0,
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
+        "intent_model_led_application_proven": (
+            not require_intent_model_led_application
+            or int(model_led.get("applied_without_keyword_prefilter") or 0) > 0
+        ),
     }
     notes: list[str] = []
     if paired.get("status") == "mismatch":
@@ -1447,6 +1501,8 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("Provider timeout is present; this is an infra marker, not a frame-quality miss.")
     if not flags["self_answer_partial_freshness_zero"]:
         notes.append("At least one self-answer shadow candidate has only partial freshness/client-safe fact coverage.")
+    if not flags["intent_model_led_application_proven"]:
+        notes.append("Model-led intent never applied without keyword permission; this run did not test the change.")
     status = "pass" if all(flags.values()) else "needs_review"
     return {"status": status, "flags": flags, "notes": notes}
 

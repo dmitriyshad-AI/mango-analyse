@@ -31,6 +31,12 @@ Wappi
 - `p0_recall_spec.py` содержит каноническую классификацию P0.
 - `fact_venue_scope.py` и `fact_scope_spec.py` ограничивают площадку и область
   фактов.
+- `subscription_llm_parts/policy_routing.py` допускает, чтобы уверенно
+  определённые моделью обычные намерение и тема уточняли план ответа без
+  предварительного совпадения со словарём только при явном экспериментальном
+  `TELEGRAM_INTENT_MODEL_LED=1`. Обычный профиль сохраняет прежнее поведение до
+  парного экзамена M1. При низкой уверенности план не меняется; P0 и остальные
+  защитные полы этим правилом не обходятся.
 - `customer_timeline/bot_safe_runtime_context.py` допускает в контекст только
   разрешённую bot-safe память.
 - `apply_payment_confirmation_guard()` и `apply_unstated_subject_guard()`

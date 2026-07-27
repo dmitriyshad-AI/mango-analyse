@@ -30,6 +30,8 @@ from mango_mvp.customer_timeline.safety import (
 )
 from mango_mvp.productization.capture_staging import (
     CaptureManifestStore,
+    ManifestEntry,
+    manifest_audio_exists,
     stage_capture_events,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
@@ -39,7 +41,7 @@ from mango_mvp.productization.mango_office_client import (
     MangoOfficeCredentials,
 )
 from mango_mvp.productization.mango_recordings import MangoRecordingDownloader
-from mango_mvp.productization.contracts import TenantRef
+from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
@@ -72,6 +74,7 @@ class CallsTwoProcessesConfig:
     bootstrap_since: Optional[str] = None
     first_lookback_hours: int = 24
     poll_overlap_minutes: int = 15
+    pending_recording_retry_hours: int = 24
     api_window_hours: int = 12
     min_free_gib: float = 40.0
     stale_lock_seconds: int = 6 * 60 * 60
@@ -79,6 +82,7 @@ class CallsTwoProcessesConfig:
     poll_seconds: int = 10
     max_idle_cycles: int = 30
     freshness_max_age_minutes: int = 90
+    manifest_recheck_sleep_sec: float = 2.0
     asr_mode: str = "mlx_dual"
     codex_resolve_model: str = "gpt-5.4"
     codex_analyze_model: str = "gpt-5.4-mini"
@@ -103,6 +107,7 @@ class CallsTwoProcessesConfig:
             bootstrap_since=optional_text(payload.get("bootstrap_since")),
             first_lookback_hours=int(payload.get("first_lookback_hours", 24)),
             poll_overlap_minutes=int(payload.get("poll_overlap_minutes", 15)),
+            pending_recording_retry_hours=int(payload.get("pending_recording_retry_hours", 24)),
             api_window_hours=int(payload.get("api_window_hours", 12)),
             min_free_gib=float(payload.get("min_free_gib", 40.0)),
             stale_lock_seconds=int(payload.get("stale_lock_seconds", 6 * 60 * 60)),
@@ -110,6 +115,7 @@ class CallsTwoProcessesConfig:
             poll_seconds=int(payload.get("poll_seconds", 10)),
             max_idle_cycles=int(payload.get("max_idle_cycles", 30)),
             freshness_max_age_minutes=int(payload.get("freshness_max_age_minutes", 90)),
+            manifest_recheck_sleep_sec=float(payload.get("manifest_recheck_sleep_sec", 2.0)),
             asr_mode=str(payload.get("asr_mode") or "mlx_dual").strip().lower(),
             codex_resolve_model=str(payload.get("codex_resolve_model") or "gpt-5.4"),
             codex_analyze_model=str(payload.get("codex_analyze_model") or "gpt-5.4-mini"),
@@ -133,6 +139,8 @@ class CallsTwoProcessesConfig:
             raise ValueError("freshness_max_age_minutes must be at least 15")
         if self.api_window_hours < 1 or self.api_window_hours > 24:
             raise ValueError("api_window_hours must be between 1 and 24")
+        if self.pending_recording_retry_hours < 1:
+            raise ValueError("pending_recording_retry_hours must be positive")
         if self.asr_mode != "mlx_dual":
             raise ValueError("asr_mode must be mlx_dual; single-ASR fallback is disabled")
         if self.min_free_gib < 1:
@@ -335,6 +343,35 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
+            capture_incomplete = capture.get("status") == "partial"
+            audio_incomplete = positive_int(metadata.get("skipped_total")) > 0
+            if capture_incomplete or audio_incomplete:
+                drop = (
+                    publish_ready_db(config, db_counts)
+                    if bool(environment.get("codex_network_ok")) and config.working_db.exists()
+                    else {"status": "not_created"}
+                )
+                if not skip_capture:
+                    # Failed captures remain in the manifest recovery queue, so
+                    # advancing the API window cannot lose them.
+                    write_cursor(config.cursor_path, window_until, capture)
+                return finalize_report(
+                    config,
+                    run_id,
+                    "process_a",
+                    "partial",
+                    "capture_audio_incomplete",
+                    {
+                        "disk": disk,
+                        "environment": environment,
+                        "capture": capture,
+                        "metadata": metadata,
+                        "workers": compact_command_reports(worker_reports),
+                        "call_db": db_counts,
+                        "drop": drop,
+                        "lock": lock_info,
+                    },
+                )
             if not bool(environment.get("codex_network_ok")):
                 if not skip_capture:
                     write_cursor(config.cursor_path, window_until, capture)
@@ -405,6 +442,22 @@ def _run_process_b(
     if not config.ready_db.exists():
         return finalize_report(config, run_id, "process_b", "idle", "drop_missing", {"events": 0})
     drop_fingerprint = ready_drop_fingerprint(config)
+    if not drop_fingerprint.get("manifest_valid"):
+        # publish_ready_db swaps the sqlite before it writes the manifest, so a
+        # single invalid read can just be that window: re-read once before failing.
+        time.sleep(max(0.0, float(config.manifest_recheck_sleep_sec)))
+        drop_fingerprint = ready_drop_fingerprint(config)
+    if not drop_fingerprint.get("manifest_valid"):
+        # A sealed drop whose manifest still disagrees with the sqlite is not a
+        # trustworthy source: fail closed instead of importing it as success.
+        return finalize_report(
+            config,
+            run_id,
+            "process_b",
+            "failed",
+            "drop_manifest_mismatch" if drop_fingerprint.get("manifest_mismatch") else "drop_manifest_invalid",
+            {"events": 0, "drop": drop_fingerprint},
+        )
     previous_cursor = read_json(config.process_b_cursor_path)
     if drop_fingerprint.get("sha256") and previous_cursor.get("sha256") == drop_fingerprint.get("sha256"):
         return finalize_report(
@@ -430,6 +483,15 @@ def _run_process_b(
             "process_b",
             "failed",
             "producer_failed",
+            {"producer": producer, "quick_check_before": quick_before},
+        )
+    if positive_int(producer.get("rows_selected")) != positive_int(producer.get("events_written")):
+        return finalize_report(
+            config,
+            run_id,
+            "process_b",
+            "failed",
+            "producer_event_count_mismatch",
             {"producer": producer, "quick_check_before": quick_before},
         )
     import_config = TimelineImportCliConfig(
@@ -662,7 +724,8 @@ def capture_mango_window(
     mapper = MangoOfficePayloadMapper()
     tenant = TenantRef(config.tenant_id)
     rows: list[Mapping[str, Any]] = []
-    chunk_start = since
+    pending_since, pending_keys, pending_expired = pending_recording_state(config, until)
+    chunk_start = min(since, pending_since) if pending_since is not None else since
     api_requests = 0
     while chunk_start < until:
         chunk_end = min(until, chunk_start + timedelta(hours=config.api_window_hours))
@@ -673,21 +736,25 @@ def capture_mango_window(
     for row in rows:
         event = mapper.from_payload(tenant=tenant, payload=row)
         unique_events[event.event_key] = event
+    recovery_events = missing_capture_recovery_events(config)
+    recovery_keys = {event.event_key for event in recovery_events} | pending_keys
+    for event in recovery_events:
+        unique_events.setdefault(event.event_key, event)
     mapped_events = sorted(unique_events.values(), key=lambda event: (event.started_at, event.provider_call_id))
     known_recordings, known_calls = read_known_processed_ids(config.pipeline_root.parent)
     external_known_keys = {
         event.event_key
         for event in mapped_events
-        if (event.recording_ref and event.recording_ref in known_recordings)
-        or event.provider_call_id in known_calls
+        if event.event_key not in recovery_keys
+        and (
+            (event.recording_ref and event.recording_ref in known_recordings)
+            or event.provider_call_id in known_calls
+        )
     }
-    # Calls without a recording are deliberately not committed to the capture
-    # manifest: Mango may attach the recording later, and a future overlap poll
-    # must be able to pick it up.
     events = [
         event
         for event in mapped_events
-        if (event.recording_ref or event.recording_url) and event.event_key not in external_known_keys
+        if event.event_key not in external_known_keys
     ]
     summary = stage_capture_events(
         events=events,
@@ -697,13 +764,21 @@ def capture_mango_window(
         dry_run=False,
         sleep_sec=1.5,
     )
-    status = "ok" if summary.failed == 0 else "failed"
+    complete = (
+        summary.failed == 0
+        and summary.skipped_no_recording == 0
+        and not pending_keys
+        and pending_expired == 0
+    )
+    status = "ok" if complete else "partial"
     return {
         "status": status,
         "api_requests": api_requests,
         "api_rows_total": len(rows),
         "api_events_total": len(mapped_events),
         "api_events_already_known_external": len(external_known_keys),
+        "pending_recording_retries": len(pending_keys),
+        "pending_recording_expired": pending_expired,
         "api_events_without_recording": sum(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
@@ -711,16 +786,76 @@ def capture_mango_window(
     }
 
 
+def pending_recording_state(
+    config: CallsTwoProcessesConfig,
+    until: datetime,
+) -> tuple[Optional[datetime], set[str], int]:
+    if not config.capture_manifest.exists():
+        return None, set(), 0
+    threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    starts: list[datetime] = []
+    keys: set[str] = set()
+    expired = 0
+    for entry in CaptureManifestStore(config.capture_manifest).latest_by_event_key().values():
+        if entry.status != "skipped_no_recording":
+            continue
+        started = parse_datetime(entry.started_at)
+        if started < threshold:
+            expired += 1
+            continue
+        starts.append(started - timedelta(minutes=config.poll_overlap_minutes))
+        keys.add(entry.event_key)
+    return (min(starts) if starts else None), keys, expired
+
+
+def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[TelephonyCallEvent, ...]:
+    store = CaptureManifestStore(config.capture_manifest)
+    recovered: list[TelephonyCallEvent] = []
+    for entry in store.latest_by_event_key().values() if config.capture_manifest.exists() else ():
+        if entry.status not in {"downloaded", "failed"} or not entry.recording_id or not entry.local_audio_path:
+            continue
+        if entry.status == "downloaded" and manifest_audio_exists(entry):
+            continue
+        recovered.append(capture_event_from_manifest(entry))
+    return tuple(recovered)
+
+
+def capture_event_from_manifest(entry: ManifestEntry) -> TelephonyCallEvent:
+    try:
+        direction = Direction(entry.direction)
+    except ValueError:
+        direction = Direction.UNKNOWN
+    return TelephonyCallEvent(
+        tenant=TenantRef(entry.tenant_id),
+        provider=entry.provider,
+        provider_call_id=entry.provider_call_id,
+        started_at=parse_datetime(entry.started_at),
+        ended_at=parse_datetime(entry.ended_at) if entry.ended_at else None,
+        direction=direction,
+        client_phone=entry.client_phone,
+        manager_ref=entry.manager_ref,
+        recording_ref=entry.recording_id,
+        raw_payload={},
+    )
+
+
 def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     config.working_audio_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
+    skipped: dict[str, int] = {}
     latest = CaptureManifestStore(config.capture_manifest).latest_by_event_key() if config.capture_manifest.exists() else {}
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
             continue
         source = Path(entry.local_audio_path)
-        if not source.is_file() or source.stat().st_size <= 0:
+        # A manifest row promised audio that is gone or empty: count it, so a
+        # lost recording never reads as a clean run.
+        if not source.is_file():
+            skipped["audio_file_missing"] = skipped.get("audio_file_missing", 0) + 1
+            continue
+        if source.stat().st_size <= 0:
+            skipped["audio_file_empty"] = skipped.get("audio_file_empty", 0) + 1
             continue
         target = config.working_audio_dir / source.name
         action = hardlink_or_copy(source, target)
@@ -744,7 +879,13 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
         )
         writer.writeheader()
         writer.writerows(rows)
-    return {"audio_files": len(rows), "link_actions": actions, "metadata_rows": len(rows)}
+    return {
+        "audio_files": len(rows),
+        "link_actions": actions,
+        "metadata_rows": len(rows),
+        "skipped": skipped,
+        "skipped_total": sum(skipped.values()),
+    }
 
 
 def read_known_processed_ids(product_data_root: Path) -> tuple[set[str], set[str]]:
@@ -1181,14 +1322,33 @@ def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]
     manifest_sha = optional_text(manifest.get("sha256"))
     manifest_size = positive_int(manifest.get("size_bytes")) or None
     actual_size = config.ready_db.stat().st_size
+    try:
+        actual_quick_check = sqlite_check(config.ready_db, "quick_check")
+    except (OSError, sqlite3.DatabaseError):
+        actual_quick_check = "error"
+    errors: list[str] = []
+    if optional_text(manifest.get("status")) != "ready":
+        errors.append("status_not_ready")
+    if optional_text(manifest.get("quick_check")) != "ok" or actual_quick_check != "ok":
+        errors.append("quick_check_not_ok")
+    if not manifest_sha:
+        errors.append("sha256_missing")
+    elif manifest_sha != actual_sha:
+        errors.append("sha256_mismatch")
+    if manifest_size is None:
+        errors.append("size_missing")
+    elif manifest_size != actual_size:
+        errors.append("size_mismatch")
     return {
         "sha256": actual_sha,
         "size_bytes": actual_size,
         "manifest_sha256": manifest_sha,
         "manifest_size_bytes": manifest_size,
-        "manifest_mismatch": bool(
-            manifest_sha and (manifest_sha != actual_sha or manifest_size not in {None, actual_size})
-        ),
+        "manifest_quick_check": optional_text(manifest.get("quick_check")),
+        "actual_quick_check": actual_quick_check,
+        "manifest_valid": not errors,
+        "manifest_errors": errors,
+        "manifest_mismatch": any(error.endswith("_mismatch") for error in errors),
     }
 
 

@@ -19,7 +19,6 @@ DEFAULT_CAPTURE_FILENAME_TZ = ZoneInfo("Europe/Moscow")
 TERMINAL_EVENT_STATUSES = {
     "downloaded",
     "duplicate_recording",
-    "skipped_no_recording",
 }
 ASSET_STATUSES = {"downloaded"}
 
@@ -114,7 +113,7 @@ class CaptureManifestStore:
         for entry in self.read_entries():
             if entry.status not in ASSET_STATUSES or not entry.recording_id:
                 continue
-            if not entry.local_audio_path:
+            if not manifest_audio_exists(entry):
                 continue
             latest[entry.recording_id] = entry
         return latest
@@ -143,11 +142,15 @@ def stage_capture_events(
     for event in events:
         total += 1
         existing = latest_by_event.get(event.event_key)
-        if existing is not None and existing.status in TERMINAL_EVENT_STATUSES:
+        recording_id = event.recording_ref or event.recording_url
+        if existing is not None and existing.status in TERMINAL_EVENT_STATUSES and (
+            existing.status != "downloaded" or manifest_audio_exists(existing)
+        ):
             counts["already_manifested"] += 1
             continue
-
-        recording_id = event.recording_ref or event.recording_url
+        if existing is not None and existing.status == "skipped_no_recording" and not recording_id:
+            counts["already_manifested"] += 1
+            continue
         if not recording_id:
             entry = manifest_entry_from_event(event, status="skipped_no_recording")
             manifest_store.append(entry)
@@ -183,6 +186,8 @@ def stage_capture_events(
             continue
 
         try:
+            if existing is not None and existing.status == "failed" and target_path.exists():
+                target_path.unlink()
             reused_existing = target_path.exists() and target_path.stat().st_size > 0
             if not reused_existing:
                 if downloader is None:
@@ -225,6 +230,14 @@ def stage_capture_events(
         manifest_path=str(manifest_store.path),
         recordings_dir=str(recordings_dir),
     )
+
+
+def manifest_audio_exists(entry: ManifestEntry) -> bool:
+    path = Path(entry.local_audio_path) if entry.local_audio_path else None
+    try:
+        return bool(path and path.is_file() and path.stat().st_size > 0)
+    except OSError:
+        return False
 
 
 def manifest_entry_from_event(

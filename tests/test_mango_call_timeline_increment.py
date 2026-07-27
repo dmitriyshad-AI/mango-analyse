@@ -23,6 +23,16 @@ sys.modules[spec.name] = producer
 spec.loader.exec_module(producer)
 
 
+@pytest.mark.parametrize("schema", ["CREATE TABLE other (id INTEGER)", "CREATE TABLE call_records (id INTEGER)"])
+def test_ready_call_rows_rejects_missing_required_schema(tmp_path: Path, schema: str) -> None:
+    db = tmp_path / "broken.sqlite"
+    with sqlite3.connect(db) as con:
+        con.execute(schema)
+
+    with pytest.raises(ValueError, match="required call"):
+        producer.read_ready_call_rows(db, table="call_records", source_kind="call_records")
+
+
 def test_brand_evidence_is_deterministic_single_both_none() -> None:
     assert producer.detect_brand_evidence("Позвонили из центра Фотон") == ("single", ("foton",))
     assert producer.detect_brand_evidence("УНПК МФТИ") == ("single", ("unpk",))

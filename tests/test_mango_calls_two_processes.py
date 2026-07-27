@@ -25,6 +25,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     dead_letter_mass_failure,
     environment_preflight,
     module_probe_command,
+    missing_capture_recovery_events,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
@@ -33,11 +34,13 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     read_json,
     read_known_processed_ids,
     run_parallel_pipeline_workers,
+    run_process_a,
     run_process_b,
     run_command,
     compact_command_reports,
     pipeline_freshness,
     safe_daily_payload,
+    sha256_file,
     worker_command,
     write_json,
 )
@@ -86,7 +89,7 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
         assert caught.value.metadata["pid"] == first["pid"]
 
 
-def test_capture_does_not_commit_calls_without_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), api_window_hours=1)
     tenant = TenantRef("foton")
     no_recording = TelephonyCallEvent(
@@ -133,9 +136,10 @@ def test_capture_does_not_commit_calls_without_recording(monkeypatch: pytest.Mon
 
     class Summary:
         failed = 0
+        skipped_no_recording = 1
 
         def to_json_dict(self) -> dict[str, int]:
-            return {"downloaded": 1, "failed": 0}
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 1}
 
     def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
         captured.extend(events)
@@ -154,9 +158,104 @@ def test_capture_does_not_commit_calls_without_recording(monkeypatch: pytest.Mon
         datetime(2026, 7, 9, 2, tzinfo=timezone.utc),
     )
 
-    assert [event.provider_call_id for event in captured] == ["ready"]
+    assert [event.provider_call_id for event in captured] == ["late", "ready"]
+    assert report["status"] == "partial"
     assert report["api_requests"] == 2
     assert report["api_events_without_recording"] == 1
+
+
+def test_capture_reports_partial_when_one_download_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=1)
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            return []
+
+    class Summary:
+        failed = 1
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 1}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 9, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "partial"
+
+
+def test_pending_recording_widens_poll_window_beyond_normal_overlap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=12, pending_recording_retry_hours=24)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:pending-1",
+            provider_call_id="pending-1",
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="skipped_no_recording",
+        )
+    )
+    requested: list[datetime] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, *, since: datetime, **_: object) -> list[dict[str, str]]:
+            requested.append(since)
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 11, tzinfo=timezone.utc),
+    )
+
+    assert requested[0] == datetime(2026, 7, 9, 7, 45, tzinfo=timezone.utc)
+    assert report["pending_recording_retries"] == 1
+    assert report["status"] == "partial"
 
 
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
@@ -426,8 +525,11 @@ def create_ready_call_db(path: Path) -> None:
                 manager_name TEXT,
                 direction TEXT,
                 duration_sec REAL,
+                transcription_status TEXT,
+                resolve_status TEXT,
                 analysis_status TEXT,
                 analysis_json TEXT,
+                dead_letter_stage TEXT,
                 amocrm_contact_id TEXT,
                 amocrm_lead_id TEXT
             )
@@ -455,6 +557,16 @@ def create_ready_call_db(path: Path) -> None:
                 json.dumps({"call_type": "sales_call", "history_summary": "Обсуждался курс."}),
             ),
         )
+    write_json(
+        path.with_suffix(".manifest.json"),
+        {
+            "schema_version": "mango_calls_two_processes_v1",
+            "status": "ready",
+            "sha256": sha256_file(path),
+            "size_bytes": path.stat().st_size,
+            "quick_check": "ok",
+        },
+    )
 
 
 def test_process_b_returns_locked_instead_of_traceback(tmp_path: Path) -> None:
@@ -525,6 +637,28 @@ def test_process_b_fails_loud_when_import_validation_fails(tmp_path: Path) -> No
     report = run_process_b(config, producer_runner=fake_producer, import_runner=invalid_import)
     assert report["status"] == "failed"
     assert report["stop_reason"] == "import_validation_failed"
+
+
+def test_process_b_rejects_producer_event_count_mismatch(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+
+    def incomplete_producer(
+        _: CallsTwoProcessesConfig, out: Path, report: Path, since: str | None
+    ) -> dict[str, object]:
+        del since
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("", encoding="utf-8")
+        report.write_text("{}", encoding="utf-8")
+        return {"status": "ok", "rows_selected": 1, "events_written": 0}
+
+    result = run_process_b(config, producer_runner=incomplete_producer)
+
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "producer_event_count_mismatch"
+    assert read_json(config.process_b_cursor_path) == {}
 
 
 def test_process_b_normalizes_unexpected_exception_and_keeps_cursor(tmp_path: Path) -> None:
@@ -598,12 +732,20 @@ def test_process_b_does_not_skip_late_old_call_by_timestamp_cursor(tmp_path: Pat
     first = run_process_b(config)
     assert first["status"] == "ok"
     old_sha = read_json(config.process_b_cursor_path)["sha256"]
-    write_json(
-        config.ready_db.with_suffix(".manifest.json"),
-        {"sha256": old_sha, "size_bytes": config.ready_db.stat().st_size},
-    )
     with sqlite3.connect(config.ready_db) as con:
         con.execute("UPDATE call_records SET duration_sec=61 WHERE id=1")
+    # Re-seal the drop the way publish_ready_db does: the manifest describes the
+    # republished sqlite, while the process B cursor still holds the old sha.
+    write_json(
+        config.ready_db.with_suffix(".manifest.json"),
+        {
+            "status": "ready",
+            "quick_check": "ok",
+            "sha256": sha256_file(config.ready_db),
+            "size_bytes": config.ready_db.stat().st_size,
+        },
+    )
+    assert read_json(config.process_b_cursor_path)["sha256"] == old_sha
     seen_since: list[str | None] = []
 
     def fake_producer(_: CallsTwoProcessesConfig, out: Path, report: Path, since: str | None) -> dict[str, object]:
@@ -682,3 +824,348 @@ def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path)
     with plist_path.open("rb") as handle:
         payload = plistlib.load(handle)
     assert payload["StartInterval"] == 900
+
+
+def test_process_b_fails_loud_on_stale_drop_manifest(tmp_path: Path) -> None:
+    """A drop manifest that no longer matches the sealed sqlite must stop the
+    import instead of passing as success: `ready_drop_fingerprint` already
+    computes `manifest_mismatch`, and process B must honour it."""
+    config = replace(config_for(tmp_path), manifest_recheck_sleep_sec=0.0)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+    write_json(
+        config.ready_db.with_suffix(".manifest.json"),
+        {
+            "status": "ready",
+            "sha256": "0" * 64,
+            "size_bytes": config.ready_db.stat().st_size + 1,
+            "quick_check": "ok",
+        },
+    )
+
+    report = run_process_b(config)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "drop_manifest_mismatch"
+    assert report["counters"]["drop"]["manifest_mismatch"] is True
+    with sqlite3.connect(f"file:{config.timeline_db}?mode=ro", uri=True) as con:
+        written = int(
+            con.execute("SELECT COUNT(*) FROM timeline_events WHERE event_type='mango_call'").fetchone()[0]
+        )
+    assert written == 0
+    assert read_json(config.process_b_cursor_path) == {}
+
+
+@pytest.mark.parametrize("manifest", [None, {"status": "ready", "quick_check": "ok"}])
+def test_process_b_rejects_missing_or_incomplete_manifest(
+    tmp_path: Path, manifest: dict[str, str] | None
+) -> None:
+    config = replace(config_for(tmp_path), manifest_recheck_sleep_sec=0.0)
+    create_ready_call_db(config.ready_db)
+    manifest_path = config.ready_db.with_suffix(".manifest.json")
+    if manifest is None:
+        manifest_path.unlink()
+    else:
+        write_json(manifest_path, manifest)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+
+    report = run_process_b(config)
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "drop_manifest_invalid"
+    assert report["counters"]["drop"]["manifest_valid"] is False
+    assert read_json(config.process_b_cursor_path) == {}
+
+
+def test_prepare_ingest_inputs_counts_missing_capture_audio(tmp_path: Path) -> None:
+    """A manifest row marked `downloaded` whose audio no longer exists must be
+    counted in the report, not silently dropped."""
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = config_for(tmp_path)
+    config.recordings_dir.mkdir(parents=True, exist_ok=True)
+    present = config.recordings_dir / "present.mp3"
+    present.write_bytes(b"audio-bytes")
+    empty = config.recordings_dir / "empty.mp3"
+    empty.write_bytes(b"")
+
+    store = CaptureManifestStore(config.capture_manifest)
+
+    def entry(event_key: str, audio_path: str) -> ManifestEntry:
+        return ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=event_key,
+            provider_call_id=event_key,
+            recording_id=event_key,
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=audio_path,
+        )
+
+    store.append(entry("ok-1", str(present)))
+    store.append(entry("gone-1", str(config.recordings_dir / "vanished.mp3")))
+    store.append(entry("empty-1", str(empty)))
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 1
+    assert result["skipped"] == {"audio_file_missing": 1, "audio_file_empty": 1}
+    assert result["skipped_total"] == 2
+
+
+def test_process_a_processes_available_audio_then_marks_missing_partial(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    store = CaptureManifestStore(config.capture_manifest)
+
+    def entry(event_key: str, audio_path: str) -> ManifestEntry:
+        return ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=event_key,
+            provider_call_id=event_key,
+            recording_id=event_key,
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=audio_path,
+        )
+    present = config.recordings_dir / "present.mp3"
+    present.parent.mkdir(parents=True, exist_ok=True)
+    present.write_bytes(b"audio")
+    store.append(entry("present-1", str(present)))
+    store.append(entry("gone-1", str(config.recordings_dir / "missing.mp3")))
+    create_ready_call_db(config.working_db)
+    commands: list[str] = []
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+
+    def fake_command(command: list[str], _env: dict[str, str], _cwd: Path) -> dict[str, object]:
+        commands.append(" ".join(command))
+        return {"rc": 0, "command": command[-1]}
+
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        skip_workers=False,
+        command_runner=fake_command,
+    )
+
+    assert report["status"] == "partial"
+    assert report["stop_reason"] == "capture_audio_incomplete"
+    assert report["counters"]["metadata"]["skipped_total"] == 1
+    assert report["counters"]["drop"]["status"] == "ready"
+    assert config.ready_db.exists()
+    assert any(" ingest " in f" {command} " for command in commands)
+    assert read_json(config.cursor_path) == {}
+
+
+def test_process_a_partial_capture_publishes_available_work_and_advances_cursor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.prepare_ingest_inputs",
+        lambda _config: {"audio_files": 0, "skipped_total": 0},
+    )
+
+    report = run_process_a(
+        config,
+        since="2026-07-09T09:00:00+00:00",
+        until="2026-07-09T10:00:00+00:00",
+        skip_workers=True,
+        capture_runner=lambda *_args: {"status": "partial", "downloaded": 1, "failed": 1},
+    )
+
+    assert report["status"] == "partial"
+    assert report["counters"]["drop"]["status"] == "ready"
+    assert config.ready_db.exists()
+    assert read_json(config.cursor_path)["until"] == "2026-07-09T10:00:00+00:00"
+
+
+def test_missing_downloaded_capture_is_returned_for_recovery(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:gone-1",
+            provider_call_id="gone-1",
+            recording_id="recording-1",
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(config.recordings_dir / "missing.mp3"),
+        )
+    )
+
+    recovered = missing_capture_recovery_events(config)
+
+    assert len(recovered) == 1
+    assert recovered[0].provider_call_id == "gone-1"
+    assert recovered[0].recording_ref == "recording-1"
+
+
+def test_failed_capture_stays_in_recovery_queue(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:failed-1",
+            provider_call_id="failed-1",
+            recording_id="recording-1",
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="failed",
+            local_audio_path=str(config.recordings_dir / "failed.mp3"),
+        )
+    )
+
+    recovered = missing_capture_recovery_events(config)
+
+    assert [event.provider_call_id for event in recovered] == ["failed-1"]
+
+
+def test_recovery_is_not_filtered_by_known_processed_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=1)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:failed-1",
+            provider_call_id="failed-1",
+            recording_id="recording-1",
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="failed",
+            local_audio_path=str(config.recordings_dir / "failed.mp3"),
+        )
+    )
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 0}
+
+    captured: list[TelephonyCallEvent] = []
+
+    def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
+        captured.extend(events)
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.read_known_processed_ids",
+        lambda _root: ({"recording-1"}, {"failed-1"}),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    capture_mango_window(
+        config,
+        datetime(2026, 7, 9, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert [event.provider_call_id for event in captured] == ["failed-1"]
+
+
+def test_process_b_registers_call_audio_artifact(tmp_path: Path) -> None:
+    """The recording path is the only pointer a manager has back to the call;
+    it must land in `event_artifacts`, not only inside record_json."""
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+
+    report = run_process_b(config)
+    assert report["status"] == "ok"
+
+    with sqlite3.connect(f"file:{config.timeline_db}?mode=ro", uri=True) as con:
+        rows = con.execute(
+            "SELECT artifact_type, path FROM event_artifacts WHERE source_system='mango_processed_summary'"
+        ).fetchall()
+    assert [row[0] for row in rows] == ["call_audio"]
+    assert rows[0][1] == "/ignored/masked.mp3"
+
+
+def test_call_audio_artifact_path_never_reaches_a_projection(tmp_path: Path) -> None:
+    """Capture filenames embed the client phone, so the artifact path is PDn:
+    the read projection must expose only `has_path`, never the path itself."""
+    from mango_mvp.customer_timeline.read_api import project_artifact
+
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.timeline_allowed_root):
+        pass
+    assert run_process_b(config)["status"] == "ok"
+
+    with sqlite3.connect(f"file:{config.timeline_db}?mode=ro", uri=True) as con:
+        con.row_factory = sqlite3.Row
+        stored = [dict(row) for row in con.execute("SELECT * FROM event_artifacts")]
+    assert len(stored) == 1
+    assert stored[0]["path"]
+
+    projected = project_artifact(stored[0])
+    assert "path" not in projected
+    assert projected["has_path"] is True
+    assert stored[0]["path"] not in json.dumps(projected, ensure_ascii=False)

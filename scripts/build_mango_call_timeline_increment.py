@@ -212,10 +212,11 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only = ON")
         if not table_exists(con, table):
-            return []
+            raise ValueError(f"required call table missing in {path}: {table}")
         cols = table_columns(con, table)
-        if "analysis_json" not in cols:
-            return []
+        missing = {"analysis_status", "analysis_json"} - cols
+        if missing:
+            raise ValueError(f"required call columns missing in {path}: {sorted(missing)}")
         query = f"SELECT * FROM {table} WHERE analysis_status = 'done' AND analysis_json IS NOT NULL AND analysis_json != ''"
         result: list[SourceRow] = []
         for raw in con.execute(query):
@@ -320,6 +321,9 @@ def build_event_payload(
         "source_row_id": row.row_id,
         "source_filename": row.source_filename,
         "source_file": row.source_file,
+        # `mango_artifacts` reads `audio_path`; without it the timeline keeps no
+        # pointer back to the recording and `event_artifacts` stays empty.
+        "audio_path": row.source_file,
         "phone": normalize_phone(row.phone or ""),
         "call_at": normalize_datetime_text(row.started_at),
         "event_at": normalize_datetime_text(row.started_at),

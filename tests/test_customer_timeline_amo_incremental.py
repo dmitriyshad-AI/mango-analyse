@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.ingestion import TimelineSourceRecord
 from mango_mvp.customer_timeline.nightly_incremental import (
     AmoEventNormalizer,
     IncrementalSourceConfig,
+    JsonlTimelineNormalizer,
     normalizer_for_source,
 )
 
@@ -1011,3 +1012,67 @@ def test_fetch_endpoint_checkpointed_restarts_when_boundary_page_changes(tmp_pat
     assert stats["carried_over_from_checkpoint"] == 0
     assert [item["id"] for item in items] == ["x", "a"]
     assert client.calls == [1, 1, 1]
+
+
+def test_updated_lead_versions_get_distinct_event_at() -> None:
+    """Two versions of one AMO lead must carry different event_at, otherwise
+    `ORDER BY event_at DESC, event_id DESC` picks a version by id hash and a
+    stale card can present itself as the current one."""
+    link_index = {("amo_contact_id", "30"): ("customer:known-contact",)}
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    def card(updated_at: int, price: int) -> dict:
+        return {
+            "_embedded": {
+                "leads": [
+                    {
+                        "id": 42,
+                        "name": "Lead",
+                        "price": price,
+                        "created_at": 1782250000,
+                        "updated_at": updated_at,
+                        "_embedded": {"contacts": [{"id": 30}]},
+                    }
+                ]
+            }
+        }
+
+    first, _ = fetch_cards_source(
+        FakeAmoClient(card(1782250001, 100), expected_path="leads"),
+        path="leads",
+        embedded_key="leads",
+        entity_type="lead",
+        cursor_name="amo_leads_updated_at",
+        from_ts=NOW,
+        link_index=link_index,
+        config=config,
+    )
+    second, _ = fetch_cards_source(
+        FakeAmoClient(card(1782259999, 200), expected_path="leads"),
+        path="leads",
+        embedded_key="leads",
+        entity_type="lead",
+        cursor_name="amo_leads_updated_at",
+        from_ts=NOW,
+        link_index=link_index,
+        config=config,
+    )
+
+    assert first[0]["source_id"] != second[0]["source_id"]
+    assert first[0]["event_at"] == first[0]["updated_at"]
+    assert second[0]["event_at"] == second[0]["updated_at"]
+    assert first[0]["event_at"] != second[0]["event_at"]
+
+    normalizer = JsonlTimelineNormalizer("amocrm_snapshot")
+    events = [
+        normalizer.normalize(
+            TimelineSourceRecord(
+                source_system="amocrm_snapshot",
+                source_ref="amocrm:lead:42",
+                observed_at=NOW,
+                payload=row,
+            )
+        ).events[0]
+        for row in (first[0], second[0])
+    ]
+    assert events[0].event_at < events[1].event_at

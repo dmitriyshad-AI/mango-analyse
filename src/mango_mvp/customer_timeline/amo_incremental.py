@@ -784,6 +784,10 @@ def normalize_cards_source(
             "status": item.get("status_id"),
             "pipeline": item.get("pipeline_id"),
             "created_at": epoch_to_iso(item.get("created_at")) or updated_at,
+            # Without an explicit event_at the normalizer falls back to
+            # created_at, so every version of one card lands on the same
+            # timestamp and "ORDER BY event_at DESC" cannot tell them apart.
+            "event_at": updated_at,
             "updated_at": updated_at,
             "source_ref": f"amocrm:{entity_type}:{entity_id}",
             "record": scrub_item(item),

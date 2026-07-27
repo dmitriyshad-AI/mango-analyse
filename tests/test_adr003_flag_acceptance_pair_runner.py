@@ -41,6 +41,7 @@ def test_adr003_flag_acceptance_runner_isolates_sibling_package_flags() -> None:
 def test_adr003_flag_acceptance_runner_requires_model_led_application() -> None:
     text = _runner_text()
 
+    assert "set -euo pipefail" in text
     assert '[[ "$TARGET_FLAG" == "TELEGRAM_INTENT_MODEL_LED" ]]' in text
     assert "--require-intent-model-led-application" in text
     assert 'run_leg B "${base_env[@]}" "${package_flags_off[@]}"' in text

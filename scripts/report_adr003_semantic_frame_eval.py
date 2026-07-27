@@ -78,6 +78,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     md_path.write_text(render_markdown(report), encoding="utf-8")
     print(json.dumps({"ok": True, "json": str(json_path), "markdown": str(md_path)}, ensure_ascii=False, indent=2))
+    if args.require_intent_model_led_application and report["acceptance"]["status"] != "pass":
+        return 3
     return 0
 
 

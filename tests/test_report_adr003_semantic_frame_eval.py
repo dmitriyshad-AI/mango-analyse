@@ -182,6 +182,25 @@ def test_report_rejects_intent_model_led_exam_without_application(tmp_path: Path
     assert result["acceptance"]["status"] == "needs_review"
 
 
+def test_report_cli_fails_when_required_model_led_application_is_missing(tmp_path: Path) -> None:
+    on_transcripts = tmp_path / "on.jsonl"
+    out_dir = tmp_path / "report"
+    _write_jsonl(on_transcripts, [_dialog(include_frame=True)])
+
+    exit_code = report.main(
+        [
+            "--on-transcripts",
+            str(on_transcripts),
+            "--out-dir",
+            str(out_dir),
+            "--require-intent-model-led-application",
+        ]
+    )
+
+    assert exit_code == 3
+    assert (out_dir / "adr003_semantic_frame_eval_report.json").is_file()
+
+
 def test_report_frame_emission_excludes_p0_preblock_timeout_and_model_not_called_from_denominator(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
     dialog = _dialog(include_frame=True)

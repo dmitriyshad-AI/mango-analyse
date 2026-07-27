@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, NoReturn, Optional, Sequence
 
 from mango_mvp.customer_timeline.amo_incremental import AmoIncrementalConfig, run_amo_incremental
 from mango_mvp.customer_timeline.nightly_incremental import (
@@ -1160,6 +1160,9 @@ def failed_step_report(
     }
     if error is not None:
         payload["error_type"] = type(error).__name__
+        diagnostics_path = getattr(error, "diagnostics_path", None)
+        if diagnostics_path:
+            payload["error_diagnostics_path"] = str(diagnostics_path)
     return payload
 
 
@@ -1364,28 +1367,83 @@ def run_tallanto_money_api_step(
         "--actor",
         str(config.get("actor") or "customer_timeline_nightly_tallanto_money"),
     ]
-    proc = subprocess.run(
-        command,
-        cwd=importer_script.parents[1],
-        env=_repo_python_env(importer_script.parents[1]),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=step_timeout_seconds,
-    )
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=importer_script.parents[1],
+            env=_repo_python_env(importer_script.parents[1]),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=step_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _raise_tallanto_money_failure(
+            timeline_db,
+            allowed_root,
+            failure_kind="timeout",
+            stdout=exc.stdout,
+            stderr=exc.stderr,
+            cause=exc,
+        )
     if proc.returncode != 0:
-        raise RuntimeError(f"Tallanto money API importer failed with rc={proc.returncode}")
+        _raise_tallanto_money_failure(
+            timeline_db, allowed_root, failure_kind="nonzero_exit",
+            returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
+        )
     try:
         report = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Tallanto money API importer returned invalid JSON") from exc
+    except json.JSONDecodeError:
+        _raise_tallanto_money_failure(
+            timeline_db, allowed_root, failure_kind="invalid_json",
+            returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
+        )
     if not isinstance(report, Mapping):
-        raise RuntimeError("Tallanto money API importer returned a non-object report")
+        _raise_tallanto_money_failure(
+            timeline_db, allowed_root, failure_kind="non_object_report",
+            returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
+        )
     safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
     if safety.get("write_tallanto") is not False or safety.get("write_product_timeline_db") is not True:
-        raise RuntimeError("Tallanto money API importer safety contract failed")
+        _raise_tallanto_money_failure(
+            timeline_db, allowed_root, failure_kind="safety_contract_failed",
+            returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
+        )
     return report
+
+
+def _raise_tallanto_money_failure(
+    timeline_db: Path,
+    allowed_root: Path,
+    *,
+    failure_kind: str,
+    returncode: int | None = None,
+    stdout: str | bytes | None = None,
+    stderr: str | bytes | None = None,
+    cause: Exception | None = None,
+) -> NoReturn:
+    stdout_bytes = stdout if isinstance(stdout, bytes) else str(stdout or "").encode("utf-8", errors="replace")
+    stderr_bytes = stderr if isinstance(stderr, bytes) else str(stderr or "").encode("utf-8", errors="replace")
+    diagnostics_path = guard_customer_timeline_output_path(
+        timeline_db.parent / "tallanto_money_api_failure.json", allowed_root
+    )
+    write_json(
+        diagnostics_path,
+        {
+            "schema_version": "tallanto_money_api_failure_v1",
+            "failure_kind": failure_kind,
+            "returncode": returncode,
+            "stdout_bytes": len(stdout_bytes),
+            "stderr_bytes": len(stderr_bytes),
+            "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+            "raw_output_persisted": False,
+        },
+    )
+    error = cause or RuntimeError(f"Tallanto money API importer failed: {failure_kind}")
+    error.diagnostics_path = diagnostics_path  # type: ignore[attr-defined]
+    raise error
 
 
 def run_mango_processed_sweep(
@@ -2249,6 +2307,9 @@ def _proof_tallanto_payments_subscriptions(ctx: "_SourceProofContext") -> Mappin
     if status != "ok":
         return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=event_ts,
                       reason=f"tallanto_money_api_incremental step status={status}")
+    if not records:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=event_ts,
+                      reason="tallanto_money_api_incremental produced no Tallanto payment or subscription events")
     return _proof(
         label, ctx, status="ok", records=records, cursor_or_max_event_at=event_ts,
         reason="tallanto_money_api_incremental ok; timeline_events count for tallanto_crm_call",
@@ -2267,6 +2328,9 @@ def _proof_tallanto_attendance(ctx: "_SourceProofContext") -> Mapping[str, Any]:
     if status != "ok":
         return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
                       reason=f"tallanto_attendance_api_incremental step status={status}")
+    if not records:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=cursor_ts,
+                      reason="tallanto_attendance_api_incremental has no persisted attendance events")
     if not _cursor_is_fresh(cursor, now=ctx.now):
         return _proof(
             label, ctx, status="stale", records=records, cursor_or_max_event_at=cursor_ts,

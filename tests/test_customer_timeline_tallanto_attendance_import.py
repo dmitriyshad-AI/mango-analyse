@@ -860,6 +860,71 @@ def test_attendance_api_conflict_never_creates_a_strong_link(tmp_path: Path) -> 
         assert con.execute("SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'").fetchone()[0] == 0
 
 
+def test_attendance_api_empty_first_run_does_not_advance_cursor(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    CustomerTimelineSQLiteStore(db, allowed_root=tmp_path).close()
+
+    class EmptyAttendanceApi(FakeAttendanceApi):
+        def request(self, *, module, http_method, query_items, **_kwargs):
+            self.http_methods.add(http_method)
+            return {"entry_list": [], "result_count": 0, "total_count": 0}
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=EmptyAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "partial"
+    assert report["validation_errors"] == ["no_attendance_events"]
+    assert report["cursor_after"] == report["cursor_before"]
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 0
+
+
+def test_attendance_api_empty_repeat_with_existing_history_is_valid_no_op(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:student",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=now,
+                source_system="tallanto_attendance_api",
+                source_id="existing-api-attendance",
+                direction=TimelineDirection.SYSTEM,
+                created_at=now,
+            )
+        )
+
+    class EmptyAttendanceApi(FakeAttendanceApi):
+        def request(self, *, module, http_method, query_items, **_kwargs):
+            self.http_methods.add(http_method)
+            return {"entry_list": [], "result_count": 0, "total_count": 0}
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=EmptyAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "completed"
+    assert report["validation_ok"] is True
+    assert report["validation_errors"] == []
+    assert report["counts"]["existing_events_before"] == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 1
+
+
 def _identity_link_count(db: Path) -> int:
     with sqlite3.connect(db) as con:
         return int(con.execute("SELECT count(*) FROM identity_links").fetchone()[0])

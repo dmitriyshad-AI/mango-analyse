@@ -435,3 +435,8 @@ def test_tallanto_cards_sync_skips_id_less_contact_and_counts_unmatched(tmp_path
     assert report["checked_with_id"] == 1
     assert report["skipped_missing_id"] == 1
     assert report["unmatched"] == 1
+    assert report["validation_ok"] is False
+    assert report["apply_blocked"] is True
+    assert report["blocked_reason"] == "contacts_missing_stable_id"
+    assert not (tmp_path / "out/tallanto_cards_sources/tallanto_contacts_daily.jsonl").exists()
+    assert load_tallanto_cards_checkpoint(tmp_path / "out")

@@ -512,6 +512,28 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             continue
         mapped_rows.append(mapped)
 
+    if len(mapped_rows) != len(all_items):
+        return _finish(
+            out_root,
+            started=started,
+            timeline_db=timeline_db,
+            extra={
+                "validation_ok": False,
+                "apply_blocked": True,
+                "blocked_reason": "contacts_missing_stable_id",
+                "complete": False,
+                "checked": len(all_items),
+                "checked_with_id": len(mapped_rows),
+                "skipped_missing_id": skipped_missing_id,
+                "updated": 0,
+                "unchanged": 0,
+                "unmatched": skipped_missing_id,
+                "conflict": 0,
+                "cursor_time": None,
+                "safety": _safety(staging_db_write=False),
+            },
+        )
+
     source_path = out_root / "tallanto_cards_sources" / "tallanto_contacts_daily.jsonl"
     write_jsonl(source_path, mapped_rows)
 

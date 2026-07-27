@@ -21,6 +21,9 @@ from mango_mvp.customer_timeline import (
     IdentityLinkType,
     IdentityMatchClass,
     IdentityStatus,
+    TimelineDirection,
+    TimelineEvent,
+    TimelineEventType,
 )
 from mango_mvp.customer_timeline.nightly_service import (
     NightlyServiceStep,
@@ -711,6 +714,178 @@ def test_nightly_service_runs_tallanto_money_api_importer_without_exposing_env(
     assert isinstance(command, list)
     assert command[command.index("--tallanto-api-env") + 1] == str(env_file)
     assert "secret" not in " ".join(command)
+
+
+def test_tallanto_money_failure_diagnostic_contains_no_raw_output(tmp_path: Path, monkeypatch) -> None:
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    timeline_db = tmp_path / "staging.sqlite"
+    raw_stdout = "parent@example.com +7 916 111-22-33"
+    raw_stderr = "authorization=super-secret-token"
+    monkeypatch.setattr(
+        nightly_service_module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 9, raw_stdout, raw_stderr),
+    )
+    step = NightlyServiceStep(
+        name="tallanto_money_api_incremental",
+        kind="tallanto_money_api",
+        tallanto_money_api_config={
+            "importer_script": str(importer),
+            "tallanto_env_file": str(env_file),
+            "timeline_db": str(timeline_db),
+            "allowed_root": str(tmp_path),
+            "apply": True,
+        },
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        run_tallanto_money_api_step(
+            step,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+        )
+
+    diagnostics_path = Path(raised.value.diagnostics_path)
+    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert payload["returncode"] == 9
+    assert payload["raw_output_persisted"] is False
+    assert raw_stdout not in diagnostics_path.read_text(encoding="utf-8")
+    assert raw_stderr not in diagnostics_path.read_text(encoding="utf-8")
+    assert diagnostics_path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    ("stdout", "failure_kind"),
+    (
+        ("not-json", "invalid_json"),
+        ("[]", "non_object_report"),
+        (json.dumps({"safety": {"write_tallanto": True}}), "safety_contract_failed"),
+    ),
+)
+def test_tallanto_money_contract_failures_create_safe_diagnostics(
+    tmp_path: Path, monkeypatch, stdout: str, failure_kind: str
+) -> None:
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("token=secret\n", encoding="utf-8")
+    timeline_db = tmp_path / "staging.sqlite"
+    monkeypatch.setattr(
+        nightly_service_module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout, "parent@example.com"),
+    )
+    step = NightlyServiceStep(
+        name="tallanto_money_api_incremental",
+        kind="tallanto_money_api",
+        tallanto_money_api_config={
+            "importer_script": str(importer), "tallanto_env_file": str(env_file),
+            "timeline_db": str(timeline_db), "allowed_root": str(tmp_path), "apply": True,
+        },
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        run_tallanto_money_api_step(step, timeline_db=timeline_db, allowed_root=tmp_path, tenant_id="foton")
+
+    payload = json.loads(Path(raised.value.diagnostics_path).read_text(encoding="utf-8"))
+    assert payload["failure_kind"] == failure_kind
+    assert payload["raw_output_persisted"] is False
+
+
+def test_tallanto_money_timeout_creates_safe_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("token=secret\n", encoding="utf-8")
+    timeline_db = tmp_path / "staging.sqlite"
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 5, output="+79161112233", stderr="secret@example.com")
+
+    monkeypatch.setattr(nightly_service_module.subprocess, "run", timeout)
+    step = NightlyServiceStep(
+        name="tallanto_money_api_incremental",
+        kind="tallanto_money_api",
+        tallanto_money_api_config={
+            "importer_script": str(importer), "tallanto_env_file": str(env_file),
+            "timeline_db": str(timeline_db), "allowed_root": str(tmp_path), "apply": True,
+        },
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        run_tallanto_money_api_step(step, timeline_db=timeline_db, allowed_root=tmp_path, tenant_id="foton")
+
+    payload = json.loads(Path(raised.value.diagnostics_path).read_text(encoding="utf-8"))
+    assert payload["failure_kind"] == "timeout"
+    assert payload["raw_output_persisted"] is False
+
+
+def test_required_tallanto_money_proof_rejects_success_without_events() -> None:
+    result = nightly_service_module.check_required_manifest_sources(
+        [{"name": "tallanto_money_api_incremental", "status": "ok"}],
+        ["tallanto_payments_subscriptions"],
+        source_counts=[],
+        now=NOW,
+    )
+
+    proof = result["proofs"]["tallanto_payments_subscriptions"]
+    assert proof["status"] == "missing"
+    assert result["missing"] == ["tallanto_payments_subscriptions"]
+
+
+def test_nightly_service_reports_tallanto_money_diagnostics_path(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# test importer\n", encoding="utf-8")
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    monkeypatch.setattr(
+        nightly_service_module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 9, "raw phone +79161112233", "raw token"),
+    )
+    config_path = tmp_path / "nightly.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "tallanto_money_api_incremental",
+                        "kind": "tallanto_money_api",
+                        "required": True,
+                        "config": {
+                            "importer_script": str(importer),
+                            "tallanto_env_file": str(env_file),
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "apply": True,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    step_report = report["steps"][0]
+    assert step_report["status"] == "failed"
+    assert Path(step_report["error_diagnostics_path"]).is_file()
 
 
 def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path: Path) -> None:
@@ -1793,6 +1968,23 @@ def _seed_tallanto_attendance_cursor(db_path: Path, *, updated_at: datetime) -> 
         con.commit()
 
 
+def _seed_tallanto_attendance_event(db_path: Path, *, allowed_root: Path) -> None:
+    now = datetime.now(timezone.utc)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:nightly-1",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=now,
+                source_system="tallanto_attendance_api",
+                source_id="existing-attendance",
+                direction=TimelineDirection.SYSTEM,
+                created_at=now,
+            )
+        )
+
+
 def _tallanto_attendance_config(tmp_path: Path, db_path: Path) -> dict:
     return {
         "timeline_db": str(db_path),
@@ -1825,6 +2017,7 @@ def test_nightly_service_required_source_proof_passes_on_fresh_no_op(
     db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
     db_path.parent.mkdir(parents=True)
     seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_event(db_path, allowed_root=tmp_path)
     _seed_tallanto_attendance_cursor(db_path, updated_at=datetime.now(timezone.utc))
     config_path = tmp_path / "tallanto_api_service.json"
     config_path.write_text(
@@ -1851,6 +2044,28 @@ def test_nightly_service_required_source_proof_passes_on_fresh_no_op(
     assert report["snapshot_manifest"]["latest_published"] is True
 
 
+def test_nightly_service_required_attendance_proof_rejects_fresh_cursor_without_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_cursor(db_path, updated_at=datetime.now(timezone.utc))
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(json.dumps(_tallanto_attendance_config(tmp_path, db_path)), encoding="utf-8")
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {"validation_ok": True, "counts": {}, "safety": {"writes_tallanto": False}},
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proof = report["required_sources_check"]["proofs"]["tallanto_attendance"]
+    assert proof["status"] == "missing"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
 def test_nightly_service_required_source_proof_fails_on_stale_no_op(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1861,6 +2076,7 @@ def test_nightly_service_required_source_proof_fails_on_stale_no_op(
     db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
     db_path.parent.mkdir(parents=True)
     seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_event(db_path, allowed_root=tmp_path)
     _seed_tallanto_attendance_cursor(
         db_path, updated_at=datetime.now(timezone.utc) - timedelta(hours=48)
     )

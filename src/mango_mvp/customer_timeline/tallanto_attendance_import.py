@@ -249,6 +249,14 @@ def run_tallanto_attendance_api_increment(
     counters["relationships_from_class_overlap"] = len(overlap_relations)
     counters["relationships_unique"] = len(relationships)
     counters["events_resolved"] = len(events)
+    with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
+        existing_event_count = int(
+            con.execute(
+                "SELECT count(*) FROM timeline_events WHERE tenant_id=? AND source_system=?",
+                (config.tenant_id, API_SOURCE_SYSTEM),
+            ).fetchone()[0]
+        )
+    counters["existing_events_before"] = existing_event_count
     # Without a durable retry queue, advancing past an unmatched relationship
     # would lose it permanently once the identity appears later.
     blocking_reasons = (
@@ -258,9 +266,11 @@ def run_tallanto_attendance_api_increment(
     )
     blocking_unresolved_count = sum(counters[reason] for reason in blocking_reasons)
     validation_errors = [reason for reason in blocking_reasons if counters[reason]]
+    if not events and not existing_event_count and not validation_errors:
+        validation_errors.append("no_attendance_events")
     unresolved_count = len(unresolved)
-    run_status = "partial" if blocking_unresolved_count else "completed"
-    cursor_may_advance = config.apply and not blocking_unresolved_count
+    run_status = "partial" if validation_errors else "completed"
+    cursor_may_advance = config.apply and not validation_errors
 
     if config.apply:
         with CustomerTimelineSQLiteStore(db, allowed_root=root) as store:

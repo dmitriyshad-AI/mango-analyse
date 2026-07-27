@@ -1068,6 +1068,7 @@ def service_step_from_json(
             refresh_widget_links=bool(raw_config.get("refresh_widget_links", True)),
             actor=str(raw_config.get("actor") or actor),
             out_path=Path(str(raw_config["out_path"])) if raw_config.get("out_path") else None,
+            checkpoint_dir=Path(str(raw_config["checkpoint_dir"])) if raw_config.get("checkpoint_dir") else None,
             limits=WappiFetchLimits(
                 chat_limit_per_profile=int(raw_config.get("chat_limit_per_profile", 5000)),
                 messages_per_chat=int(raw_config.get("messages_per_chat", 100)),
@@ -1205,6 +1206,8 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 guard_customer_timeline_output_path(step.wappi_history_config.timeline_db, allowed_root)
                 if step.wappi_history_config.widget_link_db is not None:
                     guard_customer_timeline_output_path(step.wappi_history_config.widget_link_db, allowed_root)
+                if step.wappi_history_config.checkpoint_dir is not None:
+                    guard_customer_timeline_output_path(step.wappi_history_config.checkpoint_dir, allowed_root)
             if step.family_graph_config is not None:
                 guard_customer_timeline_output_path(step.family_graph_config.timeline_db, allowed_root)
                 if step.family_graph_config.out_path is not None:

@@ -579,6 +579,7 @@ def build_service_config(
                 "sleep_seconds": 0.2,
                 "show_all_chats": True,
                 "complete_message_history": True,
+                "checkpoint_dir": str(out_root / "wappi_history_checkpoint"),
             },
         }
     )

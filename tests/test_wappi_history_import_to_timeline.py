@@ -1919,7 +1919,8 @@ def test_wappi_history_duplicate_chat_id_between_pages_is_deduplicated(tmp_path:
     stats = report["profiles"]["p-tg"]
     assert stats["duplicate_chat_ids"] >= 1
     assert stats["chat_snapshot_drift_detected"] is False
-    assert report["validation_ok"] is True
+    assert report["validation_ok"] is False
+    assert any(marker.endswith("pagination_drift_detected") for marker in report["limit_hits"])
     assert len([call for call in client.calls if call.get("kind") == "messages"]) == 1
 
 

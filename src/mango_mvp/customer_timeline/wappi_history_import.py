@@ -236,6 +236,7 @@ class WappiHistoryImportConfig:
     actor: str = "wappi_history_timeline_import"
     idempotency_key: Optional[str] = None
     out_path: Optional[Path] = None
+    checkpoint_dir: Optional[Path] = None
     limits: WappiFetchLimits = field(default_factory=WappiFetchLimits)
 
     def __post_init__(self) -> None:
@@ -269,6 +270,206 @@ class WappiHistoryImportConfig:
             raise ValueError("Widget coverage-only mode requires widget_link_db")
         if self.widget_coverage_only and not self.refresh_widget_links:
             raise ValueError("Widget coverage-only mode must refresh the chat catalogue")
+        checkpoint_dir = guard_customer_timeline_output_path(self.checkpoint_dir, root) if self.checkpoint_dir else None
+        object.__setattr__(self, "checkpoint_dir", checkpoint_dir)
+        if checkpoint_dir is not None and not self.limits.complete_message_history:
+            raise ValueError("Wappi fetch checkpoint requires complete_message_history=True")
+
+
+# --- Wappi fetch checkpoint -------------------------------------------------
+# Resumes a large history load from the last CONFIRMED chat instead of page 1.
+# Reuses the checkpoint pattern already in this package (amo_incremental.py,
+# tallanto_cards_sync.py): universe fingerprint, honest reset reason, atomic
+# write, and "a partial pass never confirms freshness". Deliberately identity
+# based, not positional: the catalogue is re-listed every run (cheap) and only
+# already-CONFIRMED chats are skipped, so a reordered catalogue cannot make the
+# importer silently skip an unread chat. Stores digests and offsets only --
+# never message text, names, phones, emails or tokens.
+WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION = "customer_timeline_wappi_history_checkpoint_v1"
+
+
+def wappi_history_checkpoint_path(checkpoint_dir: Path) -> Path:
+    return Path(checkpoint_dir) / "wappi_history_checkpoint.json"
+
+
+def wappi_checkpoint_token(value: str) -> str:
+    # A Telegram chat_id is the peer's user id: keep only a one-way digest.
+    return stable_digest({"wappi_chat": str(value or "")})[:32]
+
+
+def wappi_checkpoint_anchor(tokens: Sequence[str]) -> str:
+    # Anchors are computed over id sequences only, never over raw payloads:
+    # unread counters and message previews would otherwise force a reset every run.
+    return stable_digest({"tokens": list(tokens)})
+
+
+def wappi_fetch_universe_fingerprint(
+    profile: WappiProfileSpec, limits: WappiFetchLimits, *, tenant_id: str = ""
+) -> str:
+    return stable_digest(
+        {
+            "tenant_id": tenant_id,
+            "profile_id": profile.profile_id,
+            "brand": profile.brand,
+            "channel": profile.channel,
+            "show_all_chats": bool(limits.show_all_chats),
+            "page_size": int(limits.page_size),
+            "chat_limit_per_profile": int(limits.chat_limit_per_profile),
+            "messages_per_chat": int(limits.messages_per_chat),
+            "complete_message_history": bool(limits.complete_message_history),
+        }
+    )
+
+
+def load_wappi_history_checkpoint(checkpoint_dir: Optional[Path]) -> Mapping[str, Any]:
+    if checkpoint_dir is None:
+        return {}
+    try:
+        payload = json.loads(wappi_history_checkpoint_path(checkpoint_dir).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    if payload.get("schema_version") != WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION:
+        return {}
+    profiles_state = payload.get("profiles")
+    if not isinstance(profiles_state, Mapping):
+        return {}
+    # A corrupted entry must degrade like a corrupted file: be ignored, not crash the
+    # nightly step into the same failure every single night.
+    return {"schema_version": payload.get("schema_version"), "profiles": {
+        str(key): entry
+        for key, entry in profiles_state.items()
+        if isinstance(entry, Mapping)
+        and isinstance(entry.get("chats_done") or [], list)
+        and isinstance(entry.get("active_chat") or {}, Mapping)
+        and _wappi_active_chat_is_valid(entry.get("active_chat"))
+        and _wappi_safe_int(entry.get("timeline_rows")) is not None
+        and _wappi_safe_int(entry.get("catalog_next_offset")) is not None
+    }}
+
+
+def _wappi_safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wappi_active_chat_is_valid(value: Any) -> bool:
+    if value in (None, {}):
+        return True
+    if not isinstance(value, Mapping):
+        return False
+    offset = _wappi_safe_int(value.get("message_offset"))
+    return bool(
+        isinstance(value.get("chat"), str)
+        and isinstance(value.get("page_anchor") or "", str)
+        and offset is not None
+        and offset >= 0
+    )
+
+
+def save_wappi_history_checkpoint(checkpoint_dir: Optional[Path], profiles: Mapping[str, Any]) -> None:
+    if checkpoint_dir is None:
+        return
+    from mango_mvp.customer_timeline.amo_incremental import _atomic_write_text
+
+    path = wappi_history_checkpoint_path(checkpoint_dir)
+    if not profiles:
+        if path.exists():
+            path.unlink()
+        return
+    _atomic_write_text(
+        path,
+        json.dumps(
+            {"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": dict(profiles)},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
+
+
+def count_wappi_timeline_rows(
+    db_path: Path, *, tenant_id: str, profiles: Sequence[WappiProfileSpec] = ()
+) -> dict[str, int]:
+    """Confirmed rows per checkpoint key. Counting per channel would let a growing
+    sibling profile mask rows another profile on the same channel has lost."""
+    counts = {f"{profile.source_system}:{profile.profile_id}": 0 for profile in profiles}
+    if not counts or not Path(db_path).exists():
+        return counts
+    con = open_readonly_sqlite(db_path)
+    try:
+        if not sqlite_table_exists(con, "timeline_events"):
+            return counts
+        for profile in profiles:
+            prefix = f"{profile.profile_id}:"
+            row = con.execute(
+                "SELECT COUNT(*) FROM timeline_events "
+                "WHERE tenant_id = ? AND source_system = ? AND substr(source_id, 1, ?) = ?",
+                (tenant_id, profile.source_system, len(prefix), prefix),
+            ).fetchone()
+            counts[f"{profile.source_system}:{profile.profile_id}"] = int(row[0]) if row else 0
+    finally:
+        con.close()
+    return counts
+
+
+def wappi_timeline_state(
+    db_path: Path, *, tenant_id: str, profiles: Sequence[WappiProfileSpec] = ()
+) -> dict[str, Mapping[str, Any]]:
+    state = {
+        f"{profile.source_system}:{profile.profile_id}": {"rows": 0, "source_digest": stable_digest([])}
+        for profile in profiles
+    }
+    if not state or not Path(db_path).exists():
+        return state
+    con = open_readonly_sqlite(db_path)
+    try:
+        if not sqlite_table_exists(con, "timeline_events"):
+            return state
+        for profile in profiles:
+            prefix = f"{profile.profile_id}:"
+            source_ids = [
+                str(row[0])
+                for row in con.execute(
+                    "SELECT source_id FROM timeline_events "
+                    "WHERE tenant_id = ? AND source_system = ? AND substr(source_id, 1, ?) = ? "
+                    "ORDER BY source_id",
+                    (tenant_id, profile.source_system, len(prefix), prefix),
+                )
+            ]
+            state[f"{profile.source_system}:{profile.profile_id}"] = {
+                "rows": len(source_ids),
+                "source_digest": stable_digest(source_ids),
+            }
+    finally:
+        con.close()
+    return state
+
+
+def usable_wappi_checkpoint_profiles(
+    checkpoint: Mapping[str, Any], *, db_row_counts: Mapping[str, int],
+    db_source_digests: Optional[Mapping[str, str]] = None,
+) -> dict[str, Any]:
+    """Drop entries whose staging DB lost the rows the checkpoint calls confirmed."""
+    profiles_state = checkpoint.get("profiles") if isinstance(checkpoint, Mapping) else None
+    usable: dict[str, Any] = {}
+    if not isinstance(profiles_state, Mapping):
+        return usable
+    for key, entry in profiles_state.items():
+        if not isinstance(entry, Mapping):
+            continue
+        if int(entry.get("timeline_rows") or 0) > int(db_row_counts.get(str(key), 0)):
+            continue
+        if db_source_digests is not None and str(entry.get("timeline_source_digest") or "") != str(
+            db_source_digests.get(str(key)) or ""
+        ):
+            continue
+        usable[str(key)] = dict(entry)
+    return usable
 
 
 WAPPI_WIDGET_LINK_SCHEMA = "wappi_amo_link_map_v3"
@@ -1316,6 +1517,10 @@ class WappiFetchStats:
     pagination_drift_detected: bool = False
     chat_snapshot_drift_detected: bool = False
     message_page_drift_detected: bool = False
+    checkpoint_network_error: bool = False
+    checkpoint_no_progress: bool = False
+    checkpoint_chats_skipped: int = 0
+    checkpoint_chats_confirmed: int = 0
     resolution_status_counts: Counter[str] = field(default_factory=Counter)
     coverage_counts: Counter[str] = field(default_factory=Counter)
     amo_auto_status_counts: Counter[str] = field(default_factory=Counter)
@@ -1350,6 +1555,10 @@ class WappiFetchStats:
             "pagination_drift_detected": self.pagination_drift_detected,
             "chat_snapshot_drift_detected": self.chat_snapshot_drift_detected,
             "message_page_drift_detected": self.message_page_drift_detected,
+            "checkpoint_network_error": self.checkpoint_network_error,
+            "checkpoint_no_progress": self.checkpoint_no_progress,
+            "checkpoint_chats_skipped": self.checkpoint_chats_skipped,
+            "checkpoint_chats_confirmed": self.checkpoint_chats_confirmed,
             "resolution_status_counts": dict(self.resolution_status_counts),
             "coverage_counts": dict(self.coverage_counts),
             "amo_auto_status_counts": dict(self.amo_auto_status_counts),
@@ -1776,12 +1985,30 @@ def run_wappi_history_import(
     widget_prime_report = resolver.prime_widget_chat_resolutions(profiles)
     message_identity_prime_report = resolver.prime_existing_message_identity_resolutions(profiles)
     provisional_prime_report = resolver.prime_provisional_chat_resolutions(profiles)
+    checkpoint_state: Mapping[str, Any] = {}
+    next_checkpoint: Optional[dict[str, Any]] = None
+    if config.checkpoint_dir is not None:
+        next_checkpoint = {}
+        current_timeline_state = wappi_timeline_state(
+            config.timeline_db, tenant_id=config.tenant_id, profiles=profiles
+        )
+        checkpoint_state = {
+            "profiles": usable_wappi_checkpoint_profiles(
+                load_wappi_history_checkpoint(config.checkpoint_dir),
+                db_row_counts={key: int(value["rows"]) for key, value in current_timeline_state.items()},
+                db_source_digests={
+                    key: str(value["source_digest"]) for key, value in current_timeline_state.items()
+                },
+            )
+        }
     records, fetch_stats_by_profile = fetch_wappi_history_records(
         client=client,
         profiles=profiles,
         resolver=resolver,
         limits=config.limits,
         tenant_id=config.tenant_id,
+        checkpoint=checkpoint_state,
+        next_checkpoint=next_checkpoint,
     )
     network_source_ids = {
         str(record.payload.get("timeline_source_id") or "")
@@ -1903,7 +2130,13 @@ def run_wappi_history_import(
     limit_hits = [
         f"{profile_id}:{field}"
         for profile_id, report in sorted(profile_reports.items())
-        for field in ("chat_limit_hit", "message_limit_hit", "request_limit_hit", "pagination_drift_detected")
+        for field in (
+            "chat_limit_hit",
+            "message_limit_hit",
+            "request_limit_hit",
+            "pagination_drift_detected",
+            "checkpoint_no_progress",
+        )
         if report.get(field)
     ]
     limit_hits.extend(widget_setup_errors)
@@ -1941,6 +2174,23 @@ def run_wappi_history_import(
     ):
         limit_hits.append("provenance_drift")
 
+    # A checkpointed run is allowed to stop early and still WRITE what it confirmed
+    # (that is the whole point: otherwise nothing ever accumulates). It is never
+    # allowed to claim freshness -- validation_ok stays False until the checkpoint
+    # reports terminal complete, so the nightly service will not publish "latest".
+    checkpoint_complete = next_checkpoint is None or all(
+        bool(entry.get("complete")) for entry in next_checkpoint.values()
+    )
+    checkpoint_deferred: list[str] = []
+    if next_checkpoint is not None and not checkpoint_complete:
+        checkpoint_deferred = [
+            marker
+            for marker in limit_hits
+            if marker.rsplit(":", 1)[-1]
+            in {"request_limit_hit", "empty_profile", "widget_personal_chat_coverage_incomplete"}
+        ]
+    blocking_limit_hits = [marker for marker in limit_hits if marker not in checkpoint_deferred]
+
     import_reports: dict[str, Mapping[str, Any]] = {}
     write_status_counts: Counter[str] = Counter()
     normalized_counts: Counter[str] = Counter()
@@ -1967,7 +2217,7 @@ def run_wappi_history_import(
         normalized_counts.update({key: int(value) for key, value in preview.normalized_counts.items()})
         errors.extend(sanitize_wappi_import_error(item.to_json_dict()) for item in preview.errors)
 
-    apply_effective = config.apply and not errors and not limit_hits
+    apply_effective = config.apply and not errors and not blocking_limit_hits
     if apply_effective:
         import_reports = {}
         write_status_counts.clear()
@@ -2025,6 +2275,36 @@ def run_wappi_history_import(
             read_only=True,
         ) as store_ro:
             store_summary_after = store_ro.summary()
+    checkpoint_committed = False
+    if next_checkpoint is not None and apply_effective:
+        # Commit the checkpoint only AFTER the rows it vouches for are in the DB.
+        # A crash before this point simply replays the window; source_id keeps the
+        # replay idempotent, so the checkpoint can lag but can never run ahead.
+        current_timeline_state = wappi_timeline_state(
+            config.timeline_db, tenant_id=config.tenant_id, profiles=profiles
+        )
+        stamp = datetime.now(timezone.utc).isoformat()
+        # Merge, do not overwrite: a profile that was not touched this run (dropped from
+        # the phase1 config, or written by a concurrent run) must keep its progress.
+        merged = dict(checkpoint_state.get("profiles") or {})
+        merged.update(
+            {
+                key: {
+                    **entry,
+                    "timeline_rows": int(current_timeline_state.get(str(key), {}).get("rows", 0)),
+                    "timeline_source_digest": str(
+                        current_timeline_state.get(str(key), {}).get("source_digest") or ""
+                    ),
+                    "updated_at": stamp,
+                }
+                for key, entry in next_checkpoint.items()
+            }
+        )
+        save_wappi_history_checkpoint(
+            config.checkpoint_dir,
+            {key: entry for key, entry in merged.items() if not entry.get("complete")},
+        )
+        checkpoint_committed = True
     amo_read_active = bool(
         amo_auto_resolver is not None or widget_contact_hydrate_report.get("requested")
     )
@@ -2043,7 +2323,7 @@ def run_wappi_history_import(
         "write_tallanto": False,
         "blocked_live_actions": blocked_live_actions(),
     }
-    validation_ok = not errors and not limit_hits and safety_ok(safety)
+    validation_ok = not errors and not limit_hits and safety_ok(safety) and checkpoint_complete
     code_identity_end = dict(build_draft_loop_code_identity())
     worktree_end = git_worktree_provenance(code_root)
     db_identity_end = timeline_db_identity(config.timeline_db)
@@ -2085,6 +2365,27 @@ def run_wappi_history_import(
         "dry_run": not apply_effective,
         "validation_ok": validation_ok,
         "limit_hits": limit_hits,
+        "checkpoint": {
+            "enabled": next_checkpoint is not None,
+            "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
+            "path": str(wappi_history_checkpoint_path(config.checkpoint_dir)) if config.checkpoint_dir else None,
+            "complete": checkpoint_complete,
+            "committed": checkpoint_committed,
+            "deferred_limit_hits": checkpoint_deferred,
+            "profiles": {
+                key: {
+                    "complete": bool(entry.get("complete")),
+                    "stop_reason": entry.get("stop_reason"),
+                    "reset_reason": entry.get("reset_reason"),
+                    "catalog_next_offset": entry.get("catalog_next_offset"),
+                    "catalog_chats_seen": entry.get("catalog_chats_seen"),
+                    "chats_done": len(entry.get("chats_done") or ()),
+                    "resumed_from": entry.get("resumed_from"),
+                    "active_chat_message_offset": (entry.get("active_chat") or {}).get("message_offset"),
+                }
+                for key, entry in sorted((next_checkpoint or {}).items())
+            },
+        },
         "summary": {
             "tenant_id": config.tenant_id,
             "profiles": len(profiles),
@@ -2133,6 +2434,11 @@ def run_wappi_history_import(
             "send_messenger": False,
             "limit_hits": limit_hits,
             "empty_profiles": empty_profiles,
+            "checkpoint_enabled": next_checkpoint is not None,
+            "checkpoint_complete": checkpoint_complete,
+            "checkpoint_paused_profiles": sorted(
+                key for key, entry in (next_checkpoint or {}).items() if not entry.get("complete")
+            ),
         },
         "profiles": profile_reports,
         "records": {
@@ -3306,8 +3612,13 @@ def fetch_wappi_history_records(
     resolver: WappiPairCustomerResolver,
     limits: WappiFetchLimits,
     tenant_id: str,
+    checkpoint: Optional[Mapping[str, Any]] = None,
+    next_checkpoint: Optional[dict[str, Any]] = None,
 ) -> tuple[tuple[TimelineSourceRecord, ...], dict[tuple[str, str], WappiFetchStats]]:
-    del tenant_id
+    # next_checkpoint is an out-parameter (same shape as amo_incremental's
+    # fetch_endpoint_checkpointed) so the existing 2-tuple contract is unchanged.
+    checkpoint_enabled = next_checkpoint is not None
+    checkpoint_profiles = (checkpoint or {}).get("profiles") if isinstance(checkpoint, Mapping) else None
     records: list[TimelineSourceRecord] = []
     stats_by_profile: dict[tuple[str, str], WappiFetchStats] = {
         (profile.source_system, profile.profile_id): WappiFetchStats()
@@ -3323,17 +3634,40 @@ def fetch_wappi_history_records(
         if limits.message_limit_total
         else 0
     )
-    for profile in profiles:
+    for profile_index, profile in enumerate(profiles):
         stats = stats_by_profile[(profile.source_system, profile.profile_id)]
         profile_amo_calls_start = resolver.amo_auto_calls
+        # Without a checkpoint the budget stays global (unchanged behaviour). With one,
+        # the REMAINING budget is split across the REMAINING profiles: otherwise the
+        # alphabetically first profile eats everything every night and the second
+        # channel never loads at all. Unused share rolls over to the next profile.
+        profile_budget_limit = limits.request_limit_total
+        if checkpoint_enabled:
+            share = max(
+                1,
+                (limits.request_limit_total - total_requests) // max(1, len(profiles) - profile_index),
+            )
+            profile_budget_limit = min(limits.request_limit_total, total_requests + share)
         offset = 0
         profile_messages = 0
         chat_ids_seen: set[str] = set()
         dialogs_snapshot: list[Mapping[str, Any]] = []
         chat_page_specs: list[tuple[int, int]] = []
+        checkpoint_key = f"{profile.source_system}:{profile.profile_id}"
+        fingerprint = wappi_fetch_universe_fingerprint(profile, limits, tenant_id=tenant_id)
+        entry, reset_reason = _wappi_resume_entry(checkpoint_profiles, checkpoint_key, fingerprint)
+        confirmed_tokens: set[str] = {str(item) for item in (entry.get("chats_done") or ())}
+        confirmed_at_start = set(confirmed_tokens)
+        tail_checked: set[str] = set()
+        resumed_from = len(confirmed_tokens)
+        active_chat = entry.get("active_chat") if isinstance(entry.get("active_chat"), Mapping) else {}
+        catalog_page_tokens: list[tuple[int, tuple[str, ...]]] = []
+        catalog_total: Optional[int] = None
+        catalog_complete = False
+        stop_reason = "source_exhausted"
         while (
             (limits.complete_message_history or len(dialogs_snapshot) < limits.chat_limit_per_profile)
-            and total_requests < limits.request_limit_total
+            and total_requests < profile_budget_limit
         ):
             page_limit = (
                 limits.page_size
@@ -3353,13 +3687,34 @@ def fetch_wappi_history_records(
                 )
             except WappiPhysicalRequestBudgetExceeded:
                 stats.request_limit_hit = True
+                stop_reason = "request_budget"
+                break
+            except AmoWappiHttpError:
+                if not checkpoint_enabled:
+                    raise
+                stats.checkpoint_network_error = True
+                stop_reason = "network_error"
                 break
             total_requests += 1
             stats.requests += 1
             sleep_if_needed(limits.sleep_seconds)
             dialogs = extract_wappi_items(payload, "dialogs", "chats", "items", "data")
+            total_present, observed_total = _extract_wappi_total_count(payload)
+            if total_present and observed_total is None:
+                stats.pagination_drift_detected = True
+                stop_reason = "pagination_drift"
+                break
+            if observed_total is not None:
+                catalog_total = max(catalog_total or 0, observed_total)
             chat_page_specs.append((offset, page_limit))
+            catalog_page_tokens.append(
+                (offset, tuple(wappi_checkpoint_token(extract_chat_id(item)) for item in dialogs))
+            )
             if not dialogs:
+                catalog_complete = catalog_total is None or offset >= catalog_total
+                if not catalog_complete:
+                    stats.pagination_drift_detected = True
+                    stop_reason = "pagination_drift"
                 break
             stats.chats_seen += len(dialogs)
             for dialog in dialogs:
@@ -3375,13 +3730,19 @@ def fetch_wappi_history_records(
                 chat_ids_seen.add(chat_id)
                 dialogs_snapshot.append(dialog)
                 stats.chats_loaded += 1
-            if len(dialogs) < page_limit:
+            next_offset = offset + len(dialogs)
+            if catalog_total is not None and next_offset >= catalog_total:
+                catalog_complete = True
                 break
-            offset += page_limit
+            if len(dialogs) < page_limit and catalog_total is None:
+                catalog_complete = True
+                break
+            offset = next_offset
         verification_chat_ids: set[str] = set()
         for verification_offset, verification_limit in chat_page_specs:
-            if total_requests >= limits.request_limit_total:
+            if total_requests >= profile_budget_limit:
                 stats.request_limit_hit = True
+                stop_reason = "request_budget"
                 break
             try:
                 verification_payload = client.list_chats(
@@ -3394,6 +3755,13 @@ def fetch_wappi_history_records(
                 )
             except WappiPhysicalRequestBudgetExceeded:
                 stats.request_limit_hit = True
+                stop_reason = "request_budget"
+                break
+            except AmoWappiHttpError:
+                if not checkpoint_enabled:
+                    raise
+                stats.checkpoint_network_error = True
+                stop_reason = "network_error"
                 break
             else:
                 total_requests += 1
@@ -3417,14 +3785,47 @@ def fetch_wappi_history_records(
                             dialogs_snapshot.append(item)
                             stats.chats_loaded += 1
         stats.chat_snapshot_drift_detected = chat_ids_seen != verification_chat_ids
+        if checkpoint_enabled and limits.complete_message_history and catalog_total is None:
+            stats.pagination_drift_detected = True
+            stop_reason = "pagination_drift"
+        if not stats.chat_snapshot_drift_detected and catalog_complete and catalog_total is not None and (
+            len(chat_ids_seen) != catalog_total or len(verification_chat_ids) != catalog_total
+        ):
+            stats.pagination_drift_detected = True
+            stop_reason = "pagination_drift"
+        if entry and entry.get("catalog_page_anchor") and not reset_reason and catalog_complete:
+            current_catalog_anchor = wappi_checkpoint_anchor(
+                tuple(token for _offset, page_tokens in catalog_page_tokens for token in page_tokens)
+            )
+            if current_catalog_anchor != entry.get("catalog_page_anchor"):
+                reset_reason = "catalog_page_drift"
+                tail_checked.clear()
         if not limits.complete_message_history and len(dialogs_snapshot) >= limits.chat_limit_per_profile:
             stats.chat_limit_hit = True
-        if total_requests >= limits.request_limit_total:
+        if total_requests >= profile_budget_limit:
             stats.request_limit_hit = True
+            stats.checkpoint_no_progress = checkpoint_enabled and bool(dialogs_snapshot)
+            stop_reason = "request_budget"
+            _stash_wappi_checkpoint(
+                next_checkpoint, checkpoint_key, fingerprint=fingerprint, confirmed=confirmed_tokens,
+                active_chat=active_chat, catalog_pages=catalog_page_tokens,
+                chats_total=len(dialogs_snapshot),
+                resumed_from=resumed_from, complete=False, stop_reason=stop_reason, reset_reason=reset_reason,
+            )
+            if checkpoint_enabled:
+                continue
             break
         if not limits.complete_message_history and total_messages >= limits.message_limit_total:
             break
         profile_widget_calls_start = resolver.widget_calls
+        dialogs_snapshot.sort(
+            key=lambda item: wappi_checkpoint_token(extract_chat_id(item)) in confirmed_at_start
+        )
+        tail_required = confirmed_at_start & {
+            wappi_checkpoint_token(extract_chat_id(item))
+            for item in dialogs_snapshot
+            if extract_chat_id(item)
+        }
         for dialog in dialogs_snapshot:
             if not limits.complete_message_history and (
                 total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit
@@ -3432,19 +3833,44 @@ def fetch_wappi_history_records(
                 stats.message_limit_hit = True
                 break
             chat_id = extract_chat_id(dialog)
-            resolver.record_coverage(profile=profile, dialog=dialog, stats=stats)
-            messages = fetch_chat_messages(
-                client,
-                profile=profile,
-                chat_id=chat_id,
-                limits=limits,
-                request_counter=stats,
-                request_budget=max(0, limits.request_limit_total - total_requests),
+            chat_token = wappi_checkpoint_token(chat_id) if chat_id else ""
+            is_tail_check = bool(chat_token and chat_token in confirmed_at_start)
+            if is_tail_check and chat_token in tail_checked:
+                stats.checkpoint_chats_skipped += 1
+                continue
+            resume_offset = (
+                int(active_chat.get("message_offset") or 0)
+                if checkpoint_enabled and active_chat and str(active_chat.get("chat") or "") == chat_token
+                else 0
             )
+            resolver.record_coverage(profile=profile, dialog=dialog, stats=stats)
+            try:
+                messages = fetch_chat_messages(
+                    client,
+                    profile=profile,
+                    chat_id=chat_id,
+                    limits=limits,
+                    request_counter=stats,
+                    request_budget=max(0, profile_budget_limit - total_requests),
+                    start_offset=resume_offset,
+                    resume_anchor=str(active_chat.get("page_anchor") or "") if resume_offset else "",
+                )
+            except AmoWappiHttpError:
+                if not checkpoint_enabled:
+                    raise
+                stats.checkpoint_network_error = True
+                stop_reason = "network_error"
+                break
             total_requests += int(getattr(fetch_chat_messages, "last_request_count", 0))
+            stop_after_chat = False
             if bool(getattr(fetch_chat_messages, "last_request_limit_hit", False)):
                 stats.request_limit_hit = True
-                break
+                stop_reason = "request_budget"
+                if not checkpoint_enabled:
+                    break
+                # With a checkpoint the partially read chat is still written and its
+                # resume offset is remembered: source_id keeps the write idempotent.
+                stop_after_chat = True
             if bool(getattr(fetch_chat_messages, "last_limit_hit", False)):
                 stats.message_limit_hit = True
             if bool(getattr(fetch_chat_messages, "last_pagination_drift_detected", False)):
@@ -3500,9 +3926,96 @@ def fetch_wappi_history_records(
                         stats.linked_by_pair += 1
                 else:
                     stats.pending_attribution += 1
+            if checkpoint_enabled and chat_token:
+                if stop_after_chat:
+                    active_chat = {
+                        "chat": chat_token,
+                        "message_offset": int(getattr(fetch_chat_messages, "last_next_offset", 0)),
+                        "page_anchor": str(getattr(fetch_chat_messages, "last_page_anchor", "")),
+                    }
+                elif is_tail_check:
+                    tail_checked.add(chat_token)
+                    active_chat = {}
+                else:
+                    confirmed_tokens.add(chat_token)
+                    stats.checkpoint_chats_confirmed += 1
+                    active_chat = {}
             if stats.request_limit_hit:
                 break
+        if checkpoint_enabled:
+            profile_complete = not (
+                stats.request_limit_hit
+                or stats.checkpoint_network_error
+                or stats.message_limit_hit
+                or stats.chat_limit_hit
+                or stats.pagination_drift_detected
+                or stats.chat_snapshot_drift_detected
+                or not catalog_complete
+                or not tail_required.issubset(tail_checked)
+            )
+            if stats.pagination_drift_detected:
+                stop_reason = "pagination_drift"
+            if stats.chat_snapshot_drift_detected:
+                stop_reason = "catalog_drift"
+            _stash_wappi_checkpoint(
+                next_checkpoint,
+                checkpoint_key,
+                fingerprint=fingerprint,
+                confirmed=confirmed_tokens,
+                active_chat=active_chat,
+                catalog_pages=catalog_page_tokens,
+                chats_total=len(dialogs_snapshot),
+                resumed_from=resumed_from,
+                complete=profile_complete,
+                stop_reason="source_exhausted" if profile_complete else stop_reason,
+                reset_reason=reset_reason,
+            )
     return tuple(records), stats_by_profile
+
+
+def _wappi_resume_entry(
+    checkpoint_profiles: Any, key: str, fingerprint: str
+) -> tuple[dict[str, Any], Optional[str]]:
+    entry = checkpoint_profiles.get(key) if isinstance(checkpoint_profiles, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return {}, None
+    if entry.get("fingerprint") != fingerprint:
+        return {}, "fingerprint_changed"
+    if entry.get("complete"):
+        return {}, None
+    return dict(entry), None
+
+
+def _stash_wappi_checkpoint(
+    next_checkpoint: Optional[dict[str, Any]],
+    key: str,
+    *,
+    fingerprint: str,
+    confirmed: set[str],
+    active_chat: Mapping[str, Any],
+    catalog_pages: Sequence[tuple[int, tuple[str, ...]]],
+    chats_total: int,
+    resumed_from: int,
+    complete: bool,
+    stop_reason: str,
+    reset_reason: Optional[str],
+) -> None:
+    if next_checkpoint is None:
+        return
+    last_offset, last_tokens = catalog_pages[-1] if catalog_pages else (0, ())
+    catalog_tokens = tuple(token for _offset, page_tokens in catalog_pages for token in page_tokens)
+    next_checkpoint[key] = {
+        "fingerprint": fingerprint,
+        "complete": bool(complete),
+        "stop_reason": stop_reason,
+        "reset_reason": reset_reason,
+        "catalog_next_offset": int(last_offset) + len(last_tokens),
+        "catalog_page_anchor": wappi_checkpoint_anchor(catalog_tokens),
+        "catalog_chats_seen": int(chats_total),
+        "resumed_from": int(resumed_from),
+        "chats_done": sorted(confirmed),
+        "active_chat": dict(active_chat) if active_chat else None,
+    }
 
 
 def is_personal_wappi_dialog(profile: WappiProfileSpec, dialog: Mapping[str, Any]) -> bool:
@@ -3549,14 +4062,43 @@ def fetch_chat_messages(
     limits: WappiFetchLimits,
     request_counter: WappiFetchStats,
     request_budget: int,
+    start_offset: int = 0,
+    resume_anchor: str = "",
 ) -> tuple[WappiHistoryMessage, ...]:
     messages: list[WappiHistoryMessage] = []
-    offset = 0
+    offset = max(0, int(start_offset))
     request_count = 0
     limit_hit = False
     request_limit_hit = request_budget <= 0
     pagination_drift_detected = False
+    page_anchor_value = resume_anchor
     page_signatures: list[tuple[int, int, tuple[str, ...]]] = []
+    if offset > 0 and resume_anchor and not request_limit_hit:
+        # Re-read the last CONFIRMED message page: if it drifted, the saved
+        # offset points at the wrong place, so restart this chat from zero.
+        anchor_offset = max(0, offset - limits.page_size)
+        anchor_payload = client.get_chat_messages(
+            channel=profile.channel,
+            profile_id=profile.profile_id,
+            chat_id=chat_id,
+            limit=limits.page_size,
+            offset=anchor_offset,
+            order="asc",
+            mark_all=False,
+        )
+        request_count += 1
+        request_counter.requests += 1
+        anchor_items = extract_wappi_items(anchor_payload, "messages", "items", "data")
+        current_anchor = wappi_checkpoint_anchor(
+            tuple(str(item.get("id") or item.get("message_id") or "") for item in anchor_items)
+        )
+        if current_anchor != resume_anchor:
+            offset = 0
+            page_anchor_value = ""
+        if request_count >= request_budget:
+            # The anchor probe ate the last request: the chat is NOT finished,
+            # otherwise the caller would confirm it with zero messages read.
+            request_limit_hit = True
     while (
         (limits.complete_message_history or len(messages) < limits.messages_per_chat)
         and request_count < request_budget
@@ -3587,13 +4129,9 @@ def fetch_chat_messages(
         raw_messages = extract_wappi_items(payload, "messages", "items", "data")
         if not raw_messages:
             break
-        page_signatures.append(
-            (
-                offset,
-                page_limit,
-                tuple(str(item.get("id") or item.get("message_id") or "") for item in raw_messages),
-            )
-        )
+        page_ids = tuple(str(item.get("id") or item.get("message_id") or "") for item in raw_messages)
+        page_signatures.append((offset, page_limit, page_ids))
+        page_anchor_value = wappi_checkpoint_anchor(page_ids)
         for raw in raw_messages:
             item = wappi_message_from_raw(profile.profile_id, {**dict(raw), "chat_id": chat_id})
             if item is None:
@@ -3635,6 +4173,8 @@ def fetch_chat_messages(
     setattr(fetch_chat_messages, "last_limit_hit", limit_hit)
     setattr(fetch_chat_messages, "last_request_limit_hit", request_limit_hit)
     setattr(fetch_chat_messages, "last_pagination_drift_detected", pagination_drift_detected)
+    setattr(fetch_chat_messages, "last_next_offset", offset)
+    setattr(fetch_chat_messages, "last_page_anchor", page_anchor_value)
     return tuple(sorted(messages, key=lambda item: (item.timestamp, item.message_id)))
 
 

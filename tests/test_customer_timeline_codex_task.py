@@ -764,6 +764,9 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
     wappi = steps["wappi_history_incremental"]
     assert wappi["config"]["require_widget_linkage"] is True
+    assert wappi["config"]["checkpoint_dir"] == str(
+        staging_root / "nightly_dv2_sources/wappi_history_checkpoint"
+    )
     cards = steps["tallanto_cards_sync"]
     assert cards["kind"] == "tallanto_cards"
     assert cards["required"] is True

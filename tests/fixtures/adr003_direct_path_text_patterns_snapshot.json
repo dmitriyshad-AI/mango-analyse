@@ -704,22 +704,6 @@
     "symbol": "has_any_marker"
   },
   {
-    "args_preview": "(\"уже оплат\", \"оплатил\", \"оплатила\", \"списали\", \"сняли\")",
-    "args_sha256": "68391c94d4f58100494c9c21a89069243b150913251b24cd47e2e9a4e79829fa",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/semantic_roles.py",
-    "qualname": "_refund_frame",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\"уже оплат\", \"оплатил\", \"оплатила\", \"списали\", \"сняли\")",
-    "args_sha256": "68391c94d4f58100494c9c21a89069243b150913251b24cd47e2e9a4e79829fa",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/semantic_roles.py",
-    "qualname": "_refund_frame",
-    "symbol": "has_any_marker"
-  },
-  {
     "args_preview": "(\"услов\", \"как\", \"можно\", \"сколько\", \"част\", \"месяц\", \"семестр\", \"плат\")",
     "args_sha256": "e806fe238df10d8379cff5de5ab3adcd7444311c9dc2bdcebcdf55164da0e857",
     "node_kind": "marker_helper_call",
@@ -789,14 +773,6 @@
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py",
     "qualname": "_result_has_live_status_missing_fact",
-    "symbol": "has_any_marker"
-  },
-  {
-    "args_preview": "(\n            \"верните\",\n            \"требую\",\n            \"хочу вернуть\",\n            \"хочу возврат\",\n            \"хочу деньги назад\",\n            \"вернуть деньги\",\n            \"деньги назад\",\n            \"отдайте\",\n            \"забрать де",
-    "args_sha256": "116b6db58ec7861ace59da2c493427486934f91e785d6a51dd40655ebb6c6eb9",
-    "node_kind": "marker_helper_call",
-    "path": "src/mango_mvp/channels/semantic_roles.py",
-    "qualname": "is_negated_refund_topic",
     "symbol": "has_any_marker"
   },
   {
@@ -876,7 +852,7 @@
     "args_sha256": "73d032db3f539bbeac9bff9a28e1921632d816f400e68159446bcfb42940f956",
     "node_kind": "marker_helper_call",
     "path": "src/mango_mvp/channels/semantic_roles.py",
-    "qualname": "is_negated_refund_topic",
+    "qualname": "refund_topic_negation_residual",
     "symbol": "has_marker"
   },
   {
@@ -6095,9 +6071,9 @@
     "path": "src/mango_mvp/channels/semantic_roles.py",
     "pattern_preview": "(?:\\bне\\s+(?:про|о)\\s+|\\bэто\\s+не\\s+(?:про\\s+)?|\\bне\\s+)возврат\\w*",
     "pattern_sha256": "e86ccb1876eab0fa56cd4ff1aea32c96fb0171b10606589ec3d4dd28b0758c67",
-    "qualname": "is_negated_refund_topic",
+    "qualname": "refund_topic_negation_residual",
     "symbol": "re.search",
-    "target": ""
+    "target": "negated"
   },
   {
     "flags": "value",
@@ -6686,6 +6662,14 @@
     "symbol": "PAYMENT_SOURCE_MARKERS",
     "value_preview": "{\n    \"matkap\": (\"маткап\", \"материнск\", \"материнским\", \"сфр\"),\n    \"tax_deduction\": (\"налоговый вычет\", \"вычет\", \"фнс\", \"кнд\", \"3-ндфл\", \"3 ндфл\"),\n    \"sertifikat\": (\"сертификат\", \"сертификатом\"),\n}",
     "value_sha256": "d17b221d3c114f66883172489947745022f431703f06d4878d41640667c6d272"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/semantic_roles.py",
+    "qualname": "<module>",
+    "symbol": "REFUND_DEMAND",
+    "value_preview": "(\n    \"верните\",\n    \"требую\",\n    \"хочу возврат\",\n    \"хочу вернуть\",\n    \"хочу деньги назад\",\n    \"верните деньги\",\n    \"расторгнуть договор\",\n    \"немедленно верн\",\n)",
+    "value_sha256": "7ee9fb44113904381cc1f88dfba8b5698f6df6936f69a3e2d34254d1e87cc04c"
   },
   {
     "node_kind": "text_table",

@@ -509,10 +509,12 @@ def _refund_frame(text: str, *, context: Mapping[str, object] | None = None) -> 
     if has_any_marker(text, REFUND_BENIGN_NON_REFUND) or has_any_marker(text, REFUND_BENIGN_OBJECTS):
         return "none", ""
     demand_hit = next((m for m in REFUND_DEMAND if has_marker(text, m)), "")
+    # One canonical signal that money has already moved; do not copy its markers.
     paid_hit = next((m for m in REFUND_POST_PAYMENT if has_marker(text, m)), "")
     if _is_tax_deduction_return_question(text) and not demand_hit and not paid_hit:
         return "none", "tax_deduction_return"
-    if intent_state_repair_enabled() and not demand_hit and not paid_hit and is_negated_refund_topic(text):
+    # Topic negation may coexist with payment background, but not with a new demand.
+    if intent_state_repair_enabled() and not demand_hit and is_negated_refund_topic(text):
         return "none", "negated_refund_topic"
     process_hit = next((m for m in REFUND_POLICY_PROCESS_MARKERS if has_marker(text, m)), "")
     context_has_presale_refund = _context_has_presale_refund(context)
@@ -523,14 +525,20 @@ def _refund_frame(text: str, *, context: Mapping[str, object] | None = None) -> 
         return "none", ""
     if demand_hit:
         return "dispute", f"demand:{demand_hit}"
-    if process_hit and not has_any_marker(text, ("уже оплат", "оплатил", "оплатила", "списали", "сняли")):
+    if process_hit and not paid_hit:
         return "presale_policy", f"presale_process:{process_hit}"
     frame_hit = next((m for m in REFUND_PRESALE_FRAME if has_marker(text, m)), "")
-    if frame_hit and not has_any_marker(text, ("уже оплат", "оплатил", "оплатила", "списали", "сняли")):
+    if frame_hit and not paid_hit:
         return "presale_policy", f"presale_frame:{frame_hit}"
     if paid_hit:
         return "dispute", f"post_payment:{paid_hit}"
     return "dispute", "bare_refund_mention"
+
+
+def has_post_payment_refund_evidence(text: object) -> bool:
+    """Whether the message says that money has already moved."""
+
+    return has_any_marker(str(text or ""), REFUND_POST_PAYMENT)
 
 
 def _context_has_presale_refund(context: Mapping[str, object] | None) -> bool:
@@ -554,31 +562,26 @@ def _is_tax_deduction_return_question(text: str) -> bool:
     return has_any_marker(value, ("вернуть", "вернут", "вернё", "возврат"))
 
 
-def is_negated_refund_topic(text: object) -> bool:
+def refund_topic_negation_residual(text: object) -> str | None:
     value = " ".join(str(text or "").casefold().replace("ё", "е").split())
     if not has_marker(value, "возврат"):
-        return False
-    if not re.search(r"(?:\bне\s+(?:про|о)\s+|\bэто\s+не\s+(?:про\s+)?|\bне\s+)возврат\w*", value):
+        return None
+    negated = re.search(
+        r"(?:\bне\s+(?:про|о)\s+|\bэто\s+не\s+(?:про\s+)?|\bне\s+)возврат\w*",
+        value,
+    )
+    if not negated:
+        return None
+    return f"{value[:negated.start()]} {value[negated.end():]}".strip()
+
+
+def is_negated_refund_topic(text: object) -> bool:
+    residual = refund_topic_negation_residual(text)
+    if residual is None:
         return False
     return not has_any_marker(
-        value,
-        (
-            "верните",
-            "требую",
-            "хочу вернуть",
-            "хочу возврат",
-            "хочу деньги назад",
-            "вернуть деньги",
-            "деньги назад",
-            "отдайте",
-            "забрать деньги",
-            "расторгнуть",
-            "уже оплат",
-            "оплатил",
-            "оплатила",
-            "списали",
-            "сняли",
-        ),
+        residual,
+        REFUND_MENTION + REFUND_DEMAND + REFUND_POLICY_PROCESS_MARKERS,
     )
 
 

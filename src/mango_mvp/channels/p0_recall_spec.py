@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
-from mango_mvp.channels.semantic_roles import is_negated_refund_topic, tag_message_roles
+from mango_mvp.channels.semantic_roles import (
+    has_post_payment_refund_evidence,
+    refund_topic_negation_residual,
+    tag_message_roles,
+)
 
 
 P0_RECALL_SPEC_SCHEMA_VERSION = "p0_recall_spec_v1_2026_05_24"
@@ -328,10 +332,18 @@ def has_complaint_signal(text: str) -> bool:
 def codes_from_text(text: str) -> tuple[str, ...]:
     value = str(text or "")
     result: list[str] = []
+    refund_signal = bool(REFUND_RE.search(value))
     refund_frame = tag_message_roles(value).refund_frame
-    benign_refund_context = refund_frame == "presale_policy"
-    negated_refund_topic = is_negated_refund_topic(value)
-    if refund_frame == "dispute" or (REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic):
+    negated_residual = refund_topic_negation_residual(value)
+    negated_refund_topic = negated_residual is not None and not REFUND_RE.search(negated_residual)
+    # Presale may lower the route only before payment. Explicit topic negation is
+    # narrower: inspect the residual so cancellation/refund demands stay P0.
+    refund_downgrade_allowed = (
+        refund_frame == "presale_policy"
+        and negated_residual is None
+        and not has_post_payment_refund_evidence(value)
+    ) or negated_refund_topic
+    if refund_frame == "dispute" or (refund_signal and not refund_downgrade_allowed):
         result.append("refund")
     if LEGAL_RE.search(value):
         result.append("legal")
@@ -341,7 +353,7 @@ def codes_from_text(text: str) -> tuple[str, ...]:
         result.append("reputation_threat")
     if PAYMENT_DISPUTE_RE.search(value):
         result.append("payment_dispute")
-    if "payment_dispute" in result and REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic:
+    if "payment_dispute" in result and refund_signal and not refund_downgrade_allowed:
         result.insert(0, "refund")
     return tuple(dict.fromkeys(result))
 
@@ -370,4 +382,5 @@ def contains_any_p0(codes: Sequence[str]) -> bool:
 
 
 def is_benign_hypothetical_refund(text: str) -> bool:
-    return tag_message_roles(text).refund_frame == "presale_policy"
+    value = str(text or "")
+    return tag_message_roles(value).refund_frame == "presale_policy" and not has_post_payment_refund_evidence(value)

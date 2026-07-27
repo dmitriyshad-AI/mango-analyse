@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic, stratified sampler for the Block D semantic review.
+r"""Deterministic, stratified sampler for the Block D semantic review.
 
 Built for `2026-07-26_TZ_CLAUDE_dovesti_do_AI_sotrudnika_bez_pauz.md` (Block D: "досье и
 локальные черновики"). The audit sandbox that wrote this script has no mount for
@@ -88,8 +88,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
+    OWNER50_REQUIRED_COLUMNS,
     _family_scope_customer_ids,
     _guard_local_dossier_output_path,
+    _owner50_family_rows,
     _source_freshness,
     build_manager_dossier_workbook,
     build_owner50_family_workbook,
@@ -399,6 +401,10 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
         "SELECT record_json FROM timeline_conflicts WHERE tenant_id = ? AND status != 'resolved'",
         (tenant_id,),
     ).fetchall():
+        # entity_refs -- тот же точный признак, что уже используется в _next_step_for_dossier
+        # (manager_dossier.py:3070-3083) для увязки конфликта с customer_id. НЕ substring: id
+        # одного клиента может быть текстовым префиксом другого ("customer:1" внутри
+        # "customer:10") -- substring даёт ложные совпадения, entity_refs -- нет.
         refs = {str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())}
         for cid in ids:
             if set(customer_entity_ref_values(cid)) & refs:
@@ -526,6 +532,20 @@ def _write_acceptance_workbook(path: Path, sheets: Mapping[str, tuple[Sequence[s
     path.chmod(0o600)
 
 
+_ACCEPTANCE_EVIDENCE_KIND_BY_EVENT_TYPE = {
+    "email_message": "Почта",
+    "mango_call": "Звонок",
+    "wappi_telegram": "Telegram",
+    "wappi_max": "Max",
+    "tallanto_attendance": "Посещение",
+    "amo_deal_stage": "Сделка",
+}
+
+
+def _acceptance_evidence_kind(event_type: Any) -> str:
+    return _ACCEPTANCE_EVIDENCE_KIND_BY_EVENT_TYPE.get(str(event_type or ""), "Событие")
+
+
 def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: Sequence[Mapping[str, Any]]) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], list[list[Any]]]:
     families: list[list[Any]] = []; chronology: list[list[Any]] = []
     evidence: list[list[Any]] = []; conflicts: list[list[Any]] = []
@@ -533,6 +553,15 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
         "SELECT conflict_id,conflict_type,severity,status,created_at,record_json FROM timeline_conflicts "
         "WHERE tenant_id=? AND status!='resolved' ORDER BY created_at,conflict_id", (tenant_id,)
     ).fetchall()
+    # гэп №1 (EXCEL_priemka_30_semey_spec.md §3/§9.1): режим приёмки не должен подставлять
+    # match_status там, где его физически нет (минимальная синтетика тестов харнесса не несёт
+    # этой колонки) -- тот же защитный паттерн, что _table_exists уже применяет к опциональным
+    # таблицам в manager_dossier.py, только на уровне колонки.
+    event_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(timeline_events)").fetchall()}
+    match_status_clause = (
+        " AND (event_type != 'mango_call' OR match_status = 'strong_unique')"
+        if "match_status" in event_columns else ""
+    )
     for number, selected in enumerate(sample, start=1):
         customer_id = str(selected["id"])
         family_id = str(selected.get("family_id") or customer_id)
@@ -554,33 +583,65 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
         ).fetchone()
         event_rows = con.execute(
             f"SELECT event_id,customer_id,event_at,event_type,source_system,direction,subject,summary,text_preview,source_ref "
-            f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({placeholders}) AND COALESCE(superseded_by,'')='' "
+            f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({placeholders}) AND COALESCE(superseded_by,'')=''"
+            f"{match_status_clause} "
             "ORDER BY event_at,event_id", (tenant_id, *members)
         ).fetchall()
         attendance = next((row for row in reversed(event_rows) if row["event_type"] == "tallanto_attendance"), None)
         latest = event_rows[-1] if event_rows else None
+        # entity_refs -- тот же точный признак, что уже используется в _next_step_for_dossier
+        # (manager_dossier.py:3070-3083); НЕ substring -- один customer_id может быть текстовым
+        # префиксом другого ("customer:1" внутри "customer:10"), substring даёт ложные конфликты.
         member_refs = {ref for member in members for ref in customer_entity_ref_values(member)}
-        matched_conflicts = [row for row in conflict_rows if member_refs & {
-            str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())
-        }]
+        matched_conflicts = [
+            row for row in conflict_rows
+            if member_refs & {str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())}
+        ]
         families.append([
             number, family_id, customer_id, dossier.display_name, dossier.phone, dossier.email, dossier.brand,
             child_text, len(children), opportunity["title"] if opportunity else "", opportunity["status"] if opportunity else "",
             payment["total_in"] if payment else 0, payment["last_at"] if payment else "",
             attendance["event_at"] if attendance else "", attendance["subject"] if attendance else "",
             latest["event_at"] if latest else "", latest["source_system"] if latest else "",
-            dossier.next_step, dossier.next_step_source, "; ".join(row["conflict_type"] for row in matched_conflicts), "", "",
+            dossier.next_step, dossier.next_step_source,
+            "; ".join(sorted({row["conflict_type"] for row in matched_conflicts})), "", "",
         ])
         evidence.extend([
             [family_id, "Личность", dossier.display_name, "customer_identities", "", "customer_identities", customer_id, "да"],
             *([family_id, "Ребёнок", row["canonical_name"], "family_links_v1.canonical_name", "", "family_links_v1", row["child_key"], "да"] for row in children),
-            [family_id, "Оплаты", payment["total_in"] if payment else 0, "customer_purchases_v1.total_in", payment["last_at"] if payment else "", "customer_purchases_v1", customer_id, "да"], [family_id, "Следующий шаг", dossier.next_step, dossier.next_step_source, "", "derived_signals", "", "да" if dossier.next_step else "нет"],
+            [family_id, "Оплаты", payment["total_in"] if payment else 0, "customer_purchases_v1.total_in", payment["last_at"] if payment else "", "customer_purchases_v1", customer_id, "да" if (payment and payment["last_at"]) else "нет"],
+            [family_id, "Следующий шаг", dossier.next_step, "next_step_resolver.display_text", "", dossier.next_step_source or "", "", "нет"],
         ])
+        # гэп №2 (спека §4/§9.1): event_id теперь есть в SQL -- каждое событие хронологии
+        # одновременно становится проверяемой строкой доказательства с настоящим event_id
+        # (не заглушкой вроде customer_id).
         for row in event_rows:
-            chronology.append([family_id, row["customer_id"], row["event_id"], row["event_at"], row["event_type"],
-                               row["source_system"], row["direction"], row["subject"], row["summary"], row["text_preview"], row["source_ref"]])
+            full_text = row["text_preview"] or row["summary"] or ""
+            evidence.append([
+                family_id, _acceptance_evidence_kind(row["event_type"]),
+                full_text or row["subject"] or "(пусто)",
+                "timeline_events.text_preview" if row["text_preview"] else "timeline_events.summary",
+                row["event_at"], row["source_system"], row["event_id"], "да",
+            ])
+        # гэп №1: "Краткое содержание" (summary) и "Полный текст" (text_preview) -- РЯДОМ, оба
+        # исходные значения как есть, БЕЗ заглушки "Полный текст в базе" и без обрезки/лимита.
+        for row in event_rows:
+            chronology.append([
+                family_id, row["customer_id"], row["event_id"], row["event_at"], row["event_type"],
+                row["source_system"], row["direction"], row["subject"],
+                row["summary"], row["text_preview"], row["source_ref"],
+            ])
         conflicts.extend([[family_id, row["conflict_id"], row["conflict_type"], row["severity"], row["status"],
                            row["created_at"], row["record_json"], "", ""] for row in matched_conflicts])
+        # спека §5 "противоречия бренда": 0 или 2+ бренда у корневого клиента -- строка идёт в
+        # «Конфликты», не остаётся молча пустой в «Семьи 30» (dossier.brand == "" в обоих случаях,
+        # см. build_customer_dossier: brand=brands[0] if len(brands)==1 else "").
+        if not dossier.brand:
+            conflicts.append([
+                family_id, "", "brand_ambiguous", "medium", "open", "",
+                f"customer_identities:{customer_id}",
+                "0 или несколько брендов у корневого клиента семьи -- не определён однозначно", "",
+            ])
     return families, chronology, evidence, conflicts
 
 
@@ -588,25 +649,87 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     db = Path(args.db).expanduser()
     out_root = Path(args.out_root).expanduser()
     local_dir = out_root / ".codex_local"
-    local_dir.mkdir(parents=True, exist_ok=True); local_dir.chmod(0o700)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_dir.chmod(0o700)
     out_xlsx = _guard_local_dossier_output_path(local_dir / "acceptance_30_families.xlsx", out_root)
+
+    scrubbed_manifest: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "db": str(db),
+        "tenant_id": args.tenant_id,
+        "seed": args.seed,
+        "requested_count": args.count,
+        "sheets": list(_ACCEPTANCE_SHEETS),
+        "writes_amo_notes": False,
+        "sends_to_client": False,
+    }
+
+    def strata_key(row: Mapping[str, Any]) -> tuple:
+        return (
+            row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"],
+            row["has_signal"], row.get("has_mail", False), row.get("has_call", False),
+        )
+
     with _connect_ro(db) as con:
         freshness_gate = manager_freshness_gate(_source_freshness(con, tenant_id=args.tenant_id))
         if not args.skip_freshness_gate and not freshness_gate["passed"]:
-            raise RuntimeError("acceptance freshness gate failed")
+            # требование задачи: недоступная свежесть -> harness завершается ЧЕСТНО (exit 2,
+            # semantic_review_blocked_by_freshness), а не падает необработанным traceback --
+            # тот же паттерн, что уже есть у cmd_dossiers/cmd_owner50 выше.
+            reasons = ", ".join(f"{item['source_system']}:{item['reason']}" for item in freshness_gate["blockers"])
+            scrubbed_manifest["status"] = "semantic_review_blocked_by_freshness"
+            scrubbed_manifest["freshness_gate_error"] = f"acceptance freshness gate failed: {reasons}"
+            (out_root / "acceptance_selection_manifest.json").write_text(
+                json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print("semantic_review_blocked_by_freshness")
+            print(scrubbed_manifest["freshness_gate_error"])
+            print(f"Scrubbed selection manifest written (no PII): {out_root / 'acceptance_selection_manifest.json'}")
+            return 2
+
         population = _dossier_population(con, tenant_id=args.tenant_id)
-        sample = stratified_sample(population, count=args.count, seed=args.seed, strata_key=lambda row: (
-            row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"],
-            row["has_signal"], row.get("has_mail", False), row.get("has_call", False), row.get("has_attendance", False)))
-        if len(sample) != args.count: raise RuntimeError(f"acceptance requires {args.count} families, found {len(sample)}")
+        if not population:
+            print(f"BLOCKED: no eligible families found in {db} (empty family_links_v1?).")
+            return 3
+
+        sample = stratified_sample(population, count=args.count, seed=args.seed, strata_key=strata_key)
+        if len(sample) != args.count:
+            print(f"BLOCKED: acceptance requires {args.count} families, population only yields {len(sample)}.")
+            return 3
+        strata_counter = Counter(strata_key(row) for row in sample)
+
         families, chronology, evidence, conflicts = _acceptance_family_data(con, tenant_id=args.tenant_id, sample=sample)
-    owner_tmp = local_dir / ".owner50_acceptance_source.xlsx"
-    build_owner50_family_workbook(timeline_db=db, allowed_root=out_root, out_xlsx=owner_tmp,
-                                  tenant_id=args.tenant_id, enforce_freshness=not args.skip_freshness_gate)
-    selected_family_ids = {str(row[1]) for row in families}; owner_records = _owner50_sheet_rows(owner_tmp, "READY_50")
-    owner_headers = [key for key in owner_records[0] if key != "id"] if owner_records else []; owner_rows = [
-        [row.get(key) for key in owner_headers] for row in owner_records if row["id"] in selected_family_ids]
-    owner_tmp.unlink(missing_ok=True); owner_tmp.with_suffix(".summary.json").unlink(missing_ok=True)
+
+        # Owner50-лист: аудитор рекомендует прогонять classify_family() на ЭТИХ ЖЕ 30 семьях,
+        # а не тащить отдельный несвязанный пул 50 (build_owner50_family_workbook режет топ-50
+        # ПО ВСЕМУ тенанту -- READY-семья из наших 30 может не попасть в топ-50 чужого
+        # ранжирования и молча пропасть). _owner50_family_rows -- та же чистая, уже
+        # протестированная функция, но без этого среза; на лист идут только READY-строки, чей
+        # family_id входит в сэмпл, ранжированные заново уже внутри самого сэмпла.
+        try:
+            candidates, _control = _owner50_family_rows(con, tenant_id=args.tenant_id, as_of=datetime.now(timezone.utc))
+        except RuntimeError as exc:
+            candidates = []
+            scrubbed_manifest["owner50_classification_error"] = str(exc)
+
+    selected_family_ids = {str(row[1]) for row in families}
+    owner_candidates = sorted(
+        (row for row in candidates if str(row.get("family_id")) in selected_family_ids),
+        key=lambda row: row["rank_key"],
+    )
+    owner_headers = list(OWNER50_REQUIRED_COLUMNS)
+    owner_rows = [
+        [
+            rank, row["family_id"], row["brand"], row["name"], row["contact_customer_id"],
+            row["phone"], row["email"], row["channel"], row["evidence_at"], row["signal_type"],
+            row["evidence_text"], row["next_action"], row["expires_at"], row["offer"],
+            row["children"], row["payment"], row["rank_reason"], row["action_text"],
+            row["target_child_key"], row["target_child_name"], row["target_child_grade"],
+        ]
+        for rank, row in enumerate(owner_candidates, start=1)
+    ]
+
     sheets = {
         "Семьи 30": (("№", "family_id", "customer_id", "Родитель", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
         "Хронология": (("family_id", "customer_id", "event_id", "Дата/время", "Тип события", "Источник", "Направление", "Тема", "Краткое содержание", "Полный текст", "source_ref"), chronology),
@@ -615,7 +738,31 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         "Owner50": (owner_headers, owner_rows),
     }
     _write_acceptance_workbook(out_xlsx, sheets)
-    print(f"OK: {len(families)} families written to {out_xlsx} (PII, local only, not for git).")
+
+    scrubbed_manifest["status"] = "sample_built"
+    scrubbed_manifest["population_size"] = len(population)
+    scrubbed_manifest["sample_size"] = len(sample)
+    scrubbed_manifest["distinct_strata_covered"] = len(strata_counter)
+    scrubbed_manifest["strata_breakdown"] = [
+        {
+            "brand": key[0], "channel": key[1], "child_bucket": key[2], "has_payment": key[3],
+            "has_conflict": key[4], "has_signal": key[5], "has_mail": key[6], "has_calls": key[7],
+            "count": n,
+        }
+        for key, n in sorted(strata_counter.items(), key=lambda kv: str(kv[0]))
+    ]
+    scrubbed_manifest["sample_customer_id_hashes"] = [_short_hash(row["id"]) for row in sample]
+    scrubbed_manifest["families_rows"] = len(families)
+    scrubbed_manifest["chronology_rows"] = len(chronology)
+    scrubbed_manifest["evidence_rows"] = len(evidence)
+    scrubbed_manifest["conflicts_rows"] = len(conflicts)
+    scrubbed_manifest["owner50_ready_rows"] = len(owner_rows)
+    scrubbed_manifest["chronology_row_limit_applied"] = False
+    (out_root / "acceptance_selection_manifest.json").write_text(
+        json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"OK: {len(families)} families -> {out_xlsx} (5 sheets: {', '.join(_ACCEPTANCE_SHEETS)}; PII, local only, not for git).")
+    print(f"Scrubbed selection manifest (no PII): {out_root / 'acceptance_selection_manifest.json'}")
     return 0
 
 

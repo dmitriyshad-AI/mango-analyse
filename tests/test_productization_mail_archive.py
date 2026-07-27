@@ -1427,7 +1427,7 @@ def test_mail_phone_lift_preview_lifts_manual_messages_from_text_phones(
     assert report["safety"]["write_tallanto"] is False
     assert report["safety"]["open_attachments"] is False
     assert report["privacy"]["raw_phones_written"] is False
-    privacy_report = {key: value for key, value in report.items() if key != "outputs"}
+    privacy_report = {key: value for key, value in report.items() if key not in {"outputs", "created_at"}}
     assert "+79990000000" not in json.dumps(privacy_report, ensure_ascii=False)
     assert "999" not in json.dumps(privacy_report, ensure_ascii=False)
 

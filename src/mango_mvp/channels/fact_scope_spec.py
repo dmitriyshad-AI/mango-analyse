@@ -223,3 +223,34 @@ def answer_scopes_allowed(answer_scopes: set[str], *, requested_scope: str = "",
     if requested and requested in answer_scopes:
         blocked -= set(ANSWER_COMPATIBLE_NEIGHBOR_SCOPES.get(requested, frozenset()))
     return not (answer_scopes & blocked)
+
+
+def fact_scope_conflicts_with_query_text(
+    fact_text: object,
+    query_text: object,
+    *,
+    fact_types: Sequence[str] = (),
+    requested_scope: str = "",
+) -> bool:
+    """Reject a fact from a mutually exclusive product scope.
+
+    Multiple scopes from one family mean comparison/history, so a deterministic
+    selector must not choose either side autonomously.
+    """
+    fact_scopes = detect_fact_scopes(fact_text, fact_types=fact_types)
+    if not fact_scopes:
+        return False
+    query_scopes = detect_fact_scopes(query_text)
+    if not query_scopes and str(requested_scope or "").strip():
+        query_scopes = {str(requested_scope).strip()}
+    if not query_scopes:
+        return False
+    for query_scope in query_scopes:
+        family = scope_family_for(query_scope)
+        if not (family & fact_scopes):
+            continue
+        if len(query_scopes & family) != 1:
+            return True
+        if not fact_scopes_allowed(fact_scopes, requested_scope=query_scope):
+            return True
+    return False

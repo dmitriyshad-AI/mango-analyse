@@ -1307,12 +1307,8 @@ def build_snapshot_v3(
             "two_separate_telegram_bots": True,
         },
         "sources": list(sources),
-        "source_registry": list(sources),
         "facts": list(facts),
-        "facts_registry": list(facts),
         "chunks": chunks,
-        "knowledge_chunks": chunks,
-        "approval_queue": list(approval_queue),
         "post_filter": dict(post_filter),
         "brand_rules": dict(brand_rules),
         "bot_policy": dict(bot_policy),
@@ -1782,7 +1778,7 @@ def write_outputs(
     write_jsonl(out_root / "facts_registry.jsonl", facts)
     write_csv(out_root / "facts_registry.csv", facts)
     write_yaml(out_root / "facts_registry.yaml", {"schema_version": "facts_registry_v3", "items": list(facts)})
-    write_csv(out_root / "knowledge_chunks.csv", snapshot.get("knowledge_chunks") or [])
+    write_csv(out_root / "knowledge_chunks.csv", snapshot.get("chunks") or [])
     write_yaml(out_root / "brand_rules.yaml", brand_rules)
     write_yaml(out_root / "bot_policy.yaml", bot_policy)
     write_json(out_root / "post_filter_registry.json", post_filter)

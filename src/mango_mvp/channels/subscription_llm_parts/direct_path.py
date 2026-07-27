@@ -14,6 +14,7 @@ import yaml
 
 from mango_mvp.channels.dialogue_memory import _dialog_summary_candidate, _dialog_summary_rolling_enabled
 from mango_mvp.channels.dialogue_debug_trace import trace_event
+from mango_mvp.channels.fact_scope_spec import fact_scope_conflicts_with_query_text
 from mango_mvp.channels.fact_venue_scope import (
     FACT_VENUE_SCOPE_ENV,
     VENUE_SCOPE_VALUES,
@@ -649,11 +650,16 @@ def _direct_path_fact_text(value: Any) -> str:
         return ""
     return _client_clean_fact_text(str(value))
 
-def _direct_path_add_fact(items: dict[str, str], key: str, value: Any) -> None:
+def _direct_path_add_fact(items: dict[str, Any], key: str, value: Any) -> None:
     fact_key = str(key or "").strip()
     text = _direct_path_fact_text(value)
     if fact_key and text:
-        items.setdefault(fact_key, text)
+        if isinstance(value, Mapping):
+            structured = dict(value)
+            structured["client_safe_text"] = text
+            items.setdefault(fact_key, structured)
+        else:
+            items.setdefault(fact_key, text)
 
 def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -> bool:
     if not isinstance(value, Mapping):
@@ -671,12 +677,12 @@ def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -
         return False
     return True
 
-def _direct_path_add_legacy_fact(items: dict[str, str], key: str, value: Any, *, active_brand: str) -> None:
+def _direct_path_add_legacy_fact(items: dict[str, Any], key: str, value: Any, *, active_brand: str) -> None:
     if _direct_path_legacy_context_fact_allowed(value, active_brand=active_brand):
         _direct_path_add_fact(items, key, value)
 
-def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, str]:
-    items: dict[str, str] = {}
+def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, Any]:
+    items: dict[str, Any] = {}
     if not isinstance(context, Mapping):
         return items
     active_brand = _active_brand(context)
@@ -1908,6 +1914,45 @@ def _direct_path_records_to_fact_pack(
         result.update(dict(extra_metadata))
     return result
 
+def _direct_path_requested_fact_scope(context: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(context, Mapping):
+        return ""
+    for key in ("conversation_intent_plan", "dialogue_memory_view", "facts_context"):
+        container = context.get(key)
+        if not isinstance(container, Mapping):
+            continue
+        scope = str(container.get("fact_scope") or "").strip()
+        if scope:
+            return scope
+        held = container.get("held_state")
+        if isinstance(held, Mapping) and str(held.get("active_fact_scope") or "").strip():
+            return str(held["active_fact_scope"]).strip()
+    return str(context.get("fact_scope") or "").strip()
+
+
+def _direct_path_scope_fact_types(fact: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = fact.get("fact_types")
+    values = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)) else []
+    values.extend((fact.get("fact_type"), fact_program_kind(fact)))
+    return tuple(str(value) for value in values if str(value or "").strip())
+
+
+def _direct_path_scope_safe_legacy(
+    legacy: Mapping[str, Any], client_message: str, context: Optional[Mapping[str, Any]]
+) -> dict[str, str]:
+    requested_scope = _direct_path_requested_fact_scope(context)
+    return {
+        key: _direct_path_fact_text(value)
+        for key, value in legacy.items()
+        if not fact_scope_conflicts_with_query_text(
+            f"{key} {_direct_path_fact_text(value)}",
+            client_message,
+            fact_types=_direct_path_scope_fact_types(value) if isinstance(value, Mapping) else (),
+            requested_scope=requested_scope,
+        )
+    }
+
+
 def _direct_path_keyword_fact_pack_from_records(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -1921,13 +1966,25 @@ def _direct_path_keyword_fact_pack_from_records(
 ) -> Mapping[str, Any]:
     categories = _direct_path_selected_categories(client_message, context)
     selected_category = "+".join(categories) if categories else "fallback_core"
+    requested_scope = _direct_path_requested_fact_scope(context)
+    scope_safe_records = [
+        fact
+        for fact in records
+        if not fact_scope_conflicts_with_query_text(
+            _direct_path_snapshot_fact_text(fact),
+            client_message,
+            fact_types=_direct_path_scope_fact_types(fact),
+            requested_scope=requested_scope,
+        )
+    ]
+    scope_safe_legacy = _direct_path_scope_safe_legacy(legacy, client_message, context)
     if _direct_keyword_fallback_relevance_enabled(context) and not categories:
-        candidates = list(records)
+        candidates = list(scope_safe_records)
         selected_category = "fallback_relevance"
     else:
         candidates = [
             fact
-            for fact in records
+            for fact in scope_safe_records
             if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
         ]
     if not candidates:
@@ -1935,14 +1992,14 @@ def _direct_path_keyword_fact_pack_from_records(
             candidates = []
             selected_category = "fallback_relevance"
         else:
-            candidates = [fact for fact in records if _direct_path_core_fact(fact)]
+            candidates = [fact for fact in scope_safe_records if _direct_path_core_fact(fact)]
             selected_category = "fallback_core"
     if not candidates:
         if _direct_keyword_fallback_relevance_enabled(context):
-            candidates = list(records)
+            candidates = list(scope_safe_records)
             selected_category = "fallback_relevance"
         else:
-            candidates = list(records)[:max_facts]
+            candidates = list(scope_safe_records)[:max_facts]
             selected_category = "fallback_core"
 
     slots = _direct_path_slot_scope(context)
@@ -2040,7 +2097,7 @@ def _direct_path_keyword_fact_pack_from_records(
 
     return _direct_path_records_to_fact_pack(
         active_brand=active_brand,
-        legacy=legacy,
+        legacy=scope_safe_legacy,
         exact_records=exact_records,
         adjacent_records=adjacent_records,
         selected_category=selected_category,
@@ -2748,7 +2805,9 @@ def _direct_path_wide_fact_pack(
     max_chars: int = DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
     retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
 ) -> Mapping[str, Any]:
-    legacy = _direct_path_legacy_context_fact_items(context, limit=18)
+    legacy = _direct_path_scope_safe_legacy(
+        _direct_path_legacy_context_fact_items(context, limit=18), client_message, context
+    )
     active_brand = _active_brand(context)
     snapshot_path = _direct_path_snapshot_path_from_context(context)
     snapshot = _direct_path_load_snapshot(snapshot_path)

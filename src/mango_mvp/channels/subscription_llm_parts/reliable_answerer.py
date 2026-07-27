@@ -4,6 +4,7 @@ import re
 from dataclasses import replace
 from typing import Any, Mapping, Optional, Sequence
 
+from mango_mvp.channels.fact_scope_spec import fact_scope_conflicts_with_query_text
 from mango_mvp.channels.fact_venue_scope import VENUE_SCOPE_ANY, normalize_fact_venue, normalize_requested_scope
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult, _normalize_output_sanitizer_text
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
@@ -180,6 +181,16 @@ def build_answer_coverage_plan(
             "must_not_handoff_whole_answer": False,
         }
     requested_scope = _requested_scope_from_pack(fact_pack)
+
+    def scope_types(key: str) -> tuple[str, ...]:
+        item = fact_meta.get(key) if isinstance(fact_meta, Mapping) else None
+        if not isinstance(item, Mapping):
+            return ()
+        raw = item.get("fact_types")
+        values = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)) else []
+        values.extend((item.get("fact_type"), item.get("program_kind")))
+        return tuple(str(value) for value in values if str(value or "").strip())
+
     covered: list[dict[str, Any]] = []
     missing: list[dict[str, str]] = []
     blocked: list[dict[str, str]] = []
@@ -189,6 +200,10 @@ def build_answer_coverage_plan(
         for key in exact_keys:
             key_text = f"{key} {facts.get(key) or ''} {fact_meta.get(key, {}) if isinstance(fact_meta, Mapping) else ''}"
             if not _fact_covers_facet(facet, key_text):
+                continue
+            if fact_scope_conflicts_with_query_text(
+                facts.get(key) or "", client_message, fact_types=scope_types(key)
+            ):
                 continue
             meta = fact_meta.get(key) if isinstance(fact_meta, Mapping) and isinstance(fact_meta.get(key), Mapping) else {}
             if _fact_blocked_for_facet(facet, meta, requested_scope=requested_scope):
@@ -205,6 +220,9 @@ def build_answer_coverage_plan(
             key
             for key in adjacent_keys
             if _fact_covers_facet(facet, f"{key} {facts.get(key) or ''} {fact_meta.get(key, {}) if isinstance(fact_meta, Mapping) else ''}")
+            and not fact_scope_conflicts_with_query_text(
+                facts.get(key) or "", client_message, fact_types=scope_types(key)
+            )
         ]
         reason = "only_adjacent_facts" if adjacent_matches else "no_confirmed_fact"
         missing.append({"facet": facet, "reason": reason})

@@ -37,6 +37,7 @@ TEXT_TABLE_NAME_PARTS = (
     "ACTION",
     "ALIAS",
     "CUE",
+    "DEMAND",
     "FACET",
     "INTENT",
     "KEYWORD",

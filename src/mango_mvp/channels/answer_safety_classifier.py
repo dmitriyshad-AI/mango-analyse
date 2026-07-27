@@ -78,6 +78,7 @@ def classify_answer_safety(
     haystack = "\n".join(texts)
     normalized = _normalize(haystack)
     current_norm = _normalize(current)
+    haystack_codes = codes_from_text(haystack)
     # A message can *look* like a benign presale question in isolation (e.g. "как
     # оформить возврат?" matches the process-question frame) while the recent
     # conversation already shows a post-payment signal (e.g. a prior client turn
@@ -91,10 +92,8 @@ def classify_answer_safety(
     codes: list[str] = []
 
     if (
-        REFUND_RE.search(haystack)
-        and not (current_benign_refund and not current_codes)
-        and not is_benign_hypothetical_refund(haystack)
-        and not is_negated_refund_topic(current)
+        "refund" in haystack_codes
+        and not (is_negated_refund_topic(current) and "refund" not in current_codes)
     ):
         codes.append("refund")
         evidence["refund"] = _first_match(REFUND_RE, haystack)

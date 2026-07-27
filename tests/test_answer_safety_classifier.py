@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import itertools
 import re
 from pathlib import Path
 
 import pytest
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety, codes_from_current_message
+from mango_mvp.channels.output_verification_floor import p0_pre_gate
 from mango_mvp.channels.p0_recall_spec import (
     PAYMENT_DISPUTE_BENIGN_CASES,
     PAYMENT_DISPUTE_POSITIVE_CASES,
@@ -13,6 +15,15 @@ from mango_mvp.channels.p0_recall_spec import (
     P0_BENIGN_CASES,
     P0_TRUE_POSITIVE_CASES,
     codes_from_text,
+    hard_codes_from_text,
+    is_benign_hypothetical_refund,
+)
+from mango_mvp.channels.semantic_roles import (
+    REFUND_POST_PAYMENT,
+    REFUND_PRESALE_FRAME,
+    _refund_frame,
+    has_post_payment_refund_evidence,
+    is_negated_refund_topic,
 )
 from mango_mvp.channels.subscription_llm_parts.support import _p0_model_led_filter_high_risk_codes
 
@@ -463,3 +474,201 @@ def test_p0_text_regexes_live_only_in_p0_recall_spec() -> None:
             offenders.append(path.name)
 
     assert offenders == []
+
+
+def test_d1_top_risk_post_payment_refund_is_never_downgraded_to_presale_policy() -> None:
+    """D-1 top-risk fix (owner audit 2026-07-26): before the fix, semantic_roles.
+    _refund_frame guarded its two presale branches with a hand-copied, narrower
+    duplicate of REFUND_POST_PAYMENT -- ("уже оплат", "оплатил", "оплатила",
+    "списали", "сняли") -- that missed "мы платили", "я платил", "после оплаты",
+    "заключили договор", "за наш" and bare "списал". A genuine post-payment refund
+    claim phrased with one of the missed markers plus any REFUND_PRESALE_FRAME word
+    (e.g. "если") was silently reclassified as presale_policy. That made
+    p0_recall_spec.codes_from_text drop the "refund" code and let
+    output_verification_floor.p0_pre_gate -- the deterministic gate the live
+    direct-path build_draft() calls before ever running the model -- return None: a
+    real refund claim after payment could have been answered by the bot instead of
+    handed to a human manager."""
+    for message in (
+        "Мы платили за смену в лагере. Если вдруг что-то не устроит, деньги вернёте?",
+        "Я платил за курс, а если ребёнку не понравится, вернёте?",
+        "Мы уже заключили договор, а если передумаем, деньги вернёте?",
+    ):
+        frame, evidence = _refund_frame(message)
+        assert frame == "dispute", f"{message!r} -> refund_frame={frame!r} ({evidence}), expected dispute"
+
+        codes = codes_from_text(message)
+        assert "refund" in codes, f"{message!r} -> codes_from_text={codes!r}, expected 'refund' present"
+        assert "refund" in hard_codes_from_text(message)
+
+        assert p0_pre_gate(message) is not None, f"{message!r} was not caught by the production P0 gate"
+
+
+@pytest.mark.parametrize(
+    ("paid_marker", "presale_marker"),
+    list(itertools.product(REFUND_POST_PAYMENT, REFUND_PRESALE_FRAME)),
+)
+def test_d1_any_post_payment_marker_always_beats_any_presale_frame_marker(paid_marker: str, presale_marker: str) -> None:
+    """Invariant (more important than the fix itself, per the D-1 audit): ANY
+    REFUND_POST_PAYMENT marker combined with ANY REFUND_PRESALE_FRAME marker must
+    still resolve to a hard P0 refund signal that reaches the production gate, never
+    to the benign presale_policy frame. This is a full cross-product (11 x 29 = 319
+    cases) over the two canonical marker tables, so it automatically re-covers any
+    future addition to either list -- exactly the class of drift that caused the
+    original defect (a hand-copied subset of REFUND_POST_PAYMENT silently fell out
+    of sync with the real list). Money already moved must always dominate
+    hypothetical/pre-sale wording: a deterministic layer may tag a message as
+    presale, but must never let that tag delete a hard signal that also carries
+    post-payment evidence."""
+    message = f"{paid_marker}, {presale_marker}, вернёте деньги?"
+
+    codes = codes_from_text(message)
+    assert "refund" in codes, (
+        f"{message!r} lost its refund P0 code -- a real post-payment refund claim "
+        "could be handled by the bot instead of a human manager."
+    )
+    assert p0_pre_gate(message) is not None
+
+
+def test_d1_negated_refund_topic_respects_explicit_topic_negation_even_with_post_payment_evidence() -> None:
+    """Owner audit follow-up (Codex semantic review BLOCKED): this test used to assert
+    the opposite -- that any REFUND_POST_PAYMENT marker anywhere in the message always
+    overrides an explicit "не про возврат" negation. That was the over-widened state
+    Codex's semantic sample audit flagged: "это не про возврат, мы платили, вопрос про
+    расписание" (payment mentioned only as background context, the actual question is
+    about schedule) was wrongly kept P0 and routed to a human. An explicit topic
+    negation is a stronger, more deliberate signal than REFUND_PRESALE_FRAME
+    hypothetical wording (which must still lose to payment evidence, see
+    test_d1_any_post_payment_marker_always_beats_any_presale_frame_marker above) -- it
+    denies the refund topic outright, so payment evidence elsewhere in the same
+    message no longer suppresses it."""
+    assert is_negated_refund_topic("Это не про возврат, я платил за курс, но хочу обсудить детали.") is True
+    assert is_negated_refund_topic("Это не про возврат, мы уже заключили договор, а не понравилось.") is True
+    assert is_negated_refund_topic("Это не про возврат, мы платили, вопрос про расписание.") is True
+    # Unaffected control case (no payment evidence) must keep working as before.
+    assert is_negated_refund_topic("Я не про возврат, я про то, где смотреть запись.") is True
+    # An explicit demand phrase alongside the negation must still block it -- a client
+    # cannot use "это не про возврат" to slip a real refund demand past the guard.
+    assert is_negated_refund_topic("Это не про возврат, я платил за курс, но всё равно верните деньги.") is False
+
+
+REFUND_TOPIC_NEGATION_PHRASES: tuple[str, ...] = (
+    "это не про возврат",
+    "не про возврат",
+    "не о возврате",
+    "это не возврат",
+)
+
+
+@pytest.mark.parametrize(
+    ("paid_marker", "negation_phrase"),
+    list(itertools.product(REFUND_POST_PAYMENT, REFUND_TOPIC_NEGATION_PHRASES)),
+)
+def test_d2_explicit_topic_negation_beats_any_post_payment_marker(paid_marker: str, negation_phrase: str) -> None:
+    """Negation-axis counterpart to test_d1_any_post_payment_marker_always_beats_any_presale_frame_marker
+    (owner audit follow-up, Codex semantic review BLOCKED): a REFUND_POST_PAYMENT
+    marker can appear in a message purely as background context ("мы платили") while
+    the client explicitly says the current question is *not* about a refund at all
+    ("это не про возврат"). Unlike REFUND_PRESALE_FRAME hypothetical wording (D-1,
+    still must lose to payment evidence, see the test above), an explicit topic
+    negation means there is no refund topic to downgrade -- codes_from_text must not
+    fire "refund" for any of these 11 x 4 = 44 combinations."""
+    message = f"{negation_phrase}, {paid_marker}, вопрос про расписание."
+
+    codes = codes_from_text(message)
+    assert "refund" not in codes, (
+        f"{message!r} wrongly kept its refund P0 code despite an explicit topic negation -- "
+        "a client saying this is not about a refund must not be routed to a human as if it were."
+    )
+
+
+@pytest.mark.parametrize("paid_marker", REFUND_POST_PAYMENT)
+def test_d2_real_refund_question_still_beats_post_payment_marker_without_negation(paid_marker: str) -> None:
+    """Paired control for the negation-axis test above: dropping the negation phrase
+    but keeping the same payment marker and a genuine refund question must still
+    resolve to hard P0. This guards against the opposite regression -- a fix for the
+    negation gap that overcorrects into silencing real post-payment refund claims."""
+    message = f"{paid_marker}, а деньги вернёте?"
+
+    codes = codes_from_text(message)
+    assert "refund" in codes, f"{message!r} lost its refund P0 code without any topic negation present"
+    assert p0_pre_gate(message) is not None
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Это не про возврат, но почему вы не вернули деньги?",
+        "Это не про возврат, когда вы вернете оплату?",
+        "Это не про возврат, хочу, чтобы вы вернули оплату.",
+        "Это не про возврат, прошу оформить возврат оплаченного курса.",
+        "Это не про возврат, мне нужен возврат за курс.",
+    ),
+)
+def test_d2_topic_negation_never_hides_a_second_real_refund_request(message: str) -> None:
+    assert "refund" in codes_from_text(message)
+    assert classify_answer_safety(client_message=message).manager_only is True
+    assert p0_pre_gate(message) is not None
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Это не про возврат, мы оплатили, но можно отменить обучение?",
+        "Я не про возврат. Прошу отменить запись на курс.",
+    ),
+)
+def test_topic_negation_does_not_hide_cancellation_p0(message: str) -> None:
+    assert "refund" in codes_from_text(message)
+    assert classify_answer_safety(client_message=message).manager_only is True
+    assert p0_pre_gate(message) is not None
+
+
+def test_d1_is_benign_hypothetical_refund_requires_no_post_payment_evidence() -> None:
+    """is_benign_hypothetical_refund is the shared "presale evidence" primitive read
+    by answer_safety_classifier.py, output_verification_floor.py and
+    dialogue_memory.py to decide whether a refund signal/latch may be released. It
+    must independently confirm has_post_payment_refund_evidence() is False, not just
+    trust _refund_frame's own internal state -- so a future bug in _refund_frame
+    cannot silently reopen this defect through any of its other consumers."""
+    assert is_benign_hypothetical_refund("Мы платили за смену в лагере. Если вдруг что-то не устроит, деньги вернёте?") is False
+    assert is_benign_hypothetical_refund("Перед оплатой хочу понять условия возврата.") is True
+
+
+def test_d1_refund_downgrade_guard_cannot_reintroduce_narrow_post_payment_duplicate() -> None:
+    """Structural regression guard for the D-1 fix, modeled on
+    test_p0_text_regexes_live_only_in_p0_recall_spec: the presale/negated refund
+    guards must key off the single canonical REFUND_POST_PAYMENT signal
+    (semantic_roles.has_post_payment_refund_evidence / the paid_hit variable already
+    computed from it), never a hand-copied, independently-drifting subset of it --
+    that drift is exactly what let a real post-payment refund claim slip past the
+    bot-vs-manager gate before this fix. No function anywhere in channels/ is
+    allowed to reintroduce that literal narrow tuple."""
+    channels_dir = Path(__file__).resolve().parents[1] / "src" / "mango_mvp" / "channels"
+    forbidden = '"уже оплат", "оплатил", "оплатила", "списали", "сняли"'
+    offenders = [path.name for path in channels_dir.rglob("*.py") if forbidden in path.read_text(encoding="utf-8")]
+
+    assert offenders == []
+
+
+def test_d1_has_post_payment_refund_evidence_covers_the_previously_missed_markers() -> None:
+    """Every REFUND_POST_PAYMENT marker must be individually detected by the
+    canonical helper -- this is the single signal both _refund_frame's paid_hit and
+    the p0_recall_spec-level defense-in-depth guard rely on."""
+    for marker in REFUND_POST_PAYMENT:
+        assert has_post_payment_refund_evidence(marker) is True, marker
+    assert has_post_payment_refund_evidence("ничего похожего тут нет") is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Преподаватель вернул домашнюю работу.",
+        "Курс ещё не оплачен, какие условия возврата?",
+    ),
+)
+def test_ambiguous_non_payment_words_do_not_create_post_payment_p0(message: str) -> None:
+    assert has_post_payment_refund_evidence(message) is False
+    assert "refund" not in codes_from_text(message)
+    assert classify_answer_safety(client_message=message).manager_only is False
+    assert p0_pre_gate(message) is None

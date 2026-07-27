@@ -544,6 +544,24 @@ def test_inline_text_health_gate_blocks_p0_route_loss(tmp_path: Path) -> None:
     assert gate["route_flip_dangerous_count"] == 1
 
 
+def test_inline_text_health_gate_does_not_infer_p0_from_manager_route(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off = _dialog(include_frame=False)
+    off["turns"][0]["bot_route"] = "manager_only"
+    off["turns"][0]["bot_safety_flags"] = ["manager_approval_required"]
+    on = _dialog(text="Безопасный подтверждённый ответ.", include_frame=True)
+    on["turns"][0]["bot_route"] = "bot_answer_self_for_pilot"
+    on["turns"][0]["bot_safety_flags"] = ["no_auto_send"]
+    _write_jsonl(off_transcripts, [off])
+    _write_jsonl(on_transcripts, [on])
+
+    gate = report.build_report(on_transcripts=on_transcripts, off_transcripts=off_transcripts)["inline_text_health_gate"]
+
+    assert gate["route_flip_dangerous_count"] == 1
+    assert gate["p0_route_lost_count"] == 0
+
+
 def test_inline_text_health_gate_treats_p0_hygiene_flag_diff_as_warning(tmp_path: Path) -> None:
     off_transcripts = tmp_path / "off.jsonl"
     on_transcripts = tmp_path / "on.jsonl"

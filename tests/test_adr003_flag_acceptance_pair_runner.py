@@ -56,3 +56,6 @@ def test_adr003_flag_acceptance_runner_validates_traced_profile_baseline() -> No
     assert "--progress-leg \"$leg\"" in text
     assert "report_adr003_semantic_frame_eval.py" in text
     assert "sha_manifest.json" in text
+    assert 'run_report || report_rc=$?' in text
+    assert text.rindex('run_report || report_rc=$?') < text.rindex("write_sha_manifest")
+    assert 'exit "$report_rc"' in text

@@ -1388,7 +1388,6 @@ def _actual_off_topic_decision(turn: Mapping[str, Any]) -> str:
 
 
 def _actual_p0_signal(turn: Mapping[str, Any]) -> bool:
-    route = str(turn.get("bot_route") or "")
     flags = " ".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])).casefold()
     direct_path = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
     model_p0 = turn.get("bot_direct_path_model_p0") if isinstance(turn.get("bot_direct_path_model_p0"), Mapping) else {}
@@ -1396,8 +1395,7 @@ def _actual_p0_signal(turn: Mapping[str, Any]) -> bool:
     risk_codes = " ".join(str(code) for code in (plan.get("risk_codes") or [])).casefold()
     direct_p0 = direct_path.get("direct_path_model_p0") if isinstance(direct_path.get("direct_path_model_p0"), Mapping) else {}
     return (
-        route == "manager_only"
-        or any(marker in flags for marker in P0_FLAG_MARKERS)
+        any(marker in flags for marker in P0_FLAG_MARKERS)
         or any(marker in risk_codes for marker in P0_FLAG_MARKERS)
         or _strict_bool(model_p0.get("is_p0")) is True
         or _strict_bool(direct_p0.get("is_p0")) is True

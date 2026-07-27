@@ -682,7 +682,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["retriever"] == {"env": "", "effective": True}
     assert flags["retriever_need_shadow"] == {"env": "", "effective": False}
     assert flags["retriever_model_driven"] == {"env": "", "effective": False}
-    assert flags["intent_model_led"] == {"env": "", "effective": True}
+    assert flags["intent_model_led"] == {"env": "", "effective": False}
     assert flags["memory_provenance"] == {"env": "", "effective": True}
     assert flags["snapshot"] == str(snapshot_path)
 

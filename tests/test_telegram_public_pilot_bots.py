@@ -464,7 +464,7 @@ def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, 
     os.environ.pop(ENFORCE_CANONICAL_PROFILE_ENV, None)
 
 
-def test_public_bot_selfcheck_reports_intent_model_led_from_profile(monkeypatch) -> None:
+def test_public_bot_selfcheck_requires_explicit_intent_model_led(monkeypatch) -> None:
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
     monkeypatch.delenv(INTENT_MODEL_LED_ENV, raising=False)
 
@@ -473,7 +473,11 @@ def test_public_bot_selfcheck_reports_intent_model_led_from_profile(monkeypatch)
 
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
     check_on = pilot_profile_selfcheck()
-    assert check_on.active_guards["intent_model_led"] is True
+    assert check_on.active_guards["intent_model_led"] is False
+
+    monkeypatch.setenv(INTENT_MODEL_LED_ENV, "1")
+    check_explicit = pilot_profile_selfcheck()
+    assert check_explicit.active_guards["intent_model_led"] is True
 
     monkeypatch.setenv(INTENT_MODEL_LED_ENV, "0")
     check_explicit_off = pilot_profile_selfcheck()

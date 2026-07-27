@@ -5536,16 +5536,18 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
     assert "оплаченная смена/курс/запись" in on_prompt
 
 
-def test_intent_model_led_default_off_and_enabled_by_pilot_profile() -> None:
+def test_intent_model_led_requires_explicit_opt_in() -> None:
     assert subscription_llm._intent_model_led_enabled({}) is False
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "1"}) is True
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "0"}) is False
-    assert subscription_llm.INTENT_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "true"}) is False
+    assert subscription_llm._intent_model_led_enabled({"intent_model_led": "1"}) is True
+    assert subscription_llm.INTENT_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert (
         subscription_llm._intent_model_led_enabled(
             {subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION}
         )
-        is True
+        is False
     )
     assert (
         subscription_llm._intent_model_led_enabled(

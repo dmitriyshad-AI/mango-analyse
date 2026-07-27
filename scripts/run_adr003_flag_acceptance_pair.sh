@@ -219,6 +219,8 @@ if [[ "$DRY_CHECK" == "1" ]]; then
   exit 0
 fi
 
-run_report
+report_rc=0
+run_report || report_rc=$?
 write_sha_manifest
 echo "Done: $OUT"
+exit "$report_rc"

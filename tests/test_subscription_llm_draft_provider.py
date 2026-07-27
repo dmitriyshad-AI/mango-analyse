@@ -4466,7 +4466,7 @@ def test_direct_path_wide_pack_excludes_expired_client_safe_fact(tmp_path) -> No
                 "allowed_for_client_answer": True,
                 "forbidden_for_client": False,
                 "internal_only": False,
-                "valid_until": "2026-05-15",
+                "valid_until": "2026-12-31",
                 "client_safe_text": "Фотон: старая цена — 1 000 ₽.",
             },
             {
@@ -4488,6 +4488,7 @@ def test_direct_path_wide_pack_excludes_expired_client_safe_fact(tmp_path) -> No
     pack = _direct_path_context_fact_pack(
         {
             "active_brand": "foton",
+            "evaluation_date": "2027-01-15",
             "snapshot_path": str(snapshot_path),
             "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
         },
@@ -5585,6 +5586,72 @@ def test_intent_model_led_prompt_block_is_flagged_only() -> None:
     assert "«закрепить материал/навык» — other" in on_prompt
 
 
+def test_direct_path_prompt_uses_explicit_evaluation_date_and_external_fact_rule() -> None:
+    prompt = _build_direct_path_prompt(
+        "Какая погода?",
+        context={"active_brand": "unpk", "evaluation_date": "2026-07-27"},
+    )
+
+    assert "Дата ответа: 2026-07-27" in prompt
+    assert "завершившееся событие нельзя называть текущим или будущим" in prompt
+    assert "не отвечай внешними сведениями и не угадывай" in prompt
+
+
+def test_intent_model_led_replaces_confident_off_topic_draft_without_weakening_route() -> None:
+    result = apply_conversation_intent_plan_guard(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="На выходных будет +25.",
+            metadata={
+                "direct_path_model_intent": {
+                    "primary_intent": "off_topic",
+                    "confidence": 0.98,
+                }
+            },
+        ),
+        client_message="Какая погода?",
+        context={
+            "active_brand": "unpk",
+            subscription_llm.INTENT_MODEL_LED_ENV: "1",
+            "conversation_intent_plan": {
+                "primary_intent": "schedule",
+                "topic_id": "theme:013_schedule",
+                "answer_policy": "answer_directly_if_fact_verified",
+            },
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == subscription_llm.OFF_TOPIC_UNPK_SAFE_TEXT
+    assert "intent_model_led_off_topic_safe_reply" in result.safety_flags
+    assert result.metadata["intent_model_led"]["applied_primary_intent"] == "off_topic"
+
+
+def test_intent_model_led_off_topic_does_not_replace_p0_response() -> None:
+    result = apply_conversation_intent_plan_guard(
+        SubscriptionDraftResult(
+            route="manager_only",
+            draft_text="Передам жалобу менеджеру.",
+            risk_level="high",
+            safety_flags=("complaint",),
+            metadata={"direct_path_model_intent": {"primary_intent": "off_topic", "confidence": 0.99}},
+        ),
+        client_message="У меня жалоба.",
+        context={
+            "active_brand": "foton",
+            subscription_llm.INTENT_MODEL_LED_ENV: "1",
+            "conversation_intent_plan": {
+                "primary_intent": "complaint",
+                "route_bias": "manager_only",
+            },
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text == "Передам жалобу менеджеру."
+    assert "intent_model_led_off_topic_safe_reply" not in result.safety_flags
+
+
 def test_direct_path_payload_parses_model_intent_metadata() -> None:
     result = _normalize_direct_path_payload(
         {
@@ -6469,6 +6536,7 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     context = {
         "active_brand": "foton",
+        "evaluation_date": "2026-07-27",
         "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
         "recent_messages": ["Клиент: Сколько стоит?"],
     }
@@ -6485,6 +6553,10 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,
 если это не подтверждено в памяти или фактах. Имя ребёнка можно использовать, если
 клиент сам его назвал; телефон или ФИО целиком не дублируй.
+
+Дата ответа: 2026-07-27. Сравнивай с ней все подтверждённые даты: завершившееся событие нельзя называть текущим или будущим и нельзя предлагать проверять наличие мест на него. Слова «ближайший», «следующий» и «уже прошёл» используй только после такого сравнения; иначе перечисли подтверждённые даты без вывода.
+
+Если вопрос не относится к обучению или продуктам центра и подтверждённых фактов для ответа нет, не отвечай внешними сведениями и не угадывай. Коротко скажи, что помогаешь по вопросам обучения, и предложи помощь по курсам, формату, расписанию или записи.
 
 Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,
 классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.
@@ -6542,6 +6614,10 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 Запрещено вычислять новые числа: не выводи проценты, скидки, суммы и итоги из других цен («за два предмета выйдет…», «это получается N%»). Называй только числа, которые есть в фактах дословно или назвал сам клиент. Не подтверждай расчёты клиента («у меня выходит N, верно?») — точный расчёт и итог по нескольким предметам или со скидками подтвердит менеджер.
 Избегай сравнительных оценок форматов/программ без факта («очно удобнее…») — вместо этого предложи признак выбора вопросом.
 Запрещено: выбирать "draft_for_manager" на всякий случай при полных фактах.
+
+Дата ответа: 2026-07-27. Сравнивай с ней все подтверждённые даты: завершившееся событие нельзя называть текущим или будущим и нельзя предлагать проверять наличие мест на него. Слова «ближайший», «следующий» и «уже прошёл» используй только после такого сравнения; иначе перечисли подтверждённые даты без вывода.
+
+Если вопрос не относится к обучению или продуктам центра и подтверждённых фактов для ответа нет, не отвечай внешними сведениями и не угадывай. Коротко скажи, что помогаешь по вопросам обучения, и предложи помощь по курсам, формату, расписанию или записи.
 
 Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,
 классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.

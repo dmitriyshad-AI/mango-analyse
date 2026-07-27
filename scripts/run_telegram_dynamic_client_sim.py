@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -73,6 +73,16 @@ DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_st
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 DEFAULT_CUSTOMER_TIMELINE_DB = Path("product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
+EVALUATION_DATE_ENV = "MANGO_EVALUATION_DATE"
+
+
+def evaluation_date() -> str:
+    raw = str(os.getenv(EVALUATION_DATE_ENV) or "").strip()
+    if not raw:
+        return date.today().isoformat()
+    return date.fromisoformat(raw).isoformat()
+
+
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
 JUDGE_PROMPT_VERSION_V9 = "judge_v9_verifier_aware"
 JUDGE_PROMPT_VERSION_V91_PREVIOUS = "judge_v9_1_pilot_calibrated"
@@ -2209,6 +2219,7 @@ def run_one_dialog(
             }
         turn = {
             "turn": turn_index,
+            "evaluation_date": str(context.get("evaluation_date") or ""),
             "client_message": client_message,
             "client_stop": client_stop,
             "bot_text": bot_text,
@@ -2343,6 +2354,7 @@ def build_bot_prompt_context(
     )
     payload = dict(pilot_context.to_prompt_context())
     payload["active_brand"] = brand
+    payload["evaluation_date"] = evaluation_date()
     payload["snapshot_path"] = str(snapshot_path)
     payload["knowledge_snapshot_path"] = str(snapshot_path)
     payload["known_dialog_fields"] = known_dialog
@@ -2632,6 +2644,12 @@ def build_judge_prompt(
     judge_prompt_version: str = "v2",
 ) -> str:
     version = normalize_judge_prompt_version(judge_prompt_version)
+    evaluation_dates = {
+        str(turn.get("evaluation_date") or "").strip()
+        for turn in turns
+        if str(turn.get("evaluation_date") or "").strip()
+    }
+    evaluation_date_text = next(iter(evaluation_dates)) if len(evaluation_dates) == 1 else "НЕСОГЛАСОВАНА"
     transcript = "\n".join(
         f"Ход {turn['turn']}\n"
         f"Клиент видел реплику клиента: {turn['client_message']}\n"
@@ -2656,6 +2674,7 @@ def build_judge_prompt(
         "Ты судья качества Telegram-бота образовательного центра.\n"
         "Верни только JSON по output_schema из judge_spec. Без Markdown.\n\n"
         f"Версия промпта судьи: {judge_prompt_version_id(version)}.\n"
+        f"Дата оценки, общая для бота и судьи: {evaluation_date_text}. Событие, закончившееся раньше этой даты, нельзя представлять текущим или будущим и нельзя отправлять проверять наличие мест на него; такой ответ не может быть PASS. Оценивай слова «ближайший», «следующий» и «уже прошёл» относительно той же даты.\n"
         "Важно: в транскрипте есть внутренние метаданные route/topic/safety/checklist/missing_facts. "
         "Также есть подтверждённые факты и фрагменты базы знаний, доступные боту на каждом ходу. "
         "Они нужны тебе для оценки маршрутизации и выдумок, но клиент их НЕ видел как служебный блок. "
@@ -2766,7 +2785,10 @@ def judge_dialog(
             original=raw,
             judge_prompt_version=version,
         )
-    return normalize_judge_result(raw, dialog_id=dialog_id, brand=brand, judge_prompt_version=version)
+    result = dict(normalize_judge_result(raw, dialog_id=dialog_id, brand=brand, judge_prompt_version=version))
+    dates = {str(turn.get("evaluation_date") or "").strip() for turn in turns if str(turn.get("evaluation_date") or "").strip()}
+    result["evaluation_date"] = next(iter(dates)) if len(dates) == 1 else ""
+    return result
 
 
 def _should_reask_judge_gates(payload: Mapping[str, Any], *, run_status: str, judge_prompt_version: str) -> bool:
@@ -3726,6 +3748,7 @@ def build_summary(
         "scenario_metadata": _scenario_metadata(judge_spec),
         "run_config": {
             "parallel": int(parallel),
+            "evaluation_date": evaluation_date(),
             "judge_version": JUDGE_FACT_AUDIT_VERSION,
             "judge_prompt_version": normalize_judge_prompt_version(judge_prompt_version),
             "judge_prompt_version_id": judge_prompt_version_id(judge_prompt_version),

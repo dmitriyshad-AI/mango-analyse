@@ -615,14 +615,16 @@ def _direct_path_valid_until_ok(value: Any, *, today: Optional[date] = None) -> 
         return False
     return valid_until >= (today or date.today())
 
-def _direct_path_client_safe_snapshot_fact(fact: Mapping[str, Any], *, active_brand: str) -> bool:
+def _direct_path_client_safe_snapshot_fact(
+    fact: Mapping[str, Any], *, active_brand: str, today: Optional[date] = None
+) -> bool:
     brand = str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
     return (
         brand == str(active_brand or "").strip().casefold()
         and fact.get("allowed_for_client_answer") is True
         and fact.get("forbidden_for_client") is not True
         and fact.get("internal_only") is not True
-        and _direct_path_valid_until_ok(fact.get("valid_until"))
+        and _direct_path_valid_until_ok(fact.get("valid_until"), today=today)
         and bool(str(fact.get("client_safe_text") or fact.get("fact_text") or "").strip())
     )
 

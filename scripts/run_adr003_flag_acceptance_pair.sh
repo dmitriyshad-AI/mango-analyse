@@ -17,6 +17,8 @@ done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+EVALUATION_DATE="${EVALUATION_DATE:-$(TZ=Europe/Moscow date +%F)}"
+export MANGO_EVALUATION_DATE="$EVALUATION_DATE"
 
 TARGET_FLAG="${TARGET_FLAG:-}"
 TARGET_FLAG_VALUE="${TARGET_FLAG_VALUE:-1}"
@@ -68,6 +70,7 @@ base_env=(
   -u TELEGRAM_SEMANTIC_FRAME_EXISTENCE_PROOF_SHADOW
   -u TELEGRAM_SEMANTIC_FRAME_PROOF_RECONCILIATION_SHADOW
   TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1
+  MANGO_EVALUATION_DATE="$EVALUATION_DATE"
   PYTHONDONTWRITEBYTECODE=1
   PYTHONPATH="$ROOT/src"
 )
@@ -92,6 +95,7 @@ write_sha_manifest() {
   python3 - "$OUT" "$SCEN" "$SNAPSHOT" "$ROOT/scripts/run_adr003_flag_acceptance_pair.sh" "$PACKAGE_ID" "$TARGET_FLAG" "$TARGET_FLAG_VALUE" "$ROOT" <<'PY'
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -159,6 +163,7 @@ manifest = {
         "B": "pilot_gold_v1 profile with package flags explicitly set to 0",
         "ON": f"pilot_gold_v1 profile with package flags explicitly set to 0, plus {target_flag}={target_flag_value}",
         "TELEGRAM_SEMANTIC_READING_CLASSES": "unset in process env so pilot profile default classes apply",
+        "MANGO_EVALUATION_DATE": os.environ.get("MANGO_EVALUATION_DATE", ""),
     },
 }
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -205,6 +210,7 @@ echo "package_id=$PACKAGE_ID"
 echo "target_flag=$TARGET_FLAG"
 echo "scenarios=$SCEN"
 echo "snapshot=$SNAPSHOT"
+echo "evaluation_date=$EVALUATION_DATE"
 echo "out=$OUT"
 if [[ "$DRY_CHECK" == "1" ]]; then
   echo "mode=dry-check limit=2"

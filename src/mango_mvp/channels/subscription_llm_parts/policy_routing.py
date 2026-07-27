@@ -2208,6 +2208,7 @@ def _apply_conversation_intent_plan_legacy_guard(
     route_bias = str(plan.get("route_bias") or "").strip()
     route = result.route
     topic = str(result.topic_id or "").strip()
+    draft_text = result.draft_text
     flags = list(result.safety_flags)
     checklist = list(result.manager_checklist)
     metadata = dict(result.metadata)
@@ -2261,9 +2262,31 @@ def _apply_conversation_intent_plan_legacy_guard(
     if primary_intent:
         metadata["conversation_intent_primary_intent"] = primary_intent
 
+    model_signal = _direct_path_model_intent_signal(result)
+    if (
+        _intent_model_led_enabled(context)
+        and _direct_path_model_intent_primary(model_signal) == "off_topic"
+        and (_float_value(model_signal.get("confidence")) or 0.0) >= INTENT_MODEL_LED_CONFIDENCE_THRESHOLD
+        and not high_risk_plan
+        and not is_high_risk_result(result)
+    ):
+        draft_text = {
+            "foton": OFF_TOPIC_FOTON_SAFE_TEXT,
+            "unpk": OFF_TOPIC_UNPK_SAFE_TEXT,
+        }.get(_active_brand(context), OFF_TOPIC_GENERIC_SAFE_TEXT)
+        flags.append("intent_model_led_off_topic_safe_reply")
+        metadata["intent_model_led"] = {
+            **dict(metadata.get("intent_model_led") or {}),
+            "enabled": True,
+            "applied": True,
+            "applied_primary_intent": "off_topic",
+            "confidence": _float_value(model_signal.get("confidence")) or 0.0,
+        }
+
     if (
         route == result.route
         and topic == result.topic_id
+        and draft_text == result.draft_text
         and tuple(flags) == result.safety_flags
         and tuple(checklist) == result.manager_checklist
         and metadata == result.metadata
@@ -2274,6 +2297,7 @@ def _apply_conversation_intent_plan_legacy_guard(
         result,
         topic_id=topic,
         route=route,
+        draft_text=draft_text,
         safety_flags=tuple(dict.fromkeys(flags)),
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,

@@ -46,6 +46,9 @@ def test_adr003_flag_acceptance_runner_requires_model_led_application() -> None:
     assert "--require-intent-model-led-application" in text
     assert 'run_leg B "${base_env[@]}" "${package_flags_off[@]}"' in text
     assert '"$TARGET_FLAG=$TARGET_FLAG_VALUE"' in text
+    assert 'export MANGO_EVALUATION_DATE="$EVALUATION_DATE"' in text
+    assert 'MANGO_EVALUATION_DATE="$EVALUATION_DATE"' in text
+    assert '"MANGO_EVALUATION_DATE": os.environ.get("MANGO_EVALUATION_DATE", "")' in text
 
 
 def test_adr003_flag_acceptance_runner_validates_traced_profile_baseline() -> None:

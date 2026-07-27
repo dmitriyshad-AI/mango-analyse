@@ -661,7 +661,9 @@ def _direct_path_add_fact(items: dict[str, Any], key: str, value: Any) -> None:
         else:
             items.setdefault(fact_key, text)
 
-def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -> bool:
+def _direct_path_legacy_context_fact_allowed(
+    value: Any, *, active_brand: str, evaluation_day: Optional[date] = None
+) -> bool:
     if not isinstance(value, Mapping):
         return True
     brand = str(value.get("brand") or value.get("active_brand") or "").strip().casefold()
@@ -673,12 +675,14 @@ def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -
         return False
     if value.get("forbidden_for_client") is True or value.get("internal_only") is True:
         return False
-    if "valid_until" in value and not _direct_path_valid_until_ok(value.get("valid_until")):
+    if "valid_until" in value and not _direct_path_valid_until_ok(value.get("valid_until"), today=evaluation_day):
         return False
     return True
 
-def _direct_path_add_legacy_fact(items: dict[str, Any], key: str, value: Any, *, active_brand: str) -> None:
-    if _direct_path_legacy_context_fact_allowed(value, active_brand=active_brand):
+def _direct_path_add_legacy_fact(
+    items: dict[str, Any], key: str, value: Any, *, active_brand: str, evaluation_day: Optional[date] = None
+) -> None:
+    if _direct_path_legacy_context_fact_allowed(value, active_brand=active_brand, evaluation_day=evaluation_day):
         _direct_path_add_fact(items, key, value)
 
 def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, Any]:
@@ -686,27 +690,38 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
     if not isinstance(context, Mapping):
         return items
     active_brand = _active_brand(context)
+    evaluation_day = date.fromisoformat(_direct_path_evaluation_date(context))
     confirmed = context.get("confirmed_facts")
     if isinstance(confirmed, Mapping):
         for key, value in confirmed.items():
-            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
+            _direct_path_add_legacy_fact(
+                items, str(key), value, active_brand=active_brand, evaluation_day=evaluation_day
+            )
     facts_context = context.get("facts_context")
     if isinstance(facts_context, Mapping):
         confirmed_context = facts_context.get("confirmed_facts")
         if isinstance(confirmed_context, Mapping):
             for key, value in confirmed_context.items():
-                _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
+                _direct_path_add_legacy_fact(
+                    items, str(key), value, active_brand=active_brand, evaluation_day=evaluation_day
+                )
     pipeline = context.get("dialogue_contract_pipeline")
     if isinstance(pipeline, Mapping) and isinstance(pipeline.get("retrieved_facts"), Mapping):
         for key, value in pipeline["retrieved_facts"].items():
-            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
+            _direct_path_add_legacy_fact(
+                items, str(key), value, active_brand=active_brand, evaluation_day=evaluation_day
+            )
     snippets = context.get("knowledge_snippets")
     if isinstance(snippets, Mapping):
         for key, value in snippets.items():
-            _direct_path_add_legacy_fact(items, f"snippet:{key}", value, active_brand=active_brand)
+            _direct_path_add_legacy_fact(
+                items, f"snippet:{key}", value, active_brand=active_brand, evaluation_day=evaluation_day
+            )
     elif isinstance(snippets, Sequence) and not isinstance(snippets, (str, bytes, bytearray)):
         for idx, value in enumerate(snippets, 1):
-            _direct_path_add_legacy_fact(items, f"snippet:{idx}", value, active_brand=active_brand)
+            _direct_path_add_legacy_fact(
+                items, f"snippet:{idx}", value, active_brand=active_brand, evaluation_day=evaluation_day
+            )
     return dict(list(items.items())[:limit])
 
 
@@ -1847,6 +1862,7 @@ def _direct_path_records_to_fact_pack(
     max_chars: int,
     extra_metadata: Optional[Mapping[str, Any]] = None,
     include_scope_axes: bool = False,
+    evaluation_day: Optional[date] = None,
 ) -> Mapping[str, Any]:
     facts: dict[str, str] = {}
     meta: dict[str, dict[str, str]] = {}
@@ -1864,7 +1880,11 @@ def _direct_path_records_to_fact_pack(
                 "fact_type": str(fact.get("fact_type") or ""),
                 "product": str(fact.get("product") or ""),
                 "valid_until": str(fact.get("valid_until") or ""),
-                "client_safe": "true" if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand) else "false",
+                "client_safe": "true"
+                if _direct_path_client_safe_snapshot_fact(
+                    fact, active_brand=active_brand, today=evaluation_day
+                )
+                else "false",
             },
         }
         if include_scope_axes:
@@ -2105,6 +2125,7 @@ def _direct_path_keyword_fact_pack_from_records(
         max_chars=max_chars,
         extra_metadata=metadata,
         include_scope_axes=_fact_venue_scope_enabled(context),
+        evaluation_day=date.fromisoformat(_direct_path_evaluation_date(context)),
     )
 
 def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any], *, include_scope_axes: bool = False) -> str:
@@ -2794,6 +2815,7 @@ def _direct_path_llm_retrieve_fact_pack(
         max_chars=max_chars,
         extra_metadata=extra_metadata,
         include_scope_axes=venue_scope_enabled_flag,
+        evaluation_day=date.fromisoformat(_direct_path_evaluation_date(context)),
     )
     return pack, metadata
 
@@ -2805,6 +2827,7 @@ def _direct_path_wide_fact_pack(
     max_chars: int = DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
     retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
 ) -> Mapping[str, Any]:
+    evaluation_day = date.fromisoformat(_direct_path_evaluation_date(context))
     legacy = _direct_path_scope_safe_legacy(
         _direct_path_legacy_context_fact_items(context, limit=18), client_message, context
     )
@@ -2814,7 +2837,7 @@ def _direct_path_wide_fact_pack(
     records = [
         fact
         for fact in _direct_path_snapshot_facts(snapshot)
-        if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand)
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand, today=evaluation_day)
     ]
     if not records:
         return {
@@ -3445,6 +3468,16 @@ def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str
             lines.append(f"   Принцип: {note}")
     return "\n".join(lines)
 
+
+def _direct_path_evaluation_date(context: Optional[Mapping[str, Any]]) -> str:
+    raw = str(context.get("evaluation_date") or "").strip() if isinstance(context, Mapping) else ""
+    if raw:
+        try:
+            return date.fromisoformat(raw).isoformat()
+        except ValueError:
+            pass
+    return date.today().isoformat()
+
 def _build_direct_path_prompt(
     client_message: str,
     *,
@@ -3455,6 +3488,7 @@ def _build_direct_path_prompt(
 ) -> str:
     active_brand = _active_brand(context)
     brand_label = _direct_path_brand_label(active_brand)
+    evaluation_date = _direct_path_evaluation_date(context)
     pack = fact_pack if isinstance(fact_pack, Mapping) else _direct_path_context_fact_pack(context, client_message=client_message)
     fact_items = dict(facts or pack.get("facts") or {})
     answer_coverage_plan = (
@@ -3637,6 +3671,8 @@ def _build_direct_path_prompt(
         f"{_direct_path_format_guidance_block(context)}"
         f"{_direct_path_route_rubric_block(context)}"
         f"{_text_hygiene_payment_fix_prompt_block(context)}"
+        f"Дата ответа: {evaluation_date}. Сравнивай с ней все подтверждённые даты: завершившееся событие нельзя называть текущим или будущим и нельзя предлагать проверять наличие мест на него. Слова «ближайший», «следующий» и «уже прошёл» используй только после такого сравнения; иначе перечисли подтверждённые даты без вывода.\n\n"
+        "Если вопрос не относится к обучению или продуктам центра и подтверждённых фактов для ответа нет, не отвечай внешними сведениями и не угадывай. Коротко скажи, что помогаешь по вопросам обучения, и предложи помощь по курсам, формату, расписанию или записи.\n\n"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"

@@ -30,6 +30,7 @@ def _frame(*, must_handoff: bool = True) -> dict:
 def _dialog(*, text: str = "Менеджер проверит наличие места.", include_frame: bool = True) -> dict:
     turn = {
         "turn": 1,
+        "evaluation_date": "2026-07-27",
         "client_message": "Есть места?",
         "bot_route": "draft_for_manager",
         "bot_text": text,
@@ -47,7 +48,12 @@ def _dialog(*, text: str = "Менеджер проверит наличие м�
                 "action": {"status": "aligned"},
             },
         }
-    return {"dialog_id": "d1", "brand": "foton", "turns": [turn]}
+    return {
+        "dialog_id": "d1",
+        "brand": "foton",
+        "turns": [turn],
+        "judge_result": {"evaluation_date": "2026-07-27"},
+    }
 
 
 def _preblocked_p0_turn() -> dict:
@@ -103,10 +109,27 @@ def _model_not_called_bypass_turn() -> dict:
     }
 
 
-def _summary(total_calls: int = 3, *, frame_calls: int = 0, **extra_calls: int) -> dict:
+def _summary(
+    total_calls: int = 3,
+    *,
+    frame_calls: int = 0,
+    intent_env: str = "",
+    intent_effective=None,
+    evaluation_date: str = "",
+    **extra_calls: int,
+) -> dict:
     calls = {"total": total_calls, "bot_semantic_frame_shadow": frame_calls}
     calls.update(extra_calls)
-    return {"llm_calls": calls, "hard_gate_failure_dialogs": []}
+    return {
+        "llm_calls": calls,
+        "hard_gate_failure_dialogs": [],
+        "run_config": {
+            "evaluation_date": evaluation_date,
+            "key_flags": {
+                "intent_model_led": {"env": intent_env, "effective": intent_effective},
+            },
+        },
+    }
 
 
 def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
@@ -137,6 +160,9 @@ def test_report_accepts_clean_off_on_pair(tmp_path: Path) -> None:
 
 def test_report_counts_model_led_application_without_keyword_prefilter(tmp_path: Path) -> None:
     on_transcripts = tmp_path / "on.jsonl"
+    off_transcripts = tmp_path / "off.jsonl"
+    on_summary = tmp_path / "on_summary.json"
+    off_summary = tmp_path / "off_summary.json"
     dialog = _dialog(include_frame=True)
     dialog["turns"][0]["bot_intent_model_led"] = {
         "applied": True,
@@ -146,10 +172,14 @@ def test_report_counts_model_led_application_without_keyword_prefilter(tmp_path:
     dialog["turns"].append(
         {
             "turn": 2,
+            "evaluation_date": "2026-07-27",
             "bot_intent_model_led": {"applied": False, "skip_reason": "low_confidence"},
         }
     )
     _write_jsonl(on_transcripts, [dialog])
+    _write_jsonl(off_transcripts, [_dialog(include_frame=True)])
+    on_summary.write_text(json.dumps(_summary(intent_env="1", intent_effective=True, evaluation_date="2026-07-27")), encoding="utf-8")
+    off_summary.write_text(json.dumps(_summary(intent_env="0", intent_effective=False, evaluation_date="2026-07-27")), encoding="utf-8")
 
     result = report.build_report(on_transcripts=on_transcripts)
 
@@ -164,9 +194,47 @@ def test_report_counts_model_led_application_without_keyword_prefilter(tmp_path:
     }
     required = report.build_report(
         on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
         require_intent_model_led_application=True,
     )
     assert required["acceptance"]["flags"]["intent_model_led_application_proven"] is True
+    assert required["acceptance"]["flags"]["intent_model_led_baseline_clean"] is True
+    assert required["acceptance"]["flags"]["intent_model_led_on_configured"] is True
+    assert required["acceptance"]["flags"]["evaluation_date_parity"] is True
+    assert required["acceptance"]["flags"]["baseline_hard_gate_failures_zero"] is True
+
+
+def test_report_rejects_model_led_trace_in_baseline_and_mismatched_dates(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    off_dialog = _dialog(include_frame=True)
+    off_dialog["turns"][0]["bot_intent_model_led"] = {"applied": True}
+    on_dialog = _dialog(include_frame=True)
+    on_dialog["turns"][0]["bot_intent_model_led"] = {
+        "applied": True,
+        "applied_primary_intent": "address",
+        "keyword_prefilter": [],
+    }
+    _write_jsonl(off_transcripts, [off_dialog])
+    _write_jsonl(on_transcripts, [on_dialog])
+    off_summary.write_text(json.dumps(_summary(intent_env="0", intent_effective=False, evaluation_date="2026-07-27")), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(intent_env="1", intent_effective=True, evaluation_date="2026-07-28")), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+        require_intent_model_led_application=True,
+    )
+
+    assert result["acceptance"]["flags"]["intent_model_led_baseline_clean"] is False
+    assert result["acceptance"]["flags"]["evaluation_date_parity"] is False
+    assert result["acceptance"]["status"] == "needs_review"
 
 
 def test_report_rejects_intent_model_led_exam_without_application(tmp_path: Path) -> None:
@@ -180,6 +248,32 @@ def test_report_rejects_intent_model_led_exam_without_application(tmp_path: Path
 
     assert result["acceptance"]["flags"]["intent_model_led_application_proven"] is False
     assert result["acceptance"]["status"] == "needs_review"
+
+
+def test_report_rejects_matching_invalid_evaluation_date(tmp_path: Path) -> None:
+    off_transcripts = tmp_path / "off.jsonl"
+    on_transcripts = tmp_path / "on.jsonl"
+    off_summary = tmp_path / "off_summary.json"
+    on_summary = tmp_path / "on_summary.json"
+    dialogs = [_dialog(include_frame=True)]
+    for dialog in dialogs:
+        dialog["turns"][0]["evaluation_date"] = "not-a-date"
+        dialog["judge_result"]["evaluation_date"] = "not-a-date"
+    _write_jsonl(off_transcripts, dialogs)
+    _write_jsonl(on_transcripts, dialogs)
+    off_summary.write_text(json.dumps(_summary(intent_env="0", intent_effective=False, evaluation_date="not-a-date")), encoding="utf-8")
+    on_summary.write_text(json.dumps(_summary(intent_env="1", intent_effective=True, evaluation_date="not-a-date")), encoding="utf-8")
+
+    result = report.build_report(
+        on_transcripts=on_transcripts,
+        on_summary=on_summary,
+        off_transcripts=off_transcripts,
+        off_summary=off_summary,
+        require_intent_model_led_application=True,
+    )
+
+    assert result["evaluation_date"]["status"] == "fail"
+    assert result["acceptance"]["flags"]["evaluation_date_parity"] is False
 
 
 def test_report_cli_fails_when_required_model_led_application_is_missing(tmp_path: Path) -> None:

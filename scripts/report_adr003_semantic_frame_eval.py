@@ -122,7 +122,18 @@ def build_report(
         if posthoc_dialogs
         else {"status": "not_provided"},
         "reader_agreement": _reader_agreement_metrics(on_dialogs),
+        "intent_model_led_baseline": _intent_model_led_metrics(off_dialogs),
         "intent_model_led": _intent_model_led_metrics(on_dialogs),
+        "intent_model_led_config": {
+            "off": dict(zip(("env", "effective"), _intent_model_led_config(off_summary_data))),
+            "on": dict(zip(("env", "effective"), _intent_model_led_config(on_summary_data))),
+        },
+        "evaluation_date": _evaluation_date_metrics(
+            off_dialogs,
+            on_dialogs,
+            off_summary=off_summary_data,
+            on_summary=on_summary_data,
+        ),
         "llm_calls": _llm_call_delta(off_summary_data, on_summary_data),
         "semantic_frame": _semantic_frame_metrics(on_dialogs),
         "frame_decision_shadow": _frame_decision_shadow_metrics(on_dialogs),
@@ -172,6 +183,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     )
     paired = report.get("paired_dialogs") if isinstance(report.get("paired_dialogs"), Mapping) else {}
     model_led = report.get("intent_model_led") if isinstance(report.get("intent_model_led"), Mapping) else {}
+    baseline_model_led = report.get("intent_model_led_baseline") if isinstance(report.get("intent_model_led_baseline"), Mapping) else {}
+    evaluation_date = report.get("evaluation_date") if isinstance(report.get("evaluation_date"), Mapping) else {}
     lines = [
         "# ADR-003 SemanticFrame Eval Report",
         "",
@@ -205,6 +218,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Reader agreement compared turns: `{(report.get('reader_agreement') or {}).get('compared_turns', 'n/a')}`",
         f"- Reader agreement mismatch count: `{(report.get('reader_agreement') or {}).get('mismatch_count', 'n/a')}`",
         f"- Model-led intent applied without keyword permission: `{model_led.get('applied_without_keyword_prefilter', 0)}`",
+        f"- Baseline model-led trace turns: `{baseline_model_led.get('trace_turns', 0)}`",
+        f"- Shared evaluation date: `{evaluation_date.get('value', '')}` (`{evaluation_date.get('status', 'n/a')}`)",
         f"- Model-led intent skip reasons: `{model_led.get('skip_reasons', {})}`",
         f"- LLM call mode: `{llm.get('mode', 'unknown')}`",
         f"- LLM raw total delta: `{llm.get('raw_total_delta', 'n/a')}`",
@@ -328,6 +343,48 @@ def _intent_model_led_metrics(dialogs: Sequence[Mapping[str, Any]]) -> dict[str,
         "applied_without_keyword_prefilter": applied_without_prefilter,
         "applied_without_keyword_prefilter_examples": applied_examples[:100],
         "skip_reasons": dict(sorted(skip_reasons.items())),
+    }
+
+
+def _intent_model_led_config(summary: Mapping[str, Any]) -> tuple[str, bool | None]:
+    run_config = summary.get("run_config") if isinstance(summary.get("run_config"), Mapping) else {}
+    key_flags = run_config.get("key_flags") if isinstance(run_config.get("key_flags"), Mapping) else {}
+    state = key_flags.get("intent_model_led") if isinstance(key_flags.get("intent_model_led"), Mapping) else {}
+    return str(state.get("env") or ""), state.get("effective") if isinstance(state.get("effective"), bool) else None
+
+
+def _evaluation_date_leg(dialogs: Sequence[Mapping[str, Any]], summary: Mapping[str, Any]) -> tuple[set[str], bool]:
+    turn_values = [str(turn.get("evaluation_date") or "").strip() for dialog in dialogs for turn in _turns(dialog)]
+    judge_values: list[str] = []
+    for dialog in dialogs:
+        judge = dialog.get("judge_result")
+        judge_values.append(str(judge.get("evaluation_date") or "").strip() if isinstance(judge, Mapping) else "")
+    run_config = summary.get("run_config") if isinstance(summary.get("run_config"), Mapping) else {}
+    summary_value = str(run_config.get("evaluation_date") or "").strip()
+    raw = [*turn_values, *judge_values, summary_value]
+    return {value for value in raw if value}, bool(turn_values and dialogs and all(raw))
+
+
+def _evaluation_date_metrics(
+    off_dialogs: Sequence[Mapping[str, Any]],
+    on_dialogs: Sequence[Mapping[str, Any]],
+    *,
+    off_summary: Mapping[str, Any],
+    on_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    off_values, off_complete = _evaluation_date_leg(off_dialogs, off_summary)
+    on_values, on_complete = _evaluation_date_leg(on_dialogs, on_summary)
+    values = off_values | on_values
+    value = next(iter(values)) if len(values) == 1 else ""
+    try:
+        valid_value = bool(value and datetime.strptime(value, "%Y-%m-%d").date().isoformat() == value)
+    except ValueError:
+        valid_value = False
+    return {
+        "status": "pass" if off_complete and on_complete and valid_value else "fail",
+        "value": value if valid_value else "",
+        "off_values": sorted(off_values),
+        "on_values": sorted(on_values),
     }
 
 
@@ -1427,6 +1484,13 @@ def _acceptance(
     )
     hard = report.get("hard_gate_failures") if isinstance(report.get("hard_gate_failures"), Mapping) else {}
     model_led = report.get("intent_model_led") if isinstance(report.get("intent_model_led"), Mapping) else {}
+    baseline_model_led = report.get("intent_model_led_baseline") if isinstance(report.get("intent_model_led_baseline"), Mapping) else {}
+    evaluation_date = report.get("evaluation_date") if isinstance(report.get("evaluation_date"), Mapping) else {}
+    model_led_config = report.get("intent_model_led_config") if isinstance(report.get("intent_model_led_config"), Mapping) else {}
+    off_config = model_led_config.get("off") if isinstance(model_led_config.get("off"), Mapping) else {}
+    on_config = model_led_config.get("on") if isinstance(model_led_config.get("on"), Mapping) else {}
+    off_env, off_effective = str(off_config.get("env") or ""), off_config.get("effective")
+    on_env, on_effective = str(on_config.get("env") or ""), on_config.get("effective")
     extra_total = llm.get("extra_total")
     extra_frame = llm.get("extra_semantic_frame_shadow")
     frame_present = int(frame.get("present_count") or 0)
@@ -1461,9 +1525,22 @@ def _acceptance(
         "semantic_frame_required_fields_complete": frame.get("present_count") == frame.get("complete_required_count"),
         "self_answer_partial_freshness_zero": self_shadow.get("partial_freshness_self_candidates", 0) == 0,
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
+        "baseline_hard_gate_failures_zero": (
+            not require_intent_model_led_application or hard.get("off") == 0
+        ),
         "intent_model_led_application_proven": (
             not require_intent_model_led_application
             or int(model_led.get("applied_without_keyword_prefilter") or 0) > 0
+        ),
+        "intent_model_led_baseline_clean": (
+            not require_intent_model_led_application
+            or (off_env == "0" and off_effective is False and int(baseline_model_led.get("trace_turns") or 0) == 0)
+        ),
+        "intent_model_led_on_configured": (
+            not require_intent_model_led_application or (on_env == "1" and on_effective is True)
+        ),
+        "evaluation_date_parity": (
+            not require_intent_model_led_application or evaluation_date.get("status") == "pass"
         ),
     }
     notes: list[str] = []
@@ -1503,6 +1580,14 @@ def _acceptance(
         notes.append("At least one self-answer shadow candidate has only partial freshness/client-safe fact coverage.")
     if not flags["intent_model_led_application_proven"]:
         notes.append("Model-led intent never applied without keyword permission; this run did not test the change.")
+    if not flags["baseline_hard_gate_failures_zero"]:
+        notes.append("Baseline leg still has a hard-gate failure; shared behavior is not safe enough for comparison.")
+    if not flags["intent_model_led_baseline_clean"]:
+        notes.append("Baseline leg was not proven clean: require env=0, effective=false and zero model-led traces.")
+    if not flags["intent_model_led_on_configured"]:
+        notes.append("ON leg was not proven configured with env=1 and effective=true.")
+    if not flags["evaluation_date_parity"]:
+        notes.append("Bot turns, judge results and both summaries do not share one complete evaluation date.")
     status = "pass" if all(flags.values()) else "needs_review"
     return {"status": status, "flags": flags, "notes": notes}
 

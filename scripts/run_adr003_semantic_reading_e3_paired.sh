@@ -337,10 +337,11 @@ if [[ -n "$RESUME_ON_REPORT" ]]; then
   echo "mode=resume-on-report"
   validate_leg B 0
   run_on_leg
-  run_report
+  report_rc=0
+  run_report || report_rc=$?
   write_sha_manifest
   echo "Done resume-on-report: $OUT"
-  exit 0
+  exit "$report_rc"
 fi
 
 mkdir -p "$OUT"
@@ -374,7 +375,8 @@ if [[ "$DRY_CHECK" == "1" ]]; then
   exit 0
 fi
 
-run_report
-
+report_rc=0
+run_report || report_rc=$?
 write_sha_manifest
 echo "Done: $OUT"
+exit "$report_rc"

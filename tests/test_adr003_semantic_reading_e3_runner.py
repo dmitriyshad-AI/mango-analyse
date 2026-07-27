@@ -168,6 +168,14 @@ def test_adr003_e3_runner_has_resume_on_report_mode() -> None:
     assert "Done resume-on-report" in text[resume_index:full_run_index]
 
 
+def test_adr003_e3_runner_writes_manifest_after_red_report() -> None:
+    text = _runner_text()
+
+    assert text.count("run_report || report_rc=$?") == 2
+    assert text.count('exit "$report_rc"') == 2
+    assert text.rindex("run_report || report_rc=$?") < text.rindex("write_sha_manifest")
+
+
 def test_adr003_e3_runner_passes_progress_json_to_both_legs() -> None:
     text = _runner_text()
 

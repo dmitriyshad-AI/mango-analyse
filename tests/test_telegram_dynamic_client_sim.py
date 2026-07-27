@@ -1555,6 +1555,7 @@ def test_codex_bot_mode_requires_existing_snapshot(tmp_path):
 
 def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeypatch, tmp_path):
     monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+    monkeypatch.setenv(sim.EVALUATION_DATE_ENV, "2026-07-27")
 
     context = sim.build_bot_prompt_context(
         "Это цена на сейчас?",
@@ -1564,6 +1565,7 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     )
 
     assert context["context_parity_checked"] is True
+    assert context["evaluation_date"] == "2026-07-27"
     assert "funnel_state" in context
     assert context["known_slots"]["grade"] == "9"
     assert context["known_slots"]["subject"] == "физика"
@@ -1575,6 +1577,32 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert "answer_quality_reference" in context
     assert "conversation_intent_plan" in context
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+
+
+def test_evaluation_date_is_shared_with_judge_and_invalid_value_fails(monkeypatch) -> None:
+    monkeypatch.setenv(sim.EVALUATION_DATE_ENV, "2026-07-27")
+    assert sim.evaluation_date() == "2026-07-27"
+    prompt = sim.build_judge_prompt(
+        {"output_schema": {"verdict": "PASS|FAIL"}},
+        {"dialog_id": "date", "brand": "foton"},
+        [
+            {
+                "turn": 1,
+                "evaluation_date": "2026-07-27",
+                "client_message": "Какая смена ближайшая?",
+                "bot_text": "Сверю подтверждённые даты.",
+                "bot_route": "draft_for_manager",
+                "bot_topic_id": "theme:026_camp_general",
+                "bot_safety_flags": [],
+            }
+        ],
+    )
+    assert "Дата оценки, общая для бота и судьи: 2026-07-27" in prompt
+    assert "нельзя отправлять проверять наличие мест на него" in prompt
+
+    monkeypatch.setenv(sim.EVALUATION_DATE_ENV, "27.07.2026")
+    with pytest.raises(ValueError):
+        sim.evaluation_date()
 
 
 def test_initial_history_lines_seed_dynamic_context(monkeypatch, tmp_path):

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.productization.mail_archive import CANONICAL_MAIL_IDENTITY_DB
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_customer_timeline_codex_task.py"
 spec = importlib.util.spec_from_file_location("run_customer_timeline_codex_task", SCRIPT)
 module = importlib.util.module_from_spec(spec)
@@ -25,6 +27,14 @@ builder = importlib.util.module_from_spec(builder_spec)
 assert builder_spec and builder_spec.loader
 sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
+
+
+def _mail_root_with_identity(tmp_path: Path) -> Path:
+    root = tmp_path / "mail-data"
+    identity_db = root / CANONICAL_MAIL_IDENTITY_DB
+    identity_db.parent.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(identity_db).close()
+    return root
 
 
 def test_builder_passes_mail_data_root_separately_from_repo_root(tmp_path, monkeypatch) -> None:
@@ -731,6 +741,7 @@ def test_nightly_self_heal_rebuilds_and_validates_persistent_config(tmp_path, mo
 
 def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
+    mail_data_root = _mail_root_with_identity(tmp_path)
 
     payload = builder.build_service_config(
         timeline_db=staging_root / "customer_timeline_staging.sqlite",
@@ -740,6 +751,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
         mango_manifest=staging_root / "mango.json",
         tallanto_manifest=staging_root / "tallanto.json",
         base_service_config=staging_root / "missing.json",
+        mail_data_root=mail_data_root,
     )
 
     steps = {step["name"]: step for step in payload["steps"]}
@@ -773,15 +785,15 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert "tallanto_money_incremental" not in steps
     mail_link_enrich = steps["mail_link_enrich"]
     assert mail_link_enrich["required"] is True
-    assert [Path(path).name for path in mail_link_enrich["config"]["tallanto_identity_dbs"]] == [
-        "tallanto_email_identity_map.sqlite",
-        "tallanto_email_identity_map.sqlite",
+    assert mail_link_enrich["config"]["tallanto_identity_dbs"] == [
+        str(mail_data_root / CANONICAL_MAIL_IDENTITY_DB)
     ]
     assert ".codex_local/staging" not in " ".join(mail_link_enrich["config"]["tallanto_identity_dbs"])
 
 
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
+    mail_data_root = _mail_root_with_identity(tmp_path)
     base = staging_root / "nightly_service/base.json"
     base.parent.mkdir(parents=True)
     base.write_text(
@@ -816,6 +828,7 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
         mango_manifest=staging_root / "mango.json",
         tallanto_manifest=staging_root / "tallanto.json",
         base_service_config=base,
+        mail_data_root=mail_data_root,
     )
 
     sources = next(
@@ -826,6 +839,7 @@ def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) 
 
 def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
     staging_root = tmp_path / ".codex_local/staging"
+    mail_data_root = _mail_root_with_identity(tmp_path)
     base = staging_root / "nightly_service/base.json"
     base.parent.mkdir(parents=True)
     base.write_text(
@@ -875,6 +889,7 @@ def test_builder_keeps_required_calls_mail_and_sweep_steps(tmp_path) -> None:
         mango_manifest=staging_root / "mango.json",
         tallanto_manifest=staging_root / "tallanto.json",
         base_service_config=base,
+        mail_data_root=mail_data_root,
     )
 
     steps = {step["name"]: step for step in payload["steps"]}

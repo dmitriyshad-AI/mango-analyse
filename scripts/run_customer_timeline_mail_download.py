@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from mango_mvp.productization.mail_archive import CANONICAL_MAIL_ARCHIVE_ROOT  # noqa: E402
 from mango_mvp.productization.mail_imap_snapshot import (  # noqa: E402
     ImapLibClient,
     parse_mailbox_list_line,
@@ -35,7 +36,7 @@ from scripts.mango_office_mail_archive import (  # noqa: E402
 )
 
 DEFAULT_SECRET = Path.home() / ".mango_secrets/mail_imap_edu_kmipt.env"
-CANONICAL_RELATIVE_ROOT = Path("_external_handoffs/mail_archive_canonical_20260711")
+CANONICAL_RELATIVE_ROOT = CANONICAL_MAIL_ARCHIVE_ROOT
 
 
 def utc_now() -> str:

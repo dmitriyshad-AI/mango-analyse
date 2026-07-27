@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 import pytest
 
+from mango_mvp.productization.mail_archive import MAIL_ARCHIVE_SCHEMA_VERSION
 from scripts import run_customer_timeline_mail_download as download
 from scripts import run_customer_timeline_mail_process as process
 from scripts import run_customer_timeline_mail_import as mail_import
@@ -227,6 +228,11 @@ def _write_archive(path: Path, *, sha: str, event_at: str | None) -> None:
         con.execute(
             "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (sha, event_at, "Тема", "external", "INBOX", "", event_at or "2026-07-12T10:04:00+00:00", "2026-07-12T10:04:00+00:00"),
+        )
+        con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        con.executemany(
+            "INSERT INTO meta VALUES (?, ?)",
+            (("schema_version", MAIL_ARCHIVE_SCHEMA_VERSION), ("updated_at", "2026-07-12T10:04:00+00:00")),
         )
 
 

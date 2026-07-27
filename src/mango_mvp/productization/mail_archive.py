@@ -44,6 +44,11 @@ from mango_mvp.productization.mail_imap_snapshot import (
 
 
 MAIL_ARCHIVE_SCHEMA_VERSION = "mail_archive_v1"
+CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION = "mail_archive_canonical_v1"
+ACCEPTED_MAIL_ARCHIVE_SCHEMA_VERSIONS = (
+    MAIL_ARCHIVE_SCHEMA_VERSION,
+    CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION,
+)
 DEFAULT_MAIL_DATA_ROOT = Path(
     os.getenv("MANGO_MAIL_DATA_ROOT", "/Users/dmitrijfabarisov/Mango_Data")
 ).expanduser()
@@ -9566,8 +9571,65 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def canonical_mail_archive_dbs(mail_data_root: Path) -> tuple[Path, ...]:
+    """Resolve every SQLite component of the single canonical mail archive."""
+    root = Path(mail_data_root).expanduser()
+    candidates = [root / CANONICAL_MAIL_ARCHIVE_DB]
+    incoming_root = root / CANONICAL_MAIL_INCOMING_ROOT
+    if incoming_root.is_dir():
+        candidates.extend(sorted(incoming_root.glob("*/*/mail_archive.sqlite")))
+    return tuple(dict.fromkeys(path.resolve(strict=False) for path in candidates))
+
+
+def existing_tallanto_identity_dbs(mail_data_root: Path) -> tuple[Path, ...]:
+    """Return only identity DBs that exist; fail before a nightly run if none do."""
+    root = Path(mail_data_root).expanduser()
+    candidates = (
+        root / CANONICAL_MAIL_CURRENT_IDENTITY_DB,
+        root / CANONICAL_MAIL_IDENTITY_DB,
+    )
+    existing = tuple(path for path in candidates if path.is_file())
+    if not existing:
+        raise FileNotFoundError(
+            "no Tallanto identity DB under the canonical mail root: "
+            + ", ".join(str(path) for path in candidates)
+        )
+    return existing
+
+
+def assert_canonical_mail_archive_ready(paths: Sequence[Path]) -> Mapping[str, Any]:
+    """Fail before reading a missing, structurally invalid or unstamped archive."""
+    if not paths:
+        raise FileNotFoundError("mail archive input is empty")
+    inventory: list[Mapping[str, Any]] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"required mail archive input is missing: {path}")
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
+            con.execute("PRAGMA query_only=ON")
+            tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing_tables = sorted({"messages", "meta"} - tables)
+            if missing_tables:
+                raise ValueError(f"mail archive misses tables {','.join(missing_tables)}: {path}")
+            meta = {str(row[0]): str(row[1]) for row in con.execute("SELECT key, value FROM meta")}
+        schema_version = meta.get("schema_version", "")
+        if schema_version not in ACCEPTED_MAIL_ARCHIVE_SCHEMA_VERSIONS:
+            raise ValueError(f"mail archive schema mismatch: {schema_version or 'missing'}")
+        stamped_at = meta.get("built_at") or meta.get("updated_at") or ""
+        if not stamped_at:
+            raise ValueError(f"mail archive manifest is unstamped: {path}")
+        inventory.append({"path": str(path), "schema_version": schema_version, "stamped_at": stamped_at})
+    return {"databases": inventory}
+
+
 __all__ = [
+    "ACCEPTED_MAIL_ARCHIVE_SCHEMA_VERSIONS",
+    "CANONICAL_MAIL_ARCHIVE_SCHEMA_VERSION",
     "CANONICAL_MAIL_CURRENT_IDENTITY_DB",
+    "assert_canonical_mail_archive_ready",
+    "canonical_mail_archive_dbs",
+    "existing_tallanto_identity_dbs",
     "FULL_MESSAGE_FETCH_QUERY",
     "DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS",
     "DEFAULT_ATTACHMENT_PARSE_ALLOW_EXTENSIONS",

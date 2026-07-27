@@ -24,10 +24,11 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.productization.mail_archive import (  # noqa: E402
     CANONICAL_MAIL_ARCHIVE_DB,
-    CANONICAL_MAIL_CURRENT_IDENTITY_DB,
-    CANONICAL_MAIL_IDENTITY_DB,
     CANONICAL_MAIL_STAGE2_DELTA_EVENTS,
     DEFAULT_MAIL_DATA_ROOT,
+    assert_canonical_mail_archive_ready,
+    canonical_mail_archive_dbs,
+    existing_tallanto_identity_dbs,
 )
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
@@ -99,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     service_config = build_service_config(
         timeline_db=timeline_db,
         out_root=out_root,
+        mail_data_root=mail_data_root,
         mail_jsonl=mail_jsonl,
         mail_manifest=mail_manifest,
         mango_manifest=mango_manifest,
@@ -166,12 +168,13 @@ def build_mail_increment(
     archive_dbs = (
         list(archive_db_paths)
         if archive_db_paths is not None
-        else [mail_data_root / CANONICAL_MAIL_ARCHIVE_DB]
+        else list(canonical_mail_archive_dbs(mail_data_root))
     )
     missing_archive_dbs = [path for path in archive_dbs if not path.is_file()]
     if not archive_dbs or missing_archive_dbs:
         missing = missing_archive_dbs or [mail_data_root / CANONICAL_MAIL_ARCHIVE_DB]
         raise FileNotFoundError("required mail archive input is missing: " + ", ".join(map(str, missing)))
+    archive_readiness = assert_canonical_mail_archive_ready(archive_dbs)
     inputs: list[Mapping[str, Any]] = []
     for path in stage2_paths:
         count_before = len(rows)
@@ -243,6 +246,7 @@ def build_mail_increment(
         "schema_version": "mail_archive_stage2_incremental_manifest_v1",
         "tenant_id": tenant_id,
         "cursor_start": since.isoformat(),
+        "archive_readiness": archive_readiness,
         "inputs": inputs,
         "output_jsonl": str(out_jsonl),
         "rows_written": len(rows),
@@ -433,10 +437,13 @@ def build_service_config(
     mango_manifest: Path,
     tallanto_manifest: Path,
     base_service_config: Path | None = None,
+    mail_data_root: Path = DEFAULT_MAIL_DATA_ROOT,
 ) -> Mapping[str, Any]:
     allowed_root = timeline_db.parent.resolve(strict=False)
+    mail_data_root = Path(mail_data_root).expanduser()
     steps: list[Mapping[str, Any]] = []
     mango_sweep_jsonl = out_root / "mango_processed_sweep.jsonl"
+    tallanto_identity_dbs = existing_tallanto_identity_dbs(mail_data_root)
     steps.append(
         {
             "name": "mango_processed_sweep",
@@ -609,10 +616,7 @@ def build_service_config(
                 "out_dir": str(out_root / "mail_link_enrich"),
                 "tenant_id": "foton",
                 "apply": True,
-                "tallanto_identity_dbs": [
-                    str(DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_CURRENT_IDENTITY_DB),
-                    str(DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_IDENTITY_DB),
-                ],
+                "tallanto_identity_dbs": [str(path) for path in tallanto_identity_dbs],
             },
         }
     )
@@ -770,6 +774,7 @@ def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    path.chmod(0o600)
 
 
 def read_text_preview(path: Any, limit: int) -> str:

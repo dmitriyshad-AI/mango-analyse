@@ -32,9 +32,8 @@ from mango_mvp.customer_timeline.mail_link_enrich import (  # noqa: E402
     run_mail_link_enrich,
 )
 from mango_mvp.productization.mail_archive import (  # noqa: E402
-    CANONICAL_MAIL_CURRENT_IDENTITY_DB,
-    CANONICAL_MAIL_IDENTITY_DB,
     DEFAULT_MAIL_DATA_ROOT,
+    existing_tallanto_identity_dbs,
 )
 
 
@@ -171,10 +170,7 @@ def enrich_mail_links(*, timeline_db: Path, allowed_root: Path, out_dir: Path) -
             out_dir=out_dir,
             tenant_id="foton",
             apply=True,
-            tallanto_identity_dbs=(
-                DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_CURRENT_IDENTITY_DB,
-                DEFAULT_MAIL_DATA_ROOT / CANONICAL_MAIL_IDENTITY_DB,
-            ),
+            tallanto_identity_dbs=existing_tallanto_identity_dbs(DEFAULT_MAIL_DATA_ROOT),
         )
     )
 

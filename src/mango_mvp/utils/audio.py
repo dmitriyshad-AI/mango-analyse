@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import audioop
 import json
 import re
 import shutil
@@ -237,6 +236,11 @@ def split_stereo_to_mono(path: Path) -> Optional[Tuple[Path, Path, Path]]:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
 
+        try:
+            import audioop
+        except ImportError:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
         left_frames = audioop.tomono(frames, sample_width, 1, 0)
         right_frames = audioop.tomono(frames, sample_width, 0, 1)
         for out_path, mono_frames in ((left, left_frames), (right, right_frames)):

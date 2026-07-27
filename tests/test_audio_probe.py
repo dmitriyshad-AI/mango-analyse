@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import wave
@@ -12,6 +15,31 @@ from mango_mvp.utils.audio import probe_audio
 
 
 class AudioProbeTest(unittest.TestCase):
+    def test_module_import_does_not_require_audioop(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        code = """
+import builtins
+import sys
+import types
+sys.modules["wave"] = types.ModuleType("wave")
+real_import = builtins.__import__
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "audioop":
+        raise ModuleNotFoundError("blocked by test")
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded_import
+import mango_mvp.utils.audio
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=repo_root,
+            env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_probe_uses_ffprobe_when_available(self) -> None:
         payload = {
             "streams": [{"codec_name": "mp3", "sample_rate": "8000", "channels": 2}],

@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from scripts.skills import fail_raw_export, inventory_before_build, live_truth, tz_lint, wappi_draft_loop_replay
 from scripts.wappi_draft_loop_ops import ProcessInfo
 
@@ -116,6 +118,7 @@ def test_fail_raw_export_masks_pii_and_exports_only_fail_rows(tmp_path: Path) ->
 
     result = fail_raw_export.write_export(run, tmp_path / "out")
 
+    assert result["status"] == "FAILS_EXPORTED"
     assert result["fail_count"] == 1
     text = Path(result["md"]).read_text(encoding="utf-8")
     assert "+7 999 123-45-67" not in text
@@ -123,6 +126,87 @@ def test_fail_raw_export_masks_pii_and_exports_only_fail_rows(tmp_path: Path) ->
     assert "[redacted_phone]" in text
     assert "[redacted_email]" in text
     assert "case_ok" not in text
+
+
+def test_fail_raw_export_discovers_nested_runs_without_merging_legs(tmp_path: Path) -> None:
+    run = tmp_path / "package"
+    for leg in ("B", "ON"):
+        dry = run / "dry" / leg
+        dry.mkdir(parents=True)
+        (dry / "dynamic_dialog_transcripts.jsonl").write_text('{"dialog_id":"dry"}\n', encoding="utf-8")
+        (dry / "dynamic_judge_results.jsonl").write_text('{"dialog_id":"dry","verdict":"FAIL"}\n', encoding="utf-8")
+    for leg, fail_count in (("B", 4), ("ON", 5)):
+        leg_dir = run / "exam_full" / leg
+        leg_dir.mkdir(parents=True)
+        transcripts = [
+            {"dialog_id": f"case_{index}", "turns": [{"client_text": "вопрос", "bot_text": "ответ"}]}
+            for index in range(fail_count)
+        ]
+        judges = [
+            {"dialog_id": f"case_{index}", "verdict": "FAIL", "rationale": f"{leg}-{index}"}
+            for index in range(fail_count)
+        ]
+        (leg_dir / "dynamic_dialog_transcripts.jsonl").write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in transcripts) + "\n",
+            encoding="utf-8",
+        )
+        (leg_dir / "dynamic_judge_results.jsonl").write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in judges) + "\n",
+            encoding="utf-8",
+        )
+
+    first = fail_raw_export.write_export(run, tmp_path / "out-first")
+    second = fail_raw_export.write_export(run, tmp_path / "out-second")
+
+    rows = [json.loads(line) for line in Path(first["jsonl"]).read_text(encoding="utf-8").splitlines()]
+    assert first["status"] == "FAILS_EXPORTED"
+    assert first["fail_count"] == 9
+    assert first["source_runs"] == ["exam_full/B", "exam_full/ON"]
+    assert [row["source_run"] for row in rows].count("exam_full/B") == 4
+    assert [row["source_run"] for row in rows].count("exam_full/ON") == 5
+    assert Path(first["jsonl"]).read_text(encoding="utf-8") == Path(second["jsonl"]).read_text(encoding="utf-8")
+
+
+def test_fail_raw_export_rejects_unknown_layout(tmp_path: Path) -> None:
+    run = tmp_path / "empty"
+    run.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="expected exactly one complete"):
+        fail_raw_export.write_export(run, tmp_path / "out")
+
+
+def test_fail_raw_export_uses_first_failing_turn_and_m1_fields(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "dynamic_dialog_transcripts.jsonl").write_text(
+        json.dumps({"dialog_id": "case", "turns": [
+            {"turn": 1, "client_message": "первый", "bot_text": "ошибка", "judge_fact_audit": {"ok": False}, "bot_safe_context_items": ["fact"]},
+            {"turn": 2, "client_message": "второй", "bot_text": "ответ"},
+        ]}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (run / "dynamic_judge_results.jsonl").write_text(
+        json.dumps({"dialog_id": "case", "verdict": "FAIL", "first_failing_turn": 1}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = fail_raw_export.write_export(run, tmp_path / "out")
+    row = json.loads(Path(result["jsonl"]).read_text(encoding="utf-8"))
+
+    assert row["client_text"] == "первый"
+    assert row["fact_audit"] == {"ok": False}
+    assert row["context_items"] == ["fact"]
+    assert row["first_failing_turn"] == 1
+
+
+def test_fail_raw_export_rejects_malformed_jsonl(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "dynamic_dialog_transcripts.jsonl").write_text("{broken\n", encoding="utf-8")
+    (run / "dynamic_judge_results.jsonl").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid JSONL"):
+        fail_raw_export.write_export(run, tmp_path / "out")
 
 
 def test_wappi_replay_checks_four_profiles_mapping_and_brand_mismatch(tmp_path: Path) -> None:

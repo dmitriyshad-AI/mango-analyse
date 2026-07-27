@@ -8,14 +8,18 @@ from typing import Any, Mapping
 _CURSOR_GROUPS = {
     "amocrm_snapshot": ("amo_leads_updated_at", "amo_contacts_updated_at"),
     "amocrm_event": ("amo_events_created_at",),
+    "tallanto_snapshot": ("tallanto_cards_daily",),
+    "tallanto_attendance_api": ("tallanto_attendance_api",),
 }
-_MAX_DATA_AGE_HOURS = {"tallanto_snapshot": 24.0 * 45.0}
+_REQUIRED_DATA_BOUNDARY = {"tallanto_snapshot", "tallanto_crm_call", "tallanto_attendance_api"}
 MANAGER_REQUIRED_SOURCE_SYSTEMS = (
     "amocrm_snapshot",
     "amocrm_event",
     "mail_archive_stage2",
     "mango_processed_summary",
     "tallanto_snapshot",
+    "tallanto_crm_call",
+    "tallanto_attendance_api",
     "wappi_telegram",
     "wappi_max",
 )
@@ -50,16 +54,22 @@ def source_freshness_rows(
     cursors = {str(row["source_system"]): dict(row) for row in cursor_rows}
     successful_imports: dict[str, str] = {}
     if _table_exists(con, "ingestion_runs"):
+        payment_proof = (
+            "(source_system != 'tallanto_crm_call' OR source_ref = 'tallanto_api:get_entry_list')"
+            if _column_exists(con, "ingestion_runs", "source_ref")
+            else "source_system != 'tallanto_crm_call'"
+        )
         successful_imports = {
             str(row["source_system"]): str(row["imported_at"])
             for row in con.execute(
-                """
+                f"""
                 SELECT source_system, MAX(finished_at) AS imported_at
                 FROM ingestion_runs
                 WHERE tenant_id = ?
-                  AND run_kind = 'timeline_import'
+                  AND run_kind IN ('timeline_import', 'tallanto_attendance_api_increment')
                   AND status = 'completed'
                   AND finished_at IS NOT NULL
+                  AND {payment_proof}
                 GROUP BY source_system
                 """,
                 (tenant_id,),
@@ -147,12 +157,8 @@ def manager_freshness_gate(
         max_event_at = _parse_datetime(row.get("max_event_at"))
         if max_event_at is not None and max_event_at > checked_at + timedelta(minutes=5):
             blockers.append({"source_system": source, "reason": "max_event_at_in_future"})
-        max_data_age = _MAX_DATA_AGE_HOURS.get(source)
-        if max_data_age is not None:
-            if max_event_at is None:
-                blockers.append({"source_system": source, "reason": "data_boundary_missing"})
-            elif checked_at - max_event_at > timedelta(hours=max_data_age):
-                blockers.append({"source_system": source, "reason": "data_boundary_stale"})
+        if source in _REQUIRED_DATA_BOUNDARY and max_event_at is None:
+            blockers.append({"source_system": source, "reason": "data_boundary_missing"})
     return {
         "passed": not blockers,
         "checked_at": checked_at.isoformat(),
@@ -182,6 +188,10 @@ def _table_exists(con: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
         (table,),
     ).fetchone() is not None
+
+
+def _column_exists(con: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(str(row[1]) == column for row in con.execute(f"PRAGMA table_info({table})"))
 
 
 __all__ = ["MANAGER_REQUIRED_SOURCE_SYSTEMS", "manager_freshness_gate", "source_freshness_rows"]

@@ -212,7 +212,8 @@ def cmd_owner50(args: argparse.Namespace) -> int:
     local_dir = out_root / ".codex_local"
     local_dir.mkdir(parents=True, exist_ok=True)
     local_dir.chmod(0o700)
-    out_xlsx = local_dir / "owner50_sample.xlsx"
+    run_token = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_xlsx = local_dir / f"owner50_sample_{run_token}.xlsx"
 
     scrubbed_manifest: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -221,6 +222,8 @@ def cmd_owner50(args: argparse.Namespace) -> int:
         "seed": args.seed,
         "candidate_sample_size_requested": args.candidate_count,
         "excluded_sample_size_requested": args.excluded_count,
+        "current_artifact": None,
+        "legacy_artifact_present": (local_dir / "owner50_sample.xlsx").exists(),
     }
 
     try:
@@ -230,7 +233,7 @@ def cmd_owner50(args: argparse.Namespace) -> int:
             out_xlsx=out_xlsx,
             tenant_id=args.tenant_id,
             limit=50,
-            enforce_freshness=not args.skip_freshness_gate,
+            enforce_freshness=True,
         )
     except RuntimeError as exc:
         # требование F (26.07): свежая staging недоступна -> harness всё равно завершается
@@ -305,6 +308,7 @@ def cmd_owner50(args: argparse.Namespace) -> int:
     # только один локальный XLSX; здесь ниже -- только чтение того же XLSX и JSON-манифесты.
     scrubbed_manifest["writes_amo_notes"] = False
     scrubbed_manifest["sends_to_client"] = False
+    scrubbed_manifest["current_artifact"] = f".codex_local/{out_xlsx.name}"
     (out_root / "owner50_selection_manifest.json").write_text(
         json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -440,6 +444,8 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
     local_dir = out_root / ".codex_local"
     local_dir.mkdir(parents=True, exist_ok=True)
     local_dir.chmod(0o700)
+    run_token = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_xlsx = local_dir / f"dossiers_sample_{run_token}.xlsx"
 
     with _connect_ro(db) as con:
         population = _dossier_population(con, tenant_id=args.tenant_id)
@@ -449,7 +455,8 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
         return 3
 
     def strata_key(row: Mapping[str, Any]) -> tuple:
-        return (row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"], row["has_signal"])
+        return (row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"],
+                row["has_signal"], row["has_mail"], row["has_call"], row["has_attendance"])
 
     sample = stratified_sample(population, count=args.count, seed=args.seed, strata_key=strata_key)
     strata_counter = Counter(strata_key(row) for row in sample)
@@ -462,11 +469,14 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
         "requested_count": args.count,
         "population_size": len(population),
         "sample_size": len(sample),
+        "current_artifact": None,
+        "legacy_artifact_present": (local_dir / "dossiers_sample.xlsx").exists(),
         "distinct_strata_covered": len(strata_counter),
         "strata_breakdown": [
             {
                 "brand": key[0], "channel": key[1], "child_bucket": key[2],
                 "has_payment": key[3], "has_conflict": key[4], "has_signal": key[5],
+                "has_mail": key[6], "has_call": key[7], "has_attendance": key[8],
                 "count": n,
             }
             for key, n in sorted(strata_counter.items(), key=lambda kv: str(kv[0]))
@@ -478,11 +488,11 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
         summary = build_manager_dossier_workbook(
             timeline_db=db,
             allowed_root=out_root,
-            out_xlsx=local_dir / "dossiers_sample.xlsx",
+            out_xlsx=out_xlsx,
             tenant_id=args.tenant_id,
             customer_ids=[row["id"] for row in sample],
             limit=len(sample),
-            enforce_freshness=not args.skip_freshness_gate,
+            enforce_freshness=True,
         )
     except RuntimeError as exc:
         scrubbed_manifest["status"] = "semantic_review_blocked_by_freshness"
@@ -497,13 +507,14 @@ def cmd_dossiers(args: argparse.Namespace) -> int:
         return 2
 
     scrubbed_manifest["status"] = "sample_built"
+    scrubbed_manifest["current_artifact"] = f".codex_local/{out_xlsx.name}"
     scrubbed_manifest["dossier_summary"] = {
         k: v for k, v in summary.items() if k not in ("actuality_header", "source_freshness_top")
     }
     (out_root / "dossiers_selection_manifest.json").write_text(
         json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(f"OK: {len(sample)} dossiers written to {local_dir / 'dossiers_sample.xlsx'} (PII, local only, not for git).")
+    print(f"OK: {len(sample)} dossiers written to {out_xlsx} (PII, local only, not for git).")
     print(f"Scrubbed selection manifest (no PII): {out_root / 'dossiers_selection_manifest.json'}")
     return 0
 
@@ -651,7 +662,8 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     local_dir = out_root / ".codex_local"
     local_dir.mkdir(parents=True, exist_ok=True)
     local_dir.chmod(0o700)
-    out_xlsx = _guard_local_dossier_output_path(local_dir / "acceptance_30_families.xlsx", out_root)
+    run_token = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_xlsx = _guard_local_dossier_output_path(local_dir / f"acceptance_30_families_{run_token}.xlsx", out_root)
 
     scrubbed_manifest: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -662,17 +674,19 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         "sheets": list(_ACCEPTANCE_SHEETS),
         "writes_amo_notes": False,
         "sends_to_client": False,
+        "current_artifact": None,
+        "legacy_artifact_present": (local_dir / "acceptance_30_families.xlsx").exists(),
     }
 
     def strata_key(row: Mapping[str, Any]) -> tuple:
         return (
             row["brand"], row["channel"], row["child_bucket"], row["has_payment"], row["has_conflict"],
-            row["has_signal"], row.get("has_mail", False), row.get("has_call", False),
+            row["has_signal"], row.get("has_mail", False), row.get("has_call", False), row.get("has_attendance", False),
         )
 
     with _connect_ro(db) as con:
         freshness_gate = manager_freshness_gate(_source_freshness(con, tenant_id=args.tenant_id))
-        if not args.skip_freshness_gate and not freshness_gate["passed"]:
+        if not freshness_gate["passed"]:
             # требование задачи: недоступная свежесть -> harness завершается ЧЕСТНО (exit 2,
             # semantic_review_blocked_by_freshness), а не падает необработанным traceback --
             # тот же паттерн, что уже есть у cmd_dossiers/cmd_owner50 выше.
@@ -697,6 +711,17 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         if len(sample) != args.count:
             print(f"BLOCKED: acceptance requires {args.count} families, population only yields {len(sample)}.")
             return 3
+        missing_layers = [
+            field for field in ("has_payment", "has_attendance")
+            if any(row.get(field) for row in population) and not any(row.get(field) for row in sample)
+        ]
+        if missing_layers:
+            scrubbed_manifest.update(status="semantic_review_blocked_by_sample_coverage", missing_layers=missing_layers)
+            (out_root / "acceptance_selection_manifest.json").write_text(
+                json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(f"semantic_review_blocked_by_sample_coverage: {', '.join(missing_layers)}")
+            return 4
         strata_counter = Counter(strata_key(row) for row in sample)
 
         families, chronology, evidence, conflicts = _acceptance_family_data(con, tenant_id=args.tenant_id, sample=sample)
@@ -710,8 +735,12 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         try:
             candidates, _control = _owner50_family_rows(con, tenant_id=args.tenant_id, as_of=datetime.now(timezone.utc))
         except RuntimeError as exc:
-            candidates = []
-            scrubbed_manifest["owner50_classification_error"] = str(exc)
+            scrubbed_manifest.update(status="semantic_review_blocked_by_owner50", owner50_classification_error=str(exc))
+            (out_root / "acceptance_selection_manifest.json").write_text(
+                json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print("semantic_review_blocked_by_owner50")
+            return 4
 
     selected_family_ids = {str(row[1]) for row in families}
     owner_candidates = sorted(
@@ -740,6 +769,7 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     _write_acceptance_workbook(out_xlsx, sheets)
 
     scrubbed_manifest["status"] = "sample_built"
+    scrubbed_manifest["current_artifact"] = f".codex_local/{out_xlsx.name}"
     scrubbed_manifest["population_size"] = len(population)
     scrubbed_manifest["sample_size"] = len(sample)
     scrubbed_manifest["distinct_strata_covered"] = len(strata_counter)
@@ -747,6 +777,7 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         {
             "brand": key[0], "channel": key[1], "child_bucket": key[2], "has_payment": key[3],
             "has_conflict": key[4], "has_signal": key[5], "has_mail": key[6], "has_calls": key[7],
+            "has_attendance": key[8],
             "count": n,
         }
         for key, n in sorted(strata_counter.items(), key=lambda kv: str(kv[0]))
@@ -935,11 +966,6 @@ def main() -> int:
     p_owner50.add_argument("--seed", type=int, default=20260726)
     p_owner50.add_argument("--candidate-count", type=int, default=15)
     p_owner50.add_argument("--excluded-count", type=int, default=15)
-    p_owner50.add_argument(
-        "--skip-freshness-gate", action="store_true",
-        help="DANGEROUS: for harness self-tests against known-stale snapshots only. Never use "
-             "this to produce a real semantic-review sample.",
-    )
     p_owner50.set_defaults(func=cmd_owner50)
 
     p_dossiers = sub.add_parser("dossiers", help="Sample 30 stratified family dossiers.")
@@ -948,11 +974,6 @@ def main() -> int:
     p_dossiers.add_argument("--tenant-id", default="foton")
     p_dossiers.add_argument("--seed", type=int, default=20260726)
     p_dossiers.add_argument("--count", type=int, default=30)
-    p_dossiers.add_argument(
-        "--skip-freshness-gate", action="store_true",
-        help="DANGEROUS: for harness self-tests against known-stale snapshots only. Never use "
-             "this to produce a real semantic-review sample.",
-    )
     p_dossiers.set_defaults(func=cmd_dossiers)
 
     p_acceptance = sub.add_parser("acceptance", help="One five-sheet XLSX for manual review of 30 families.")
@@ -961,7 +982,6 @@ def main() -> int:
     p_acceptance.add_argument("--tenant-id", default="foton")
     p_acceptance.add_argument("--seed", type=int, default=20260726)
     p_acceptance.add_argument("--count", type=int, default=30)
-    p_acceptance.add_argument("--skip-freshness-gate", action="store_true")
     p_acceptance.set_defaults(func=cmd_acceptance)
 
     p_drafts = sub.add_parser("drafts", help="Sample 50 stratified blind Wappi drafts from a dry-run journal.")

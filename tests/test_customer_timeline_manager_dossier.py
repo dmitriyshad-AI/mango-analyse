@@ -39,7 +39,11 @@ from mango_mvp.customer_timeline.manager_dossier import (
     owner50_action_text,
     resolve_evidence_source,
 )
-from mango_mvp.customer_timeline.freshness import manager_freshness_gate
+from mango_mvp.customer_timeline.freshness import (
+    MANAGER_REQUIRED_SOURCE_SYSTEMS,
+    manager_freshness_gate,
+    source_freshness_rows,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -798,6 +802,90 @@ def test_manager_freshness_gate_blocks_missing_and_future_import_times() -> None
     }
 
 
+def test_manager_freshness_requires_tallanto_payments_and_attendance_data() -> None:
+    assert {"tallanto_crm_call", "tallanto_attendance_api"} <= set(MANAGER_REQUIRED_SOURCE_SYSTEMS)
+    rows = [
+        {"source_system": source, "expected": True, "missing": False, "cursor_complete": True,
+         "cursor_updated_at": "2026-07-22T00:00:00+00:00", "imported_at": "2026-07-22T00:00:00+00:00",
+         "max_event_at": None}
+        for source in ("tallanto_crm_call", "tallanto_attendance_api")
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is False
+    assert gate["blockers"] == [
+        {"source_system": "tallanto_crm_call", "reason": "data_boundary_missing"},
+        {"source_system": "tallanto_attendance_api", "reason": "data_boundary_missing"},
+    ]
+
+
+def test_source_freshness_reads_attendance_increment_and_cursor() -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_cursors (tenant_id TEXT, source_system TEXT, last_cursor_ts TEXT, updated_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','tallanto_attendance_api','2026-07-21T12:00:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','tallanto_attendance_api','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','tallanto_attendance_api','tallanto:attendance-api','tallanto_attendance_api_increment','completed','2026-07-22T00:02:00+00:00');
+        """
+    )
+
+    row = next(item for item in source_freshness_rows(
+        con, expected_sources=("tallanto_attendance_api",)
+    ) if item["source_system"] == "tallanto_attendance_api")
+
+    assert row["imported_at"] == "2026-07-22T00:02:00+00:00"
+    assert row["cursor_complete"] is True
+    assert row["events"] == 1
+
+
+def test_source_freshness_rejects_local_payment_snapshot_as_api_proof() -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','tallanto_crm_call','2026-07-01T00:00:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','tallanto_crm_call','old-local.json','timeline_import','completed','2026-07-22T00:00:00+00:00');
+        """
+    )
+
+    row = next(item for item in source_freshness_rows(
+        con, expected_sources=("tallanto_crm_call",)
+    ) if item["source_system"] == "tallanto_crm_call")
+
+    assert row["imported_at"] is None
+    assert manager_freshness_gate([row], now=datetime(2026, 7, 22, tzinfo=timezone.utc))["passed"] is False
+
+
+def test_source_freshness_uses_live_cards_cursor_not_bootstrap_import() -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_cursors (tenant_id TEXT, source_system TEXT, last_cursor_ts TEXT, updated_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','tallanto_snapshot','2026-01-01T00:00:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','tallanto_cards_daily','2026-07-22T00:00:00+00:00','2026-07-22T00:01:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','tallanto_cards_daily','tallanto:contacts:daily','timeline_import','completed','2026-07-22T00:02:00+00:00');
+        """
+    )
+
+    row = next(item for item in source_freshness_rows(
+        con, expected_sources=("tallanto_snapshot",)
+    ) if item["source_system"] == "tallanto_snapshot")
+
+    assert row["cursor_sources"] == ["tallanto_cards_daily"]
+    assert row["imported_at"] == "2026-07-22T00:02:00+00:00"
+    assert manager_freshness_gate([row], now=datetime(2026, 7, 22, 1, tzinfo=timezone.utc))["passed"] is True
+
+
 def test_manager_freshness_gate_does_not_accept_local_amo_reindex() -> None:
     rows = [
         {
@@ -819,13 +907,14 @@ def test_manager_freshness_gate_does_not_accept_local_amo_reindex() -> None:
     ]
 
 
-def test_manager_freshness_gate_blocks_future_or_stale_data_boundary() -> None:
+def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fresh_scan() -> None:
     rows = [
         {
             "source_system": "wappi_max",
             "expected": True,
             "missing": False,
             "cursor_complete": True,
+            "cursor_updated_at": "2026-07-22T00:00:00+00:00",
             "imported_at": "2026-07-22T00:00:00+00:00",
             "max_event_at": "2026-07-23T00:00:00+00:00",
         },
@@ -834,6 +923,7 @@ def test_manager_freshness_gate_blocks_future_or_stale_data_boundary() -> None:
             "expected": True,
             "missing": False,
             "cursor_complete": True,
+            "cursor_updated_at": "2026-07-22T00:00:00+00:00",
             "imported_at": "2026-07-22T00:00:00+00:00",
             "max_event_at": "2026-05-01T00:00:00+00:00",
         },
@@ -841,10 +931,7 @@ def test_manager_freshness_gate_blocks_future_or_stale_data_boundary() -> None:
 
     gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
 
-    assert {item["reason"] for item in gate["blockers"]} == {
-        "max_event_at_in_future",
-        "data_boundary_stale",
-    }
+    assert gate["blockers"] == [{"source_system": "wappi_max", "reason": "max_event_at_in_future"}]
 
 
 def test_manager_dossier_matches_canonical_call_id_and_prefixed_source_id(tmp_path: Path) -> None:

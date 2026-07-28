@@ -216,11 +216,6 @@ from mango_mvp.customer_timeline.safe_copy import (
     safe_copy_prod_snapshot,
     sqlite_wal_path,
 )
-from mango_mvp.customer_timeline.mail_stage2_enrich import (
-    MAIL_STAGE2_ENRICH_SCHEMA_VERSION,
-    MailStage2ExistingEnrichConfig,
-    enrich_existing_mail_stage2_from_archives,
-)
 from mango_mvp.customer_timeline.stage3_maintenance import (
     CHUNK_LABEL_POLICY_VERSION,
     STAGE3_MAINTENANCE_SCHEMA_VERSION,
@@ -311,8 +306,6 @@ __all__ = [
     "IdentityMatchClass",
     "IdentityStatus",
     "MANAGER_REVIEW_ACTION",
-    "MAIL_STAGE2_ENRICH_SCHEMA_VERSION",
-    "MailStage2ExistingEnrichConfig",
     "NextStepResolution",
     "OBJECTION_EXTRACTOR_VERSION",
     "OBJECTION_SCHEMA_VERSION",
@@ -380,7 +373,6 @@ __all__ = [
     "build_timeline_import_preview",
     "decode_delimiter",
     "evaluate_timeline_promotion",
-    "enrich_existing_mail_stage2_from_archives",
     "expected_actions_for_message",
     "extract_latest_telegram_reply_pairs",
     "extract_objections_from_text",

@@ -939,9 +939,6 @@ class AnalyzeService:
     def _analysis_user_prompt(self, call: CallRecord, text: str, profile: Optional[str] = None) -> str:
         return str(self._analysis_prompt_context(call, text, profile)["user_prompt"])
 
-    def _analysis_llm_prompt(self, call: CallRecord, text: str, profile: Optional[str] = None) -> str:
-        return str(self._analysis_prompt_context(call, text, profile)["llm_prompt"])
-
     def _analysis_cache_lookup(
         self,
         *,

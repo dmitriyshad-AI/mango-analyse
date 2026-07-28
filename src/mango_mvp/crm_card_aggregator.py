@@ -684,12 +684,6 @@ def _priority(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, events:
     return "review"
 
 
-def _deal_priority(contact_priority: str, signals: Sequence[Mapping[str, Any]]) -> str:
-    if any(_safe_text(item.get("signal_type")) == "paid_no_access" for item in signals):
-        return "review"
-    return contact_priority or "review"
-
-
 def _objections(facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
     raw = facts.objections
     if not raw:
@@ -1060,45 +1054,6 @@ def _deal_events(events: Sequence[Mapping[str, Any]], opportunity_id: Any) -> li
     return [event for event in events if _safe_text(event.get("opportunity_id")) == opp]
 
 
-def _deal_summary(
-    opportunity: Mapping[str, Any],
-    events: Sequence[Mapping[str, Any]],
-    latest_call: Mapping[str, Any],
-    latest_summary: str,
-    history_scope: str,
-) -> str:
-    title = _safe_text(opportunity.get("title")) or "сделка не выбрана"
-    if latest_summary:
-        last_at = _safe_text(latest_call.get("event_at"))[:10] if latest_call else ""
-        last_part = (
-            f"Последний содержательный звонок {last_at}: полная сводка вынесена в поле «Последняя сводка»."
-            if last_at
-            else "Последняя содержательная сводка вынесена в поле «Последняя сводка»."
-        )
-    else:
-        last_part = "Содержательных событий не найдено."
-    return f"Сделка: {title}. Основа: {history_scope}. {last_part}"
-
-
-def _deal_history(
-    events: Sequence[Mapping[str, Any]],
-    *,
-    history_scope: str,
-    compact_event_keys: set[str] | None = None,
-    compact_full_texts: set[str] | None = None,
-) -> str:
-    chronology = _chronology_text(
-        events,
-        limit=10,
-        compact_event_keys=compact_event_keys,
-        compact_full_texts=compact_full_texts,
-        compact_call_summaries=True,
-    )
-    if not chronology:
-        return f"{history_scope}: релевантные события не найдены."
-    return f"{history_scope}:\n{chronology}"
-
-
 def _deal_status(opportunity: Mapping[str, Any], facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str:
     stage = _latest_amo_deal_stage(events)
     if opportunity:
@@ -1129,42 +1084,6 @@ def _latest_amo_deal_stage(events: Sequence[Mapping[str, Any]]) -> str:
         if summary:
             return summary
     return ""
-
-
-def _followup_from_signal(signals: Sequence[Mapping[str, Any]]) -> str:
-    for signal in signals:
-        expires = _safe_text(signal.get("expires_at"))
-        if expires:
-            return expires[:10]
-    return ""
-
-
-def _recommendation_reason(
-    signals: Sequence[Mapping[str, Any]],
-    events: Sequence[Mapping[str, Any]],
-    facts: ManagerFacts,
-) -> str:
-    if signals:
-        top = signals[0]
-        return (
-            f"Основание: активный сигнал {_safe_text(top.get('signal_type'))}; "
-            f"{_safe_text(top.get('evidence_text')) or 'evidence в профиле'}."
-        )
-    if facts.next_step:
-        return "Основание: fallback из старого analyze-поля next_step."
-    return f"Основание: {len(events)} событий в customer_timeline; нужен ручной контроль менеджера."
-
-
-def _binding_quality(
-    identity_status: str,
-    identity_links: Sequence[Mapping[str, Any]],
-    opportunity: Mapping[str, Any],
-    history_scope: str,
-) -> str:
-    classes = Counter(_safe_text(item.get("match_class")) or "unknown" for item in identity_links)
-    quality = ", ".join(f"{key}: {value}" for key, value in classes.most_common()) or "identity_links отсутствуют"
-    opp = _safe_text(opportunity.get("opportunity_id")) or "нет opportunity_id"
-    return f"Identity: {identity_status}; links: {quality}; opportunity: {opp}; {history_scope}."
 
 
 def _warnings(conflicts: Sequence[Mapping[str, Any]], signals: Sequence[Mapping[str, Any]]) -> str:

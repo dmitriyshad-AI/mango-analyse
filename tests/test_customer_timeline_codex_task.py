@@ -87,6 +87,10 @@ def test_mail_builder_fails_before_writing_when_archive_input_is_missing(tmp_pat
 
 
 def valid_nightly_payload(staging_root: Path) -> dict:
+    mail_identity_db = staging_root / "mail_identity.sqlite"
+    mail_identity_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(mail_identity_db):
+        pass
     return {
         "config_schema_version": module.EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION,
         "required_manifest_sources": sorted(module.REQUIRED_MANIFEST_SOURCES),
@@ -125,6 +129,13 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 },
             },
             {
+                "name": "amo_incremental_shadow",
+                "kind": "amo_incremental",
+                "enabled": True,
+                "required": True,
+                "config": {"max_pages": 100},
+            },
+            {
                 "name": "wappi_history_incremental",
                 "kind": "wappi_history",
                 "enabled": True,
@@ -132,10 +143,17 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 "config": {
                     "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
                     "apply": True,
+                    "require_widget_linkage": False,
+                    "checkpoint_dir": str(staging_root / "wappi_history_checkpoint"),
                 },
             },
             {"name": "mail_archive_incremental", "enabled": True, "required": True},
-            {"name": "mail_link_enrich", "enabled": True, "required": True},
+            {
+                "name": "mail_link_enrich",
+                "enabled": True,
+                "required": True,
+                "config": {"tallanto_identity_dbs": [str(mail_identity_db)]},
+            },
             {
                 "name": "tallanto_money_api_incremental",
                 "kind": "tallanto_money_api",
@@ -667,6 +685,29 @@ def _write_ready_package_db(path: Path) -> None:
         con.commit()
 
 
+def test_nightly_config_v4_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    ready_package_db = tmp_path / "drop/mango_calls_ready.sqlite"
+    _write_ready_package_db(ready_package_db)
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    monkeypatch.setattr(module, "MANGO_READY_PACKAGE_DB", ready_package_db)
+    base = valid_nightly_payload(staging_root)
+    config = tmp_path / "nightly.json"
+
+    cases = (
+        ("AMO page budget", lambda payload: payload["steps"][2]["config"].update(max_pages=20), "100 pages"),
+        ("Wappi checkpoint", lambda payload: payload["steps"][3]["config"].pop("checkpoint_dir"), "checkpoint"),
+        ("Wappi strict nightly", lambda payload: payload["steps"][3]["config"].update(require_widget_linkage=True), "quarantine"),
+        ("mail identity", lambda payload: payload["steps"][5]["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
+    )
+    for _name, mutate, expected in cases:
+        payload = json.loads(json.dumps(base))
+        mutate(payload)
+        config.write_text(json.dumps(payload), encoding="utf-8")
+        assert expected in module.validate_nightly_config(config)
+
+
 def test_nightly_self_heal_rebuilds_stale_on_disk_config(tmp_path, monkeypatch) -> None:
     """B1: ensure_nightly_config() self-heals a config that already exists on
     disk but is stale (old schema version / missing required_manifest_sources)
@@ -761,9 +802,10 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert amo["kind"] == "amo_incremental"
     assert amo["required"] is True
     assert amo["config"]["page_limit"] == 50
+    assert amo["config"]["max_pages"] == 100
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
     wappi = steps["wappi_history_incremental"]
-    assert wappi["config"]["require_widget_linkage"] is True
+    assert wappi["config"]["require_widget_linkage"] is False
     assert wappi["config"]["checkpoint_dir"] == str(
         staging_root / "nightly_dv2_sources/wappi_history_checkpoint"
     )

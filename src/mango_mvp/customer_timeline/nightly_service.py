@@ -75,7 +75,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v3"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v4"
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
 # by the *external* process-group wrapper
@@ -632,7 +632,10 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
-                status = "ok" if step_report.get("validation_ok") else "failed"
+                status = "ok" if (
+                    step_report.get("validation_ok")
+                    and step_report.get("attribution_complete", True)
+                ) else "failed"
                 if status == "failed" and step.required:
                     failed_required_steps.append(step.name)
                 report["steps"].append(

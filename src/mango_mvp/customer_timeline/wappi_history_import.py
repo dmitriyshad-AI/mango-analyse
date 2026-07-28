@@ -58,6 +58,7 @@ from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
+    json_dumps,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AMO_WAPPI_ENV_FILE,
@@ -1793,6 +1794,119 @@ class WappiHistoryTimelineNormalizer:
         )
 
 
+def quarantine_conflicting_wappi_events(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    tenant_id: str,
+    conflicts: Sequence[tuple[str, str, str, str]],
+    actor: str,
+) -> Mapping[str, int]:
+    counts: Counter[str] = Counter()
+    conflicted_customers: set[str] = set()
+    for source_system, source_id, reason, customer_id in sorted(set(conflicts)):
+        conflicted_customers.add(customer_id)
+        row = store._con.execute(
+            """
+            SELECT event_id, record_json, record_hash
+            FROM timeline_events
+            WHERE tenant_id = ? AND source_system = ? AND source_id = ?
+              AND superseded_by IS NULL
+            """,
+            (tenant_id, source_system, source_id),
+        ).fetchone()
+        if row is None:
+            continue
+        payload = json.loads(str(row["record_json"] or "{}"))
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "allowed_for_bot": False,
+                "requires_manager_review": True,
+                "pending_attribution": True,
+                "brand_context_authorized": False,
+                "resolution_reason": reason,
+            }
+        )
+        payload["metadata"] = metadata
+        safe_payload = scrub_timeline_persisted_json(payload)
+        after_hash = stable_digest(safe_payload)
+        if after_hash != str(row["record_hash"]):
+            store._con.execute(
+                "UPDATE timeline_events SET record_json = ?, record_hash = ? WHERE event_id = ?",
+                (json_dumps(safe_payload), after_hash, row["event_id"]),
+            )
+            store._append_audit_log(
+                tenant_id=tenant_id,
+                action="wappi_identity_conflict_quarantined",
+                entity_type="timeline_event",
+                entity_id=str(row["event_id"]),
+                actor=actor,
+                ingestion_run_id=None,
+                before_hash=str(row["record_hash"]),
+                after_hash=after_hash,
+                metadata={"reason": reason, "source_system": source_system},
+                now=store._now(),
+            )
+            counts["existing_event_quarantined"] += 1
+        counts["bot_context_chunks_revoked"] += store.revoke_bot_context_chunks_for_event(
+            tenant_id,
+            event_id=str(row["event_id"]),
+            source_system=source_system,
+            reason="wappi_identity_conflict",
+            actor=actor,
+        )
+    for customer_id in sorted(conflicted_customers):
+        rows = store._con.execute(
+            """
+            SELECT chunk_id, record_json, record_hash
+            FROM bot_context_chunks
+            WHERE tenant_id = ? AND customer_id = ? AND chunk_type = 'bot_safe_summary'
+              AND superseded_by IS NULL
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+        retired_ids: list[str] = []
+        for row in rows:
+            payload = json.loads(str(row["record_json"] or "{}"))
+            metadata = dict(payload.get("metadata") or {})
+            metadata["retired_reason"] = "wappi_identity_conflict"
+            payload.update(
+                {
+                    "allowed_for_bot": False,
+                    "requires_manager_review": True,
+                    "metadata": metadata,
+                }
+            )
+            safe_payload = scrub_timeline_persisted_json(payload)
+            after_hash = stable_digest(safe_payload)
+            store._con.execute(
+                """
+                UPDATE bot_context_chunks
+                SET allowed_for_bot = 0, requires_manager_review = 1,
+                    superseded_by = ?, record_json = ?, record_hash = ?
+                WHERE chunk_id = ?
+                """,
+                (str(row["chunk_id"]), json_dumps(safe_payload), after_hash, row["chunk_id"]),
+            )
+            store._append_audit_log(
+                tenant_id=tenant_id,
+                action="bot_safe_summary_revoked_for_wappi_conflict",
+                entity_type="bot_context_chunk",
+                entity_id=str(row["chunk_id"]),
+                actor=actor,
+                ingestion_run_id=None,
+                before_hash=str(row["record_hash"]),
+                after_hash=after_hash,
+                metadata={"customer_id": customer_id},
+                now=store._now(),
+            )
+            retired_ids.append(str(row["chunk_id"]))
+        if retired_ids:
+            store._delete_bot_context_fts_for_chunk_ids(retired_ids)
+            counts["bot_safe_summaries_revoked"] += len(retired_ids)
+    return dict(counts)
+
+
 def run_wappi_history_import(
     config: WappiHistoryImportConfig,
     *,
@@ -1870,7 +1984,7 @@ def run_wappi_history_import(
                 limits=config.limits,
                 force_recheck=config.widget_coverage_only,
             )
-            if not widget_link_report.get("complete"):
+            if config.require_widget_linkage and not widget_link_report.get("complete"):
                 widget_setup_errors.append("wappi_amo_widget:link_db_collection_incomplete")
         if config.widget_coverage_only:
             accounting_complete = bool(widget_link_report.get("accounting_complete"))
@@ -2042,6 +2156,8 @@ def run_wappi_history_import(
     exact_authority_overrides = 0
     duplicate_count = 0
     blocked_customer_relink_conflicts = 0
+    unresolved_kept_existing = 0
+    conflicting_existing_events: list[tuple[str, str, str, str]] = []
     guarded_records: list[TimelineSourceRecord] = []
     for record in records:
         source_id = str(record.payload.get("timeline_source_id") or "")
@@ -2057,6 +2173,12 @@ def run_wappi_history_import(
         )
         proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
         proposed_authority = str(record.payload.get("identity_authority") or "")
+        candidate_customers = {
+            str(item)
+            for item in (record.payload.get("candidate_customer_ids") or ())
+            if str(item)
+        }
+        rival_candidates = candidate_customers - {existing_customer, proposed_customer}
         exact_override = _is_exact_authority_override(
             existing_customer,
             existing_authority,
@@ -2075,17 +2197,29 @@ def run_wappi_history_import(
             provisional_upgrades[existing_customer] = proposed_customer
         elif exact_override:
             exact_authority_overrides += 1
+        elif existing_customer and (
+            (proposed_authority == "wappi_provisional" and not rival_candidates)
+            or (not proposed_customer and not (candidate_customers - {existing_customer}))
+        ):
+            # A missing/provisional answer is not a rival identity. Keep the
+            # previously proven event byte-for-byte and do not spam conflicts.
+            unresolved_kept_existing += 1
+            continue
         elif existing_customer and proposed_customer != existing_customer:
             blocked_customer_relink_conflicts += 1
             existing_reason = str(record.payload.get("resolution_reason") or "")
+            conflict_reason = (
+                existing_reason
+                if existing_reason == "existing_wappi_chat_customer_conflict"
+                else "existing_wappi_source_customer_conflict"
+            )
+            conflicting_existing_events.append(
+                (record.source_system, source_id, conflict_reason, existing_customer)
+            )
             guarded_records.append(
                 replace_wappi_record_resolution(
                     record,
-                    reason=(
-                        existing_reason
-                        if existing_reason == "existing_wappi_chat_customer_conflict"
-                        else "existing_wappi_source_customer_conflict"
-                    ),
+                    reason=conflict_reason,
                     status="pending_attribution",
                 )
             )
@@ -2140,10 +2274,25 @@ def run_wappi_history_import(
         if report.get(field)
     ]
     limit_hits.extend(widget_setup_errors)
+    attribution_warnings: list[str] = []
+    pending_attribution_count = sum(
+        stats.pending_attribution for stats in fetch_stats_by_profile.values()
+    )
+    if pending_attribution_count:
+        attribution_warnings.append("wappi_identity:pending_attribution")
+    if not config.require_widget_linkage and widget_link_report and not widget_link_report.get("complete"):
+        attribution_warnings.append("wappi_amo_widget:link_db_collection_incomplete")
     if config.require_widget_linkage and resolver.widget_missing_personal_chats:
         limit_hits.append("wappi_amo_widget:personal_chat_without_contact")
+    elif resolver.widget_missing_personal_chats:
+        attribution_warnings.append("wappi_amo_widget:personal_chat_without_contact")
+    # Conflicting historical ownership is quarantined per record above: the old
+    # customer stays untouched and a pending-attribution conflict is recorded.
+    # It must not discard every unrelated, safely attributed message in the batch.
     if blocked_customer_relink_conflicts:
-        limit_hits.append("wappi_amo_widget:existing_customer_conflict")
+        attribution_warnings.append("wappi_amo_widget:existing_customer_conflict")
+        if config.require_widget_linkage:
+            limit_hits.append("wappi_amo_widget:existing_customer_conflict")
     if config.require_widget_linkage:
         for (source_system, profile_id), stats in sorted(fetch_stats_by_profile.items()):
             if (
@@ -2257,6 +2406,13 @@ def run_wappi_history_import(
                         actor=config.actor,
                     )
                     write_status_counts["customer_id_mapping_upserted"] += 1
+                quarantined = quarantine_conflicting_wappi_events(
+                    store,
+                    tenant_id=config.tenant_id,
+                    conflicts=conflicting_existing_events,
+                    actor=config.actor,
+                )
+                write_status_counts.update(quarantined)
         finally:
             store.close()
         provisional_cleanup = remove_orphaned_provisional_customers(
@@ -2323,7 +2479,40 @@ def run_wappi_history_import(
         "write_tallanto": False,
         "blocked_live_actions": blocked_live_actions(),
     }
-    validation_ok = not errors and not limit_hits and safety_ok(safety) and checkpoint_complete
+    attribution_complete = not attribution_warnings
+    validation_ok = (
+        not errors
+        and not limit_hits
+        and safety_ok(safety)
+        and checkpoint_complete
+    )
+    publish_ready = validation_ok and attribution_complete
+    records_reliably_linked = sum(
+        stats.linked_by_pair
+        + stats.linked_by_timeline
+        + stats.linked_by_amo_auto
+        + stats.linked_by_amo_widget
+        + stats.linked_by_amo_event_sequence
+        for stats in fetch_stats_by_profile.values()
+    )
+    messages_newly_saved = 0
+    if store_summary_before is not None and store_summary_after is not None:
+        messages_newly_saved = max(
+            0,
+            int(store_summary_after["counts"]["timeline_events"])
+            - int(store_summary_before["counts"]["timeline_events"]),
+        )
+    messages_present_in_timeline = sum(
+        len(
+            load_existing_wappi_source_ids(
+                config.timeline_db,
+                tenant_id=config.tenant_id,
+                source_systems={source_system},
+                source_ids=[str(record.payload.get("timeline_source_id") or "") for record in group],
+            )
+        )
+        for source_system, group in grouped.items()
+    )
     code_identity_end = dict(build_draft_loop_code_identity())
     worktree_end = git_worktree_provenance(code_root)
     db_identity_end = timeline_db_identity(config.timeline_db)
@@ -2364,7 +2553,11 @@ def run_wappi_history_import(
         "mode": "apply" if apply_effective else ("apply_blocked" if config.apply else "dry_run_preview"),
         "dry_run": not apply_effective,
         "validation_ok": validation_ok,
+        "fetch_complete": validation_ok,
+        "attribution_complete": attribution_complete,
+        "publish_ready": publish_ready,
         "limit_hits": limit_hits,
+        "attribution_warnings": sorted(set(attribution_warnings)),
         "checkpoint": {
             "enabled": next_checkpoint is not None,
             "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
@@ -2390,6 +2583,10 @@ def run_wappi_history_import(
             "tenant_id": config.tenant_id,
             "profiles": len(profiles),
             "records_built": len(records),
+            "messages_newly_saved": messages_newly_saved,
+            "messages_present_in_timeline": messages_present_in_timeline,
+            "records_reliably_linked": records_reliably_linked,
+            "attribution_complete": attribution_complete,
             "linked_by_pair": sum(stats.linked_by_pair for stats in fetch_stats_by_profile.values()),
             "linked_by_timeline": sum(stats.linked_by_timeline for stats in fetch_stats_by_profile.values()),
             "linked_by_amo_auto": sum(stats.linked_by_amo_auto for stats in fetch_stats_by_profile.values()),
@@ -2400,7 +2597,7 @@ def run_wappi_history_import(
             "linked_by_provisional": sum(
                 stats.linked_by_provisional for stats in fetch_stats_by_profile.values()
             ),
-            "pending_attribution": sum(stats.pending_attribution for stats in fetch_stats_by_profile.values()),
+            "pending_attribution": pending_attribution_count,
             "requests": sum(stats.requests for stats in fetch_stats_by_profile.values()),
             "physical_requests": readonly_wappi_physical_request_count(client),
             "amo_auto_enabled": amo_auto_resolver is not None,
@@ -2416,9 +2613,15 @@ def run_wappi_history_import(
             "message_identity_prime": message_identity_prime_report,
             "provisional_wappi_prime": provisional_prime_report,
             "write_applied": apply_effective,
-            "writes_applied": sum(write_status_counts.values()) if apply_effective else 0,
+            "writes_applied": (
+                sum(value for key, value in write_status_counts.items() if key != "duplicate")
+                if apply_effective
+                else 0
+            ),
+            "writes_attempted": sum(write_status_counts.values()) if apply_effective else 0,
             "duplicate_source_ids_before_import": duplicate_count,
             "blocked_customer_relink_conflicts": blocked_customer_relink_conflicts,
+            "unresolved_kept_existing": unresolved_kept_existing,
             "provisional_customer_upgrades": len(provisional_upgrades),
             "exact_authority_overrides": exact_authority_overrides,
             "local_unmatched_relink_records": len(local_relink_records),
@@ -2433,6 +2636,7 @@ def run_wappi_history_import(
             "transport": "DefaultDenyTransport",
             "send_messenger": False,
             "limit_hits": limit_hits,
+            "attribution_warnings": sorted(set(attribution_warnings)),
             "empty_profiles": empty_profiles,
             "checkpoint_enabled": next_checkpoint is not None,
             "checkpoint_complete": checkpoint_complete,
@@ -3022,6 +3226,14 @@ class WappiPairCustomerResolver:
         chat_id = extract_chat_id(dialog) or (messages[0].chat_id if messages else "")
         widget_resolution = self._resolve_with_amo_widget(profile=profile, dialog=dialog)
         if widget_resolution is not None:
+            if (
+                not self._widget_required
+                and not widget_resolution.resolved
+                and not widget_resolution.candidate_customer_ids
+                and widget_resolution.reason == "wappi_widget_timeline_identity_missing_or_conflicting"
+            ):
+                widget_resolution = None
+        if widget_resolution is not None:
             guarded = self._guard_chat_customer(profile, chat_id, widget_resolution)
             if is_personal_wappi_dialog(profile, dialog) and chat_id:
                 key = (profile.source_system, profile.profile_id, chat_id)
@@ -3031,6 +3243,7 @@ class WappiPairCustomerResolver:
         primed = self._chat_resolutions.get((profile.source_system, profile.profile_id, chat_id))
         if (
             primed is not None
+            and (primed.resolved or primed.candidate_customer_ids)
             and primed.resolution_source != "wappi_provisional"
             and is_personal_wappi_dialog(profile, dialog)
         ):
@@ -3093,7 +3306,11 @@ class WappiPairCustomerResolver:
             cached_status = str(cached.get("status") or "").strip()
             if cached_status != "resolved":
                 self._widget_missing_personal_chats += 1
-                fail_closed = cached_status in {"conflict", "http_5xx", "timeout"}
+                fail_closed = cached_status in WAPPI_TECHNICAL_LINK_STATUSES or cached_status not in {
+                    "candidate",
+                    "missing",
+                    "resolved",
+                }
                 if self._widget_required or fail_closed:
                     return WappiChatResolution(
                         status="pending_attribution",
@@ -3566,9 +3783,18 @@ class WappiPairCustomerResolver:
             ),
         }
         if candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
+            customer_id = next(iter(candidate_union))
+            customer_brand = self._customer_brands.get(customer_id, "unknown")
+            evidence.update(
+                {
+                    "customer_brand": customer_brand,
+                    "profile_brand": profile.brand,
+                    "brand_context_authorized": customer_brand == profile.brand,
+                }
+            )
             return WappiChatResolution(
                 status="resolved",
-                customer_id=next(iter(candidate_union)),
+                customer_id=customer_id,
                 opportunity_id=opportunity_id or None,
                 lead_id=lead_id,
                 contact_id=contact_id,

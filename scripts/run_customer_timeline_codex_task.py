@@ -69,7 +69,7 @@ REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
 # with mango_mvp.customer_timeline.nightly_service.NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
 # and REQUIRED_MANIFEST_SOURCE_STEP_MAP (which build_customer_timeline_nightly_dv2_sources.py
 # writes into the config from the same source of truth).
-EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v3"
+EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v4"
 REQUIRED_MANIFEST_SOURCES = frozenset(
     {
         "amo_contacts_leads_events",
@@ -197,6 +197,23 @@ def validate_nightly_config(path: Path | None = None) -> str:
     )
     if inactive:
         return "nightly config has inactive required steps: " + ",".join(inactive)
+    amo_config = steps.get("amo_incremental_shadow", {}).get("config")
+    if not isinstance(amo_config, Mapping) or amo_config.get("max_pages") != 100:
+        return "amo_incremental_shadow must read up to 100 pages per run"
+    wappi_config = steps["wappi_history_incremental"].get("config")
+    if not isinstance(wappi_config, Mapping) or wappi_config.get("require_widget_linkage") is not False:
+        return "wappi_history_incremental must quarantine incomplete identity linkage"
+    checkpoint_dir = Path(str(wappi_config.get("checkpoint_dir") or "")).expanduser().resolve(strict=False)
+    if not path_is_within(checkpoint_dir, STAGING_ROOT):
+        return "wappi_history_incremental checkpoint is outside persistent staging root"
+    mail_config = steps["mail_link_enrich"].get("config")
+    identity_dbs = (
+        tuple(Path(str(item)).expanduser().resolve(strict=False) for item in mail_config.get("tallanto_identity_dbs", ()))
+        if isinstance(mail_config, Mapping)
+        else ()
+    )
+    if not identity_dbs or any(not item.is_file() for item in identity_dbs):
+        return "mail_link_enrich requires existing Tallanto identity DBs"
     money_step = steps["tallanto_money_api_incremental"]
     money_config = money_step.get("config")
     if money_step.get("kind") != "tallanto_money_api" or not isinstance(money_config, Mapping):

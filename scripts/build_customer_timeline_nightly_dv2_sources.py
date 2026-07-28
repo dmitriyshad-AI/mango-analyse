@@ -545,7 +545,7 @@ def build_service_config(
                 "mcp_env": str(DEFAULT_AMO_MCP_ENV),
                 "safety_overlap_seconds": 300,
                 "page_limit": 50,
-                "max_pages": 20,
+                "max_pages": 100,
                 "sleep_sec": 1.05,
             },
         }
@@ -569,7 +569,7 @@ def build_service_config(
                 "widget_link_db": str(allowed_root / "wappi_amo_links.sqlite"),
                 "apply": True,
                 "require_nonempty_profiles": True,
-                "require_widget_linkage": True,
+                "require_widget_linkage": False,
                 "refresh_widget_links": True,
                 "chat_limit_per_profile": 5000,
                 "messages_per_chat": 100,

@@ -10,6 +10,7 @@ from typing import Any, Mapping
 import pytest
 
 from mango_mvp.customer_timeline.contracts import (
+    BotContextChunk,
     CustomerIdentity,
     CustomerOpportunity,
     IdentityLink,
@@ -616,7 +617,12 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
     )
 
     assert report["validation_ok"] is True
+    assert report["publish_ready"] is False
     assert report["mode"] == "apply"
+    assert report["summary"]["write_applied"] is True
+    assert report["summary"]["attribution_complete"] is False
+    assert report["summary"]["messages_newly_saved"] == 1
+    assert report["summary"]["messages_present_in_timeline"] == 1
     assert report["summary"]["pending_attribution"] == 1
     assert report["summary"]["amo_widget_missing_personal_chats"] == 1
     assert report["limit_hits"] == []
@@ -757,13 +763,14 @@ def test_wappi_readonly_connection_sees_uncheckpointed_wal(tmp_path: Path) -> No
         writer.close()
 
 
-def test_wappi_apply_blocks_widget_conflict_with_existing_chat_owner(
+def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer_with_amo(db_path, tmp_path, customer_id="customer:first", lead_id="1001", contact_id="2002")
     seed_customer_with_amo(db_path, tmp_path, customer_id="customer:second", lead_id="9001", contact_id="9002")
+    seed_customer_with_amo(db_path, tmp_path, customer_id="customer:third", lead_id="7001", contact_id="7002")
     phase1 = write_phase1_config(tmp_path)
     first_record = wappi_message_to_record(
         profile=WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
@@ -794,16 +801,46 @@ def test_wappi_apply_blocks_widget_conflict_with_existing_chat_owner(
         store.upsert_event(first_batch.events[0], actor="test")
         for link in first_batch.identity_links:
             store.upsert_identity_link(link, actor="test")
+        for chunk in first_batch.bot_context_chunks:
+            store.upsert_bot_context_chunk(chunk, actor="test")
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id="customer:first",
+                chunk_type="bot_safe_summary",
+                text="Ребёнок: 10 класс",
+                summary="Ребёнок: 10 класс",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref="bot-safe:customer:first:foton",
+                event_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"brand_context_authorized": True},
+            ),
+            actor="test",
+        )
 
     monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
     client = FakeWidgetWappiClient(
-        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            "p-tg": [
+                {"id": "123456", "type": "user"},
+                {"id": "654321", "type": "user"},
+            ],
+            "p-max": [],
+        },
         {
             ("telegram", "p-tg", "123456"): [
                 {"id": "m-1", "chat_id": "123456", "type": "text", "body": "Здравствуйте", "time": 1_753_000_000},
-            ]
+            ],
+            ("telegram", "p-tg", "654321"): [
+                {"id": "m-2", "chat_id": "654321", "type": "text", "body": "Новый диалог", "time": 1_753_000_001},
+            ],
         },
-        {("telegram", "123456"): {"contact": {"id": 9002}, "leads": [{"id": 9001}]}},
+        {
+            ("telegram", "123456"): {"contact": {"id": 9002}, "leads": [{"id": 9001}]},
+            ("telegram", "654321"): {"contact": {"id": 7002}, "leads": [{"id": 7001}]},
+        },
     )
     report = run_wappi_history_import(
         WappiHistoryImportConfig(
@@ -823,14 +860,224 @@ def test_wappi_apply_blocks_widget_conflict_with_existing_chat_owner(
         client=client,
     )
 
-    assert report["mode"] == "apply_blocked"
+    assert report["mode"] == "apply"
     assert report["summary"]["blocked_chat_relink_conflicts"] == 1
-    assert "wappi_amo_widget:existing_customer_conflict" in report["limit_hits"]
+    assert report["validation_ok"] is True
+    assert report["publish_ready"] is False
+    assert report["summary"]["attribution_complete"] is False
+    assert report["summary"]["messages_newly_saved"] == 1
+    assert report["summary"]["messages_present_in_timeline"] == 2
+    assert report["summary"]["records_reliably_linked"] >= 1
+    assert "wappi_amo_widget:existing_customer_conflict" not in report["limit_hits"]
+    assert "wappi_amo_widget:existing_customer_conflict" in report["attribution_warnings"]
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
-        rows = con.execute("SELECT record_json FROM timeline_events WHERE source_system='wappi_telegram'").fetchall()
-        assert len(rows) == 1
-        assert json.loads(rows[0]["record_json"])["customer_id"] == "customer:first"
+        rows = con.execute(
+            "SELECT source_id, customer_id, record_json FROM timeline_events WHERE source_system='wappi_telegram'"
+        ).fetchall()
+        assert len(rows) == 2
+        by_source = {str(row["source_id"]): row for row in rows}
+        conflicted = by_source["p-tg:123456:m-1"]
+        assert conflicted["customer_id"] == "customer:first"
+        conflicted_metadata = json.loads(conflicted["record_json"])["metadata"]
+        assert conflicted_metadata["pending_attribution"] is True
+        assert conflicted_metadata["brand_context_authorized"] is False
+        assert conflicted_metadata["allowed_for_bot"] is False
+        assert by_source["p-tg:654321:m-2"]["customer_id"] == "customer:third"
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE event_id = ? AND superseded_by IS NULL",
+            (json.loads(conflicted["record_json"])["event_id"],),
+        ).fetchone()[0] == 0
+        summary_row = con.execute(
+            """
+            SELECT allowed_for_bot, requires_manager_review, superseded_by, record_json
+            FROM bot_context_chunks
+            WHERE customer_id = 'customer:first' AND chunk_type = 'bot_safe_summary'
+            """
+        ).fetchone()
+        assert summary_row["allowed_for_bot"] == 0
+        assert summary_row["requires_manager_review"] == 1
+        assert summary_row["superseded_by"]
+        assert json.loads(summary_row["record_json"])["metadata"]["retired_reason"] == "wappi_identity_conflict"
+        counts_before_repeat = tuple(
+            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("timeline_events", "timeline_conflicts", "identity_links", "bot_context_chunks")
+        )
+
+    repeated = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5,
+                messages_per_chat=5,
+                message_limit_total=20,
+                sleep_seconds=0,
+            ),
+        ),
+        client=client,
+    )
+    assert repeated["mode"] == "apply"
+    assert repeated["writes"]["status_counts"]["duplicate"] > 0
+    assert repeated["summary"]["writes_applied"] == 0
+    assert repeated["summary"]["messages_newly_saved"] == 0
+    assert repeated["summary"]["messages_present_in_timeline"] == 2
+    with sqlite3.connect(db_path) as con:
+        assert tuple(
+            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("timeline_events", "timeline_conflicts", "identity_links", "bot_context_chunks")
+        ) == counts_before_repeat
+
+    strict = run_wappi_history_import(
+        replace(
+            WappiHistoryImportConfig(
+                timeline_db=db_path,
+                allowed_root=tmp_path,
+                phase1_config=phase1,
+                pairs_file=None,
+                auto_pairs_file=None,
+                apply=True,
+                limits=WappiFetchLimits(
+                    chat_limit_per_profile=5,
+                    messages_per_chat=5,
+                    message_limit_total=20,
+                    sleep_seconds=0,
+                ),
+            ),
+            require_widget_linkage=True,
+        ),
+        client=client,
+    )
+    assert strict["mode"] == "apply_blocked"
+    assert "wappi_amo_widget:existing_customer_conflict" in strict["limit_hits"]
+
+
+def test_wappi_apply_keeps_unresolved_widget_chat_pending_when_linkage_is_optional(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        pass
+    phase1 = write_phase1_config(tmp_path)
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
+    client = FakeWidgetWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {
+                    "id": "m-1",
+                    "chat_id": "123456",
+                    "type": "text",
+                    "body": "Здравствуйте",
+                    "time": 1_753_000_000,
+                }
+            ]
+        },
+        {("telegram", "123456"): {}},
+    )
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            widget_link_db=tmp_path / "wappi_amo_links.sqlite",
+            require_widget_linkage=False,
+            limits=WappiFetchLimits(
+                chat_limit_per_profile=5,
+                messages_per_chat=5,
+                message_limit_total=20,
+                sleep_seconds=0,
+            ),
+        ),
+        client=client,
+    )
+
+    assert report["mode"] == "apply"
+    assert report["validation_ok"] is True
+    assert report["publish_ready"] is False
+    assert report["summary"]["attribution_complete"] is False
+    assert report["summary"]["pending_attribution"] == 1
+    assert report["summary"]["writes_applied"] > 0
+    assert "wappi_amo_widget:link_db_collection_incomplete" not in report["limit_hits"]
+    assert "wappi_amo_widget:link_db_collection_incomplete" in report["attribution_warnings"]
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT customer_id, record_json FROM timeline_events WHERE source_system='wappi_telegram'"
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row[1])["metadata"]["pending_attribution"] is True
+
+    strict_db = tmp_path / "strict_customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(strict_db, allowed_root=tmp_path):
+        pass
+    strict = run_wappi_history_import(
+        replace(
+            WappiHistoryImportConfig(
+                timeline_db=strict_db,
+                allowed_root=tmp_path,
+                phase1_config=phase1,
+                pairs_file=None,
+                auto_pairs_file=None,
+                apply=True,
+                widget_link_db=tmp_path / "strict_wappi_amo_links.sqlite",
+                limits=WappiFetchLimits(sleep_seconds=0),
+            ),
+            require_widget_linkage=True,
+        ),
+        client=client,
+    )
+    assert strict["mode"] == "apply_blocked"
+    assert "wappi_amo_widget:link_db_collection_incomplete" in strict["limit_hits"]
+
+
+def test_wappi_apply_never_calls_pending_attribution_complete_without_widget(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path):
+        pass
+    client = FakeWappiClient(
+        {"p-tg": [{"id": "chat-1", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "chat-1"): [
+                {
+                    "id": "m-1",
+                    "chat_id": "chat-1",
+                    "type": "text",
+                    "body": "Здравствуйте",
+                    "time": 1_753_000_000,
+                }
+            ]
+        },
+    )
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=write_phase1_config(tmp_path),
+            pairs_file=None,
+            auto_pairs_file=None,
+            apply=True,
+            limits=WappiFetchLimits(sleep_seconds=0),
+        ),
+        client=client,
+    )
+
+    assert report["mode"] == "apply"
+    assert report["validation_ok"] is True
+    assert report["publish_ready"] is False
+    assert report["summary"]["attribution_complete"] is False
+    assert report["summary"]["pending_attribution"] == 1
+    assert report["summary"]["messages_newly_saved"] == 1
+    assert "wappi_identity:pending_attribution" in report["attribution_warnings"]
 
 
 def test_wappi_superseded_exact_event_does_not_block_new_widget_owner(tmp_path: Path) -> None:
@@ -2497,7 +2744,149 @@ def test_wappi_history_auto_resolver_accepts_exact_contact_without_active_deal_f
     assert resolution.reason == "amo_auto_exact_identity_without_opportunity"
     assert resolution.evidence["single_active_lead"] is False
     assert resolution.evidence["identity_only"] is True
+    assert resolution.evidence["customer_brand"] == "foton"
+    assert resolution.evidence["profile_brand"] == "foton"
+    assert resolution.evidence["brand_context_authorized"] is True
     assert auto_resolver.calls == 1
+
+
+def test_wappi_unresolved_rerun_keeps_existing_exact_event_without_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+    phase1 = write_phase1_config(tmp_path)
+    monkeypatch.setenv("AMO_WAPPI_CRM_ID", "crm-id")
+    chats = {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []}
+    messages = {
+        ("telegram", "p-tg", "123456"): [
+            {"id": "m-1", "chat_id": "123456", "type": "text", "body": "Цена?", "time": 1_753_000_000}
+        ]
+    }
+    config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        pairs_file=None,
+        auto_pairs_file=None,
+        apply=True,
+        require_widget_linkage=False,
+        limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+    )
+    first = run_wappi_history_import(
+        config,
+        client=FakeWidgetWappiClient(
+            chats,
+            messages,
+            {("telegram", "123456"): {"contact": {"id": 2002}, "leads": [{"id": 1001}]}},
+        ),
+    )
+    with sqlite3.connect(db_path) as con:
+        before_conflicts = con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0]
+    second = run_wappi_history_import(
+        config,
+        client=FakeWidgetWappiClient(chats, messages, {}),
+    )
+    with sqlite3.connect(db_path) as con:
+        event_before_third = con.execute(
+            "SELECT customer_id, record_hash FROM timeline_events"
+        ).fetchone()
+        links_before_third = con.execute("SELECT COUNT(*) FROM identity_links").fetchone()[0]
+        conflicts_before_third = con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0]
+    third = run_wappi_history_import(
+        config,
+        client=FakeWidgetWappiClient(chats, messages, {}),
+    )
+
+    assert first["summary"]["linked_by_amo_widget"] == 1
+    assert second["summary"]["blocked_customer_relink_conflicts"] == 0
+    assert second["summary"]["unresolved_kept_existing"] == 1
+    assert third["summary"]["blocked_customer_relink_conflicts"] == 0
+    assert third["summary"]["unresolved_kept_existing"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0] == before_conflicts
+        assert con.execute("SELECT customer_id, record_hash FROM timeline_events").fetchone() == event_before_third
+        assert con.execute("SELECT COUNT(*) FROM identity_links").fetchone()[0] == links_before_third
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts").fetchone()[0] == conflicts_before_third
+        assert event_before_third[0] == customer_id
+
+
+def test_wappi_unknown_widget_contact_allows_exact_auto_resolver(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="", contact_id="2002")
+
+    class ExactResolver:
+        calls = 0
+        stoplist_error = ""
+
+        def __call__(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return {"status": "rejected", "reason": "no_active_lead", "contact_id": "2002", "match_key": "Telegram ID"}
+
+    auto = ExactResolver()
+    resolution = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={},
+        amo_auto_resolver=auto,  # type: ignore[arg-type]
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "9999",
+                "lead_ids": (),
+            }
+        },
+        widget_required=False,
+    ).resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+    )
+
+    assert auto.calls == 1
+    assert resolution.resolved is True
+    assert resolution.customer_id == customer_id
+
+
+def test_wappi_primed_unknown_widget_contact_allows_exact_auto_resolver(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="", contact_id="2002")
+
+    class ExactResolver:
+        calls = 0
+        stoplist_error = ""
+
+        def __call__(self, **_kwargs: Any) -> Mapping[str, Any]:
+            self.calls += 1
+            return {"status": "rejected", "reason": "no_active_lead", "contact_id": "2002", "match_key": "Telegram ID"}
+
+    auto = ExactResolver()
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={},
+        amo_auto_resolver=auto,  # type: ignore[arg-type]
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "9999",
+                "lead_ids": (),
+            }
+        },
+        widget_required=False,
+    )
+    resolver.prime_widget_chat_resolutions((profile("p-tg", "foton", "telegram"),))
+
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+    )
+
+    assert auto.calls == 1
+    assert resolution.resolved is True
+    assert resolution.customer_id == customer_id
 
 
 def test_wappi_history_auto_resolver_error_keeps_only_that_chat_pending(tmp_path: Path) -> None:
@@ -3193,7 +3582,20 @@ def test_wappi_widget_missing_contact_falls_back_to_static_pair_when_optional(tm
     assert resolution.resolution_source == "draft_loop_pair"
 
 
-@pytest.mark.parametrize("widget_status", ("conflict", "http_5xx", "timeout"))
+@pytest.mark.parametrize(
+    "widget_status",
+    (
+        "conflict",
+        "auth_error",
+        "rate_limit",
+        "timeout",
+        "http_5xx",
+        "invalid_response",
+        "lookup_error",
+        "request_limit",
+        "unknown_status",
+    ),
+)
 def test_wappi_widget_exact_failure_does_not_fall_back_when_optional(
     tmp_path: Path,
     widget_status: str,

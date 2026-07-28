@@ -971,10 +971,15 @@ def collect_wappi_widget_links(
     )
     technical_failures = sum(counts[name] for name in WAPPI_TECHNICAL_LINK_STATUSES)
     physical_requests = readonly_wappi_physical_request_count(client)
+    personal_chats_seen = sum(
+        int(report.get("personal_catalogued") or 0) for report in profile_reports.values()
+    )
     return {
         "schema_version": WAPPI_WIDGET_LINK_SCHEMA,
         "requests": requests,
         "physical_requests": physical_requests,
+        "personal_chats_seen": personal_chats_seen,
+        "personal_chats_total": personal_chats_seen if accounting_complete else None,
         "counts": dict(sorted(counts.items())),
         "operations": dict(sorted(operations.items())),
         "profiles": profile_reports,
@@ -1039,6 +1044,56 @@ def load_wappi_widget_links(db_path: Path | None) -> Mapping[tuple[str, str, str
             "matched_points": int(row["matched_points"] or 0),
         }
     return result
+
+
+def summarize_wappi_widget_link_cache(
+    widget_links: Mapping[tuple[str, str, str], Mapping[str, Any]],
+    *,
+    personal_chats_total: int | None,
+) -> Mapping[str, Any]:
+    """Summarize the persisted cache after all exact AMO bridges have run."""
+    status_counts: Counter[str] = Counter()
+    authority_counts: Counter[str] = Counter()
+    for link in widget_links.values():
+        status = str(link.get("status") or "")
+        status_counts[_widget_linkage_status(status, tuple(link.get("lead_ids") or ()))] += 1
+        if status == "resolved":
+            authority_counts[str(link.get("resolution_source") or "unknown_source")] += 1
+    link_rows_total = len(widget_links)
+    measured = personal_chats_total is not None
+    cache_row_count_delta = (
+        link_rows_total - int(personal_chats_total)
+        if measured
+        else None
+    )
+    return {
+        "scope": "amo_entity_link_not_timeline_customer_attribution",
+        "link_rows_total": link_rows_total,
+        "personal_chats_total": int(personal_chats_total) if measured else None,
+        "cache_row_count_delta": cache_row_count_delta,
+        "counts": dict(sorted(status_counts.items())),
+        "amo_entity_links_by_authority": dict(sorted(authority_counts.items())),
+    }
+
+
+def _wappi_talk_bridge_warnings(
+    *,
+    post_bridge_cache: Mapping[str, Any],
+    talk_report: Mapping[str, Any],
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    candidates = int(post_bridge_cache.get("counts", {}).get("candidate") or 0)
+    if (
+        talk_report.get("setup_error")
+        or talk_report.get("setup_unavailable")
+        or (candidates and not talk_report)
+    ):
+        warnings.append("wappi_amo_talk:bridge_unavailable")
+    if int(talk_report.get("lookup_error") or 0) or int(
+        talk_report.get("invalid_response") or 0
+    ):
+        warnings.append("wappi_amo_talk:bridge_degraded")
+    return tuple(warnings)
 
 
 def enrich_wappi_widget_links_from_timeline_amo_events(
@@ -1503,7 +1558,7 @@ class WappiFetchStats:
     linked_by_timeline: int = 0
     linked_by_amo_auto: int = 0
     linked_by_amo_widget: int = 0
-    linked_by_amo_event_sequence: int = 0
+    linked_by_amo_talk: int = 0
     linked_by_provisional: int = 0
     pending_attribution: int = 0
     skipped_empty: int = 0
@@ -1541,7 +1596,8 @@ class WappiFetchStats:
             "linked_by_timeline": self.linked_by_timeline,
             "linked_by_amo_auto": self.linked_by_amo_auto,
             "linked_by_amo_widget": self.linked_by_amo_widget,
-            "linked_by_amo_event_sequence": self.linked_by_amo_event_sequence,
+            "linked_by_amo_talk": self.linked_by_amo_talk,
+            "linked_by_amo_event_sequence": 0,
             "linked_by_provisional": self.linked_by_provisional,
             "pending_attribution": self.pending_attribution,
             "skipped_empty": self.skipped_empty,
@@ -2052,6 +2108,15 @@ def run_wappi_history_import(
                 except Exception:  # noqa: BLE001 - report only a safe class, never connector secrets.
                     widget_talk_link_report = {"setup_error": 1}
     widget_links = load_wappi_widget_links(config.widget_link_db)
+    widget_link_cache_after_bridges = summarize_wappi_widget_link_cache(
+        widget_links,
+        personal_chats_total=(
+            int(widget_link_report["personal_chats_total"])
+            if widget_link_report.get("accounting_complete")
+            and "personal_chats_total" in widget_link_report
+            else None
+        ),
+    )
     if config.apply and widget_links and not widget_setup_errors:
         widget_contact_hydrate_report = hydrate_wappi_widget_contacts(
             timeline_db=config.timeline_db,
@@ -2232,6 +2297,8 @@ def run_wappi_history_import(
                     stats.linked_by_amo_auto -= 1
                 elif stats.linked_by_amo_widget > 0 and record.payload.get("identity_authority") == "wappi_amo_widget":
                     stats.linked_by_amo_widget -= 1
+                elif stats.linked_by_amo_talk > 0 and record.payload.get("identity_authority") == "amo_talk_authoritative":
+                    stats.linked_by_amo_talk -= 1
                 elif stats.linked_by_timeline > 0 and record.payload.get("identity_authority") == "timeline_identity":
                     stats.linked_by_timeline -= 1
                 elif stats.linked_by_provisional > 0 and record.payload.get("identity_authority") == "wappi_provisional":
@@ -2282,6 +2349,12 @@ def run_wappi_history_import(
         attribution_warnings.append("wappi_identity:pending_attribution")
     if not config.require_widget_linkage and widget_link_report and not widget_link_report.get("complete"):
         attribution_warnings.append("wappi_amo_widget:link_db_collection_incomplete")
+    attribution_warnings.extend(
+        _wappi_talk_bridge_warnings(
+            post_bridge_cache=widget_link_cache_after_bridges,
+            talk_report=widget_talk_link_report,
+        )
+    )
     if config.require_widget_linkage and resolver.widget_missing_personal_chats:
         limit_hits.append("wappi_amo_widget:personal_chat_without_contact")
     elif resolver.widget_missing_personal_chats:
@@ -2492,7 +2565,7 @@ def run_wappi_history_import(
         + stats.linked_by_timeline
         + stats.linked_by_amo_auto
         + stats.linked_by_amo_widget
-        + stats.linked_by_amo_event_sequence
+        + stats.linked_by_amo_talk
         for stats in fetch_stats_by_profile.values()
     )
     messages_newly_saved = 0
@@ -2591,9 +2664,8 @@ def run_wappi_history_import(
             "linked_by_timeline": sum(stats.linked_by_timeline for stats in fetch_stats_by_profile.values()),
             "linked_by_amo_auto": sum(stats.linked_by_amo_auto for stats in fetch_stats_by_profile.values()),
             "linked_by_amo_widget": sum(stats.linked_by_amo_widget for stats in fetch_stats_by_profile.values()),
-            "linked_by_amo_event_sequence": sum(
-                stats.linked_by_amo_event_sequence for stats in fetch_stats_by_profile.values()
-            ),
+            "linked_by_amo_talk": sum(stats.linked_by_amo_talk for stats in fetch_stats_by_profile.values()),
+            "linked_by_amo_event_sequence": 0,
             "linked_by_provisional": sum(
                 stats.linked_by_provisional for stats in fetch_stats_by_profile.values()
             ),
@@ -2606,6 +2678,7 @@ def run_wappi_history_import(
             "amo_widget_calls": resolver.widget_calls,
             "amo_widget_missing_personal_chats": resolver.widget_missing_personal_chats,
             "amo_widget_link_map": widget_link_report,
+            "amo_widget_link_map_after_bridges": widget_link_cache_after_bridges,
             "amo_widget_contact_hydrate": widget_contact_hydrate_report,
             "amo_event_sequence_link_map": widget_event_link_report,
             "amo_talk_authoritative_link_map": widget_talk_link_report,
@@ -4139,10 +4212,10 @@ def fetch_wappi_history_records(
                 if resolution.resolved:
                     if resolution.resolution_source == "amo_auto_resolver":
                         stats.linked_by_amo_auto += 1
-                    elif resolution.resolution_source in WAPPI_EXACT_AMO_AUTHORITIES:
+                    elif resolution.resolution_source == "wappi_amo_widget":
                         stats.linked_by_amo_widget += 1
-                    elif resolution.resolution_source == "amo_event_sequence":
-                        stats.linked_by_amo_event_sequence += 1
+                    elif resolution.resolution_source == "amo_talk_authoritative":
+                        stats.linked_by_amo_talk += 1
                     elif resolution.resolution_source == "timeline_identity":
                         stats.linked_by_timeline += 1
                     elif resolution.resolution_source == "wappi_provisional":

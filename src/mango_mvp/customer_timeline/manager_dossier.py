@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.next_step_resolver import (
     _is_non_closing_service_event,
     resolve_customer_next_step,
 )
+from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import customer_entity_ref_values, customer_timeline_readonly_uri
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
@@ -1335,6 +1336,7 @@ def manager_outreach_eligibility(
                 tenant_id=tenant_id,
                 customer_id=customer_id,
                 evidence_at=evidence_at,
+                as_of=now,
             ):
                 reasons.append("season_purchase_not_confirmed")
             elif _has_active_customer_access(con, tenant_id=tenant_id, customer_id=customer_id):
@@ -1380,6 +1382,7 @@ def _season_purchase_matches(
     tenant_id: str,
     customer_id: str,
     evidence_at: datetime,
+    as_of: datetime,
 ) -> bool:
     if not _table_exists(con, "customer_purchases_v1"):
         return False
@@ -1395,6 +1398,8 @@ def _season_purchase_matches(
         and float(row["total_in"] or 0) > 0
         and int(row["deals_cnt"] or 0) > 0
         and stored_at
+        and stored_at <= as_of
+        and evidence_at <= as_of
         and stored_at.date() == evidence_at.date()
     )
 
@@ -1417,11 +1422,24 @@ def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, cust
 
 
 def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> tuple[str, ...]:
+    customer_ids = [customer_id]
+    family_link_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(family_links_v1)").fetchall()}
+    if "family_id" in family_link_columns:
+        related = con.execute(
+            "SELECT DISTINCT sibling.customer_id FROM family_links_v1 current "
+            "JOIN family_links_v1 sibling ON sibling.tenant_id=current.tenant_id AND sibling.family_id=current.family_id "
+            "WHERE current.tenant_id=? AND current.customer_id=? "
+            "AND current.status='confident' AND current.confidence IN ('high','medium') "
+            "AND sibling.status='confident' AND sibling.confidence IN ('high','medium')",
+            (tenant_id, customer_id),
+        ).fetchall()
+        customer_ids.extend(str(row[0]) for row in related if row[0])
+    customer_ids = list(dict.fromkeys(customer_ids))
     rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
-        "FROM timeline_events WHERE tenant_id=? AND customer_id=? "
+        f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({','.join('?' for _ in customer_ids)}) "
         "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
-        (tenant_id, customer_id),
+        (tenant_id, *customer_ids),
     ).fetchall()
     risks: list[str] = []
     for row in rows:
@@ -1429,6 +1447,8 @@ def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_
         stored = _safe_json(row["record_json"])
         event["record"] = _mapping(stored.get("record"))
         event["metadata"] = _mapping(stored.get("metadata"))
+        if _owner50_event_is_explicit_refund(event):
+            risks.append("durable_p0_history")
         if _clean_text(event.get("direction")).casefold() != "inbound":
             continue
         text = _event_text(event)
@@ -1887,6 +1907,8 @@ def _owner50_family_rows(
                 if not opportunity or str(opportunity["customer_id"]) != str(signal["customer_id"]):
                     quality_reasons.append("active_deal_missing")
         for event in all_events:
+            if _owner50_event_is_explicit_refund(event):
+                reasons.append("durable_p0_history")
             if _clean_text(event.get("direction")).casefold() != "inbound":
                 continue
             text = _event_text(event)
@@ -2052,7 +2074,7 @@ def _owner50_family_rows(
                     rejected.append("active_access_or_learning")
                     continue
                 purchase_at = _parse_iso_datetime(_mapping(signal_record.get("metadata")).get("last_purchase_at"))
-                if not _owner50_purchase_matches(purchase, purchase_at):
+                if not _owner50_purchase_matches(purchase, purchase_at, as_of=as_of):
                     rejected.append("season_purchase_not_confirmed")
                     continue
                 evidence_at = purchase_at
@@ -2707,7 +2729,12 @@ def _owner50_event_channel(event: Mapping[str, Any] | None) -> str:
     return _display_source(source_system)
 
 
-def _owner50_purchase_matches(row: sqlite3.Row | None, evidence_at: datetime | None) -> bool:
+def _owner50_purchase_matches(
+    row: sqlite3.Row | None,
+    evidence_at: datetime | None,
+    *,
+    as_of: datetime,
+) -> bool:
     stored_at = _parse_iso_datetime(row["last_purchase_at"]) if row else None
     return bool(
         row
@@ -2715,7 +2742,19 @@ def _owner50_purchase_matches(row: sqlite3.Row | None, evidence_at: datetime | N
         and float(row["total_in"] or 0) > 0
         and int(row["deals_cnt"] or 0) > 0
         and stored_at
+        and stored_at <= as_of
+        and evidence_at <= as_of
         and stored_at.date() == evidence_at.date()
+    )
+
+
+def _owner50_event_is_explicit_refund(event: Mapping[str, Any]) -> bool:
+    if _clean_text(event.get("event_type")) != "tallanto_payment":
+        return False
+    record = _mapping(event.get("record"))
+    return any(
+        is_explicit_refund_direction(record.get(field))
+        for field in ("payment_direction", "direction")
     )
 
 

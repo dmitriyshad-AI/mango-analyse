@@ -516,13 +516,39 @@ def test_sg_v1_season_return_requires_positive_payment_and_accepts_balance_charg
     paired_balance_charge = derive_sg_v1_signals(
         tenant_id=TENANT,
         customer_id=CUSTOMER,
-        events=(),
+        events=({
+            "event_id": "balance-charge",
+            "event_type": "tallanto_payment",
+            "event_at": (NOW - timedelta(days=200)).isoformat(),
+            "record": {"payment_direction": "school_out"},
+        },),
         purchases={**base, "total_in": 5000, "total_out": 5000},
         as_of=NOW,
     )
 
     assert no_payment == ()
     assert [signal.signal_type for signal in paired_balance_charge] == ["season_return_candidate"]
+
+    refund_records = (
+        {"payment_direction": "refund"},
+        {"payment_direction": "return"},
+        {"payment_direction": "возврат"},
+        {"direction": "return"},
+        {"payment_direction": "school_out", "direction": "refund"},
+    )
+    for index, record in enumerate(refund_records):
+        assert derive_sg_v1_signals(
+            tenant_id=TENANT,
+            customer_id=CUSTOMER,
+            events=({
+                "event_id": f"refund-{index}",
+                "event_type": "tallanto_payment",
+                "event_at": (NOW - timedelta(days=200)).isoformat(),
+                "record": record,
+            },),
+            purchases={**base, "total_in": 5000, "total_out": 5000},
+            as_of=NOW,
+        ) == ()
 
 
 def test_sg_v1_season_return_rejects_missing_purchase_evidence() -> None:

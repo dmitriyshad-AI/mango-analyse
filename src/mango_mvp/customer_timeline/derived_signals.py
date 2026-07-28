@@ -10,6 +10,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.contracts import DerivedSignal, SignalSeverity, SignalStatus
 from mango_mvp.customer_timeline.ids import normalize_key, optional_text, require_text, require_timezone, stable_signal_id
+from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_entity_ref_values
 
@@ -265,7 +266,7 @@ def derive_sg_v1_signals(
     hot_streak = _derive_hot_streak(tenant, customer, ordered, as_of)
     if hot_streak:
         signals.append(hot_streak)
-    season = _derive_season_return(tenant, customer, purchases or {}, as_of)
+    season = _derive_season_return(tenant, customer, ordered, purchases or {}, as_of)
     if season:
         signals.append(season)
     return tuple(signals)
@@ -666,6 +667,7 @@ def _derive_hot_streak(
 def _derive_season_return(
     tenant_id: str,
     customer_id: str,
+    events: Sequence[Mapping[str, Any]],
     purchases: Mapping[str, Any],
     as_of: datetime,
 ) -> Optional[DerivedSignal]:
@@ -676,6 +678,7 @@ def _derive_season_return(
         or float(purchases.get("total_in") or 0) <= 0
         or int(purchases.get("deals_cnt") or 0) <= 0
         or not purchases.get("last_purchase_at")
+        or any(_is_explicit_refund_event(event) for event in events)
     ):
         return None
     try:
@@ -710,6 +713,16 @@ def _derive_season_return(
             "period": period,
         },
         created_at=period_start,
+    )
+
+
+def _is_explicit_refund_event(event: Mapping[str, Any]) -> bool:
+    if str(event.get("event_type") or "") != "tallanto_payment":
+        return False
+    record = _record(event)
+    return any(
+        is_explicit_refund_direction(record.get(field))
+        for field in ("payment_direction", "direction")
     )
 
 

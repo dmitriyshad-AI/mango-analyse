@@ -379,6 +379,76 @@ def test_manager_outreach_eligibility_blocks_p0_optout_and_meaningful_outbound(t
     )
 
 
+def test_manager_outreach_blocks_structured_refund_with_neutral_text(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE family_links_v1 ("
+            "tenant_id TEXT, family_id TEXT, customer_id TEXT, status TEXT, confidence TEXT)"
+        )
+        con.executemany(
+            "INSERT INTO family_links_v1 VALUES (?,?,?,?,?)",
+            (
+                ("foton", "family:1", "customer:1", "confident", "high"),
+                ("foton", "family:1", "customer:2", "confident", "high"),
+            ),
+        )
+        event_id = str(con.execute("SELECT event_id FROM timeline_events WHERE source_id='call-client'").fetchone()[0])
+    store = CustomerTimelineSQLiteStore(db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:2",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Second family member",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        store.upsert_signal(
+            DerivedSignal(
+                tenant_id="foton",
+                customer_id="customer:1",
+                event_id=event_id,
+                signal_type="client_returned",
+                severity=SignalSeverity.MEDIUM,
+                evidence_text="Клиент вернулся после паузы.",
+                expires_at=NOW + timedelta(days=30),
+                created_at=NOW,
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:2",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW - timedelta(days=2),
+                source_system="tallanto_crm_call",
+                source_id="structured-refund",
+                direction=TimelineDirection.SYSTEM,
+                summary="Структурная операция Tallanto.",
+                record={"payment_direction": "school_out", "direction": "refund", "amount": 1000},
+                match_status="strong_unique",
+                created_at=NOW - timedelta(days=2),
+            )
+        )
+    finally:
+        store.close()
+
+    with sqlite3.connect(db) as con:
+        blocked = manager_outreach_eligibility(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            as_of=NOW + timedelta(days=1),
+        )
+
+    assert blocked["eligible"] is False
+    assert "durable_p0_history" in blocked["reasons"]
+
+
 def test_manager_outreach_eligibility_blocks_risk_signal_and_exact_conflict(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
@@ -540,6 +610,7 @@ def test_manager_season_evidence_accepts_tallanto_balance_charge(tmp_path: Path)
             tenant_id="foton",
             customer_id="customer:1",
             evidence_at=evidence_at,
+            as_of=NOW,
         )
         con.execute(
             "UPDATE customer_purchases_v1 SET total_out=1000 WHERE customer_id='customer:1' AND money_kind='fact'"
@@ -549,6 +620,20 @@ def test_manager_season_evidence_accepts_tallanto_balance_charge(tmp_path: Path)
             tenant_id="foton",
             customer_id="customer:1",
             evidence_at=evidence_at,
+            as_of=NOW,
+        )
+        future = NOW + timedelta(days=10)
+        con.execute(
+            "UPDATE customer_purchases_v1 SET last_purchase_at=? "
+            "WHERE customer_id='customer:1' AND money_kind='fact'",
+            (future.isoformat(),),
+        )
+        assert not _season_purchase_matches(
+            con,
+            tenant_id="foton",
+            customer_id="customer:1",
+            evidence_at=future,
+            as_of=NOW,
         )
 
 
@@ -1317,6 +1402,13 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
     _seed_owner50_member(
         db,
         tmp_path,
+        family_id="family:explicit-refund",
+        customer_id="customer:refund",
+        signal_type="client_returned",
+    )
+    _seed_owner50_member(
+        db,
+        tmp_path,
         family_id="family:test-opportunity",
         customer_id="customer:s",
         signal_type="callback_due",
@@ -1384,6 +1476,21 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
                 summary="Активная учебная группа.",
                 match_status="strong_unique",
                 created_at=NOW - timedelta(days=1),
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:refund",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW - timedelta(days=2),
+                source_system="tallanto_crm_call",
+                source_id="explicit-refund",
+                direction=TimelineDirection.SYSTEM,
+                summary="Структурная операция Tallanto.",
+                record={"amount": 1000, "payment_direction": "refund"},
+                match_status="strong_unique",
+                created_at=NOW - timedelta(days=2),
             )
         )
     finally:
@@ -1525,6 +1632,9 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         row[:3] for row in control_rows
     }
     assert ("family:test-event", "excluded", "staff_test_system") in {
+        row[:3] for row in control_rows
+    }
+    assert ("family:explicit-refund", "excluded", "durable_p0_history") in {
         row[:3] for row in control_rows
     }
     assert ("family:ambiguous-event", "candidate", "signal_evidence_ambiguous") in {row[:3] for row in candidate_rows}

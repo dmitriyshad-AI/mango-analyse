@@ -7,6 +7,11 @@ from typing import Any, Mapping, Sequence
 PURCHASE_MONEY_KIND_PLAN = "plan"
 PURCHASE_MONEY_KIND_FACT = "fact"
 PURCHASE_MONEY_KINDS = frozenset({PURCHASE_MONEY_KIND_PLAN, PURCHASE_MONEY_KIND_FACT})
+EXPLICIT_REFUND_DIRECTIONS = frozenset({"refund", "return", "возврат"})
+
+
+def is_explicit_refund_direction(value: Any) -> bool:
+    return str(value or "").strip().casefold() in EXPLICIT_REFUND_DIRECTIONS
 
 
 def ensure_customer_purchases_v1_table(con: sqlite3.Connection) -> None:
@@ -192,6 +197,7 @@ __all__ = [
     "PURCHASE_MONEY_KIND_FACT",
     "PURCHASE_MONEY_KIND_PLAN",
     "ensure_customer_purchases_v1_table",
+    "is_explicit_refund_direction",
     "normalize_customer_purchase_row",
     "upsert_customer_purchase_rows",
 ]

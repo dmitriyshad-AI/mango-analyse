@@ -225,6 +225,8 @@ sales_workbook.xlsx
 # Local/raw client-question mining exports with possible PII or URL secrets.
 D1_audit_backlog/kb_intake_20260610/questions_all_clients_*.jsonl
 D1_audit_backlog/kb_intake_20260610/questions_clean_*.jsonl
+product_data/question_catalog/
+product_data/bot_improvement_candidates_20260523/
 
 # Finance is a separate local workspace outside the bot repository.
 /Финансовая модель/

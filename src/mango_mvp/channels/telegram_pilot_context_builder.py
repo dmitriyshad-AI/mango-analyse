@@ -23,7 +23,11 @@ from mango_mvp.channels.few_shot_reference import (
     build_gold_answer_context,
     build_gold_answers_v3_summary,
 )
-from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
+from mango_mvp.channels.pilot_context import (
+    PilotContext,
+    build_pilot_context,
+    normalize_active_brand as _normalize_active_brand,
+)
 from mango_mvp.knowledge_base.fact_registry import (
     classify_fact_types,
     fact_type_from_key,
@@ -1476,15 +1480,6 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "истина", "есть"}
-
-
-def _normalize_active_brand(value: Any) -> str:
-    text = str(value or "unknown").strip().casefold()
-    if text in {"foton", "фотон"}:
-        return "foton"
-    if text in {"unpk", "унпк", "унпк мфти"}:
-        return "unpk"
-    return "unknown"
 
 
 def _brand_neutral_text_is_safe(text: str) -> bool:

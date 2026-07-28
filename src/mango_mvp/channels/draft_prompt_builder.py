@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Mapping, Optional, Sequence
 
+from mango_mvp.channels.pilot_context import normalize_active_brand as _normalize_active_brand
 from mango_mvp.channels.tone_block import sell_prompt_enabled, tone_rich_format_enabled
 from mango_mvp.question_catalog.classifier import load_taxonomy
 
@@ -728,15 +729,6 @@ def _truthy(value: Any) -> Optional[bool]:
     if text in {"0", "false", "no", "n", "нет", "manager_only", "not_allowed", "blocked"}:
         return False
     return None
-
-
-def _normalize_active_brand(value: Any) -> str:
-    text = str(value or "unknown").strip().casefold()
-    if text in {"foton", "фотон"}:
-        return "foton"
-    if text in {"unpk", "унпк", "унпк мфти"}:
-        return "unpk"
-    return "unknown"
 
 
 def _aware_utc(value: Optional[datetime]) -> datetime:

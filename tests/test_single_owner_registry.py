@@ -10,7 +10,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "scan_single_owner.py
 CONCEPT_LIMITS = {
     "normalize_active_brand": {
         "names": {"normalize_active_brand", "_normalize_active_brand", "_normalize_brand"},
-        "limit": 8,
+        "limit": 4,
     },
     "optional_text": {"names": {"optional_text", "_optional_text"}, "limit": 3},
     "require_timezone": {"names": {"require_timezone", "_require_timezone"}, "limit": 2},

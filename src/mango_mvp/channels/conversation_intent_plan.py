@@ -15,6 +15,7 @@ from mango_mvp.channels.new_lead_funnel import (
     extract_subjects,
     normalize_text,
 )
+from mango_mvp.channels.pilot_context import normalize_active_brand as _normalize_brand
 from mango_mvp.channels.semantic_roles import MessageRoles, tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker as _has_any_marker
 from mango_mvp.channels.text_signals import has_marker as _has_marker
@@ -1080,12 +1081,3 @@ def _is_followup(text: str) -> bool:
     if len(stripped) <= 90 and re.match(r"^(а|и|да|нет|хорошо|понятно|тогда|это|как|что|сколько)\b", stripped):
         return True
     return _has_any_marker(stripped, ("это цена", "по этой", "как можно", "что от меня", "а если"))
-
-
-def _normalize_brand(value: Any) -> str:
-    text = str(value or "unknown").strip().casefold()
-    if text in {"foton", "фотон"}:
-        return "foton"
-    if text in {"unpk", "унпк", "унпк мфти"}:
-        return "unpk"
-    return "unknown"

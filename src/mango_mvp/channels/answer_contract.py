@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.pilot_context import normalize_active_brand as _normalize_brand
+
 
 ANSWER_CONTRACT_SCHEMA_VERSION = "answer_contract_v2_2026_05_24"
 
@@ -246,12 +248,3 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "да"}
-
-
-def _normalize_brand(value: Any) -> str:
-    text = str(value or "unknown").strip().casefold()
-    if text in {"foton", "фотон"}:
-        return "foton"
-    if text in {"unpk", "унпк", "унпк мфти"}:
-        return "unpk"
-    return "unknown"

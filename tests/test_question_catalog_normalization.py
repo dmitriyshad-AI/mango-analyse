@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from mango_mvp.question_catalog import (
-    classify_question,
+from mango_mvp.question_catalog.classifier import classify_question
+from mango_mvp.question_catalog.normalization import (
     detect_noise_reason,
     infer_question_metadata,
     is_question_like,

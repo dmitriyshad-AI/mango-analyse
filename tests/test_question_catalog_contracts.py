@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
-from mango_mvp.question_catalog import (
+from mango_mvp.question_catalog.contracts import (
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
     BOT_PERMISSION_DRAFT_ONLY,
     BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
@@ -21,6 +23,13 @@ from mango_mvp.question_catalog import (
 
 
 NOW = datetime(2026, 5, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def test_package_root_has_no_eager_imports() -> None:
+    package_root = Path(__file__).resolve().parents[1] / "src/mango_mvp/question_catalog/__init__.py"
+    tree = ast.parse(package_root.read_text(encoding="utf-8"))
+
+    assert not any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in tree.body)
 
 
 def test_question_item_builds_stable_id_and_serializes() -> None:

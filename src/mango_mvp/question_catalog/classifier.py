@@ -178,7 +178,7 @@ def _assign_theme_decision(
 
 
 def _assign_theme_stub(raw_text: str, params: Mapping[str, str], *, metadata: Mapping[str, Any]) -> tuple[str, str]:
-    from mango_mvp.question_catalog import normalization
+    import mango_mvp.question_catalog.normalization as normalization
 
     text = normalization.clean_text(raw_text)
     fallback_signal = str(metadata.get("fallback_signal") or "")

@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from mango_mvp.question_catalog import normalization
+import mango_mvp.question_catalog.normalization as normalization
 
 
 REGISTRY_PATH = Path(__file__).with_name("parameters_registry.yaml")

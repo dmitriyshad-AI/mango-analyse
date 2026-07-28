@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
@@ -15,6 +14,9 @@ from mango_mvp.channels.preview_service import build_channel_draft_preview
 from mango_mvp.customer_timeline.approved_context_pack import (
     APPROVED_CONTEXT_PACK_STATUS,
     CUSTOMER_TIMELINE_APPROVED_CONTEXT_PACK_SCHEMA_VERSION,
+    file_sha256,
+    load_json_object,
+    stable_unique,
 )
 from mango_mvp.customer_timeline.ids import stable_prefixed_id
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
@@ -470,13 +472,6 @@ def parse_datetime(value: Any, default: datetime) -> datetime:
     return parsed
 
 
-def load_json_object(path: Path, label: str) -> Mapping[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"{label} root must be an object")
-    return payload
-
-
 def safe_mapping(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -489,24 +484,6 @@ def safe_mapping(value: Any) -> Mapping[str, Any]:
 
 def has_marker(text: str, markers: Sequence[str]) -> bool:
     return any(marker in text for marker in markers)
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def stable_unique(items: Sequence[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        if item not in seen:
-            result.append(item)
-            seen.add(item)
-    return result
 
 
 def guard_preview_input_path(path: Path | str, allowed_root: Path) -> Path:

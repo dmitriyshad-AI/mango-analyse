@@ -926,14 +926,6 @@ def _interest_values(value: Any) -> list[str]:
     return []
 
 
-def _latest_status(opportunities: Sequence[Mapping[str, Any]]) -> str:
-    for opportunity in opportunities:
-        status = _safe_fragment(opportunity.get("status"))
-        if status:
-            return status
-    return ""
-
-
 def _latest_event_at(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],

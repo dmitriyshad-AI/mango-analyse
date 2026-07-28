@@ -1129,19 +1129,6 @@ _DEAL_ACTION_FACT_QUESTION_RE = re.compile(
 )
 
 
-def _deal_action_unknown(reason: str, *, proposal: Optional[Mapping[str, Any]] = None, enabled: bool = True) -> dict[str, Any]:
-    return {
-        "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
-        "enabled": bool(enabled),
-        "action": DEAL_ACTION_UNKNOWN,
-        "confidence": 0.0,
-        "reason": str(reason or "unknown"),
-        "source": "deterministic",
-        "proposal_action": str((proposal or {}).get("action") or DEAL_ACTION_UNKNOWN),
-        "requires_manager_approval": False,
-    }
-
-
 def _deal_action_normalize(value: Any) -> str:
     action = str(value or "").strip().casefold()
     action = action.replace("-", "_").replace(" ", "_")

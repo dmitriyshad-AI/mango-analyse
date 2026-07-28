@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.customer_timeline import approved_context_pack as approved_context_pack_module
+from mango_mvp.customer_timeline import channel_preview_from_pack as channel_preview_module
 from mango_mvp.customer_timeline import (
     CustomerTimelineApprovedContextPackConfig,
     CustomerTimelineChannelPreviewFromPackConfig,
@@ -20,6 +22,12 @@ from tests.test_customer_timeline_approved_context_pack import build_approval_ar
 
 
 FIXED_TIME = datetime(2026, 5, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def test_shared_helpers_have_one_owner() -> None:
+    assert channel_preview_module.load_json_object is approved_context_pack_module.load_json_object
+    assert channel_preview_module.file_sha256 is approved_context_pack_module.file_sha256
+    assert channel_preview_module.stable_unique is approved_context_pack_module.stable_unique
 
 
 def test_channel_preview_from_pack_builds_manager_draft_without_live_send(tmp_path: Path) -> None:

@@ -7368,7 +7368,7 @@ def test_direct_path_hard_gate_generic_replacement_avoids_repeat() -> None:
     assert "менеджер" in result.draft_text.casefold()
 
 
-def test_direct_path_soft_gate_finding_keeps_model_text_for_manager() -> None:
+def test_direct_path_foreign_address_is_blocked_not_kept_for_manager() -> None:
     text = "Очная площадка на Сретенке."
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -7390,11 +7390,11 @@ def test_direct_path_soft_gate_finding_keeps_model_text_for_manager() -> None:
     gate = result.metadata["authoritative_output_gate"]
     codes = {item["code"] for item in gate["findings"]}
     assert provider.calls == 1
-    assert result.route == "draft_for_manager"
-    assert result.draft_text == text
-    assert gate["action"] == "downgrade_keep_text"
+    assert result.route == "manager_only"
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert gate["action"] == "block"
+    assert "brand_leak" in codes
     assert "unsupported_entity" in codes
-    assert "direct_path_gate_text_preserved" in result.safety_flags
     assert result.metadata["direct_path"]["downgraded"] is True
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
 

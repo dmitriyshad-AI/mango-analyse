@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
+from mango_mvp.channels.brand_boundary import LEGACY_FOREIGN_TOKENS, foreign_brand_rule
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_venue_scope import (
     VENUE_SCOPE_VALUES,
@@ -236,10 +237,7 @@ _HANDOFF_FACTUAL_CLAIM_RE = re.compile(
 )
 
 
-_BRAND_TOKENS: dict[str, tuple[str, ...]] = {
-    "foton": ("унпк", "унпк мфти", "мфти", "kmipt", "@unpk", "ноу унпк", "ано дпо"),
-    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "foton", "долями", "т-банк"),
-}
+_BRAND_TOKENS: Mapping[str, tuple[str, ...]] = LEGACY_FOREIGN_TOKENS
 
 
 _META_MARKERS: tuple[str, ...] = (
@@ -924,10 +922,9 @@ def verify_output(
     low = text.casefold()
     findings: list[VerificationFinding] = []
     brand = _normalize_brand(active_brand)
-    for token in _BRAND_TOKENS.get(brand, ()):
-        if _brand_token_present(low, token):
-            findings.append(VerificationFinding("brand_leak", f"чужой бренд/токен: {token}"))
-            break
+    foreign_brand = foreign_brand_rule(text, active_brand=brand, facts=facts)
+    if foreign_brand is not None:
+        findings.append(VerificationFinding("brand_leak", f"чужой бренд/токен: {foreign_brand.marker}"))
     gate_answer_mode = _gate_answer_mode(contract=contract, context=context, explicit=answer_mode)
     gate_estimate_domain = _gate_estimate_domain(contract=contract, context=context, explicit=estimate_domain)
     gate_is_estimate = _gate_is_estimate(contract=contract, context=context, explicit=is_estimate)

@@ -1436,6 +1436,21 @@ def _intent_model_led_keyword_prefilter_intents(plan: Mapping[str, Any]) -> tupl
     return tuple(result)
 
 
+def _intent_model_led_inline_handoff_required(result: SubscriptionDraftResult) -> bool:
+    direct_metadata = result.metadata.get("direct_path")
+    frame = result.metadata.get("semantic_frame")
+    if not isinstance(frame, Mapping) and isinstance(direct_metadata, Mapping):
+        frame = direct_metadata.get("semantic_frame")
+    return bool(
+        isinstance(frame, Mapping)
+        and str(frame.get("source") or "").strip().casefold() == "inline"
+        and (
+            _intent_actions_frame_bool(frame.get("must_handoff")) is True
+            or str(frame.get("answerability") or "").strip().casefold() == "manager_only"
+        )
+    )
+
+
 def _conversation_intent_plan_with_model_led(
     plan: Mapping[str, Any],
     result: SubscriptionDraftResult,
@@ -1470,6 +1485,8 @@ def _conversation_intent_plan_with_model_led(
         "confidence": confidence,
         "reason": str(signal.get("reason") or ""),
     }
+    if _intent_model_led_inline_handoff_required(result):
+        return plan, {**trace_base, "applied": False, "skip_reason": "frame_must_handoff"}
     if model_intent == "off_topic":
         return plan, {**trace_base, "applied": False, "skip_reason": "off_topic_metadata_only"}
     if original_intent == "live_availability" and model_intent != "live_availability":
@@ -2267,6 +2284,7 @@ def _apply_conversation_intent_plan_legacy_guard(
         _intent_model_led_enabled(context)
         and _direct_path_model_intent_primary(model_signal) == "off_topic"
         and (_float_value(model_signal.get("confidence")) or 0.0) >= INTENT_MODEL_LED_CONFIDENCE_THRESHOLD
+        and not _intent_model_led_inline_handoff_required(result)
         and not high_risk_plan
         and not is_high_risk_result(result)
     ):

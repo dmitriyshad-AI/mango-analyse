@@ -235,6 +235,146 @@ def test_high_confidence_model_intent_does_not_require_keyword_permission() -> N
     assert trace["keyword_prefilter"] == []
 
 
+@pytest.mark.parametrize(
+    "frame",
+    (
+        {"source": "inline", "must_handoff": True, "answerability": "answer_self"},
+        {"source": "inline", "must_handoff": False, "answerability": "manager_only"},
+    ),
+)
+def test_inline_frame_handoff_floor_blocks_model_led_plan(frame: dict[str, object]) -> None:
+    plan = {"primary_intent": "general_consultation", "topic_id": "theme:000_general"}
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "schedule", "confidence": 0.94},
+            "semantic_frame": frame,
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert updated == plan
+    assert trace["applied"] is False
+    assert trace["skip_reason"] == "frame_must_handoff"
+
+
+def test_safe_inline_frame_still_allows_model_led_plan() -> None:
+    plan = {"primary_intent": "general_consultation", "topic_id": "theme:000_general"}
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "schedule", "confidence": 0.94},
+            "semantic_frame": {"source": "inline", "must_handoff": False, "answerability": "answer_self"},
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert updated["primary_intent"] == "schedule"
+    assert trace["applied"] is True
+
+
+@pytest.mark.parametrize("frame_key", ("semantic_frame_shadow", "semantic_frame_posthoc_shadow"))
+def test_shadow_frame_cannot_change_model_led_plan(frame_key: str) -> None:
+    plan = {"primary_intent": "general_consultation", "topic_id": "theme:000_general"}
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "schedule", "confidence": 0.94},
+            frame_key: {"source": "inline", "must_handoff": True, "answerability": "manager_only"},
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert updated["primary_intent"] == "schedule"
+    assert trace["applied"] is True
+
+
+def test_posthoc_behavior_frame_cannot_change_model_led_plan() -> None:
+    plan = {"primary_intent": "general_consultation", "topic_id": "theme:000_general"}
+    result = SubscriptionDraftResult(
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "schedule", "confidence": 0.94},
+            "semantic_frame": {"source": "posthoc", "must_handoff": True, "answerability": "manager_only"},
+        }
+    )
+
+    updated, trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context={INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert updated["primary_intent"] == "schedule"
+    assert trace["applied"] is True
+
+
+def test_inline_handoff_floor_blocks_off_topic_text_replacement_end_to_end() -> None:
+    original = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:013_schedule",
+        draft_text="Передам менеджеру вопрос по расписанию.",
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "off_topic", "confidence": 0.96},
+            "semantic_frame": {"source": "inline", "must_handoff": True, "answerability": "manager_only"},
+        },
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        original,
+        client_message="Это нормально, что расписания пока нет?",
+        context={
+            INTENT_MODEL_LED_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "schedule", "topic_id": "theme:013_schedule"},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == original.draft_text
+    assert guarded.metadata["intent_model_led"]["applied"] is False
+    assert guarded.metadata["intent_model_led"]["skip_reason"] == "frame_must_handoff"
+    assert "intent_model_led_off_topic_safe_reply" not in guarded.safety_flags
+
+
+def test_inline_handoff_floor_blocks_off_topic_after_non_target_plan_early_exit() -> None:
+    original = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:000_general",
+        draft_text="Передам менеджеру ваш вопрос.",
+        metadata={
+            "direct_path_model_intent": {"primary_intent": "off_topic", "confidence": 0.96},
+            "semantic_frame": {"source": "inline", "must_handoff": True, "answerability": "manager_only"},
+        },
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        original,
+        client_message="Уточните, пожалуйста.",
+        context={
+            INTENT_MODEL_LED_ENV: "1",
+            "active_brand": "foton",
+            "conversation_intent_plan": {"primary_intent": "general_consultation", "topic_id": "theme:000_general"},
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == original.draft_text
+    assert not guarded.metadata.get("intent_model_led", {}).get("applied")
+    assert "intent_model_led_off_topic_safe_reply" not in guarded.safety_flags
+
+
 def test_pilot_profile_without_explicit_flag_preserves_keyword_permission() -> None:
     plan = {
         "primary_intent": "general_consultation",

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 import mango_mvp.channels.subscription_llm as subscription_llm
+from mango_mvp.channels.subscription_llm_parts import provider as provider_module
+from mango_mvp.channels.subscription_llm_parts import support as support_module
 from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_ENV,
     DIRECT_PATH_PILOT_CONFIG_ENV,
@@ -24,6 +26,11 @@ from mango_mvp.channels.subscription_llm import (
     _normalize_direct_path_payload,
 )
 from mango_mvp.channels.subscription_llm_parts.provider import build_direct_path_semantic_frame_posthoc_prompt
+
+
+def test_semantic_frame_pii_scrub_reuses_canonical_patterns() -> None:
+    assert provider_module._SEMANTIC_FRAME_PHONE_RE is support_module._A2_PHONE_RE
+    assert provider_module._SEMANTIC_FRAME_EMAIL_RE is support_module._CLIENT_EMAIL_RE
 
 
 def test_semantic_frame_shadow_flag_is_default_off_profile_on_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:

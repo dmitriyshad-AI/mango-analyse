@@ -74,7 +74,7 @@ CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/subscription_llm_parts/direct_path.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 15,
     "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 72,
-    "src/mango_mvp/channels/subscription_llm_parts/provider.py": 3,
+    "src/mango_mvp/channels/subscription_llm_parts/provider.py": 1,
     "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/support.py": 3,
     "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py": 7,

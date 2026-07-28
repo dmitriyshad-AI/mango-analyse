@@ -1436,8 +1436,8 @@ def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> 
 SEMANTIC_FRAME_SCHEMA_VERSION = "semantic_frame_v1_2026_07_01"
 SEMANTIC_FRAME_LEGACY_SHADOW_SCHEMA_VERSION = "semantic_frame_shadow_v1_2026_06_30"
 
-_SEMANTIC_FRAME_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
-_SEMANTIC_FRAME_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
+_SEMANTIC_FRAME_PHONE_RE = _A2_PHONE_RE
+_SEMANTIC_FRAME_EMAIL_RE = _CLIENT_EMAIL_RE
 _SEMANTIC_FRAME_LONG_ID_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
 
 

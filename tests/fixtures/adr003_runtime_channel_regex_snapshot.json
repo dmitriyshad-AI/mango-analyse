@@ -82,14 +82,6 @@
   {
     "flags": "",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
-    "pattern_preview": "(?:\\+7|8|7)?[\\s\\-()]?\\d{3}[\\s\\-()]?\\d{3}[\\s\\-]?\\d{2}[\\s\\-]?\\d{2}",
-    "pattern_sha256": "0ca4bf2a1e6d1b8fce5c68c92b7b0db0830ce2528bd8a5d768ac5b8753aed767",
-    "qualname": "<module>",
-    "target": "_SEMANTIC_FRAME_PHONE_RE"
-  },
-  {
-    "flags": "",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
     "pattern_preview": "(?<!\\d)\\d{5,}(?!\\d)",
     "pattern_sha256": "72743bc877d98e776af3a81d539028be9034772b2f93e6492b0aca2dbb093b48",
     "qualname": "<module>",
@@ -1454,14 +1446,6 @@
     "pattern_sha256": "09ae9c1df0529989a28c98cf36816dbc81d6add858bba022d90d4b1b955bad55",
     "qualname": "<module>",
     "target": "_A2_FAKE_DONE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
-    "pattern_preview": "[\\w.+-]+@[\\w.-]+\\.\\w+",
-    "pattern_sha256": "f41d100abc6de078cf062cca35473818a6884e92777fa7c4247c8d30a7972c27",
-    "qualname": "<module>",
-    "target": "_SEMANTIC_FRAME_EMAIL_RE"
   },
   {
     "flags": "re.I",

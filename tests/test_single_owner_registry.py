@@ -13,7 +13,7 @@ CONCEPT_LIMITS = {
         "limit": 4,
     },
     "optional_text": {"names": {"optional_text", "_optional_text"}, "limit": 3},
-    "require_timezone": {"names": {"require_timezone", "_require_timezone"}, "limit": 2},
+    "require_timezone": {"names": {"require_timezone", "_require_timezone"}, "limit": 1},
 }
 
 
@@ -101,6 +101,6 @@ def test_live_inventory_keeps_dynamic_reexport_alive() -> None:
         "optional_text: 4 > 3: "
         "src/mango_mvp/channels/contracts.py:391, "
         "src/mango_mvp/channels/subscription_llm_parts/provider.py:2731, "
-        "src/mango_mvp/channels/telegram_pilot_store.py:919, "
+        "src/mango_mvp/channels/telegram_pilot_store.py:914, "
         "src/mango_mvp/channels/injected_duplicate.py:1"
     ]

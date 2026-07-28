@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from mango_mvp.channels.contracts import ChannelMessage, require_text, stable_digest
+from mango_mvp.channels.contracts import ChannelMessage, require_text, require_timezone, stable_digest
 
 
 TELEGRAM_PILOT_STORE_SCHEMA_VERSION = "telegram_pilot_store_v1"
@@ -909,11 +909,6 @@ def parse_datetime(value: Any) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def require_timezone(value: datetime, field_name: str) -> None:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"{field_name} must be timezone-aware")
 
 
 def optional_text(value: Any) -> Optional[str]:

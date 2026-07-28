@@ -32,6 +32,25 @@ from mango_mvp.customer_timeline.nightly_incremental import (
 NOW = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
 
 
+def test_amo_checkpoint_with_truncated_utf8_is_ignored(tmp_path) -> None:
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    (out_root / "amo_incremental_checkpoint.json").write_bytes(b'{"schema_version":"\xff')
+
+    assert amo_incremental_module.load_amo_incremental_checkpoint(out_root) == {}
+
+
+def test_amo_checkpoint_with_unknown_schema_is_ignored(tmp_path) -> None:
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    (out_root / "amo_incremental_checkpoint.json").write_text(
+        json.dumps({"schema_version": "future", "endpoints": {"leads": {"next_page": 99}}}),
+        encoding="utf-8",
+    )
+
+    assert amo_incremental_module.load_amo_incremental_checkpoint(out_root) == {}
+
+
 def test_run_amo_incremental_refuses_to_copy_over_explicit_timeline_db(tmp_path):
     source = tmp_path / "source.sqlite"
     target = tmp_path / "staging.sqlite"

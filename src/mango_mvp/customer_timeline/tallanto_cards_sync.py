@@ -105,9 +105,13 @@ def load_tallanto_cards_checkpoint(out_root: Path) -> Mapping[str, Any]:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return {}
-    return payload if isinstance(payload, Mapping) else {}
+    if not isinstance(payload, Mapping):
+        return {}
+    if payload.get("schema_version") != TALLANTO_CARDS_SYNC_SCHEMA_VERSION:
+        return {}
+    return payload
 
 
 def save_tallanto_cards_checkpoint(out_root: Path, state: Optional[Mapping[str, Any]]) -> None:

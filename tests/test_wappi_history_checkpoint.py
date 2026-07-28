@@ -511,6 +511,25 @@ def test_corrupted_entry_types_are_ignored_not_crashed(tmp_path: Path) -> None:
     assert wappi_row_count(db_path) == 4
 
 
+def test_checkpoint_with_truncated_utf8_is_ignored(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    wappi_history_checkpoint_path(checkpoint_dir).write_bytes(b'{"schema_version":"\xff')
+
+    assert load_wappi_history_checkpoint(checkpoint_dir) == {}
+
+
+def test_checkpoint_with_unknown_schema_is_ignored(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({"schema_version": "future", "profiles": {}}),
+        encoding="utf-8",
+    )
+
+    assert load_wappi_history_checkpoint(checkpoint_dir) == {}
+
+
 def test_untouched_profile_keeps_its_progress_on_save(tmp_path: Path) -> None:
     """Saving must merge, not overwrite: a profile missing from this run's config
     must not lose the progress a previous run confirmed."""

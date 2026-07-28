@@ -327,7 +327,7 @@ def load_wappi_history_checkpoint(checkpoint_dir: Optional[Path]) -> Mapping[str
         return {}
     try:
         payload = json.loads(wappi_history_checkpoint_path(checkpoint_dir).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return {}
     if not isinstance(payload, Mapping):
         return {}

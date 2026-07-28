@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -18,6 +19,25 @@ from mango_mvp.customer_timeline.tallanto_cards_sync import (
     run_tallanto_cards_sync,
     universe_fingerprint,
 )
+
+
+def test_tallanto_cards_checkpoint_with_truncated_utf8_is_ignored(tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    (out_root / "tallanto_cards_sync_checkpoint.json").write_bytes(b'{"schema_version":"\xff')
+
+    assert load_tallanto_cards_checkpoint(out_root) == {}
+
+
+def test_tallanto_cards_checkpoint_with_unknown_schema_is_ignored(tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    (out_root / "tallanto_cards_sync_checkpoint.json").write_text(
+        json.dumps({"schema_version": "future", "next_offset": 999}),
+        encoding="utf-8",
+    )
+
+    assert load_tallanto_cards_checkpoint(out_root) == {}
 
 
 class FakeContactClient:

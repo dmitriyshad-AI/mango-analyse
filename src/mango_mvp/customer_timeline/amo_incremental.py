@@ -82,9 +82,13 @@ def load_amo_incremental_checkpoint(out_root: Path) -> Mapping[str, Any]:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return {}
-    return payload if isinstance(payload, Mapping) else {}
+    if not isinstance(payload, Mapping):
+        return {}
+    if payload.get("schema_version") != AMO_INCREMENTAL_CHECKPOINT_SCHEMA_VERSION:
+        return {}
+    return payload
 
 
 def save_amo_incremental_checkpoint(out_root: Path, endpoints: Mapping[str, Any]) -> None:

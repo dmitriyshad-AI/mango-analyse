@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from mango_mvp.productization.call_processing_readiness import build_call_processing_readiness_report
+from mango_mvp.productization import call_processing_readiness as _call_processing_readiness
+
+
+build_call_processing_readiness_report = _call_processing_readiness.build_call_processing_readiness_report
+_gate = _call_processing_readiness._gate
+_path_from_value = _call_processing_readiness._path_from_value
+_resolve_optional = _call_processing_readiness._resolve_optional
+_mapping = _call_processing_readiness._dict
+_int = _call_processing_readiness._int
 
 
 CURRENT_RUNTIME_SCHEMA_VERSION = "current_runtime_contract_v1"
@@ -210,10 +218,6 @@ def _contract_gates(**kwargs: Any) -> list[Mapping[str, Any]]:
     ]
 
 
-def _gate(gate_id: str, passed: bool, reason: str, severity: str) -> Mapping[str, Any]:
-    return {"gate": gate_id, "passed": bool(passed), "severity": severity, "reason": reason}
-
-
 def _resolve_active_export_root(project_root: Path, pointer_path: Path) -> Optional[Path]:
     if not pointer_path.exists():
         return None
@@ -245,37 +249,8 @@ def _load_json_if_exists(path: Optional[Path]) -> Mapping[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _path_from_value(value: Any) -> Optional[Path]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    return Path(text).expanduser().resolve(strict=False)
-
-
-def _resolve_optional(project_root: Path, path: Optional[Path]) -> Optional[Path]:
-    if path is None:
-        return None
-    candidate = Path(path).expanduser()
-    if not candidate.is_absolute():
-        candidate = project_root / candidate
-    return candidate.resolve(strict=False)
-
-
 def _string_path(path: Optional[Path]) -> Optional[str]:
     return str(path) if path else None
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 __all__ = [

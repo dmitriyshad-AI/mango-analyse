@@ -4,7 +4,17 @@ import csv
 import json
 from pathlib import Path
 
+from mango_mvp.productization import call_processing_readiness, current_runtime
 from mango_mvp.productization.current_runtime import build_current_runtime_contract
+
+
+def test_current_runtime_reuses_call_readiness_helpers() -> None:
+    assert current_runtime.build_call_processing_readiness_report is call_processing_readiness.build_call_processing_readiness_report
+    assert current_runtime._gate is call_processing_readiness._gate
+    assert current_runtime._path_from_value is call_processing_readiness._path_from_value
+    assert current_runtime._resolve_optional is call_processing_readiness._resolve_optional
+    assert current_runtime._mapping is call_processing_readiness._dict
+    assert current_runtime._int is call_processing_readiness._int
 
 
 def test_current_runtime_contract_binds_post_backfill_artifacts(tmp_path: Path) -> None:

@@ -147,7 +147,6 @@ OWNER50_REASON_TEXT = {
     "meaningful_outbound_after_evidence": "После основания уже был содержательный исходящий контакт",
     "no_active_outreach_signal": "Нет актуального доказуемого повода для контакта",
     "open_identity_conflict": "Есть открытый конфликт идентификации",
-    "payment_outflow_history": "В фактических оплатах есть возврат или иной исходящий поток",
     "season_purchase_not_confirmed": "Сезонный возврат не подтверждён оплатой",
     "signal_evidence_ambiguous": "Событие-основание связано неоднозначно",
     "signal_evidence_missing": "Для сигнала нет первичного события, сделки или оплаты",
@@ -347,9 +346,9 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
             список = нет проверенных детей -> не влияет на graduate-логику ниже.
         payment: {"total_in", "total_out", "deals_cnt", "last_purchase_at", "above_median"} | None
             FAMILY-level агрегат, уже прогнанный через dedupe_family_payment_rows.
-            total_out > 0 -> EXCLUDED "payment_outflow_history". last_purchase_at ОБЯЗАТЕЛЕН
-            (требование архитектора #2/#5) -- без даты или с датой в будущем оплата не
-            засчитывается вообще (не "no_payment_or_interest_evidence"-safe).
+            total_out -- парное списание с баланса Tallanto, а не доказательство возврата.
+            last_purchase_at ОБЯЗАТЕЛЕН (требование архитектора #2/#5) -- без даты или
+            с датой в будущем оплата не засчитывается вообще.
         interest_quote: {"text", "quoted_at", "event_id", "source_system"} | None -- Г4.
             Засчитывается ТОЛЬКО если event_id+source_system заданы И (при наличии
             events_by_id) разрешаются в событие с СОВПАДАЮЩИМ source_system, и quoted_at не
@@ -414,8 +413,6 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         exclusions.append("active_work_recent_manager_touch")
     if family.get("stale_data"):
         exclusions.append("capture_stale_beyond_sla")
-    if float(payment.get("total_out") or 0) > 0:
-        exclusions.append("payment_outflow_history")
     for risk_signal_type in family.get("active_risk_signals") or ():
         exclusions.append(f"active_risk_signal:{risk_signal_type}")
     # решение владельца 25.07 (отменяет более раннюю правку Fable #4): все верифицированные
@@ -746,7 +743,6 @@ def _owner50_payment_is_confirmed(payment: Mapping[str, Any], *, as_of: datetime
         return False
     return (
         float(payment.get("total_in") or 0) > 0
-        and float(payment.get("total_out") or 0) == 0
         and int(payment.get("deals_cnt") or 0) > 0
     )
 
@@ -1397,7 +1393,6 @@ def _season_purchase_matches(
     return bool(
         row
         and float(row["total_in"] or 0) > 0
-        and float(row["total_out"] or 0) == 0
         and int(row["deals_cnt"] or 0) > 0
         and stored_at
         and stored_at.date() == evidence_at.date()
@@ -1930,8 +1925,6 @@ def _owner50_family_rows(
             f"{customer_id} [{', '.join(sorted(periods))}]"
             for customer_id, periods in periods_by_customer.items()
         )
-        if total_out > 0:
-            reasons.append("payment_outflow_history")
         if reasons:
             control.extend(
                 _owner50_control_rows(
@@ -1940,7 +1933,7 @@ def _owner50_family_rows(
                 )
             )
             continue
-        payment_history = total_in > 0 and total_out == 0 and deals_cnt > 0
+        payment_history = total_in > 0 and deals_cnt > 0
         specific_offer = bool(product_offers)
         child_tokens = {
             token[:5]
@@ -2720,7 +2713,6 @@ def _owner50_purchase_matches(row: sqlite3.Row | None, evidence_at: datetime | N
         row
         and evidence_at
         and float(row["total_in"] or 0) > 0
-        and float(row["total_out"] or 0) == 0
         and int(row["deals_cnt"] or 0) > 0
         and stored_at
         and stored_at.date() == evidence_at.date()

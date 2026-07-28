@@ -499,7 +499,7 @@ def test_sg_v1_season_return_is_stable_inside_month() -> None:
     assert first.metadata == second.metadata
 
 
-def test_sg_v1_season_return_requires_positive_payment_without_reversal() -> None:
+def test_sg_v1_season_return_requires_positive_payment_and_accepts_balance_charge() -> None:
     base = {
         "deals_cnt": 1,
         "last_purchase_at": (NOW - timedelta(days=220)).isoformat(),
@@ -513,7 +513,7 @@ def test_sg_v1_season_return_requires_positive_payment_without_reversal() -> Non
         purchases={**base, "total_in": 0, "total_out": 5000},
         as_of=NOW,
     )
-    reversed_payment = derive_sg_v1_signals(
+    paired_balance_charge = derive_sg_v1_signals(
         tenant_id=TENANT,
         customer_id=CUSTOMER,
         events=(),
@@ -522,7 +522,31 @@ def test_sg_v1_season_return_requires_positive_payment_without_reversal() -> Non
     )
 
     assert no_payment == ()
-    assert reversed_payment == ()
+    assert [signal.signal_type for signal in paired_balance_charge] == ["season_return_candidate"]
+
+
+def test_sg_v1_season_return_rejects_missing_purchase_evidence() -> None:
+    base = {
+        "total_in": 5000,
+        "total_out": 5000,
+        "deals_cnt": 1,
+        "last_purchase_at": (NOW - timedelta(days=220)).isoformat(),
+        "computability": "computed",
+    }
+
+    for purchases in (
+        {**base, "total_in": 0},
+        {**base, "deals_cnt": 0},
+        {**base, "last_purchase_at": ""},
+        {**base, "last_purchase_at": "not-a-date"},
+    ):
+        assert derive_sg_v1_signals(
+            tenant_id=TENANT,
+            customer_id=CUSTOMER,
+            events=(),
+            purchases=purchases,
+            as_of=NOW,
+        ) == ()
 
 
 def test_sg_v1_backfill_is_idempotent(tmp_path: Path) -> None:

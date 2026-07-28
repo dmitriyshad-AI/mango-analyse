@@ -669,17 +669,19 @@ def _derive_season_return(
     purchases: Mapping[str, Any],
     as_of: datetime,
 ) -> Optional[DerivedSignal]:
-    # ponytail: any confirmed outflow blocks proactive outreach until Tallanto
-    # exposes a reliable refund/expense distinction.
+    # Tallanto `out` is normally the paired charge from its internal balance,
+    # not a refund. Refund risk must come from a separate structured/P0 signal.
     if (
         purchases.get("computability") != "computed"
         or float(purchases.get("total_in") or 0) <= 0
-        or float(purchases.get("total_out") or 0) > 0
         or int(purchases.get("deals_cnt") or 0) <= 0
         or not purchases.get("last_purchase_at")
     ):
         return None
-    last_purchase_at = _parse_datetime(purchases["last_purchase_at"], "last_purchase_at")
+    try:
+        last_purchase_at = _parse_datetime(purchases["last_purchase_at"], "last_purchase_at")
+    except (TypeError, ValueError):
+        return None
     if as_of < last_purchase_at + timedelta(days=DEFAULT_SEASON_RETURN_DAYS):
         return None
     period_start = as_of.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

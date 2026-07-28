@@ -527,7 +527,7 @@ def test_manager_dossier_workbook_includes_full_manager_sections(tmp_path: Path)
     assert "Требуется ручная проверка модельной выжимки" not in joined
 
 
-def test_manager_season_evidence_rejects_money_reversal(tmp_path: Path) -> None:
+def test_manager_season_evidence_accepts_tallanto_balance_charge(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
     _seed_full_dossier_tables(db)
@@ -544,7 +544,7 @@ def test_manager_season_evidence_rejects_money_reversal(tmp_path: Path) -> None:
         con.execute(
             "UPDATE customer_purchases_v1 SET total_out=1000 WHERE customer_id='customer:1' AND money_kind='fact'"
         )
-        assert not _season_purchase_matches(
+        assert _season_purchase_matches(
             con,
             tenant_id="foton",
             customer_id="customer:1",
@@ -1493,8 +1493,8 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
     control = "\n".join(str(row[2]) for row in control_rows)
 
     ready_rows = list(wb["READY_50"].iter_rows(values_only=True))[1:]
-    assert summary["families"] == 1
-    assert {row[1] for row in ready_rows} == {"family:risky-signal-text"}
+    assert summary["families"] == 2
+    assert {row[1] for row in ready_rows} == {"family:outflow", "family:risky-signal-text"}
     assert {
         "structured_no_contact",
         "staff_test_system",
@@ -1506,7 +1506,6 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         "child_ambiguous",
         "brand_ambiguous",
         "identity_not_strong",
-        "payment_outflow_history",
     }.issubset(
         set(control.replace(",", "").split())
     )
@@ -2882,6 +2881,40 @@ def test_payments_are_not_double_counted_fact_plus_all_time() -> None:
     # считает существующий код (_owner50_family_rows).
     family_total_in = sum(row["total_in"] for row in deduped.values())
     assert family_total_in == 65000
+
+
+def test_tallanto_balance_charge_does_not_cancel_confirmed_payment() -> None:
+    family = _owner50_golden_family(
+        payment={
+            "customer_id": "customer:golden",
+            "total_in": 45000,
+            "total_out": 45000,
+            "deals_cnt": 1,
+            "last_purchase_at": OWNER50_CLASSIFY_NOW - timedelta(days=20),
+            "period": "all_time",
+        }
+    )
+
+    result = classify_family(family, as_of=OWNER50_CLASSIFY_NOW)
+
+    assert result["status"] == "READY"
+    assert "no_payment_or_interest_evidence" not in result["missing"]
+
+
+def test_owner50_payment_still_requires_incoming_money_deal_and_date() -> None:
+    base = dict(_owner50_golden_family()["payment"])
+    for payment in (
+        {**base, "total_in": 0, "total_out": 45000},
+        {**base, "deals_cnt": 0, "total_out": 45000},
+        {**base, "last_purchase_at": None, "total_out": 45000},
+        {**base, "last_purchase_at": "not-a-date", "total_out": 45000},
+    ):
+        result = classify_family(
+            _owner50_golden_family(payment=payment),
+            as_of=OWNER50_CLASSIFY_NOW,
+        )
+        assert result["status"] == "CANDIDATE"
+        assert "no_payment_or_interest_evidence" in result["missing"]
 
 
 def test_evidence_resolves_to_its_source_system_and_flags_dangling_refs() -> None:

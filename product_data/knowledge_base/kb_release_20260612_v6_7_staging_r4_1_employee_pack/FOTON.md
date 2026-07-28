@@ -177,13 +177,13 @@
 
 - Фотон: городской летний лагерь — 09:45-11:45.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Фотон: городской летний лагерь — Бесплатен только утренний клуб «Предлёнка» с 09:45 до 11:45 со второго дня. Сам городской лагерь платный; стоимость зависит от выбранного тарифа.
+  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: городской летний лагерь — ЛВШ выездная — другой продукт.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: городской летний лагерь — Обед (первое, второе, салат, булочка) + полдник.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: городской летний лагерь — Очная городская школа, без проживания.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: городской летний лагерь — Предлёнка начинается со второго дня занятий в летней городской школе Фотона. Предлёнка полностью бесплатно.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: городской летний лагерь, Москва — Верхняя Красносельская ул., 30.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -286,8 +286,6 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: городской летний лагерь, Москва, даты — 3-14 августа.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсивы 2026, дата старта — 13 апреля 2026.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 
 ### документы и справки
 
@@ -308,35 +306,7 @@
 
 ### интенсивы
 
-- Фотон: в интенсив 2026 входит: 14 вебинаров.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: 3 пробника.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: Записи до конца июня.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: Конспекты.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: Проверка ДЗ куратором.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: Психподдержка.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: в интенсив 2026 входит: Чат.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2018411.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2019323.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсивы 2026 — https://vk.me/join/3nehyHq4QR7_Lvm89Iymtzn1NEZP51CDLYY=.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсивы 2026 — онлайн, 2 занятия/нед после 18:00.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: по вопросу об интенсиве менеджер подберёт подходящие варианты и свяжется в течение рабочего дня.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: размер группы на интенсиве 2026 — 10-15 человек.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: среди предметов интенсива 2026 есть математика.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: среди предметов интенсива 2026 есть физика.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: этот интенсив в текущем бренде не проводится.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -424,11 +394,7 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: во втором семестре 2026/27 учебного года 15 недель.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: длительность интенсива 2026 — 7 недель.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: если по расписанию написано «уточняется», это потому что группы делятся по уровню знаний. Возможно, предложим другую группу; постараемся сохранить удобное время, потому что групп в параллели много.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Фотон: интенсив 2026 рассчитан на 8-9 классы.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Фотон: при личных обстоятельствах можно заморозить обучение или подобрать гибкий график.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -509,7 +475,7 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 классов.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.
+- По предметам доступны математика, физика, информатика (включая программирование); русский язык — только для 9 класса (ОГЭ) и 10–11 классов (ЕГЭ). С учебного года 2026/27 добавляется курс искусственного интеллекта.
   Источник: UPDATE_REPORT_2026-05-19.md (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Предоплата 15 000 ₽ фиксирует цену.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -698,8 +664,6 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: ЛВШ Менделеево, Москва — да.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: городской летний лагерь — полностью бесплатно.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: городской летний лагерь, Москва, тариф «База + полный факультативный блок» — 59 000 ₽.
   Источник: UPDATE_REPORT_2026-05-19.md (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: городской летний лагерь, Москва, тариф «База + половина факультативного блока» — 49 000 ₽.
@@ -712,15 +676,7 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: цены на 2026/27 учебный год, 3-4 класс, онлайн, семестр — 19 000 ₽.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, год — 47 000 ₽.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, семестр — 28 250 ₽.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.
-  Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.

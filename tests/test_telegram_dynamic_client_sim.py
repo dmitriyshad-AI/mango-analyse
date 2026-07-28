@@ -1750,7 +1750,7 @@ def test_client_prompt_redacts_memory_resolver_fields() -> None:
     assert "родитель" in prompt
 
 
-def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:
+def test_price_close_unpk_offline_grade9_does_not_retrieve_expired_prices() -> None:
     snapshot = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
     assert snapshot.exists()
 
@@ -1763,8 +1763,8 @@ def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:
 
     direct = context.get("confirmed_facts") or {}
     facts_text = "\n".join(str(value) for value in direct.values())
-    assert "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽." in facts_text
-    assert "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽." in facts_text
+    assert "очно, семестр — 49 000 ₽" not in facts_text
+    assert "очно, год — 82 000 ₽" not in facts_text
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
     assert context["conversation_intent_plan"]["known_slots"]["grade"] == "9"
     assert context["conversation_intent_plan"]["known_slots"]["format"] == "очно"

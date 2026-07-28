@@ -4,7 +4,7 @@
 
 ## Статус
 
-- run_id: `kb_release_20260612_v6_7_staging_r4_1`
+- run_id: `kb_release_20260728_v6_7_staging_r4_2`
 - formal_pass: `True`
 - semantic_pass: `True`
 - blocking_findings: `0`

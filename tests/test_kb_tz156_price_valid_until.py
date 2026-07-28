@@ -49,9 +49,11 @@ def _assert_tz156_price_facts(facts: list[dict[str, object]]) -> None:
         fact = by_key[key]
         structured = dict(fact.get("structured_value") or {})
 
-        assert fact.get("valid_until") == "2026-12-31"
-        assert structured.get("valid_until") == "2026-12-31"
-        assert fact.get("allowed_for_client_answer") is True
+        is_online_window = "before_2026_08_01" in key[1]
+        expected_until = "2026-07-31" if is_online_window else "2026-06-30"
+        assert fact.get("valid_until") == expected_until
+        assert structured.get("valid_until") == expected_until
+        assert fact.get("allowed_for_client_answer") is is_online_window
         assert fact.get("brand") == key[0]
 
         for amount_key, amount in expected.items():

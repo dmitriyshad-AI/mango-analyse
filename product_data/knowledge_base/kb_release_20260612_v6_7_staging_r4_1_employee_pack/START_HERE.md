@@ -13,13 +13,13 @@
 
 ## Статус качества
 
-- run_id: `kb_release_20260612_v6_7_staging_r4_1`
+- run_id: `kb_release_20260728_v6_7_staging_r4_2`
 - formal_pass: `True`
 - semantic_pass: `True`
-- client_safe_facts: `713`
-- manager_only_or_internal_facts: `379`
-- Фотон client-safe facts: `319`
-- УНПК client-safe facts: `394`
+- client_safe_facts: `662`
+- manager_only_or_internal_facts: `429`
+- Фотон client-safe facts: `297`
+- УНПК client-safe facts: `365`
 - Smoke 50: `FOTON rows=0, UNPK rows=0, errors=0, brand_violations=0`
 
 ## Главный принцип

@@ -336,14 +336,10 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: городской летний лагерь, Москва, даты — 6-17 июля; 20-31 июля.
+- УНПК: городской летний лагерь, Москва, даты — 20-31 июля.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: даты ЗВШ Менделеево на 2026/27 учебный год пока не определены.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `waiting_list`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — 14 апреля 2026.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — 15 апреля 2026.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Физика, 10 класс, обычная группа, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Физика, 10 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.
@@ -408,35 +404,7 @@
 
 ### интенсивы
 
-- УНПК: в интенсив 2026 входит: 14 живых вебинаров (90 мин).
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: 3 пробника.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: 7 практических занятий.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: ДЗ и конспекты.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: Закрытый чат.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: Психподдержка.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: в интенсив 2026 входит: Ручная проверка второй части ЕГЭ.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022195.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022205.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсивы 2026 — онлайн, 2 занятия/нед.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: по вопросу об интенсиве менеджер подберёт подходящие варианты и свяжется в течение рабочего дня.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: размер группы на интенсиве 2026 — 10-15 человек.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: среди предметов интенсива 2026 есть математика (профиль).
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: среди предметов интенсива 2026 есть физика.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: этот интенсив в текущем бренде не проводится.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -548,10 +516,6 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: во втором семестре 2026/27 учебного года 15 недель.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: длительность интенсива 2026 — 8 недель.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: интенсив 2026 рассчитан на 10-11 классы.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: при оплате за год действует дополнительная скидка 14%.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: при оплате за семестр действует дополнительная скидка 10%.
@@ -613,11 +577,11 @@
   Источник: UPDATE_REPORT_2026-05-19.md (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Городская летняя школа «Формула Физтеха» — дневная программа без проживания. Есть направления ФизМат и ИИ для 5-10 классов; занятия проходят с понедельника по пятницу, выходные свободны, пребывание обычно с 10:00 до 18:00.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Городская летняя школа «Формула Физтеха»: 6-17 июля — Москва, Верхняя Красносельская, д. 30; 20-31 июля — Главный корпус МФТИ; 17-28 августа — Главный корпус МФТИ.
+- Городская летняя школа «Формула Физтеха»: 20-31 июля — Главный корпус МФТИ; 17-28 августа — Главный корпус МФТИ.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс выходные. Утренний клуб «Предлёнка» — бесплатно, 09:45–11:45, со 2-го дня. Питание: обед (первое, второе, салат, булочка) и полдник (булочка и сок).
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смены 6–17 июля (ФизМат «Формула Физтеха» и ИИ «AI Lab») и 20–31 июля (только ФизМат «Формула Физтеха»). Тарифы: «База» — 39 500 ₽; «База + факультативный блок» — 59 500 ₽; «База + факультатив с индивидуальным обучением» — 99 500 ₽.
+- Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смена 20–31 июля — только ФизМат «Формула Физтеха». Тарифы: «База» — 39 500 ₽; «База + факультативный блок» — 59 500 ₽; «База + факультатив с индивидуальным обучением» — 99 500 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - Горячая линия УНПК МФТИ: 8 (800) 500-81-51 и 8 (495) 150-81-51, почта edu@kmipt.ru.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -655,7 +619,7 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.
+- По предметам доступны математика, физика и информатика (включая программирование). С учебного года 2026/27 добавляется курс искусственного интеллекта.
   Источник: UPDATE_REPORT_2026-05-19.md (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Предоплата 15 000 ₽ фиксирует цену.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -678,8 +642,6 @@
 - УНПК МФТИ: годовые онлайн-курсы по математике и физике для 5–11 классов проходят по выходным: 35 занятий в год, 1 занятие в неделю по 3 ак.ч. Стоимость: семестр — 37 000 ₽, год — 59 000 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК МФТИ: домашние задания всегда проверяются.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК МФТИ: онлайн-курсы для 9 и 11 классов по будням (математика, физика, информатика), 2 занятия в неделю по 2 ак.ч. Стоимость на 2026/27: семестр — 41 800 ₽, год — 69 900 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК МФТИ: очная подготовка к Физтеху отдельных уровней не имеет — это олимпиадный уровень по умолчанию.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -846,10 +808,6 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Тарифы городской летней школы УНПК: «База» — 39 500 ₽, обязательный блок 12:00-16:45; «База + факультативный блок» — 59 500 ₽, обязательный блок плюс менторская группа 3-4 человека 16:30-18:00 для подготовки проекта; «База + факультативный блок с индивидуальным обучением» — 99 500 ₽, можно выбрать утро или вечер.
   Источник: UPDATE_REPORT_2026-05-19.md (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: ЛВШ Менделеево — 114 000 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: ЛВШ Менделеево — ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. Полная стоимость — 120 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: ЛВШ Менделеево, Москва — бесплатно.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: городской летний лагерь, Долгопрудный, базовый вариант — 39 500 ₽.
@@ -863,20 +821,4 @@
 - УНПК: городской летний лагерь, Москва, вариант с индивидуальными занятиями — 99 500 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: городской летний лагерь, Москва, вариант с факультативом — 59 500 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: интенсивы 2026, два предмета — 34 400 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: интенсивы 2026, один блок — 9 400 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: интенсивы 2026, один предмет — 18 800 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: полная стоимость ЛВШ Менделеево — 120 000 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, год — 51 700 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, семестр — 31 000 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.

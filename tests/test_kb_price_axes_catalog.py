@@ -8,6 +8,7 @@ from mango_mvp.knowledge_base.price_axes_catalog import (
     _extract_grade,
     build_price_axes_catalog,
     extract_price_query_axes,
+    normalize_subject,
     select_price,
     select_price_fact_for_query,
     select_price_result_for_query,
@@ -52,7 +53,47 @@ def test_catalog_derives_grade_axes_from_classes_not_fact_key_dates() -> None:
     assert entry["subjects"] == ["math", "physics", "informatics", "russian", "ai"]
 
 
-def test_catalog_adds_confirmed_unpk_online_atomic_prices() -> None:
+def test_price_selector_respects_current_russian_product_line() -> None:
+    catalog = _catalog()
+
+    assert normalize_subject("russian") == "russian"
+    for grade in (3, 8):
+        result = select_price(
+            catalog,
+            brand="foton",
+            grade=grade,
+            subject="russian",
+            format="online",
+            period="semester",
+        )
+        assert result["status"] == "not_found"
+        assert result["reason"] == "subject_not_offered"
+
+    allowed = select_price(
+        catalog,
+        brand="foton",
+        grade=9,
+        subject="russian",
+        format="online",
+        period="semester",
+    )
+    assert allowed["status"] == "exact"
+    assert allowed["entry"]["amount"] == 29750
+
+    unpk = select_price(
+        catalog,
+        brand="unpk",
+        grade=9,
+        subject="russian",
+        format="online",
+        period="semester",
+        schedule="weekend",
+    )
+    assert unpk["status"] == "not_found"
+    assert unpk["reason"] == "subject_not_offered"
+
+
+def test_catalog_excludes_superseded_unpk_weekday_prices() -> None:
     catalog = _catalog()
     entries = _entries(catalog)
     unpk = [
@@ -61,12 +102,11 @@ def test_catalog_adds_confirmed_unpk_online_atomic_prices() -> None:
         if entry.get("brand") == "unpk" and entry.get("source_kind") == "unpk_online_kc_source_price"
     ]
 
-    assert len(unpk) == 4
+    assert len(unpk) == 2
     amounts = {(entry["classes"], entry["schedule"], entry["period"], entry["amount"]) for entry in unpk}
     assert ("5-11", "weekend", "semester", 37000) in amounts
     assert ("5-11", "weekend", "year", 59000) in amounts
-    assert ("9 и 11", "weekday", "semester", 41800) in amounts
-    assert ("9 и 11", "weekday", "year", 69900) in amounts
+    assert not any(entry["schedule"] == "weekday" for entry in unpk)
     assert all(entry.get("client_safe_text") for entry in unpk)
     assert all("Фотон" not in str(entry.get("client_safe_text")) for entry in unpk)
 
@@ -90,7 +130,7 @@ def test_catalog_marks_ranges_and_empty_client_safe_text_as_not_final_prices() -
     issues = list(catalog.get("issues") or [])
 
     assert any(issue.get("issue") == "range_not_final_price" and issue.get("amount_min") == 29900 for issue in issues)
-    assert sum(1 for issue in issues if issue.get("issue") == "empty_client_safe_text_not_final_price") >= 2
+    assert all(entry.get("client_safe_text") for entry in _entries(catalog))
     assert not [
         entry
         for entry in _entries(catalog)
@@ -110,19 +150,18 @@ def test_selector_returns_exact_regular_price_without_subject_dependency() -> No
     assert result["entry"]["subjects"] == ["math", "physics", "informatics", "russian", "ai"]
 
 
-def test_selector_requires_schedule_when_unpk_axes_have_two_prices() -> None:
+def test_selector_returns_only_current_unpk_online_price() -> None:
     result = select_price(_catalog(), brand="УНПК", grade=9, subject="математика", format="онлайн", period="год")
 
-    assert result["status"] == "needs_slot"
-    assert "schedule" in result["missing_slots"]
+    assert result["status"] == "exact"
+    assert result["entry"]["amount"] == 59000
+    assert result["entry"]["schedule"] == "weekend"
 
 
 def test_selector_can_pick_unpk_weekday_price_by_subject() -> None:
     result = select_price(_catalog(), brand="УНПК", grade=9, subject="информатика", format="онлайн", period="год")
 
-    assert result["status"] == "exact"
-    assert result["entry"]["amount"] == 69900
-    assert result["entry"]["schedule"] == "weekday"
+    assert result["status"] == "not_found"
 
 
 def test_selector_respects_explicit_unpk_weekday_schedule() -> None:
@@ -136,9 +175,30 @@ def test_selector_respects_explicit_unpk_weekday_schedule() -> None:
         schedule="будни",
     )
 
-    assert result["status"] == "exact"
-    assert result["entry"]["amount"] == 69900
-    assert result["entry"]["schedule"] == "weekday"
+    assert result["status"] == "not_found"
+
+
+def test_catalog_never_resurrects_disallowed_or_expired_fact(monkeypatch) -> None:
+    monkeypatch.setenv("MANGO_EVALUATION_DATE", "2026-07-28")
+    base = {
+        "fact_id": "fact:old-price",
+        "fact_key": "prices_regular_2026_27.offline_5_11.year",
+        "fact_type": "price",
+        "brand": "foton",
+        "allowed_for_client_answer": True,
+        "usable_for_precise_answer": True,
+        "freshness_status": "document_verified",
+        "valid_until": "2026-07-01",
+        "client_safe_text": "Фотон: год — 74 500 ₽.",
+        "structured_value": {
+            "amount": 74500,
+            "classes": "5-11",
+            "format": "offline",
+            "period": "year",
+        },
+    }
+    assert build_price_axes_catalog([base])["entries"] == []
+    assert build_price_axes_catalog([{**base, "valid_until": "2026-12-31", "allowed_for_client_answer": False}])["entries"] == []
 
 
 def test_selector_does_not_reuse_weekend_price_for_missing_weekday_grade() -> None:

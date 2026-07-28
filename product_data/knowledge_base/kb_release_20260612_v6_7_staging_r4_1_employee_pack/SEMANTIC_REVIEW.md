@@ -1,6 +1,6 @@
 # Semantic review: employees
 
-Verdict: `PASS`
+Verdict: `PASS_WITH_NOTES`
 
 ## What passed
 

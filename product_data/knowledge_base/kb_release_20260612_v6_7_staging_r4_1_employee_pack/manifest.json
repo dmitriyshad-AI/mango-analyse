@@ -1,12 +1,12 @@
 {
-  "client_safe_facts_total": 713,
-  "created_at": "2026-07-24T09:48:47.917532+00:00",
+  "client_safe_facts_total": 662,
+  "created_at": "2026-07-27T23:45:38.656376+00:00",
   "facts_by_brand": {
-    "foton": 420,
+    "foton": 419,
     "internal": 142,
     "unpk": 530
   },
-  "facts_total": 1092,
+  "facts_total": 1091,
   "formal_pass": true,
   "package_type": "employee",
   "safety": {

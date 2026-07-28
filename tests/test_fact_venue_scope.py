@@ -383,10 +383,10 @@ def test_r4_1_live_snapshot_has_structural_venue_scope_markup() -> None:
         if fact.get("program_kind"):
             program_counts[str(fact["program_kind"])] = program_counts.get(str(fact["program_kind"]), 0) + 1
 
-    assert len(facts) == 1092
+    assert len(facts) == 1091
     assert venue_counts == {
         "any": 91,
-        "moscow_regular": 97,
+        "moscow_regular": 96,
         "online": 78,
         "lvsh_mendeleevo": 118,
         "lvsh_podlipki": 17,
@@ -395,7 +395,7 @@ def test_r4_1_live_snapshot_has_structural_venue_scope_markup() -> None:
     assert program_counts == {
         "regular": 171,
         "camp_lvsh": 134,
-        "camp_city": 45,
+        "camp_city": 44,
         "any": 37,
         "olympiad": 30,
     }

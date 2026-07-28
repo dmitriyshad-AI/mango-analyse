@@ -14,22 +14,22 @@
 
 ## Сколько таких фактов в базе
 
-- программы: `123`
+- программы: `124`
 - документы и справки: `55`
+- цены: `32`
+- интенсивы: `30`
 - ЛВШ: `26`
 - материнский капитал: `24`
 - рассрочка и варианты оплаты: `20`
-- цены: `18`
+- даты и сроки: `20`
+- параметры занятий: `18`
 - возвраты: `18`
-- даты и сроки: `17`
-- параметры занятий: `14`
 - промокоды: `13`
 - преподаватели: `11`
 - налоговый вычет: `10`
 - правила ответа: `10`
 - скидки: `10`
 - адреса: `6`
-- интенсивы: `2`
 - городской лагерь: `1`
 - ЗВШ: `1`
 
@@ -65,8 +65,12 @@
 - `УНПК МФТИ` УНПК: zvsh mendeleevo , legal entity internal — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`
 - `Фотон` Фотон: справки и документы — 10. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: материнский капитал — 10. Причина: `internal_only, manager_only_route`
+- `Фотон` Фотон: интенсив 2026 рассчитан на 8-9 классы. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
+- `Фотон` Фотон: длительность интенсива 2026 — 7 недель. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `УНПК МФТИ` УНПК: справки и документы — 10. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: материнский капитал — 10. Причина: `internal_only, manager_only_route`
+- `УНПК МФТИ` УНПК: интенсив 2026 рассчитан на 10-11 классы. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
+- `УНПК МФТИ` УНПК: длительность интенсива 2026 — 8 недель. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 8+. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 15+. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 20+. Причина: `internal_only, manager_only_route`
@@ -77,6 +81,7 @@
 - `УНПК МФТИ` УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, расписание — будни. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `УНПК МФТИ` УНПК: 1 , experience years — 12. Причина: `internal_only, manager_only_route, not_client_allowed_status:archived_2026_05_20`
 - `УНПК МФТИ` УНПК: unavailable programs 2026 27 , note internal — Подтверждено Дмитрием 2026-05-22. Бот не предлагает химию 10-11 и английский 1-4 как доступные программы УНПК.. Причина: `internal_only, manager_only_route`
+- `Фотон` Фотон: интенсивы 2026, дата старта — 13 апреля 2026. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `Фотон` Фотон: ЛВШ Менделеево — foton. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
 - `Фотон` Фотон: ЛВШ Менделеево, даты — 20-28 июня. Причина: `not_client_allowed_status:open`
 - `Фотон` Фотон: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
@@ -86,6 +91,8 @@
 - `Фотон` Фотон: ЛВШ Менделеево — В эти же даты есть смена УНПК — клиенту бот Фотон видит только смену Фотона.. Причина: `cross_brand_text, internal_only, manager_only_route, not_client_allowed_status:open, other_brand_term:унпк`
 - `Фотон` Фотон: цены на 2026/27 учебный год — 15 мая 2026. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `Фотон` Фотон: цены на 2026/27 учебный год — 1 мая 2026. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
+- `УНПК МФТИ` УНПК: интенсивы 2026 — 15 апреля 2026. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
+- `УНПК МФТИ` УНПК: интенсивы 2026 — 14 апреля 2026. Причина: `blocked_status:do_not_use, not_client_allowed_status:do_not_use`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — unpk parallel independent smena. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево, даты — 18-26 июля. Причина: `not_client_allowed_status:open`
 - `УНПК МФТИ` УНПК: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
@@ -148,10 +155,3 @@
 - `УНПК МФТИ` УНПК: used for , 1 — Очные курсы УНПК Долгопрудный. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: used for , 2 — ЛШ городская АНО июль. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: used for , 3 — ЛВШ Менделеево. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: used for , 4 — Маткапитал. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: 2 , name, название — НОУ УНПК МФТИ. Причина: `global_forbidden:НОУ УНПК, internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: used for , 1 — Альтернативное юр. лицо УНПК. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: ano dpo unpk mfti , date — 13.05.2024. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: grants , 2 — Приём оплаты маткапиталом. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: grants , 3 — Договоры на платные образовательные услуги. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: ano dpo unpk mfti , holder — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`

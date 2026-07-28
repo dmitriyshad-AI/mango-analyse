@@ -67,7 +67,7 @@
     ],
     "missing": []
   },
-  "created_at": "2026-07-24T09:48:43.172101+00:00",
+  "created_at": "2026-07-27T23:45:34.212082+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -194,7 +194,7 @@
       "matkap": 44,
       "payment": 2,
       "policy": 19,
-      "price": 48,
+      "price": 47,
       "process": 66,
       "program": 288,
       "promocode": 13,
@@ -202,9 +202,9 @@
       "tax": 40,
       "teacher": 13
     },
-    "approval_queue_items": 1070,
-    "client_allowed_facts": 713,
-    "facts_total": 1092,
+    "approval_queue_items": 1069,
+    "client_allowed_facts": 662,
+    "facts_total": 1091,
     "source_registry_total": 12
   }
 }

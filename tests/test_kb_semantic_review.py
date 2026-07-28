@@ -5,6 +5,8 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 from scripts.run_kb_semantic_review import run_kb_semantic_review
 
 
@@ -532,3 +534,275 @@ def _write_release(
             writer.writeheader()
             writer.writerows(approval_rows)
     return release
+
+
+# --- окно применимости цены и завершившийся период (аудит 2026-07-27) ---------
+#
+# Оба дефекта существуют в текущем релизе и до этих правил были невидимы:
+# `valid_until` у всех ценовых фактов выставлен релизом на 2026-12-31, а окно
+# применимости живёт только в `fact_key`; период проведения смены живёт только
+# в тексте для клиента. Ревьюер давал semantic_pass=true при 8 просроченных
+# ценах и 3 фактах с завершившейся сменой.
+
+_TODAY = date(2026, 7, 27)
+
+
+def test_semantic_review_blocks_price_whose_window_already_closed(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:expired-window",
+                "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+                "fact_type": "price",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-12-31",
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+                "structured_value": {"amount": 74500, "currency": "RUB"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert report["semantic_pass"] is False
+    finding = next(
+        item for item in report["findings"] if item["check_id"] == "expired_price_window_allowed_for_client"
+    )
+    assert finding["severity"] == "P1"
+    assert "window_until=2026-07-01" in finding["evidence"]
+
+
+def test_semantic_review_allows_price_whose_window_is_still_open(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:open-window",
+                "fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+                "fact_type": "price",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-12-31",
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+                "structured_value": {"amount": 47250, "currency": "RUB"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert not any(
+        item["check_id"] == "expired_price_window_allowed_for_client" for item in report["findings"]
+    )
+
+
+def test_semantic_review_ignores_schedule_deadline_shaped_like_a_price_window(tmp_path: Path) -> None:
+    """Расписание использует тот же `before_...` в ключе. 107 таких фактов не
+    должны разом стать блокерами, когда учебный год закончится."""
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:schedule-deadline",
+                "fact_key": "schedule_2026_27.groups.group_start_date.w4.before_2026_05_30.client_safe_text",
+                "fact_type": "deadline",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2027-05-30",
+                "client_safe_text": "Математика, 7 класс, продвинутая группа, очно: суббота 10:00-12:00.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert not any(
+        item["check_id"] == "expired_price_window_allowed_for_client" for item in report["findings"]
+    )
+
+
+def test_semantic_review_blocks_finished_shift_offered_to_client(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:finished-shift",
+                "fact_key": "ls_city_2026.unpk.moscow.dates",
+                "fact_type": "deadline",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-08-31",
+                "client_safe_text": "УНПК: городской летний лагерь, Москва, даты — 6-17 июля; 20-31 июля.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert report["semantic_pass"] is False
+    finding = next(
+        item for item in report["findings"] if item["check_id"] == "finished_period_in_client_text"
+    )
+    assert finding["severity"] == "P1"
+    assert "period=6-17 июля" in finding["evidence"]
+
+
+def test_semantic_review_does_not_read_a_year_as_a_date_range(tmp_path: Path) -> None:
+    """«интенсивы 2026 — 15 апреля» не является периодом «26-15 апреля»."""
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:single-date",
+                "fact_key": "intensives_2026.ege_unpk.start_dates.math",
+                "fact_type": "deadline",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-12-31",
+                "client_safe_text": "УНПК: интенсивы 2026 — 15 апреля 2026.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert not any(
+        item["check_id"] == "finished_period_in_client_text" for item in report["findings"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("year", "blocked"),
+    [(2025, True), (2026, True), (2027, False)],
+)
+def test_semantic_review_respects_explicit_period_year(tmp_path: Path, year: int, blocked: bool) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": f"fact:period-{year}",
+                "fact_key": "city_camp.period",
+                "fact_type": "deadline",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2027-12-31",
+                "client_safe_text": f"Смена 6-17 июля {year} года.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    found = any(item["check_id"] == "finished_period_in_client_text" for item in report["findings"])
+    assert found is blocked
+
+
+def test_semantic_review_blocks_snapshot_registry_mismatch(tmp_path: Path) -> None:
+    release = _write_release(tmp_path, facts=[])
+    (release / "facts_registry.jsonl").write_text(
+        json.dumps({"fact_id": "fact:registry-only", "fact_key": "registry.only"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert any(item["check_id"] == "snapshot_registry_mismatch" for item in report["findings"])
+
+
+def test_semantic_review_allows_explicitly_historical_period(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:historical-shift",
+                "fact_key": "history.city_camp",
+                "fact_type": "program",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-12-31",
+                "client_safe_text": "Смена 6-17 июля уже завершилась; подберём ближайшую актуальную.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert not any(item["check_id"] == "finished_period_in_client_text" for item in report["findings"])
+
+
+def test_semantic_review_ignores_disallowed_past_period(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:internal-past-shift",
+                "fact_key": "internal.city_camp",
+                "fact_type": "program",
+                "brand": "unpk",
+                "allowed_for_client_answer": False,
+                "freshness_status": "do_not_use",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2026-07-17",
+                "client_safe_text": "Смена 6-17 июля.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    assert not any(item["check_id"] == "finished_period_in_client_text" for item in report["findings"])
+
+
+def test_semantic_review_binds_verdict_to_reviewed_bytes(tmp_path: Path) -> None:
+    """Отчёт без хэша нельзя привязать ни к какому снапшоту: ровно из-за этого
+    ревью от 24.07 невозможно было соотнести с текущим файлом."""
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:ok",
+                "fact_key": "academic_year_2026_27.start",
+                "fact_type": "course_parameter",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "freshness_status": "document_verified",
+                "freshness_check_date": _TODAY.isoformat(),
+                "valid_until": "2027-08-31",
+                "client_safe_text": "Фотон: занятия стартуют 12-20 сентября.",
+                "structured_value": {},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release, today=_TODAY)
+
+    import hashlib
+
+    expected = hashlib.sha256((release / "kb_release_v3_snapshot.json").read_bytes()).hexdigest()
+    assert report["snapshot_sha256"] == expected
+    assert report["checked_on"] == _TODAY.isoformat()
+    # Реестра рядом нет — поле обязано присутствовать и быть пустым, а не молчать.
+    assert report["facts_registry_sha256"] == ""
+    assert "expired_price_window_allowed_for_client" not in report["reviewer_check_ids"]

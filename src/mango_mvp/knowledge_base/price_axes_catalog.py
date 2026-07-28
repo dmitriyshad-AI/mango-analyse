@@ -10,6 +10,7 @@ store atomically: class, format, period, subject availability and tariff.
 import os
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from typing import Any, Mapping, Sequence
 
 
@@ -124,6 +125,8 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
     facts_by_key = {str(fact.get("fact_key") or ""): fact for fact in facts}
 
     for fact in facts:
+        if not _fact_is_client_usable(fact):
+            continue
         structured = _mapping(fact.get("structured_value"))
         fact_id = _text(fact.get("fact_id") or fact.get("id"))
         fact_key = _text(fact.get("fact_key") or fact_id)
@@ -165,6 +168,9 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
         if not fact:
             issues.append({"issue": "unpk_online_source_fact_missing", "fact_key": override["source_fact_key"]})
             continue
+        if not _fact_is_client_usable(fact):
+            issues.append({"issue": "unpk_online_source_fact_not_client_usable", "fact_key": override["source_fact_key"]})
+            continue
         source_text = _text(fact.get("client_safe_text") or fact.get("text"))
         if not source_text:
             issues.append({"issue": "unpk_online_source_fact_empty_client_safe_text", "fact_key": override["source_fact_key"]})
@@ -172,6 +178,8 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
         entries.extend(_entries_from_unpk_online_override(fact, override))
 
     for fact in facts:
+        if not _fact_is_client_usable(fact):
+            continue
         fact_key = _text(fact.get("fact_key"))
         if fact_key.endswith(".m9_online_math_oge_tariffs") or fact_key.endswith(".m11_online_math_ege_tariffs"):
             entries.extend(_entries_from_m9_m11_tariff_fact(fact))
@@ -195,6 +203,22 @@ def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, An
         "entries": [entry.to_dict() for entry in _dedupe_entries(entries)],
         "issues": issues,
     }
+
+
+def _fact_is_client_usable(fact: Mapping[str, Any]) -> bool:
+    if fact.get("allowed_for_client_answer") is not True or fact.get("usable_for_precise_answer") is False:
+        return False
+    if _text(fact.get("freshness_status")) in {"do_not_use", "expired", "superseded"}:
+        return False
+    raw_until = _text(fact.get("valid_until"))
+    if raw_until:
+        try:
+            evaluation_day = date.fromisoformat(_text(os.getenv("MANGO_EVALUATION_DATE"))) if os.getenv("MANGO_EVALUATION_DATE") else date.today()
+            if date.fromisoformat(raw_until) < evaluation_day:
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def select_price(
@@ -229,6 +253,12 @@ def select_price(
         missing.append("period")
     if missing:
         return {"status": "needs_slot", "missing_slots": missing, "reason": "required_axis_missing", "matches": []}
+    if normalized_subject and not _regular_subject_is_supported(
+        brand=normalized_brand,
+        grade=grade,
+        subject=normalized_subject,
+    ):
+        return {"status": "not_found", "missing_slots": (), "reason": "subject_not_offered", "matches": []}
 
     matching = [
         entry
@@ -385,11 +415,19 @@ def normalize_subject(value: str) -> str:
         return "physics"
     if any(marker in text for marker in ("информат", "программ", "it", "айти")):
         return "informatics"
-    if any(marker in text for marker in ("русск", "русский")):
+    if any(marker in text for marker in ("русск", "русский", "russian")):
         return "russian"
     if any(marker in text for marker in (" ии", "искусствен", "ai ", "ai-lab", "ai lab")):
         return "ai"
     return ""
+
+
+def _regular_subject_is_supported(*, brand: str, grade: int, subject: str) -> bool:
+    if subject not in REGULAR_SUBJECTS:
+        return False
+    if subject != "russian":
+        return brand in {FOTON, UNPK}
+    return brand == FOTON and grade >= 9
 
 
 def normalize_product_code(value: str) -> str:

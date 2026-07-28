@@ -44,38 +44,40 @@ prices_regular_2026_27:
   freshness_status: document_verified
   offline_5_11_class:
     before_2026_07_01:
+      status: do_not_use
       semester:
         raw_value: 44600
-        valid_until: '2026-12-31'
+        valid_until: '2026-06-30'
       year:
         raw_value: 74500
-        valid_until: '2026-12-31'
+        valid_until: '2026-06-30'
   offline_3_4_class:
     before_2026_07_01:
+      status: do_not_use
       semester:
         raw_value: 28250
-        valid_until: '2026-12-31'
+        valid_until: '2026-06-30'
       year:
         raw_value: 47000
-        valid_until: '2026-12-31'
+        valid_until: '2026-06-30'
   online_5_11_class:
     before_2026_08_01:
       semester:
         raw_value: 29750
-        valid_until: '2026-12-31'
+        valid_until: '2026-07-31'
       year:
         raw_value: 47250
-        valid_until: '2026-12-31'
+        valid_until: '2026-07-31'
   online_3_4_class:
     before_2026_08_01:
       semester:
         raw_value: 19000
-        valid_until: '2026-12-31'
+        valid_until: '2026-07-31'
       year_range:
         raw_value:
         - 29900
         - 33300
-        valid_until: '2026-12-31'
+        valid_until: '2026-07-31'
     note_internal: Группы 1-2 классов могут быть заложены в прайсе на будущее, но клиенту в 2026/27 анонсируем онлайн только с 3-го класса.
   early_booking_2026_27:
     description: Раннее бронирование для действующих учеников Фотона
@@ -263,7 +265,7 @@ certificates:
     when_asked: Менеджер подготовит справку и пришлёт в течение 10 рабочих дней (постараемся быстрее). Подскажите, какая справка нужна — по требованию (для работы / иное) или для налогового вычета? И ФИО плательщика, ФИО ребёнка, за какой период.
 intensives_2026:
   oge_foton:
-    status: verified
+    status: do_not_use
     brand: foton
     classes: 8-9
     subjects:
@@ -412,8 +414,7 @@ ls_city_2026_foton:
     name: Утренний клуб Предлёнка
     time: 09:45-11:45
     from_day: 2
-    cost: полностью бесплатно
-    description_for_client: Предлёнка начинается со второго дня занятий в летней городской школе Фотона. Предлёнка полностью бесплатно
+    description_for_client: Бесплатен только утренний клуб «Предлёнка» с 09:45 до 11:45 со второго дня. Сам городской лагерь платный; стоимость зависит от выбранного тарифа
 kb_v6_5_client_safe_facts_2026_06_03:
   status: verified
   freshness_status: document_verified

@@ -4418,7 +4418,7 @@ def _write_wave6_snapshot(tmp_path: Path) -> Path:
     return path
 
 
-def test_direct_path_wide_pack_price_close_contains_unpk_offline_price_pair() -> None:
+def test_direct_path_wide_pack_excludes_expired_unpk_offline_price_pair() -> None:
     message = "Сколько стоит очно физика 9 класс?"
     pack = _direct_path_context_fact_pack(
         _wide_pack_context(brand="unpk", message=message),
@@ -4427,8 +4427,8 @@ def test_direct_path_wide_pack_price_close_contains_unpk_offline_price_pair() ->
 
     exact_text = _wide_pack_text(pack, pack["exact_keys"])
     assert str(pack["selected_category"]).startswith("pricing")
-    assert "49 000" in exact_text
-    assert "82 000" in exact_text
+    assert "49 000" not in exact_text
+    assert "82 000" not in exact_text
     assert len(pack["facts"]) <= 60
 
 
@@ -4524,7 +4524,8 @@ def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
     exact_text = _wide_pack_text(pack, pack["exact_keys"]).casefold()
     adjacent_text = _wide_pack_text(pack, pack["adjacent_keys"]).casefold()
     assert "очно" in exact_text
-    assert "49 000" in exact_text
+    assert "49 000" not in exact_text
+    assert "82 000" not in exact_text
     assert "онлайн" in adjacent_text
 
 

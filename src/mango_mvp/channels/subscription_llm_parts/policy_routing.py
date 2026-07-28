@@ -25,6 +25,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     BASE_SAFETY_FLAGS,
     SAFE_FALLBACK_DRAFT_TEXT,
     SubscriptionDraftResult,
+    semantic_frame_bool as _intent_actions_frame_bool,
 )
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     preserve_partial_answer_for_live_status,
@@ -2362,23 +2363,6 @@ def _intent_actions_frame_fail_reason(frame: Mapping[str, Any]) -> str:
     if confidence < INTENT_ACTIONS_FRAME_CONFIDENCE_THRESHOLD:
         return "low_confidence"
     return ""
-
-
-def _intent_actions_frame_bool(value: Any) -> Optional[bool]:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "y", "да", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "нет", "off"}:
-            return False
-    return None
 
 
 def _intent_actions_trace(

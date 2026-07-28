@@ -137,6 +137,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     _clean_list,
     _clean_crm_recommendations,
     _clamp_float,
+    semantic_frame_bool as _semantic_frame_bool,
 )
 
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
@@ -1752,23 +1753,6 @@ _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_SUBSTRINGS = (
 )
 _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_PAYMENT = {"ready_to_pay", "paid", "dispute"}
 _SEMANTIC_FRAME_SELF_ANSWER_BLOCKING_STAGES = {"post_payment", "support"}
-
-
-def _semantic_frame_bool(value: Any) -> Optional[bool]:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "y", "да", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "нет", "off"}:
-            return False
-    return None
 
 
 def _semantic_frame_value(frame: Mapping[str, Any], key: str) -> str:

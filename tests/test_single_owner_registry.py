@@ -100,7 +100,7 @@ def test_live_inventory_keeps_dynamic_reexport_alive() -> None:
     assert violations == [
         "optional_text: 4 > 3: "
         "src/mango_mvp/channels/contracts.py:391, "
-        "src/mango_mvp/channels/subscription_llm_parts/provider.py:2731, "
+        f"src/mango_mvp/channels/subscription_llm_parts/provider.py:{provider['line']}, "
         "src/mango_mvp/channels/telegram_pilot_store.py:914, "
         "src/mango_mvp/channels/injected_duplicate.py:1"
     ]

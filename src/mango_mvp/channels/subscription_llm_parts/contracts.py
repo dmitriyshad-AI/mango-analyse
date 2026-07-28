@@ -96,6 +96,23 @@ ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
 
 
+def semantic_frame_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "y", "да", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "нет", "off"}:
+            return False
+    return None
+
+
 @dataclass(frozen=True)
 class SubscriptionDraftResult:
     message_type: str = "question"

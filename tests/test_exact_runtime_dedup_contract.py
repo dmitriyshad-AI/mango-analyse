@@ -88,3 +88,19 @@ def test_telegram_store_timezone_check_is_alias_of_one_owner() -> None:
         require_timezone(datetime.now(), "created_at")
     with pytest.raises(AttributeError):
         require_timezone(None, "created_at")  # type: ignore[arg-type]
+
+
+def test_semantic_frame_wide_bool_parsers_are_aliases_of_one_owner() -> None:
+    from mango_mvp.channels.subscription_llm_parts.contracts import semantic_frame_bool
+    from mango_mvp.channels.subscription_llm_parts.policy_routing import _intent_actions_frame_bool
+    from mango_mvp.channels.subscription_llm_parts.provider import _semantic_frame_bool
+    from mango_mvp.channels.subscription_llm_parts.text_hygiene import _semantic_frame_bool as strict_p0_bool
+
+    assert _semantic_frame_bool is semantic_frame_bool
+    assert _intent_actions_frame_bool is semantic_frame_bool
+    values = (None, True, False, 0, 1, -1, 0.0, 1.0, "", "true", "false", "y", "n", "on", "off", "да", "нет")
+    assert [semantic_frame_bool(value) for value in values] == [
+        None, True, False, False, True, None, False, True, None,
+        True, False, True, False, True, False, True, False,
+    ]
+    assert [strict_p0_bool(value) for value in (1, 0, "y", "n", "on", "off")] == [None] * 6

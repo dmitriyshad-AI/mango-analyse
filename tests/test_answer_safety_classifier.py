@@ -466,7 +466,7 @@ def test_p0_text_regexes_live_only_in_p0_recall_spec() -> None:
     )
 
     offenders: list[str] = []
-    for path in channels_dir.glob("*.py"):
+    for path in channels_dir.rglob("*.py"):
         if path.name == "p0_recall_spec.py":
             continue
         text = path.read_text(encoding="utf-8")

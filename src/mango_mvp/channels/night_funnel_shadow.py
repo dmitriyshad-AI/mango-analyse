@@ -259,11 +259,7 @@ def append_shadow_log(path: Path, record: Mapping[str, Any]) -> Path:
 
 
 def append_lead_card(path: Path, card: Mapping[str, Any]) -> Path:
-    _assert_local_runtime_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(dict(card), ensure_ascii=False, sort_keys=True) + "\n")
-    return path
+    return append_shadow_log(path, card)
 
 
 def build_inbound_tee_record(
@@ -300,11 +296,7 @@ def build_inbound_tee_record(
 
 
 def append_inbound_tee_record(path: Path, record: Mapping[str, Any]) -> Path:
-    _assert_local_runtime_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(dict(record), ensure_ascii=False, sort_keys=True) + "\n")
-    return path
+    return append_shadow_log(path, record)
 
 
 def tee_record_id(record: Mapping[str, Any]) -> str:

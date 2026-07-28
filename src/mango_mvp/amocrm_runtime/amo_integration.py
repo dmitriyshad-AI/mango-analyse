@@ -281,10 +281,7 @@ def _contact_update_endpoint(account_base_url: str, contact_id: int) -> str:
 
 
 def _contact_entity_endpoint(account_base_url: str, contact_id: int) -> str:
-    normalized = _normalize_base_url(account_base_url)
-    if not normalized:
-        raise AmoIntegrationError("AMO account base URL is not configured.", status_code=503)
-    return f"{normalized.rstrip('/')}/api/v4/contacts/{contact_id}"
+    return _contact_update_endpoint(account_base_url, contact_id)
 
 
 def _contacts_search_endpoint(account_base_url: str) -> str:
@@ -963,15 +960,7 @@ def send_contact_custom_field_update(
 
 
 def _flatten_lead_field_item(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": item.get("id"),
-        "name": item.get("name"),
-        "code": item.get("code"),
-        "type": item.get("type"),
-        "group_id": item.get("group_id"),
-        "is_predefined": bool(item.get("is_predefined")),
-        "is_api_only": bool(item.get("is_api_only")),
-    }
+    return _flatten_contact_field_item(item)
 
 
 def _lead_field_cache_path() -> Path:

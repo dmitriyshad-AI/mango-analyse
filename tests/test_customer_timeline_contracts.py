@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,6 +41,42 @@ from mango_mvp.customer_timeline import (
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
 LATER = NOW + timedelta(hours=1)
 SHA = "a" * 64
+
+
+def test_customer_timeline_package_import_is_lazy() -> None:
+    script = """
+import sys
+import mango_mvp.customer_timeline
+unexpected = [
+    name for name in (
+        'mango_mvp.customer_timeline.store',
+        'mango_mvp.customer_timeline.ingestion',
+        'mango_mvp.customer_timeline.preview_quality_audit',
+    )
+    if name in sys.modules
+]
+assert not unexpected, unexpected
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_customer_timeline_lazy_facade_resolves_every_public_name() -> None:
+    import mango_mvp.customer_timeline as timeline
+
+    assert isinstance(timeline.__all__, list)
+    assert len(timeline.__all__) == 193
+    assert all(getattr(timeline, name) is not None for name in timeline.__all__)
+
+
+def test_customer_timeline_lazy_facade_is_thread_safe() -> None:
+    script = """
+from concurrent.futures import ThreadPoolExecutor
+import mango_mvp.customer_timeline as timeline
+with ThreadPoolExecutor(max_workers=64) as pool:
+    values = list(pool.map(lambda _: timeline.CustomerTimelineSQLiteStore, range(256)))
+assert all(value is values[0] for value in values)
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_customer_identity_normalizes_copies_and_serializes() -> None:

@@ -1,434 +1,219 @@
-from mango_mvp.customer_timeline.approved_context_pack import (
-    APPROVED_CONTEXT_PACK_STATUS,
-    BLOCKED_CONTEXT_PACK_STATUS,
-    CUSTOMER_TIMELINE_APPROVED_CONTEXT_PACK_SCHEMA_VERSION,
-    CustomerTimelineApprovedContextPackConfig,
-    build_customer_timeline_approved_context_pack,
-    customer_timeline_approved_context_pack_safety_contract,
+"""Public Customer Timeline API loaded only when an exported name is requested."""
+
+from importlib import import_module
+
+
+_MODULE_EXPORTS = {
+    'approved_context_pack': (
+        'APPROVED_CONTEXT_PACK_STATUS BLOCKED_CONTEXT_PACK_STATUS '
+        'CUSTOMER_TIMELINE_APPROVED_CONTEXT_PACK_SCHEMA_VERSION CustomerTimelineApprovedContextPackConfig '
+        'build_customer_timeline_approved_context_pack '
+        'customer_timeline_approved_context_pack_safety_contract'
+    ),
+    'channel_preview_from_pack': (
+        'CHANNEL_PREVIEW_FROM_PACK_STATUS_BLOCKED CHANNEL_PREVIEW_FROM_PACK_STATUS_READY '
+        'CUSTOMER_TIMELINE_CHANNEL_PREVIEW_FROM_PACK_SCHEMA_VERSION '
+        'CustomerTimelineChannelPreviewFromPackConfig build_customer_timeline_channel_preview_from_pack '
+        'customer_timeline_channel_preview_from_pack_safety_contract'
+    ),
+    'canonical_readonly_import': (
+        'CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION CanonicalReadonlyTimelineConfig '
+        'build_canonical_readonly_customer_timeline canonical_readonly_timeline_safety_contract '
+        'resolve_config'
+    ),
+    'canonical_readonly_triage': (
+        'CANONICAL_READONLY_TRIAGE_SCHEMA_VERSION CanonicalReadonlyTriageConfig '
+        'build_canonical_readonly_timeline_triage triage_safety_contract'
+    ),
+    'approval_workspace': (
+        'CUSTOMER_TIMELINE_APPROVAL_WORKSPACE_SCHEMA_VERSION CustomerTimelineApprovalWorkspaceConfig '
+        'build_customer_timeline_approval_workspace render_customer_timeline_approval_workspace_html'
+    ),
+    'approval_decisions': (
+        'ALLOWED_REASON_CODES ALL_DECISIONS CUSTOMER_TIMELINE_APPROVAL_DECISIONS_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_APPROVAL_DECISION_ROW_SCHEMA_VERSION FINAL_DECISIONS PENDING_DECISION '
+        'REQUIRED_ACKNOWLEDGEMENTS CustomerTimelineApprovalDecisionConfig '
+        'build_customer_timeline_approval_decision_template build_decision_template_rows '
+        'customer_timeline_approval_decisions_safety_contract load_decision_jsonl_rows '
+        'run_customer_timeline_approval_decisions validate_customer_timeline_approval_decisions '
+        'workspace_fingerprint'
+    ),
+    'contracts': (
+        'CUSTOMER_TIMELINE_CONTRACTS_SCHEMA_VERSION ArtifactType BotContextChunk CustomerIdentity '
+        'CustomerOpportunity DerivedSignal EventArtifact ExtractionStatus IdentityLink IdentityLinkType '
+        'IdentityMatchClass IdentityStatus OpportunityType SignalSeverity SignalStatus TimelineDirection '
+        'TimelineEvent TimelineEventType TimelineParticipant customer_timeline_contract_inventory '
+        'dedupe_timeline_events'
+    ),
+    'context_provider': (
+        'CUSTOMER_TIMELINE_CONTEXT_PROVIDER_SCHEMA_VERSION TIMELINE_PROMOTION_STAGES '
+        'CustomerTimelineCoveragePaths assert_timeline_stage_allowed audit_customer_timeline_coverage '
+        'build_fallback_context_for_phone context_provider_safety_contract evaluate_timeline_promotion '
+        'extract_phones_from_row get_customer_context_for_phone normalize_phone_for_match'
+    ),
+    'derived_signals': (
+        'CALLBACK_DUE_SIGNAL CLIENT_RETURNED_SIGNAL DEFAULT_HOT_LEAD_SILENCE_DAYS DEAL_STALLING_SIGNAL '
+        'DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION DUPLICATE_CONTACT_SIGNAL HOT_LEAD_SILENT_SIGNAL '
+        'HOT_STREAK_SIGNAL PAID_NO_ACCESS_SIGNAL SEASON_RETURN_SIGNAL SIGNAL_RULES_VERSION '
+        'CustomerSignalRecomputeResult DerivedSignalInputs backfill_sg_v1_signals derive_active_signals '
+        'derive_sg_v1_signals recompute_customer_signals signal_expires_at'
+    ),
+    'ids': (
+        'normalize_email normalize_identity_value normalize_key optional_text require_confidence '
+        'require_text require_timezone stable_artifact_id stable_chunk_id stable_customer_id '
+        'stable_digest stable_event_id stable_identity_link_id stable_opportunity_id stable_prefixed_id '
+        'stable_signal_id'
+    ),
+    'ingestion': (
+        'CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION AmoSnapshotNormalizer ChannelMessageNormalizer '
+        'MailMessageNormalizer MangoCallSummaryNormalizer TallantoSnapshotNormalizer TimelineImportError '
+        'TimelineImportReport TimelineImportService TimelineNormalizedBatch TimelineSourceRecord '
+        'build_source_inventory file_sha256 guard_customer_timeline_source_path infer_identity_conflicts '
+        'load_local_source_records load_sqlite_source_records rows_from_csv '
+        'timeline_ingestion_safety_contract'
+    ),
+    'import_cli': (
+        'CUSTOMER_TIMELINE_IMPORT_CLI_SCHEMA_VERSION SOURCE_KIND_TO_SYSTEM TimelineImportCliConfig '
+        'build_operation_plan build_timeline_import_preview decode_delimiter load_records_for_config '
+        'normalizer_for_source_kind parse_datetime run_timeline_import_cli '
+        'timeline_import_cli_safety_contract'
+    ),
+    'maintenance': 'FTS_REBUILD_PORT_THRESHOLD_SECONDS measure_customer_timeline_window',
+    'next_step_resolver': (
+        'CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION MANAGER_REVIEW_ACTION NEXT_STEP_STATUS_ACTIVE '
+        'NEXT_STEP_STATUS_CLOSED NEXT_STEP_STATUS_EMPTY NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW '
+        'NextStepResolution resolve_customer_next_step'
+    ),
+    'objections': (
+        'OBJECTION_EXTRACTOR_VERSION OBJECTION_SCHEMA_VERSION backfill_customer_objections_v1 '
+        'extract_objections_from_text'
+    ),
+    'preview_quality_audit': (
+        'CUSTOMER_TIMELINE_PREVIEW_QUALITY_AUDIT_SCHEMA_VERSION PreviewAuditRow ReplyQualityScore '
+        'SyntheticPreviewCase TelegramReplyPair build_preview_quality_audit classify_intents '
+        'default_synthetic_preview_cases expected_actions_for_message extract_latest_telegram_reply_pairs '
+        'find_default_telegram_export render_preview_quality_audit_markdown score_employee_reply '
+        'score_product_preview'
+    ),
+    'read_api': (
+        'CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION READ_API_ROUTES CustomerTimelineReadApi '
+        'CustomerTimelineReadApiConfig build_customer_timeline_read_report '
+        'customer_timeline_read_api_safety_contract route_customer_timeline_request'
+    ),
+    'safety': (
+        'CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION assert_customer_timeline_safety_contract '
+        'blocked_live_actions customer_timeline_safety_contract guard_customer_timeline_output_path '
+        'is_stable_runtime_path'
+    ),
+    'safe_copy': 'safe_copy_prod_snapshot sqlite_wal_path',
+    'stage3_maintenance': (
+        'CHUNK_LABEL_POLICY_VERSION STAGE3_MAINTENANCE_SCHEMA_VERSION Stage3MaintenanceConfig '
+        'run_stage3_maintenance'
+    ),
+    'store': (
+        'CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION '
+        'CustomerTimelineAuditEntry CustomerTimelineIngestionRun CustomerTimelineSQLiteOpenResult '
+        'CustomerTimelineSQLiteStore CustomerTimelineStoreWriteResult '
+        'customer_timeline_sqlite_safety_contract guard_customer_timeline_sqlite_path '
+        'scrub_timeline_persisted_json sqlite_fts5_available'
+    ),
+}
+
+_EXPORTS = {
+    name: (module, name)
+    for module, names in _MODULE_EXPORTS.items()
+    for name in names.split()
+}
+_EXPORTS.update(
+    {
+        'safe_copy_file_sha256': ('safe_copy', 'file_sha256'),
+    }
 )
-from mango_mvp.customer_timeline.channel_preview_from_pack import (
-    CHANNEL_PREVIEW_FROM_PACK_STATUS_BLOCKED,
-    CHANNEL_PREVIEW_FROM_PACK_STATUS_READY,
-    CUSTOMER_TIMELINE_CHANNEL_PREVIEW_FROM_PACK_SCHEMA_VERSION,
-    CustomerTimelineChannelPreviewFromPackConfig,
-    build_customer_timeline_channel_preview_from_pack,
-    customer_timeline_channel_preview_from_pack_safety_contract,
-)
-from mango_mvp.customer_timeline.canonical_readonly_import import (
-    CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION,
-    CanonicalReadonlyTimelineConfig,
-    build_canonical_readonly_customer_timeline,
-    canonical_readonly_timeline_safety_contract,
-    resolve_config,
-)
-from mango_mvp.customer_timeline.canonical_readonly_triage import (
-    CANONICAL_READONLY_TRIAGE_SCHEMA_VERSION,
-    CanonicalReadonlyTriageConfig,
-    build_canonical_readonly_timeline_triage,
-    triage_safety_contract,
-)
-from mango_mvp.customer_timeline.approval_workspace import (
-    CUSTOMER_TIMELINE_APPROVAL_WORKSPACE_SCHEMA_VERSION,
-    CustomerTimelineApprovalWorkspaceConfig,
-    build_customer_timeline_approval_workspace,
-    render_customer_timeline_approval_workspace_html,
-)
-from mango_mvp.customer_timeline.approval_decisions import (
-    ALLOWED_REASON_CODES,
-    ALL_DECISIONS,
-    CUSTOMER_TIMELINE_APPROVAL_DECISIONS_SCHEMA_VERSION,
-    CUSTOMER_TIMELINE_APPROVAL_DECISION_ROW_SCHEMA_VERSION,
-    FINAL_DECISIONS,
-    PENDING_DECISION,
-    REQUIRED_ACKNOWLEDGEMENTS,
-    CustomerTimelineApprovalDecisionConfig,
-    build_customer_timeline_approval_decision_template,
-    build_decision_template_rows,
-    customer_timeline_approval_decisions_safety_contract,
-    load_decision_jsonl_rows,
-    run_customer_timeline_approval_decisions,
-    validate_customer_timeline_approval_decisions,
-    workspace_fingerprint,
-)
-from mango_mvp.customer_timeline.contracts import (
-    CUSTOMER_TIMELINE_CONTRACTS_SCHEMA_VERSION,
-    ArtifactType,
-    BotContextChunk,
-    CustomerIdentity,
-    CustomerOpportunity,
-    DerivedSignal,
-    EventArtifact,
-    ExtractionStatus,
-    IdentityLink,
-    IdentityLinkType,
-    IdentityMatchClass,
-    IdentityStatus,
-    OpportunityType,
-    SignalSeverity,
-    SignalStatus,
-    TimelineDirection,
-    TimelineEvent,
-    TimelineEventType,
-    TimelineParticipant,
-    customer_timeline_contract_inventory,
-    dedupe_timeline_events,
-)
-from mango_mvp.customer_timeline.context_provider import (
-    CUSTOMER_TIMELINE_CONTEXT_PROVIDER_SCHEMA_VERSION,
-    TIMELINE_PROMOTION_STAGES,
-    CustomerTimelineCoveragePaths,
-    assert_timeline_stage_allowed,
-    audit_customer_timeline_coverage,
-    build_fallback_context_for_phone,
-    context_provider_safety_contract,
-    evaluate_timeline_promotion,
-    extract_phones_from_row,
-    get_customer_context_for_phone,
-    normalize_phone_for_match,
-)
-from mango_mvp.customer_timeline.derived_signals import (
-    CALLBACK_DUE_SIGNAL,
-    CLIENT_RETURNED_SIGNAL,
-    DEFAULT_HOT_LEAD_SILENCE_DAYS,
-    DEAL_STALLING_SIGNAL,
-    DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION,
-    DUPLICATE_CONTACT_SIGNAL,
-    HOT_LEAD_SILENT_SIGNAL,
-    HOT_STREAK_SIGNAL,
-    PAID_NO_ACCESS_SIGNAL,
-    SEASON_RETURN_SIGNAL,
-    SIGNAL_RULES_VERSION,
-    CustomerSignalRecomputeResult,
-    DerivedSignalInputs,
-    backfill_sg_v1_signals,
-    derive_active_signals,
-    derive_sg_v1_signals,
-    recompute_customer_signals,
-    signal_expires_at,
-)
-from mango_mvp.customer_timeline.ids import (
-    normalize_email,
-    normalize_identity_value,
-    normalize_key,
-    optional_text,
-    require_confidence,
-    require_text,
-    require_timezone,
-    stable_artifact_id,
-    stable_chunk_id,
-    stable_customer_id,
-    stable_digest,
-    stable_event_id,
-    stable_identity_link_id,
-    stable_opportunity_id,
-    stable_prefixed_id,
-    stable_signal_id,
-)
-from mango_mvp.customer_timeline.ingestion import (
-    CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,
-    AmoSnapshotNormalizer,
-    ChannelMessageNormalizer,
-    MailMessageNormalizer,
-    MangoCallSummaryNormalizer,
-    TallantoSnapshotNormalizer,
-    TimelineImportError,
-    TimelineImportReport,
-    TimelineImportService,
-    TimelineNormalizedBatch,
-    TimelineSourceRecord,
-    build_source_inventory,
-    file_sha256,
-    guard_customer_timeline_source_path,
-    infer_identity_conflicts,
-    load_local_source_records,
-    load_sqlite_source_records,
-    rows_from_csv,
-    timeline_ingestion_safety_contract,
-)
-from mango_mvp.customer_timeline.import_cli import (
-    CUSTOMER_TIMELINE_IMPORT_CLI_SCHEMA_VERSION,
-    SOURCE_KIND_TO_SYSTEM,
-    TimelineImportCliConfig,
-    build_operation_plan,
-    build_timeline_import_preview,
-    decode_delimiter,
-    load_records_for_config,
-    normalizer_for_source_kind,
-    parse_datetime,
-    run_timeline_import_cli,
-    timeline_import_cli_safety_contract,
-)
-from mango_mvp.customer_timeline.maintenance import (
-    FTS_REBUILD_PORT_THRESHOLD_SECONDS,
-    measure_customer_timeline_window,
-)
-from mango_mvp.customer_timeline.next_step_resolver import (
-    CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
-    MANAGER_REVIEW_ACTION,
-    NEXT_STEP_STATUS_ACTIVE,
-    NEXT_STEP_STATUS_CLOSED,
-    NEXT_STEP_STATUS_EMPTY,
-    NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW,
-    NextStepResolution,
-    resolve_customer_next_step,
-)
-from mango_mvp.customer_timeline.objections import (
-    OBJECTION_EXTRACTOR_VERSION,
-    OBJECTION_SCHEMA_VERSION,
-    backfill_customer_objections_v1,
-    extract_objections_from_text,
-)
-from mango_mvp.customer_timeline.preview_quality_audit import (
-    CUSTOMER_TIMELINE_PREVIEW_QUALITY_AUDIT_SCHEMA_VERSION,
-    PreviewAuditRow,
-    ReplyQualityScore,
-    SyntheticPreviewCase,
-    TelegramReplyPair,
-    build_preview_quality_audit,
-    classify_intents,
-    default_synthetic_preview_cases,
-    expected_actions_for_message,
-    extract_latest_telegram_reply_pairs,
-    find_default_telegram_export,
-    render_preview_quality_audit_markdown,
-    score_employee_reply,
-    score_product_preview,
-)
-from mango_mvp.customer_timeline.read_api import (
-    CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
-    READ_API_ROUTES,
-    CustomerTimelineReadApi,
-    CustomerTimelineReadApiConfig,
-    build_customer_timeline_read_report,
-    customer_timeline_read_api_safety_contract,
-    route_customer_timeline_request,
-)
-from mango_mvp.customer_timeline.safety import (
-    CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION,
-    assert_customer_timeline_safety_contract,
-    blocked_live_actions,
-    customer_timeline_safety_contract,
-    guard_customer_timeline_output_path,
-    is_stable_runtime_path,
-)
-from mango_mvp.customer_timeline.safe_copy import (
-    file_sha256 as safe_copy_file_sha256,
-    safe_copy_prod_snapshot,
-    sqlite_wal_path,
-)
-from mango_mvp.customer_timeline.stage3_maintenance import (
-    CHUNK_LABEL_POLICY_VERSION,
-    STAGE3_MAINTENANCE_SCHEMA_VERSION,
-    Stage3MaintenanceConfig,
-    run_stage3_maintenance,
-)
-from mango_mvp.customer_timeline.store import (
-    CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,
-    CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
-    CustomerTimelineAuditEntry,
-    CustomerTimelineIngestionRun,
-    CustomerTimelineSQLiteOpenResult,
-    CustomerTimelineSQLiteStore,
-    CustomerTimelineStoreWriteResult,
-    customer_timeline_sqlite_safety_contract,
-    guard_customer_timeline_sqlite_path,
-    scrub_timeline_persisted_json,
-    sqlite_fts5_available,
+
+__all__ = (
+(
+        'CUSTOMER_TIMELINE_CONTRACTS_SCHEMA_VERSION CUSTOMER_TIMELINE_CONTEXT_PROVIDER_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_APPROVED_CONTEXT_PACK_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_APPROVAL_DECISIONS_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_APPROVAL_DECISION_ROW_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_APPROVAL_WORKSPACE_SCHEMA_VERSION CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION '
+        'CANONICAL_READONLY_TRIAGE_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_CHANNEL_PREVIEW_FROM_PACK_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION CUSTOMER_TIMELINE_IMPORT_CLI_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_PREVIEW_QUALITY_AUDIT_SCHEMA_VERSION CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION '
+        'CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID '
+        'CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION FTS_REBUILD_PORT_THRESHOLD_SECONDS '
+        'NEXT_STEP_STATUS_ACTIVE NEXT_STEP_STATUS_CLOSED NEXT_STEP_STATUS_EMPTY '
+        'NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW ALLOWED_REASON_CODES ALL_DECISIONS '
+        'APPROVED_CONTEXT_PACK_STATUS AmoSnapshotNormalizer ArtifactType BotContextChunk '
+        'BLOCKED_CONTEXT_PACK_STATUS ChannelMessageNormalizer CHANNEL_PREVIEW_FROM_PACK_STATUS_BLOCKED '
+        'CHANNEL_PREVIEW_FROM_PACK_STATUS_READY CHUNK_LABEL_POLICY_VERSION CustomerIdentity '
+        'CustomerOpportunity CustomerTimelineAuditEntry CustomerTimelineApprovedContextPackConfig '
+        'CustomerTimelineApprovalDecisionConfig CustomerTimelineApprovalWorkspaceConfig '
+        'CanonicalReadonlyTimelineConfig CanonicalReadonlyTriageConfig CALLBACK_DUE_SIGNAL '
+        'CLIENT_RETURNED_SIGNAL CustomerTimelineChannelPreviewFromPackConfig '
+        'CustomerTimelineCoveragePaths CustomerTimelineIngestionRun CustomerTimelineReadApi '
+        'CustomerTimelineReadApiConfig CustomerTimelineSQLiteOpenResult CustomerTimelineSQLiteStore '
+        'CustomerTimelineStoreWriteResult CustomerSignalRecomputeResult DEFAULT_HOT_LEAD_SILENCE_DAYS '
+        'DEAL_STALLING_SIGNAL DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION DerivedSignal DerivedSignalInputs '
+        'DUPLICATE_CONTACT_SIGNAL EventArtifact ExtractionStatus FINAL_DECISIONS HOT_LEAD_SILENT_SIGNAL '
+        'HOT_STREAK_SIGNAL IdentityLink IdentityLinkType IdentityMatchClass IdentityStatus '
+        'MANAGER_REVIEW_ACTION NextStepResolution OBJECTION_EXTRACTOR_VERSION OBJECTION_SCHEMA_VERSION '
+        'OpportunityType PAID_NO_ACCESS_SIGNAL PENDING_DECISION PreviewAuditRow READ_API_ROUTES '
+        'REQUIRED_ACKNOWLEDGEMENTS ReplyQualityScore SEASON_RETURN_SIGNAL SIGNAL_RULES_VERSION '
+        'SignalSeverity SignalStatus SOURCE_KIND_TO_SYSTEM STAGE3_MAINTENANCE_SCHEMA_VERSION '
+        'Stage3MaintenanceConfig SyntheticPreviewCase TallantoSnapshotNormalizer TelegramReplyPair '
+        'TIMELINE_PROMOTION_STAGES TimelineImportCliConfig TimelineDirection TimelineEvent '
+        'TimelineEventType TimelineImportError TimelineImportReport TimelineImportService '
+        'TimelineNormalizedBatch TimelineParticipant TimelineSourceRecord '
+        'assert_customer_timeline_safety_contract assert_timeline_stage_allowed '
+        'audit_customer_timeline_coverage blocked_live_actions build_fallback_context_for_phone '
+        'build_customer_timeline_approval_decision_template build_customer_timeline_approved_context_pack '
+        'build_customer_timeline_channel_preview_from_pack build_operation_plan '
+        'build_customer_timeline_read_report build_customer_timeline_approval_workspace '
+        'build_canonical_readonly_customer_timeline build_canonical_readonly_timeline_triage '
+        'build_decision_template_rows build_preview_quality_audit backfill_customer_objections_v1 '
+        'backfill_sg_v1_signals classify_intents customer_timeline_approval_decisions_safety_contract '
+        'customer_timeline_approved_context_pack_safety_contract '
+        'customer_timeline_channel_preview_from_pack_safety_contract '
+        'canonical_readonly_timeline_safety_contract customer_timeline_contract_inventory '
+        'context_provider_safety_contract customer_timeline_read_api_safety_contract '
+        'customer_timeline_safety_contract customer_timeline_sqlite_safety_contract '
+        'default_synthetic_preview_cases dedupe_timeline_events derive_active_signals '
+        'derive_sg_v1_signals recompute_customer_signals build_source_inventory '
+        'build_timeline_import_preview decode_delimiter evaluate_timeline_promotion '
+        'expected_actions_for_message extract_latest_telegram_reply_pairs extract_objections_from_text '
+        'extract_phones_from_row file_sha256 find_default_telegram_export '
+        'guard_customer_timeline_source_path guard_customer_timeline_output_path '
+        'guard_customer_timeline_sqlite_path get_customer_context_for_phone infer_identity_conflicts '
+        'is_stable_runtime_path load_decision_jsonl_rows load_records_for_config '
+        'load_local_source_records load_sqlite_source_records measure_customer_timeline_window '
+        'normalize_email normalize_identity_value normalize_key normalize_phone_for_match '
+        'normalizer_for_source_kind optional_text parse_datetime require_confidence require_text '
+        'require_timezone render_customer_timeline_approval_workspace_html '
+        'render_preview_quality_audit_markdown resolve_config rows_from_csv run_timeline_import_cli '
+        'resolve_customer_next_step run_customer_timeline_approval_decisions run_stage3_maintenance '
+        'route_customer_timeline_request safe_copy_file_sha256 safe_copy_prod_snapshot '
+        'score_employee_reply score_product_preview stable_artifact_id stable_chunk_id stable_customer_id '
+        'stable_digest stable_event_id stable_identity_link_id stable_opportunity_id stable_prefixed_id '
+        'stable_signal_id signal_expires_at scrub_timeline_persisted_json sqlite_fts5_available '
+        'sqlite_wal_path timeline_ingestion_safety_contract timeline_import_cli_safety_contract '
+        'triage_safety_contract validate_customer_timeline_approval_decisions workspace_fingerprint'
+    )
+    .split()
 )
 
 
-__all__ = [
-    "CUSTOMER_TIMELINE_CONTRACTS_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_CONTEXT_PROVIDER_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_APPROVED_CONTEXT_PACK_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_APPROVAL_DECISIONS_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_APPROVAL_DECISION_ROW_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_APPROVAL_WORKSPACE_SCHEMA_VERSION",
-    "CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION",
-    "CANONICAL_READONLY_TRIAGE_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_CHANNEL_PREVIEW_FROM_PACK_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_IMPORT_CLI_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_PREVIEW_QUALITY_AUDIT_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_SAFETY_SCHEMA_VERSION",
-    "CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID",
-    "CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION",
-    "FTS_REBUILD_PORT_THRESHOLD_SECONDS",
-    "NEXT_STEP_STATUS_ACTIVE",
-    "NEXT_STEP_STATUS_CLOSED",
-    "NEXT_STEP_STATUS_EMPTY",
-    "NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW",
-    "ALLOWED_REASON_CODES",
-    "ALL_DECISIONS",
-    "APPROVED_CONTEXT_PACK_STATUS",
-    "AmoSnapshotNormalizer",
-    "ArtifactType",
-    "BotContextChunk",
-    "BLOCKED_CONTEXT_PACK_STATUS",
-    "ChannelMessageNormalizer",
-    "CHANNEL_PREVIEW_FROM_PACK_STATUS_BLOCKED",
-    "CHANNEL_PREVIEW_FROM_PACK_STATUS_READY",
-    "CHUNK_LABEL_POLICY_VERSION",
-    "CustomerIdentity",
-    "CustomerOpportunity",
-    "CustomerTimelineAuditEntry",
-    "CustomerTimelineApprovedContextPackConfig",
-    "CustomerTimelineApprovalDecisionConfig",
-    "CustomerTimelineApprovalWorkspaceConfig",
-    "CanonicalReadonlyTimelineConfig",
-    "CanonicalReadonlyTriageConfig",
-    "CALLBACK_DUE_SIGNAL",
-    "CLIENT_RETURNED_SIGNAL",
-    "CustomerTimelineChannelPreviewFromPackConfig",
-    "CustomerTimelineCoveragePaths",
-    "CustomerTimelineIngestionRun",
-    "CustomerTimelineReadApi",
-    "CustomerTimelineReadApiConfig",
-    "CustomerTimelineSQLiteOpenResult",
-    "CustomerTimelineSQLiteStore",
-    "CustomerTimelineStoreWriteResult",
-    "CustomerSignalRecomputeResult",
-    "DEFAULT_HOT_LEAD_SILENCE_DAYS",
-    "DEAL_STALLING_SIGNAL",
-    "DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION",
-    "DerivedSignal",
-    "DerivedSignalInputs",
-    "DUPLICATE_CONTACT_SIGNAL",
-    "EventArtifact",
-    "ExtractionStatus",
-    "FINAL_DECISIONS",
-    "HOT_LEAD_SILENT_SIGNAL",
-    "HOT_STREAK_SIGNAL",
-    "IdentityLink",
-    "IdentityLinkType",
-    "IdentityMatchClass",
-    "IdentityStatus",
-    "MANAGER_REVIEW_ACTION",
-    "NextStepResolution",
-    "OBJECTION_EXTRACTOR_VERSION",
-    "OBJECTION_SCHEMA_VERSION",
-    "OpportunityType",
-    "PAID_NO_ACCESS_SIGNAL",
-    "PENDING_DECISION",
-    "PreviewAuditRow",
-    "READ_API_ROUTES",
-    "REQUIRED_ACKNOWLEDGEMENTS",
-    "ReplyQualityScore",
-    "SEASON_RETURN_SIGNAL",
-    "SIGNAL_RULES_VERSION",
-    "SignalSeverity",
-    "SignalStatus",
-    "SOURCE_KIND_TO_SYSTEM",
-    "STAGE3_MAINTENANCE_SCHEMA_VERSION",
-    "Stage3MaintenanceConfig",
-    "SyntheticPreviewCase",
-    "TallantoSnapshotNormalizer",
-    "TelegramReplyPair",
-    "TIMELINE_PROMOTION_STAGES",
-    "TimelineImportCliConfig",
-    "TimelineDirection",
-    "TimelineEvent",
-    "TimelineEventType",
-    "TimelineImportError",
-    "TimelineImportReport",
-    "TimelineImportService",
-    "TimelineNormalizedBatch",
-    "TimelineParticipant",
-    "TimelineSourceRecord",
-    "assert_customer_timeline_safety_contract",
-    "assert_timeline_stage_allowed",
-    "audit_customer_timeline_coverage",
-    "blocked_live_actions",
-    "build_fallback_context_for_phone",
-    "build_customer_timeline_approval_decision_template",
-    "build_customer_timeline_approved_context_pack",
-    "build_customer_timeline_channel_preview_from_pack",
-    "build_operation_plan",
-    "build_customer_timeline_read_report",
-    "build_customer_timeline_approval_workspace",
-    "build_canonical_readonly_customer_timeline",
-    "build_canonical_readonly_timeline_triage",
-    "build_decision_template_rows",
-    "build_preview_quality_audit",
-    "backfill_customer_objections_v1",
-    "backfill_sg_v1_signals",
-    "classify_intents",
-    "customer_timeline_approval_decisions_safety_contract",
-    "customer_timeline_approved_context_pack_safety_contract",
-    "customer_timeline_channel_preview_from_pack_safety_contract",
-    "canonical_readonly_timeline_safety_contract",
-    "customer_timeline_contract_inventory",
-    "context_provider_safety_contract",
-    "customer_timeline_read_api_safety_contract",
-    "customer_timeline_safety_contract",
-    "customer_timeline_sqlite_safety_contract",
-    "default_synthetic_preview_cases",
-    "dedupe_timeline_events",
-    "derive_active_signals",
-    "derive_sg_v1_signals",
-    "recompute_customer_signals",
-    "build_source_inventory",
-    "build_timeline_import_preview",
-    "decode_delimiter",
-    "evaluate_timeline_promotion",
-    "expected_actions_for_message",
-    "extract_latest_telegram_reply_pairs",
-    "extract_objections_from_text",
-    "extract_phones_from_row",
-    "file_sha256",
-    "find_default_telegram_export",
-    "guard_customer_timeline_source_path",
-    "guard_customer_timeline_output_path",
-    "guard_customer_timeline_sqlite_path",
-    "get_customer_context_for_phone",
-    "infer_identity_conflicts",
-    "is_stable_runtime_path",
-    "load_decision_jsonl_rows",
-    "load_records_for_config",
-    "load_local_source_records",
-    "load_sqlite_source_records",
-    "measure_customer_timeline_window",
-    "normalize_email",
-    "normalize_identity_value",
-    "normalize_key",
-    "normalize_phone_for_match",
-    "normalizer_for_source_kind",
-    "optional_text",
-    "parse_datetime",
-    "require_confidence",
-    "require_text",
-    "require_timezone",
-    "render_customer_timeline_approval_workspace_html",
-    "render_preview_quality_audit_markdown",
-    "resolve_config",
-    "rows_from_csv",
-    "run_timeline_import_cli",
-    "resolve_customer_next_step",
-    "run_customer_timeline_approval_decisions",
-    "run_stage3_maintenance",
-    "route_customer_timeline_request",
-    "safe_copy_file_sha256",
-    "safe_copy_prod_snapshot",
-    "score_employee_reply",
-    "score_product_preview",
-    "stable_artifact_id",
-    "stable_chunk_id",
-    "stable_customer_id",
-    "stable_digest",
-    "stable_event_id",
-    "stable_identity_link_id",
-    "stable_opportunity_id",
-    "stable_prefixed_id",
-    "stable_signal_id",
-    "signal_expires_at",
-    "scrub_timeline_persisted_json",
-    "sqlite_fts5_available",
-    "sqlite_wal_path",
-    "timeline_ingestion_safety_contract",
-    "timeline_import_cli_safety_contract",
-    "triage_safety_contract",
-    "validate_customer_timeline_approval_decisions",
-    "workspace_fingerprint",
-]
+def __getattr__(name: str) -> object:
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(f"{__name__}.{module_name}"), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))

@@ -757,13 +757,17 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
 
     class FakeLoop:
         calls = 0
+        heartbeats: list[tuple[str, dict[str, object]]] = []
 
         def run_once(self, *, dry_run: bool):
             assert dry_run is False
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError("temporary Wappi failure")
+                raise RuntimeError("temporary Wappi failure secret=must-not-leak")
             return {"status": "ok", "client_sends": 0, "note_written": 0}
+
+        def _write_heartbeat(self, status: str, summary: dict[str, object]) -> None:
+            self.heartbeats.append((status, summary))
 
     emitted: list[str] = []
     sleeps: list[float] = []
@@ -782,6 +786,8 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     assert first["error_type"] == "RuntimeError"
     assert first["client_sends"] == 0
     assert first["note_written"] == 0
+    assert FakeLoop.heartbeats == [("cycle_error", first)]
+    assert "must-not-leak" not in json.dumps(FakeLoop.heartbeats)
     assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
     assert sleeps == [5, 5]
 

@@ -1067,6 +1067,10 @@ def run_loop_forever(
             raise
         except Exception as exc:  # keep the live manager-draft reader from dying silently
             summary = _loop_error_report(exc)
+            try:
+                runner._write_heartbeat("cycle_error", summary)
+            except Exception:  # noqa: BLE001 -- heartbeat failure must not kill the loop
+                pass
         emit(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         sleep(interval)
 

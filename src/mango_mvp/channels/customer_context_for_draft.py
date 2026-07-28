@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.pilot_context import int_or_zero
 from mango_mvp.customer_timeline.context_provider import (
     get_customer_context_for_phone,
     normalize_phone_for_match,
@@ -544,13 +545,6 @@ def boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return safe_text(value).casefold() in {"1", "true", "yes", "y", "да", "истина"}
-
-
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def safe_text(value: Any) -> str:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+import pytest
+
 from mango_mvp.amocrm_runtime import amo_integration
 from mango_mvp.channels import night_funnel_shadow
 
@@ -59,3 +61,16 @@ def test_telegram_context_truthy_is_alias_of_one_owner() -> None:
     assert [truthy(value) for value in (None, "", 0, 1, False, True, "есть", "on", "нет")] == [
         False, False, False, True, False, True, True, False, False,
     ]
+
+
+def test_customer_context_int_or_zero_is_alias_of_one_owner() -> None:
+    from mango_mvp.channels import customer_context_for_draft
+    from mango_mvp.channels.pilot_context import int_or_zero
+
+    assert customer_context_for_draft.int_or_zero is int_or_zero
+    huge = 10**400
+    assert [int_or_zero(value) for value in (None, "", "12", True, False, huge, float("nan"))] == [
+        0, 0, 12, 1, 0, huge, 0,
+    ]
+    with pytest.raises(OverflowError):
+        int_or_zero(float("inf"))

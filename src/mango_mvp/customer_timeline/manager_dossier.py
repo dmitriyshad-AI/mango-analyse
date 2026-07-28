@@ -1422,9 +1422,9 @@ def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, cust
 
 
 def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> tuple[str, ...]:
-    customer_ids = [customer_id]
+    customer_ids = list(_family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id))
     family_link_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(family_links_v1)").fetchall()}
-    if "family_id" in family_link_columns:
+    if not _table_exists(con, "family_members_v1") and "family_id" in family_link_columns:
         related = con.execute(
             "SELECT DISTINCT sibling.customer_id FROM family_links_v1 current "
             "JOIN family_links_v1 sibling ON sibling.tenant_id=current.tenant_id AND sibling.family_id=current.family_id "
@@ -1906,7 +1906,7 @@ def _owner50_family_rows(
                 opportunity = active_opportunities.get(_clean_text(signal["opportunity_id"]))
                 if not opportunity or str(opportunity["customer_id"]) != str(signal["customer_id"]):
                     quality_reasons.append("active_deal_missing")
-        for event in all_events:
+        for event in events:
             if _owner50_event_is_explicit_refund(event):
                 reasons.append("durable_p0_history")
             if _clean_text(event.get("direction")).casefold() != "inbound":

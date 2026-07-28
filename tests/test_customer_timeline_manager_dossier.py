@@ -387,11 +387,18 @@ def test_manager_outreach_blocks_structured_refund_with_neutral_text(tmp_path: P
             "CREATE TABLE family_links_v1 ("
             "tenant_id TEXT, family_id TEXT, customer_id TEXT, status TEXT, confidence TEXT)"
         )
-        con.executemany(
+        con.execute(
             "INSERT INTO family_links_v1 VALUES (?,?,?,?,?)",
+            ("foton", "family:1", "customer:1", "confident", "high"),
+        )
+        con.execute("DELETE FROM family_members_v1 WHERE tenant_id='foton'")
+        con.executemany(
+            "INSERT INTO family_members_v1 ("
+            "tenant_id,family_id,customer_id,membership_status,confidence,reason,"
+            "created_at,updated_at,record_hash,record_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
-                ("foton", "family:1", "customer:1", "confident", "high"),
-                ("foton", "family:1", "customer:2", "confident", "high"),
+                ("foton", "family:1", "customer:1", "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), "hash-1", "{}"),
+                ("foton", "family:1", "customer:2", "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), "hash-2", "{}"),
             ),
         )
         event_id = str(con.execute("SELECT event_id FROM timeline_events WHERE source_id='call-client'").fetchone()[0])
@@ -1491,6 +1498,21 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
                 record={"amount": 1000, "payment_direction": "refund"},
                 match_status="strong_unique",
                 created_at=NOW - timedelta(days=2),
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:l",
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW - timedelta(days=3),
+                source_system="tallanto_crm_call",
+                source_id="superseded-refund",
+                direction=TimelineDirection.SYSTEM,
+                summary="Заменённая структурная операция Tallanto.",
+                record={"payment_direction": "refund", "amount": 1000},
+                match_status="strong_unique",
+                created_at=NOW - timedelta(days=3),
             )
         )
     finally:

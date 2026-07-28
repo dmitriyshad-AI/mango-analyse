@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from mango_mvp.customer_timeline.channel_preview_from_pack import redact_text
 from mango_mvp.customer_timeline.contracts import BotContextChunk, now_utc
-from mango_mvp.customer_timeline.ids import customer_entity_ref, stable_chunk_id, stable_digest
+from mango_mvp.customer_timeline.ids import customer_entity_ref, stable_digest
 from mango_mvp.customer_timeline.next_step_resolver import (
     CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION,
     PERSON_NAME_RE as NEXT_STEP_PERSON_NAME_RE,
@@ -1415,13 +1415,3 @@ def _count_values(values: Iterable[str]) -> dict[str, int]:
 
 def _bot_safe_source_ref(*, customer_id: str, brand: str) -> str:
     return f"botsafe:{customer_id}:{brand}"
-
-
-def expected_bot_safe_chunk_id(*, tenant_id: str, customer_id: str, brand: str = "unknown") -> str:
-    return stable_chunk_id(
-        tenant_id=tenant_id,
-        customer_id=customer_id,
-        chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
-        source_ref=_bot_safe_source_ref(customer_id=customer_id, brand=brand),
-        ordinal=0,
-    )

@@ -23,9 +23,9 @@ from mango_mvp.customer_timeline.bot_safe_summary import (
     BotSafeSummaryBuildConfig,
     _customer_ids_from_conflict,
     build_bot_safe_summaries,
-    expected_bot_safe_chunk_id,
     _bounded_events_with_attendance,
 )
+from mango_mvp.customer_timeline.ids import stable_chunk_id
 
 
 NOW = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
@@ -617,7 +617,13 @@ def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) ->
     )
     first = build_bot_safe_summaries(config)
     second = build_bot_safe_summaries(config)
-    expected_id = expected_bot_safe_chunk_id(tenant_id="foton", customer_id=customer.customer_id, brand="foton")
+    expected_id = stable_chunk_id(
+        tenant_id="foton",
+        customer_id=customer.customer_id,
+        chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+        source_ref=f"botsafe:{customer.customer_id}:foton",
+        ordinal=0,
+    )
 
     assert first.created == 1
     assert second.created == 0

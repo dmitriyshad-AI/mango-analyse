@@ -393,31 +393,6 @@ def save_wappi_history_checkpoint(checkpoint_dir: Optional[Path], profiles: Mapp
     )
 
 
-def count_wappi_timeline_rows(
-    db_path: Path, *, tenant_id: str, profiles: Sequence[WappiProfileSpec] = ()
-) -> dict[str, int]:
-    """Confirmed rows per checkpoint key. Counting per channel would let a growing
-    sibling profile mask rows another profile on the same channel has lost."""
-    counts = {f"{profile.source_system}:{profile.profile_id}": 0 for profile in profiles}
-    if not counts or not Path(db_path).exists():
-        return counts
-    con = open_readonly_sqlite(db_path)
-    try:
-        if not sqlite_table_exists(con, "timeline_events"):
-            return counts
-        for profile in profiles:
-            prefix = f"{profile.profile_id}:"
-            row = con.execute(
-                "SELECT COUNT(*) FROM timeline_events "
-                "WHERE tenant_id = ? AND source_system = ? AND substr(source_id, 1, ?) = ?",
-                (tenant_id, profile.source_system, len(prefix), prefix),
-            ).fetchone()
-            counts[f"{profile.source_system}:{profile.profile_id}"] = int(row[0]) if row else 0
-    finally:
-        con.close()
-    return counts
-
-
 def wappi_timeline_state(
     db_path: Path, *, tenant_id: str, profiles: Sequence[WappiProfileSpec] = ()
 ) -> dict[str, Mapping[str, Any]]:

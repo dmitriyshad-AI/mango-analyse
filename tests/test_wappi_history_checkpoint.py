@@ -19,7 +19,6 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiFetchLimits,
     WappiHistoryImportConfig,
     WappiProfileSpec,
-    count_wappi_timeline_rows,
     load_wappi_history_checkpoint,
     run_wappi_history_import,
     usable_wappi_checkpoint_profiles,
@@ -683,13 +682,16 @@ def test_checkpoint_dropped_when_confirmed_rows_disappear(tmp_path: Path) -> Non
     assert "wappi_max:p-max" in usable
 
 
-def test_count_wappi_timeline_rows_on_missing_db(tmp_path: Path) -> None:
+def test_wappi_timeline_state_on_missing_db(tmp_path: Path) -> None:
     profiles = (
         WappiProfileSpec(profile_id="p-tg", brand="foton", channel="telegram"),
         WappiProfileSpec(profile_id="p-max", brand="unpk", channel="max"),
     )
-    counts = count_wappi_timeline_rows(tmp_path / "nope.sqlite", tenant_id="foton", profiles=profiles)
-    assert counts == {"wappi_telegram:p-tg": 0, "wappi_max:p-max": 0}
+    state = wappi_timeline_state(tmp_path / "nope.sqlite", tenant_id="foton", profiles=profiles)
+    assert {key: value["rows"] for key, value in state.items()} == {
+        "wappi_telegram:p-tg": 0,
+        "wappi_max:p-max": 0,
+    }
 
 
 def test_anchor_probe_that_eats_the_last_request_never_confirms_the_chat(tmp_path: Path) -> None:

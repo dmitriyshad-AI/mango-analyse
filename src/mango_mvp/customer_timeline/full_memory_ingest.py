@@ -539,15 +539,3 @@ def run_full_memory_production_apply(config: FullMemoryIngestConfig) -> Mapping[
     }
     write_json(production_root / "full_memory_ingest_production_apply_report.json", report)
     return report
-
-
-def full_memory_ingest_safety_contract() -> Mapping[str, Any]:
-    return {
-        "schema_version": FULL_MEMORY_INGEST_SCHEMA_VERSION,
-        "production_apply_default": False,
-        "requires_backup_before_first_importer": True,
-        "strict_sequential_importers": True,
-        "fresh_relink_not_union": True,
-        "live_crm_writes": False,
-        "live_tallanto_writes": False,
-    }

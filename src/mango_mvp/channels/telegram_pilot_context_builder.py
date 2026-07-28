@@ -24,7 +24,11 @@ from mango_mvp.channels.few_shot_reference import (
     build_gold_answers_v3_summary,
 )
 from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
-from mango_mvp.knowledge_base.fact_registry import classify_fact_types, fact_type_from_key
+from mango_mvp.knowledge_base.fact_registry import (
+    classify_fact_types,
+    fact_type_from_key,
+    fact_valid_until_ok,
+)
 from mango_mvp.knowledge_base.kc_context import limit_context_chunks
 
 
@@ -715,6 +719,8 @@ def _chunk_records(snapshot: Mapping[str, Any], *, active_brand: str = "unknown"
         status = _stable_status(chunk.get("freshness_status"))
         if status in _FORBIDDEN_SNIPPET_STATUSES:
             continue
+        if not fact_valid_until_ok(chunk.get("valid_until")):
+            continue
         text = _clean_text(
             chunk.get("text")
             or chunk.get("client_safe_text")
@@ -1352,6 +1358,7 @@ def _usable_for_precise_answer(record: Mapping[str, Any], *, active_brand: str =
         and _truthy(record.get("allowed_for_client_answer"))
         and not _truthy(record.get("requires_manager_confirmation"))
         and not _truthy(record.get("forbidden_for_client"))
+        and fact_valid_until_ok(record.get("valid_until"))
         and _record_allowed_for_active_brand(record, active_brand=active_brand)
     )
 

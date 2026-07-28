@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV
 from mango_mvp.channels.output_verification_floor import concrete_anchors as dialogue_contract_concrete_anchors
+from mango_mvp.knowledge_base.fact_registry import fact_valid_until_ok
 
 
 OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
@@ -606,14 +607,7 @@ def _direct_path_snapshot_facts(snapshot: Mapping[str, Any]) -> tuple[Mapping[st
     return tuple(item for item in facts if isinstance(item, Mapping))
 
 def _direct_path_valid_until_ok(value: Any, *, today: Optional[date] = None) -> bool:
-    raw = str(value or "").strip()
-    if not raw:
-        return True
-    try:
-        valid_until = date.fromisoformat(raw[:10])
-    except ValueError:
-        return False
-    return valid_until >= (today or date.today())
+    return fact_valid_until_ok(value, today=today)
 
 def _direct_path_client_safe_snapshot_fact(
     fact: Mapping[str, Any], *, active_brand: str, today: Optional[date] = None

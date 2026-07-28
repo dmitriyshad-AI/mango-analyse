@@ -255,6 +255,18 @@ def evaluate_fact_freshness_sla(fact: Mapping[str, Any], *, today: date | None =
     return FactFreshnessSLA(fact_id, fact_key, fact_type, sla_class, sla_days, checked_raw, age_days, within, status)
 
 
+def fact_valid_until_ok(value: Any, *, today: date | None = None) -> bool:
+    """Return whether an owner-set business expiry still permits the fact."""
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    try:
+        valid_until = date.fromisoformat(raw[:10])
+    except ValueError:
+        return False
+    return valid_until >= (today or date.today())
+
+
 _W_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 

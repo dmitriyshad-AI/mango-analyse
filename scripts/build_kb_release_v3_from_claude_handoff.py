@@ -1330,6 +1330,8 @@ def build_chunks(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "text": text,
                 "fact_types": list(fact.get("fact_types") or [fact.get("fact_type")]),
                 "freshness_status": fact.get("freshness_status"),
+                "valid_from": fact.get("valid_from"),
+                "valid_until": fact.get("valid_until"),
                 "bot_permission": "bot_answer_self_or_draft" if fact.get("allowed_for_client_answer") else "internal_or_manager_only",
                 "forbidden_for_client": bool(fact.get("forbidden_for_client")),
                 "requires_manager_confirmation": bool(fact.get("requires_manager_confirmation")),

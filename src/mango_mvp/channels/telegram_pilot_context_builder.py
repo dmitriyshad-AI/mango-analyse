@@ -27,6 +27,7 @@ from mango_mvp.channels.pilot_context import (
     PilotContext,
     build_pilot_context,
     normalize_active_brand as _normalize_active_brand,
+    truthy as _truthy,
 )
 from mango_mvp.knowledge_base.fact_registry import (
     classify_fact_types,
@@ -1474,12 +1475,6 @@ def _clip_text(value: str, max_chars: int) -> str:
     if len(text) < max_chars:
         return text
     return text[: max(0, max_chars - 1)].rstrip() + "…"
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "истина", "есть"}
 
 
 def _brand_neutral_text_is_safe(text: str) -> bool:

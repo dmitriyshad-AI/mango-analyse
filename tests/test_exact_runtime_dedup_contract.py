@@ -49,3 +49,13 @@ def test_channel_brand_normalizers_are_aliases_of_one_owner() -> None:
     assert [normalize_active_brand(value) for value in (None, "", "ФОТОН", "унпк ", "other")] == [
         "unknown", "unknown", "foton", "unpk", "unknown",
     ]
+
+
+def test_telegram_context_truthy_is_alias_of_one_owner() -> None:
+    from mango_mvp.channels import telegram_pilot_context_builder
+    from mango_mvp.channels.pilot_context import truthy
+
+    assert telegram_pilot_context_builder._truthy is truthy
+    assert [truthy(value) for value in (None, "", 0, 1, False, True, "есть", "on", "нет")] == [
+        False, False, False, True, False, True, True, False, False,
+    ]

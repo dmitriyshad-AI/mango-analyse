@@ -13,6 +13,11 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.productization.mail_archive import CANONICAL_MAIL_IDENTITY_DB
+from mango_mvp.customer_timeline.nightly_service import (
+    NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
+    REQUIRED_MANIFEST_SOURCE_STEP_MAP,
+    SOURCE_PROOF_BUILDERS,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_customer_timeline_codex_task.py"
 spec = importlib.util.spec_from_file_location("run_customer_timeline_codex_task", SCRIPT)
@@ -27,6 +32,14 @@ builder = importlib.util.module_from_spec(builder_spec)
 assert builder_spec and builder_spec.loader
 sys.modules[builder_spec.name] = builder
 builder_spec.loader.exec_module(builder)
+
+
+def test_lightweight_wrapper_matches_canonical_required_sources() -> None:
+    canonical = set(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
+
+    assert set(module.REQUIRED_MANIFEST_SOURCES) == canonical
+    assert set(SOURCE_PROOF_BUILDERS) == canonical
+    assert module.EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION == NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
 
 
 def _mail_root_with_identity(tmp_path: Path) -> Path:

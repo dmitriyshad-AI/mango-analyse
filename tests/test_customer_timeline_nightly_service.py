@@ -27,6 +27,8 @@ from mango_mvp.customer_timeline import (
 )
 from mango_mvp.customer_timeline.nightly_service import (
     NightlyServiceStep,
+    _SourceProofContext,
+    _proof_family_child_graph,
     run_nightly_service,
     run_tallanto_money_api_step,
     service_config_from_json,
@@ -34,6 +36,51 @@ from mango_mvp.customer_timeline.nightly_service import (
 
 
 NOW = datetime(2026, 7, 3, 3, 20, tzinfo=timezone.utc)
+
+
+def family_graph_proof(summary: dict[str, object]) -> dict[str, object]:
+    return dict(
+        _proof_family_child_graph(
+            _SourceProofContext(
+                steps_by_name={"family_graph_refresh": {"status": "ok", "summary": summary}},
+                source_counts=(),
+                cursors=(),
+                mail_link_enrich={},
+                now=NOW,
+            )
+        )
+    )
+
+
+def test_family_graph_proof_rejects_zero_child_links() -> None:
+    proof = family_graph_proof(
+        {
+            "quick_check": "ok",
+            "family_links_total": 0,
+            "customers_with_family_links": 0,
+            "family_members_total": 34533,
+        }
+    )
+
+    assert proof["status"] == "empty"
+    assert proof["records_seen_or_written"] == 0
+
+
+def test_family_graph_proof_uses_current_or_preserved_link_count() -> None:
+    current = family_graph_proof({"quick_check": "ok", "family_links_total": 12})
+    preserved = family_graph_proof(
+        {
+            "quick_check": "ok",
+            "family_links_total": 0,
+            "existing_family_links": 9,
+            "child_graph_preserved_without_profiles": True,
+        }
+    )
+
+    assert current["status"] == "ok"
+    assert current["records_seen_or_written"] == 12
+    assert preserved["status"] == "ok"
+    assert preserved["records_seen_or_written"] == 9
 
 
 def test_repo_python_env_removes_parent_git_context(monkeypatch, tmp_path) -> None:
@@ -1919,8 +1966,9 @@ def test_nightly_service_fails_loud_when_required_manifest_source_is_missing(tmp
     assert report["steps"][0]["status"] == "ok"
     assert report["overall_status"] == "partial"
     assert "required_manifest_source:wappi_telegram" in report["failed_required_steps"]
-    assert report["required_sources_check"]["missing"] == ["wappi_telegram"]
-    assert report["required_sources_check"]["satisfied"] == ["family_child_graph"]
+    assert "required_manifest_source:family_child_graph" in report["failed_required_steps"]
+    assert report["required_sources_check"]["missing"] == ["family_child_graph", "wappi_telegram"]
+    assert report["required_sources_check"]["satisfied"] == []
     assert report["snapshot_manifest"]["latest_published"] is False
 
 

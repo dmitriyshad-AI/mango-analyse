@@ -2450,14 +2450,29 @@ def _proof_family_child_graph(ctx: "_SourceProofContext") -> Mapping[str, Any]:
     if status != "ok":
         return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
                       reason=f"family_graph_refresh step status={status}; quick_check={quick_check}")
-    records = 0
-    for key in ("edges_written", "pairs_written", "family_edges", "written", "rows_written"):
-        candidate = summary.get(key)
-        if isinstance(candidate, int):
-            records = candidate
-            break
-    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=None,
-                  reason=f"family_graph_refresh ok; quick_check={quick_check}")
+    # family_graph reports current row counts, not legacy *written counters.
+    # When profiles are unavailable it deliberately preserves the existing
+    # child graph, so that count is the only honest proof for this run.
+    preserved = summary.get("child_graph_preserved_without_profiles") is True
+    count_field = "existing_family_links" if preserved else "family_links_total"
+    records = int(summary.get(count_field) or 0)
+    if records <= 0:
+        return _proof(
+            label,
+            ctx,
+            status="empty",
+            records=0,
+            cursor_or_max_event_at=None,
+            reason=f"family_graph_refresh has no child links; quick_check={quick_check}",
+        )
+    return _proof(
+        label,
+        ctx,
+        status="ok",
+        records=records,
+        cursor_or_max_event_at=None,
+        reason=f"family_graph_refresh ok; {count_field}={records}; quick_check={quick_check}",
+    )
 
 
 def _proof_bot_safe_chunks_and_dossier(ctx: "_SourceProofContext") -> Mapping[str, Any]:

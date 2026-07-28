@@ -3514,25 +3514,6 @@ class WappiPairCustomerResolver:
         customer_id = next(iter(contact_owners))
         customer_brand = self._customer_brands.get(customer_id, "unknown")
         brand_authorized = customer_brand == profile.brand
-        if customer_brand != "unknown" and not brand_authorized:
-            self._widget_missing_personal_chats += 1
-            return WappiChatResolution(
-                status="pending_attribution",
-                lead_id=lead_ids[0] if lead_ids else "",
-                lead_ids=tuple(lead_ids),
-                contact_id=contact_id,
-                expected_brand=profile.brand,
-                reason="wappi_widget_brand_mismatch",
-                candidate_customer_ids=(customer_id,),
-                resolution_source=source,
-                match_key=match_key,
-                evidence={
-                    "lead_count": len(lead_ids),
-                    "customer_brand": customer_brand,
-                    "profile_brand": profile.brand,
-                    "brand_context_authorized": False,
-                },
-            )
         return WappiChatResolution(
             status="resolved",
             customer_id=customer_id,
@@ -3543,6 +3524,11 @@ class WappiPairCustomerResolver:
             pair_source=source,
             resolution_source=source,
             match_key=match_key,
+            reason=(
+                "wappi_widget_unique_cross_brand_person_match"
+                if customer_brand != "unknown" and not brand_authorized
+                else ""
+            ),
             evidence={
                 "lead_count": len(lead_ids),
                 "customer_brand": customer_brand,

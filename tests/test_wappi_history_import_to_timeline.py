@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
     TimelineEventType,
 )
+from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.wappi_history_import import (
     WappiFetchLimits,
@@ -2637,7 +2638,7 @@ def test_wappi_widget_resolver_uses_contact_and_keeps_multiple_leads(tmp_path: P
     assert normalized.identity_links[0].evidence["lead_ids"] == ("1001", "1002")
 
 
-def test_wappi_widget_resolver_hard_blocks_known_brand_mismatch(tmp_path: Path) -> None:
+def test_wappi_widget_resolver_keeps_exact_person_without_cross_brand_authority(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer_id = seed_customer_with_amo(
         db_path,
@@ -2665,11 +2666,47 @@ def test_wappi_widget_resolver_hard_blocks_known_brand_mismatch(tmp_path: Path) 
         messages=(),
     )
 
-    assert resolution.resolved is False
-    assert resolution.status == "pending_attribution"
-    assert resolution.reason == "wappi_widget_brand_mismatch"
-    assert resolution.candidate_customer_ids == (customer_id,)
+    assert resolution.resolved is True
+    assert resolution.status == "resolved"
+    assert resolution.customer_id == customer_id
+    assert resolution.reason == "wappi_widget_unique_cross_brand_person_match"
     assert resolution.evidence["brand_context_authorized"] is False
+
+    normalized = WappiHistoryTimelineNormalizer(
+        tenant_id="foton",
+        source_system="wappi_telegram",
+    ).normalize(
+        wappi_message_to_record(
+            profile=profile("p-tg", "foton", "telegram"),
+            message=WappiHistoryMessage(
+                profile_id="p-tg",
+                chat_id="123456",
+                message_id="m-cross-brand",
+                text="Здравствуйте",
+                message_type="text",
+                timestamp=1_753_000_000,
+                from_me=False,
+            ),
+            resolution=resolution,
+        )
+    )
+    assert normalized.events[0].customer_id == customer_id
+    assert normalized.events[0].metadata["brand_context_authorized"] is False
+    assert normalized.bot_context_chunks[0].metadata["brand_context_authorized"] is False
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(normalized.events[0], actor="test")
+        store.upsert_bot_context_chunk(normalized.bot_context_chunks[0], actor="test")
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        full_context = api.bot_context("foton", customer_id, allowed_only=False)
+        bot_context = api.bot_context("foton", customer_id, allowed_only=True)
+
+    assert {item["chunk_id"] for item in full_context["items"]} == {
+        normalized.bot_context_chunks[0].chunk_id
+    }
+    assert bot_context["items"] == []
 
 
 def test_wappi_widget_resolver_uses_unique_lead_when_contact_is_not_loaded(tmp_path: Path) -> None:

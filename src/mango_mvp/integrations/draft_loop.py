@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
+from mango_mvp.channels.brand_boundary import foreign_brand_rule
 from mango_mvp.channels.dialogue_memory import (
     MEMORY_PROVENANCE_ENV,
     _dialog_summary_candidate,
@@ -45,12 +46,6 @@ _SERVICE_HISTORY_MARKER_RE = re.compile(
     r"\b(?:message_id|chat_id|profile_id|lead_id|source_system|dedupe_key|event_id)\b|[{}\[\]]",
     re.IGNORECASE,
 )
-_OTHER_BRAND_RE = {
-    "foton": re.compile(r"\b(?:унпк|унфт|мфти|unpk|mipt)\b", re.IGNORECASE),
-    "unpk": re.compile(r"\b(?:фотон|foton|cdpo|цдпо)\b", re.IGNORECASE),
-}
-
-
 class DraftLoopError(RuntimeError):
     pass
 
@@ -1848,8 +1843,7 @@ def _history_line(item: WappiHistoryMessage) -> str:
 
 
 def _mentions_other_brand(text: str, brand: str) -> bool:
-    matcher = _OTHER_BRAND_RE.get(str(brand or "").strip().casefold())
-    return bool(matcher and matcher.search(text))
+    return foreign_brand_rule(text, active_brand=brand, facts={}) is not None
 
 
 def _older_dialogue_summary(messages: Sequence[WappiHistoryMessage], *, brand: str = "") -> str:
@@ -1918,8 +1912,11 @@ def _prompt_history_lines(
     summary = ""
     if _dialog_summary_rolling_enabled(None) and isinstance(dialogue_memory, Mapping):
         summary = _dialog_summary_candidate(dialogue_memory.get("conversation_summary_short"), active_brand=brand)
-        if summary and not _mentions_other_brand(summary, brand):
-            summary = f"{OLDER_DIALOGUE_SUMMARY_PREFIX} {summary}"[:700].rstrip()
+        if summary:
+            if _mentions_other_brand(summary, brand):
+                summary = ""
+            else:
+                summary = f"{OLDER_DIALOGUE_SUMMARY_PREFIX} {summary}"[:700].rstrip()
     if not summary:
         summary = _older_dialogue_summary(older, brand=brand)
     if summary:

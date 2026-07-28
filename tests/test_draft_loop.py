@@ -191,8 +191,26 @@ def test_prompt_history_falls_back_to_raw_summary_when_rolling_memory_empty(monk
     assert lines[0].startswith("Ранее в диалоге: Клиент: старое сообщение 0")
 
 
-def test_prompt_history_falls_back_when_rolling_summary_has_foreign_brand(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("brand", "foreign_summary"),
+    (
+        ("foton", "Клиент сравнивает Фотон и УНПК МФТИ."),
+        ("foton", "Клиент спрашивает про Сретенку."),
+        ("foton", "Клиент спрашивает про Институтский."),
+        ("foton", "Клиент спрашивает про Пацаева."),
+        ("unpk", "Клиент спрашивает про Фотон."),
+    ),
+)
+def test_prompt_history_falls_back_when_rolling_summary_has_foreign_brand(
+    monkeypatch,
+    brand: str,
+    foreign_summary: str,
+) -> None:
     monkeypatch.setenv(DIALOG_SUMMARY_ROLLING_ENV, "1")
+    monkeypatch.setattr(
+        "mango_mvp.integrations.draft_loop._dialog_summary_candidate",
+        lambda value, *, active_brand="": foreign_summary,
+    )
     messages = tuple(
         WappiHistoryMessage(
             profile_id="profile-foton",
@@ -209,11 +227,12 @@ def test_prompt_history_falls_back_when_rolling_summary_has_foreign_brand(monkey
     lines = _prompt_history_lines(
         messages,
         recent_limit=3,
-        brand="foton",
-        dialogue_memory={"conversation_summary_short": "Клиент сравнивает Фотон и УНПК МФТИ."},
+        brand=brand,
+        dialogue_memory={"conversation_summary_short": "непроверенная сводка"},
     )
 
     assert lines[0].startswith("Ранее в диалоге: Клиент: старое сообщение 0")
+    assert foreign_summary not in " ".join(lines)
 
 
 def _loop(tmp_path: Path, *, messages, pairs=None, stop: bool = False, auto_resolver=None, amo=None, bot=None) -> AmoWappiDraftLoop:

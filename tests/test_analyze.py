@@ -467,7 +467,7 @@ class AnalyzeServiceTest(unittest.TestCase):
             "Все нравится, будут ли пробники и дополнительные срезы?"
         )
         system_prompt = service._analysis_system_prompt("compact")
-        user_prompt = service._analysis_user_prompt(DummyCall(), text, "compact")
+        user_prompt = str(service._analysis_prompt_context(DummyCall(), text, "compact")["user_prompt"])
 
         self.assertIn("Return exactly these keys", system_prompt)
         self.assertNotIn("evidence", system_prompt.lower())

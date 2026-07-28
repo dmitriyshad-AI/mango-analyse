@@ -196,7 +196,6 @@ def build_crm_card_projection(
         history_summarizer=history_summarizer,
     )
     priority = _priority(signals, facts, history_items or timeline_items)
-    match_status = _match_status(identity_status, identity_links, conflicts)
     contact_payload = {
         "Запрос": normalize_manager_text(request_summary),
         "Последняя сводка": normalize_manager_multiline_text(_summary_block(latest_summary)),
@@ -214,7 +213,6 @@ def build_crm_card_projection(
         deal_blockers.append("amo_lead_id_masked_in_read_api")
     if not lead_id and not selected_opportunity:
         deal_blockers.append("amo_lead_id_not_available_in_profile")
-    deal_events = _deal_events(history_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
     warnings_text = _warnings(conflicts, signals)
     deal_payload = {
@@ -529,21 +527,6 @@ def _manager_amo_id(manager_projection: Mapping[str, Any], key: str) -> str:
         if text:
             return text
     return ""
-
-
-def _match_status(
-    identity_status: str,
-    identity_links: Sequence[Mapping[str, Any]],
-    conflicts: Sequence[Mapping[str, Any]],
-) -> str:
-    if _identity_is_ambiguous(identity_status, identity_links, conflicts):
-        return "ambiguous_manual_review"
-    classes = {_safe_text(link.get("match_class")) for link in identity_links}
-    if "strong_unique" in classes:
-        return "strong_unique"
-    if identity_status in {"partial", "unmatched"}:
-        return identity_status
-    return identity_status or "unknown"
 
 
 def _source_counts(events: Sequence[Mapping[str, Any]]) -> Counter[str]:
@@ -1045,13 +1028,6 @@ def _select_opportunity(opportunities: Sequence[Mapping[str, Any]], lead_id: str
             if lead_id in haystack:
                 return item
     return amo_opportunities[0] if amo_opportunities else {}
-
-
-def _deal_events(events: Sequence[Mapping[str, Any]], opportunity_id: Any) -> list[Mapping[str, Any]]:
-    opp = _safe_text(opportunity_id)
-    if not opp:
-        return []
-    return [event for event in events if _safe_text(event.get("opportunity_id")) == opp]
 
 
 def _deal_status(opportunity: Mapping[str, Any], facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str:

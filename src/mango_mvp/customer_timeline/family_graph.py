@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from mango_mvp.customer_profile.builder import child_name_keys, normalized_name_tokens
 from mango_mvp.customer_timeline.ids import normalize_key, stable_digest, stable_prefixed_id
-from mango_mvp.customer_timeline.store import guard_customer_timeline_sqlite_path
+from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri, guard_customer_timeline_sqlite_path
 
 
 FAMILY_GRAPH_SCHEMA_VERSION = "family_graph_v1"
@@ -256,8 +256,7 @@ def _connect(path: Path, *, write: bool) -> sqlite3.Connection:
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("PRAGMA busy_timeout = 30000")
     else:
-        uri = f"{path.as_uri()}?mode=ro&immutable=1"
-        con = sqlite3.connect(uri, uri=True, timeout=15)
+        con = sqlite3.connect(customer_timeline_readonly_uri(path), uri=True, timeout=15)
         con.execute("PRAGMA query_only = ON")
     con.row_factory = sqlite3.Row
     return con

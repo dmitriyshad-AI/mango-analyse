@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri
 
 
 FAMILY_GOLD_CHECK_SCHEMA_VERSION = "family_gold_check_v1"
@@ -125,8 +126,7 @@ def _read_gold_rows(path: Path) -> list[Mapping[str, Any]]:
 
 
 def _connect_ro(path: Path) -> sqlite3.Connection:
-    uri = f"{Path(path).resolve(strict=False).as_uri()}?mode=ro&immutable=1"
-    con = sqlite3.connect(uri, uri=True)
+    con = sqlite3.connect(customer_timeline_readonly_uri(path), uri=True)
     con.row_factory = sqlite3.Row
     return con
 

@@ -14,7 +14,7 @@ from mango_mvp.customer_timeline.contracts import (
     IdentityMatchClass,
     TimelineEvent,
 )
-from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
+from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, _connect, build_family_graph
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -1054,3 +1054,23 @@ def _insert_field(path: Path, *, profile_id: str, field: str, value: str, child_
             "INSERT INTO profile_fields VALUES (?, ?, ?, ?, ?, 'foton', 'fixture', ?, ?, '', '')",
             (f"{profile_id}:{field}:{child_key}:{value}", profile_id, field, value, child_key, f"src:{field}", NOW.isoformat()),
         )
+
+
+def test_family_graph_readonly_connection_sees_active_wal(tmp_path: Path) -> None:
+    db = tmp_path / "wal.sqlite"
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE marker(value TEXT)")
+        writer.commit()
+        writer.execute("INSERT INTO marker VALUES ('visible')")
+        writer.commit()
+        assert Path(f"{db}-wal").exists()
+
+        with _connect(db, write=False) as reader:
+            value = reader.execute("SELECT value FROM marker").fetchone()[0]
+    finally:
+        writer.close()
+
+    assert value == "visible"

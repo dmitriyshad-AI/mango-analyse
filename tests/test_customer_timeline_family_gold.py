@@ -91,6 +91,32 @@ def test_family_gold_details_must_stay_under_codex_local(tmp_path: Path) -> None
     assert not (tmp_path / "public_family_gold_details.json").exists()
 
 
+def test_family_gold_reads_committed_row_from_active_wal(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    gold = _gold(
+        tmp_path,
+        [{"customer_id": "customer:wal", "expected_children_count": 1, "expected_link_confidence": "high"}],
+    )
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "INSERT INTO family_links_v1 ("
+            "tenant_id,customer_id,child_key,canonical_name,name_variants_json,confidence,status,record_json,updated_at"
+            ") VALUES ('foton','customer:wal','child-1','Аня','[\"Аня\"]','high','confident','{}','2026-07-03')"
+        )
+        writer.commit()
+        assert Path(f"{db}-wal").exists()
+
+        summary = check_family_gold(FamilyGoldCheckConfig(timeline_db=db, gold_jsonl=gold, allowed_root=tmp_path))
+    finally:
+        writer.close()
+
+    assert summary["exact_count_ok"] == 1
+    assert summary["strict_pass"] is True
+
+
 def _db(tmp_path: Path) -> Path:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)

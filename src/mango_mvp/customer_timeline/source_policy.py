@@ -10,7 +10,7 @@ must not write bot-visible chunks directly.
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from mango_mvp.customer_timeline.ids import normalize_key
 
@@ -49,6 +49,25 @@ BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
         "amocrm_event",
     }
 )
+
+
+def is_non_contentful_call_record(value: Mapping[str, Any]) -> bool:
+    """One structural interpretation of an explicitly non-conversational call."""
+
+    record = value.get("record") if isinstance(value.get("record"), Mapping) else {}
+    call = record.get("call") if isinstance(record.get("call"), Mapping) else {}
+    analysis = record.get("call_analysis") if isinstance(record.get("call_analysis"), Mapping) else {}
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {}
+    payloads = (value, record, call, analysis, metadata)
+    contentful_values = {
+        str(payload.get("contentful") or "").strip().casefold()
+        for payload in payloads
+    }
+    call_types = {
+        str(payload.get("call_type") or "").strip().casefold()
+        for payload in payloads
+    }
+    return bool(contentful_values & {"0", "false", "нет", "no", "non_conversation"}) or "non_conversation" in call_types
 
 
 def mail_stage2_bot_visible_enabled(value: object = None, *, timeline_db_path: Path | str | None = None) -> bool:

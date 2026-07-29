@@ -18,6 +18,7 @@ from mango_mvp.customer_timeline.source_policy import (
     TELEGRAM_HISTORY_SOURCE_SYSTEM,
     WAPPI_MAX_SOURCE_SYSTEM,
     WAPPI_TELEGRAM_SOURCE_SYSTEM,
+    is_non_contentful_call_record,
 )
 from mango_mvp.customer_timeline.store import json_dumps, json_loads, scrub_timeline_persisted_json
 
@@ -233,12 +234,16 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
     sensitivity_counts: Counter[str] = Counter()
     brand_counts: Counter[str] = Counter()
     unknown_brand_chunks = 0
+    non_contentful_mango_call_chunks = 0
     already_open = 0
     to_update = 0
     for row in raw_rows:
         source_system = str(row["source_system"])
         payload = json_loads(row["record_json"])
         event_payload = json_loads(row["event_record_json"]) if row["event_record_json"] else {}
+        if source_system == MANGO_PROCESSED_SOURCE_SYSTEM and is_non_contentful_call_record(event_payload):
+            non_contentful_mango_call_chunks += 1
+            continue
         brand = _content_brand(payload, event_payload)
         brand_counts[brand] += 1
         if source_system != MANGO_PROCESSED_SOURCE_SYSTEM and brand not in {"foton", "unpk"}:
@@ -254,6 +259,7 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
     skipped = {
         **_skipped_counts(con, tenant_id=tenant_id),
         "unknown_brand_chunks": unknown_brand_chunks,
+        "non_contentful_mango_call_chunks": non_contentful_mango_call_chunks,
         "client_unsafe_mail_chunks": _client_unsafe_mail_chunk_count(con),
         "mail_chunks_not_allowed_by_output_gate": _mail_without_client_safe_fact_count(con),
     }

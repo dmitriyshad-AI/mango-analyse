@@ -273,6 +273,10 @@ class TelegramExportTimelineNormalizer:
         base_event = batch.events[0]
         match_class = resolution.match_class
         confidence = resolution.confidence
+        brand_context_authorized = brand in {"foton", "unpk"} and match_class in {
+            IdentityMatchClass.STRONG_UNIQUE,
+            IdentityMatchClass.MANUAL,
+        }
         event = replace(
             base_event,
             event_id=None,
@@ -287,6 +291,7 @@ class TelegramExportTimelineNormalizer:
                 **base_event.metadata,
                 "source_system": SOURCE_SYSTEM,
                 "brand": brand,
+                "brand_context_authorized": brand_context_authorized,
                 "identity_resolution": match_class.value,
                 "evidence_keys": list(resolution.evidence_keys),
                 "conflict_flags": list(resolution.conflict_flags),
@@ -412,6 +417,7 @@ class TelegramExportTimelineNormalizer:
                 metadata={
                     **chunk.metadata,
                     "brand": brand,
+                    "brand_context_authorized": brand_context_authorized,
                     "identity_resolution": match_class.value,
                     "allowed_for_bot_reason": "telegram_history_manager_only",
                 },

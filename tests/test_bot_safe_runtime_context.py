@@ -19,6 +19,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     _is_confirmed_payment_event,
     _is_current_access_event,
     _mango_call_item_visible_for_bot,
+    _sanitize_channel_history_text_for_bot,
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
     strip_unconfirmed_next_step_text_for_bot,
@@ -1103,10 +1104,39 @@ def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
     assert scan_bot_safe_context_pii("Телефон 8 (800) 550 25 88") == ("phone",)
 
 
+def test_phone_guard_keeps_date_ranges_and_hashes_but_masks_real_contacts() -> None:
+    safe_values = (
+        "Созвон был 06.09.2025 12:16, обсудили формат занятий.",
+        "Хеш a1234567890b, дом 24-7, ученики 5-11 классов.",
+    )
+    for value in safe_values:
+        assert "phone" not in scan_bot_safe_context_pii(value)
+
+    sanitized = _sanitize_channel_history_text_for_bot(
+        "06.09.2025 12:16 менеджер Иванова звонила по 8 (800) 550 25 88."
+    )
+    assert "06.09.2025 12:16" in sanitized
+    assert "8 (800) 550 25 88" not in sanitized
+    assert "Иванова" not in sanitized
+    assert scan_bot_safe_context_pii(sanitized) == ()
+
+    for phone in ("+7 916 111-22-33", "8 (800) 550 25 88", "79161112233"):
+        assert scan_bot_safe_context_pii(phone) == ("phone",)
+
+
 def test_scan_bot_safe_context_pii_detects_person_name_and_address() -> None:
     assert scan_bot_safe_context_pii("Имя ученика: Иван Петров") == ("person_name",)
     assert scan_bot_safe_context_pii("Иван просил расписание") == ("person_name",)
     assert scan_bot_safe_context_pii("Адрес: улица Ленина, дом 5") == ("address",)
+
+
+def test_role_context_does_not_treat_normal_words_as_person_names() -> None:
+    for value in ("Клиент объяснил условия.", "Менеджер сообщил итог.", "Ученика после оплаты добавили в группу."):
+        assert "person_name" not in scan_bot_safe_context_pii(value)
+
+    sanitized = _sanitize_channel_history_text_for_bot("Менеджер Иванова сообщила итог.")
+    assert "Иванова" not in sanitized
+    assert scan_bot_safe_context_pii(sanitized) == ()
 
 
 def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None:

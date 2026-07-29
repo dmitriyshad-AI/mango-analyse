@@ -48,7 +48,7 @@ from mango_mvp.customer_timeline.store import (
     scrub_timeline_persisted_json,
 )
 from mango_mvp.utils.phone import normalize_phone
-from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTEMS
+from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTEMS, is_non_contentful_call_record
 
 
 CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION = "customer_timeline_ingestion_v1"
@@ -1009,7 +1009,7 @@ class MangoCallSummaryNormalizer:
             links = tuple(legacy_links)
             match_class = IdentityMatchClass.STRONG_UNIQUE if phone else IdentityMatchClass.INFERRED
         call_type = normalize_key(first_value(payload, ("call_type", "call_quality_type")) or "unknown", "call_type")
-        is_non_conversation = call_type == "non_conversation"
+        is_non_conversation = is_non_contentful_call_record(payload)
         summary = None if is_non_conversation else compact_text(first_value(payload, ("summary", "insight_summary", "analysis_summary")), limit=500)
         event = TimelineEvent(
             tenant_id=self.tenant_id,

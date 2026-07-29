@@ -356,6 +356,12 @@ def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Pa
     record = json.loads(row[0])["record"]
     assert record["call_type"] == "non_conversation"
     assert record["call_history_eligible"] is False
+    with sqlite3.connect(config.timeline_db) as con:
+        assert con.execute(
+            """SELECT COUNT(*) FROM bot_context_chunks c
+               JOIN timeline_events e ON e.event_id = c.event_id
+               WHERE e.source_id = 'call-2'"""
+        ).fetchone()[0] == 0
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
 

@@ -23,6 +23,7 @@ from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     scrub_timeline_persisted_json,
 )
+from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE as INSIGHTS_COMMON_SINGLE_NAME_RE
 
 
@@ -403,6 +404,7 @@ def _build_customer_draft(
     build_now = now_utc()
     created_at = _existing_created_at(existing_chunk) or build_now
     source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
+    brand_authorized = brand in KNOWN_BRANDS
     chunk = BotContextChunk(
         tenant_id=tenant_id,
         customer_id=customer_id,
@@ -414,12 +416,12 @@ def _build_customer_draft(
         event_at=latest_at,
         freshness_score=_freshness_score_for_source_date(latest_at, now=build_now),
         relevance_tags=("bot_safe", "structured", brand),
-        allowed_for_bot=True,
-        requires_manager_review=False,
+        allowed_for_bot=brand_authorized,
+        requires_manager_review=not brand_authorized,
         metadata={
             "schema_version": BOT_SAFE_SUMMARY_SCHEMA_VERSION,
             "raw_text_used": False,
-            "brand_context_authorized": True,
+            "brand_context_authorized": brand_authorized,
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
@@ -1052,6 +1054,8 @@ def _bounded_events_with_attendance(items: Sequence[Mapping[str, Any]]) -> tuple
 
 
 def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
+    if str(event.get("event_type") or "") == "mango_call" and is_non_contentful_call_record(event):
+        return False
     metadata = _mapping(event.get("metadata"))
     authorization = metadata.get("brand_context_authorized")
     if str(event.get("source_system") or "") in {

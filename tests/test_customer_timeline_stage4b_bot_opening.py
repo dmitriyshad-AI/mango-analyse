@@ -289,6 +289,14 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             text="Звонок без бренда должен открыться как общий телефонный контекст.",
             brand="unknown",
         )
+        non_contentful_event = _mango_call_event(
+            customer,
+            "mango-non-contentful",
+            match_status="strong_unique",
+            text="Нецелевой звонок: содержательного диалога не было.",
+            brand="foton",
+            contentful="Нет",
+        )
         wrong_chunk_type_event = _mango_call_event(
             customer,
             "mango-wrong-chunk-type",
@@ -316,6 +324,7 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             unmatched_event,
             partial_event,
             unknown_brand_event,
+            non_contentful_event,
             wrong_chunk_type_event,
             mismatch_event,
             ambiguous_identity_event,
@@ -341,6 +350,7 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     )
 
     assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 3}
+    assert report["plan"]["skipped"]["non_contentful_mango_call_chunks"] == 1
     assert report["apply"]["chunks_updated"] == 3
     assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 3
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
@@ -364,6 +374,8 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert rows[unmatched_event.event_id]["allowed_for_bot"] == 0
     assert rows[partial_event.event_id]["allowed_for_bot"] == 1
     assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 1
+    assert rows[non_contentful_event.event_id]["allowed_for_bot"] == 0
+    assert rows[non_contentful_event.event_id]["requires_manager_review"] == 1
     unknown_payload = json.loads(rows[unknown_brand_event.event_id]["record_json"])
     assert {"call", "mango_processed_summary", "bot_visible", "brand_unknown"}.issubset(
         set(unknown_payload["relevance_tags"])
@@ -736,6 +748,7 @@ def _mango_call_event(
     match_status: str,
     text: str,
     brand: str = "unknown",
+    contentful: str = "Да",
 ) -> TimelineEvent:
     return TimelineEvent(
         tenant_id=customer.tenant_id,
@@ -750,7 +763,7 @@ def _mango_call_event(
         match_status=match_status,
         created_at=NOW,
         metadata={"brand": brand},
-        record={"call_id": suffix, "brand": brand},
+        record={"call_id": suffix, "brand": brand, "contentful": contentful},
     )
 
 

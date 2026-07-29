@@ -41,7 +41,10 @@ DEFAULT_BOT_SAFE_TENANT_ID = "foton"
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "да", "y"}
 _KNOWN_BRANDS = {"foton", "unpk"}
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+\s*7|8|7)?(?:[\s\u00a0()./\-–—]*\d){10}(?!\d)")
+_PHONE_RE = re.compile(
+    r"(?<![\w+])(?!(?:\d{2}[./-]){2}\d{4}\s+\d{2}:)"
+    r"(?:\+\s*7|8|7)?(?:[\s\u00a0()./\-–—]*\d){10}(?!\w)"
+)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
 _LOOSE_AT_TOKEN_RE = re.compile(r"\S*@\S*")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9.-]+\.(?:ru|рф|com|org|net)(?:/\S*)?", re.I)
@@ -51,10 +54,9 @@ _SERVICE_ID_RE = re.compile(
     re.I,
 )
 _PERSON_CONTEXT_RE = re.compile(
-    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа)\s*[:—-]?\s*"
-    r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
-    re.I,
+    r"(?i:\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя|родител[ьи]|мама|папа)\s*[:—-]?\s*)"
+    r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}"
 )
 _ADDRESS_RE = re.compile(
     r"\b(?:адрес|ул\.|улица|проспект|пр-т|шоссе|переулок|пер\.|дом|д\.|квартира|кв\.|подъезд)\s*"
@@ -748,6 +750,7 @@ def _sanitize_mail_stage2_text_for_bot(text: object) -> str:
     value = _PHONE_RE.sub(_PII_PLACEHOLDER, value)
     value = _LONG_DIGIT_TOKEN_RE.sub("[служебный номер скрыт]", value)
     value = _SERVICE_ID_RE.sub(_PII_PLACEHOLDER, value)
+    value = _PERSON_CONTEXT_RE.sub("[персона у менеджера]", value)
     value = _EMAIL_FROM_NAME_RE.sub(r"\1[персона у менеджера]\2", value)
     value = _mask_russian_person_names(value)
     value = value.replace("mailto:", "").replace("tel:", "")

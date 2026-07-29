@@ -195,6 +195,8 @@ def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> 
     assert event["source_id"] == "telegram:100:200"
     assert dialog_event["source_id"] == "telegram_dialog:100"
     assert "brand:unpk" in chunk["relevance_tags"]
+    assert event["metadata"]["brand_context_authorized"] is True
+    assert chunk["metadata"]["brand_context_authorized"] is True
     assert chunk["allowed_for_bot"] is False
     assert chunk["requires_manager_review"] is True
 

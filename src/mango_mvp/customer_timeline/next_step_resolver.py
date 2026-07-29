@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.insights.sanitizers import has_personal_data_risk
+from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
 
 
 CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION = "customer_timeline_next_step_resolution_v1"
@@ -380,7 +381,7 @@ def extract_next_step_action(event: Mapping[str, Any]) -> str:
 def _extract_next_step_from_summary(event: Mapping[str, Any]) -> str:
     if str(event.get("event_type") or "").casefold() != "mango_call":
         return ""
-    if _call_record_is_not_contentful(event):
+    if is_non_contentful_call_record(event):
         return ""
     summary = _call_summary_text(event)
     if not summary or _summary_has_no_next_step(summary) or _summary_is_non_conversation(summary):
@@ -399,12 +400,6 @@ def _extract_next_step_from_summary(event: Mapping[str, Any]) -> str:
         if action and _candidate_has_step_marker(action):
             candidates.append(action)
     return candidates[-1] if candidates else ""
-
-
-def _call_record_is_not_contentful(event: Mapping[str, Any]) -> bool:
-    record = _mapping(event.get("record"))
-    value = str(record.get("contentful") or "").strip().casefold()
-    return value in {"0", "false", "нет", "no", "non_conversation"}
 
 
 def _call_summary_text(event: Mapping[str, Any]) -> str:

@@ -36,6 +36,7 @@ from mango_mvp.customer_timeline import (
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.ingestion import resolve_customer_identity_batches
+from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
 
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
@@ -1355,6 +1356,35 @@ def test_mango_increment_non_conversation_has_no_summary_chunk_or_signal() -> No
     assert batch.events[0].summary is None
     assert batch.bot_context_chunks == ()
     assert batch.signals == ()
+
+
+def test_mango_increment_explicit_non_contentful_overrides_sales_call_type() -> None:
+    batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mango_processed_summary",
+            source_ref="call#explicit-non-contentful",
+            payload={
+                "call_id": "provider:explicit-non-contentful",
+                "call_at": "2026-05-04T12:00:00+00:00",
+                "summary": "Автоответчик.",
+                "call_type": "sales_call",
+                "contentful": "Нет",
+                "customer_id": "customer:existing",
+                "match_class": "strong_unique",
+            },
+        )
+    )
+
+    assert batch.events[0].summary is None
+    assert batch.bot_context_chunks == ()
+    assert batch.signals == ()
+
+
+def test_non_contentful_call_predicate_keeps_real_technical_service_and_unknown_calls() -> None:
+    for call_type in ("technical_call", "service_call", "unknown", ""):
+        assert not is_non_contentful_call_record({"record": {"call_type": call_type}})
+    assert is_non_contentful_call_record({"record": {"call_type": "non_conversation"}})
+    assert is_non_contentful_call_record({"record": {"contentful": "Нет", "call_type": "sales_call"}})
 
 
 def test_dry_run_preview_is_deterministic_and_does_not_mutate_store(tmp_path: Path) -> None:

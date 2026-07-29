@@ -25,6 +25,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import customer_entity_ref, normalize_email, normalize_key, stable_digest
 from mango_mvp.customer_timeline.safety import customer_timeline_safety_contract, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.safe_copy import file_sha256
+from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_sqlite_safety_contract
 from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_HISTORY_HANDOFF_DB,
@@ -268,7 +269,9 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     imported_counts[result.record_type] += 1
                     write_status_counts[result.status] += 1
                     source_event_counts[MANGO_SOURCE] += 1
-                    if event.summary:
+                    if event.summary and not is_non_contentful_call_record(
+                        {"record": event.record, "metadata": event.metadata}
+                    ):
                         chunk = BotContextChunk(
                             tenant_id=resolved.tenant_id,
                             customer_id=customer.customer_id,

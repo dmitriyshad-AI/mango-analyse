@@ -400,6 +400,33 @@ def test_bot_safe_summary_ignores_inactive_or_unsafe_unconfirmed_attendance(tmp_
         ).fetchone()[0] == 0
 
 
+def test_bot_safe_summary_does_not_use_non_contentful_call_event(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_event(
+        replace(
+            _event(customer, brand="foton"),
+            summary="Ребёнок 8 класс интересуется математикой.",
+            text_preview="Ребёнок 8 класс интересуется математикой.",
+            record={"brand": "foton", "contentful": "Нет", "call_type": "sales_call"},
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.customers_with_summary == 0
+    assert _load_bot_safe_records(tmp_path / "customer_timeline.sqlite") == []
+
+
 def test_bot_safe_summary_ignores_revoked_source_chunk(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
@@ -720,6 +747,28 @@ def test_bot_safe_summary_cross_brand_customer_gets_separate_brand_scoped_chunks
     assert "Бренд: УНПК" not in foton_record
     assert "Бренд: УНПК" in unpk_record
     assert "Бренд: Фотон" not in unpk_record
+
+
+def test_bot_safe_summary_unknown_brand_stays_manager_only(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(_opportunity(customer, brand="unknown", title="Математика онлайн"))
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+
+    assert payload["allowed_for_bot"] is False
+    assert payload["requires_manager_review"] is True
+    assert payload["metadata"]["brand_context_authorized"] is False
 
 
 def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_path: Path) -> None:

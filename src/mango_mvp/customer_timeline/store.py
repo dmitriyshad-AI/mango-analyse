@@ -1759,6 +1759,14 @@ class CustomerTimelineSQLiteStore:
                 "new_customer_id": new_id,
             },
         )
+        if old_id == new_id:
+            return CustomerTimelineStoreWriteResult(
+                "customer_id_mapping",
+                mapping_id,
+                False,
+                "duplicate",
+                stable_digest({"tenant_id": tenant, "customer_id": old_id, "status": "unchanged"}),
+            )
         existing = self._fetch_one(
             """
             SELECT record_json FROM customer_id_mappings
@@ -1767,6 +1775,35 @@ class CustomerTimelineSQLiteStore:
             (tenant, old_id),
         )
         existing_payload = json_loads(existing["record_json"]) if existing is not None else {}
+        if existing_payload.get("new_customer_id") == old_id:
+            superseded_at = self._now().isoformat()
+            superseded_payload = {
+                **existing_payload,
+                "resolution_status": "superseded",
+                "updated_at": superseded_at,
+            }
+            self._upsert_record(
+                table="customer_id_mappings",
+                key_column="mapping_id",
+                key_value=str(existing_payload["mapping_id"]),
+                record_type="customer_id_mapping",
+                tenant_id=tenant,
+                payload=superseded_payload,
+                columns={
+                    "tenant_id": tenant,
+                    "old_customer_id": old_id,
+                    "new_customer_id": old_id,
+                    "mapping_kind": str(existing_payload["mapping_kind"]),
+                    "resolution_status": "superseded",
+                    "reason": str(existing_payload["reason"]),
+                    "created_at": str(existing_payload["created_at"]),
+                    "updated_at": superseded_at,
+                },
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                commit=False,
+            )
+            existing_payload = {}
         if (
             existing_payload
             and existing_payload.get("mapping_id") != mapping_id

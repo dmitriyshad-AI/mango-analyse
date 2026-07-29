@@ -99,6 +99,131 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path, m
     assert report["multi_customer_families"] == 1
 
 
+def test_family_graph_uses_tallanto_amo_contact_as_family_relation(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    parent_id = "customer:parent"
+    child_ids = ("customer:child-a", "customer:child-b")
+    _seed_amo_parent(
+        db_path,
+        tmp_path,
+        customer_id=parent_id,
+        display_name="Ирина Иванова",
+        email="parent@amo.example",
+    )
+    for index, child_id in enumerate(child_ids, 1):
+        _seed_customer(db_path, tmp_path, customer_id=child_id, phone=f"+7900000010{index}")
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            child_id,
+            f"student-{index}",
+            f"child-{index}@example.com",
+            parent_name=f"Родитель {index}",
+            student_name=f"Ребёнок {index}",
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(DISTINCT family_id) FROM family_members_v1").fetchone()[0] == 3
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for child_id in child_ids:
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=child_id,
+                    link_type="amo_contact_id",
+                    link_value=f"amo-{parent_id}",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"tallanto:{child_id}:amo-family",
+                    match_class=IdentityMatchClass.AMBIGUOUS,
+                    confidence=1.0,
+                    evidence={"relationship": "family_amo_contact"},
+                )
+            )
+
+    first = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    second = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        members = con.execute(
+            "SELECT customer_id, family_id FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+        exact_students = con.execute(
+            "SELECT customer_id, link_value FROM identity_links "
+            "WHERE link_type='tallanto_student_id' AND match_class='strong_unique' "
+            "ORDER BY customer_id"
+        ).fetchall()
+
+    assert {row[0] for row in members} == {parent_id, *child_ids}
+    assert len({row[1] for row in members}) == 1
+    assert {row[0] for row in exact_students} == set(child_ids)
+    assert first["multi_customer_families"] == second["multi_customer_families"] == 1
+
+
+def test_family_graph_rejects_shared_strong_amo_contact_on_fresh_db(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    parent_ids = ("customer:parent-a", "customer:parent-b")
+    child_id = "customer:child"
+    for index, parent_id in enumerate(parent_ids, 1):
+        _seed_amo_parent(
+            db_path,
+            tmp_path,
+            customer_id=parent_id,
+            display_name=f"Родитель {index}",
+            email=f"parent-{index}@example.com",
+        )
+    _seed_customer(db_path, tmp_path, customer_id=child_id, phone="+79000000101")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        child_id,
+        "student-1",
+        "child@example.com",
+        student_name="Ребёнок",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for parent_id in parent_ids:
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=parent_id,
+                    link_type="amo_contact_id",
+                    link_value="shared-amo-contact",
+                    source_system="amocrm_snapshot",
+                    source_ref=f"amo:{parent_id}:shared",
+                    match_class=IdentityMatchClass.STRONG_UNIQUE,
+                    confidence=1.0,
+                )
+            )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=child_id,
+                link_type="amo_contact_id",
+                link_value="shared-amo-contact",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:child:amo-family",
+                match_class=IdentityMatchClass.AMBIGUOUS,
+                confidence=1.0,
+                evidence={"relationship": "family_amo_contact"},
+            )
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT customer_id, family_id, membership_status, reason "
+            "FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+
+    assert len({row[1] for row in rows}) == 3
+    assert {row[0] for row in rows if row[2] == "conflict"} == set(parent_ids)
+    assert next(row for row in rows if row[0] == child_id)[2:] == (
+        "singleton",
+        "single_customer_family",
+    )
+
+
 @pytest.mark.parametrize("match_status", ("ambiguous", "inferred"))
 def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_status: str) -> None:
     db_path = _timeline_db(tmp_path)

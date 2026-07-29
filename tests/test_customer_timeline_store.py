@@ -852,6 +852,80 @@ def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path
     store.close()
 
 
+def test_customer_id_mapping_ignores_self_and_supersedes_historical_self(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    old = identity(phone="+79160000006")
+    target = identity(phone="+79160000007")
+    store.upsert_customer(old)
+    store.upsert_customer(target)
+
+    noop = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id=old.customer_id,
+        new_customer_id=old.customer_id,
+        reason="unchanged",
+    )
+    assert noop.status == "duplicate"
+    assert store.list_customer_id_mappings("foton") == ()
+
+    mapping_id = store_module.stable_prefixed_id(
+        "customer_id_mapping",
+        {
+            "tenant_id": "foton",
+            "old_customer_id": old.customer_id,
+            "new_customer_id": old.customer_id,
+        },
+    )
+    historical = {
+        "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+        "mapping_id": mapping_id,
+        "tenant_id": "foton",
+        "old_customer_id": old.customer_id,
+        "new_customer_id": old.customer_id,
+        "mapping_kind": "alias",
+        "resolution_status": "active",
+        "reason": "unchanged",
+        "source_refs": [],
+        "ingestion_run_id": None,
+        "metadata": {},
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    store._upsert_record(
+        table="customer_id_mappings",
+        key_column="mapping_id",
+        key_value=mapping_id,
+        record_type="customer_id_mapping",
+        tenant_id="foton",
+        payload=historical,
+        columns={
+            "tenant_id": "foton",
+            "old_customer_id": old.customer_id,
+            "new_customer_id": old.customer_id,
+            "mapping_kind": "alias",
+            "resolution_status": "active",
+            "reason": "unchanged",
+            "created_at": NOW.isoformat(),
+            "updated_at": NOW.isoformat(),
+        },
+        actor="legacy_test",
+        ingestion_run_id=None,
+    )
+
+    store.record_customer_id_mapping(
+        "foton",
+        old_customer_id=old.customer_id,
+        new_customer_id=target.customer_id,
+        reason="tallanto_identity_union",
+    )
+    mappings = store.list_customer_id_mappings("foton", old_customer_id=old.customer_id)
+    assert {(row["new_customer_id"], row["resolution_status"]) for row in mappings} == {
+        (old.customer_id, "superseded"),
+        (target.customer_id, "active"),
+    }
+    store.close()
+
+
 def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer = identity()

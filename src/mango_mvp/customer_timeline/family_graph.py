@@ -430,7 +430,7 @@ def _resolve_family_assignments(
     shared_amo_contact_customers = {
         customer_id
         for owners in amo_contact_owners.values()
-        if len({existing[owner] for owner in owners if owner in existing}) > 1
+        if len(owners) > 1
         for customer_id in owners & customers
     }
     unsafe.update(shared_amo_contact_customers)
@@ -509,25 +509,46 @@ def _resolve_family_assignments(
             (tenant_id,),
         )
     }
+    amo_contact_ids_by_customer: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        SELECT customer_id, link_value
+        FROM identity_links
+        WHERE tenant_id=? AND source_system='amocrm_snapshot'
+          AND link_type='amo_contact_id' AND match_class IN ('strong_unique','manual')
+          AND customer_id IS NOT NULL AND customer_id != ''
+        """,
+        (tenant_id,),
+    ):
+        customer_id = str(row["customer_id"])
+        if (
+            customer_id in customers
+            and customer_id not in tallanto_customers
+            and customer_id not in unsafe
+        ):
+            amo_contact_ids_by_customer[customer_id].add(str(row["link_value"]))
     amo_contact_customers = {
-        str(row["customer_id"])
-        for row in con.execute(
-            """
-            SELECT customer_id
-            FROM identity_links
-            WHERE tenant_id=? AND source_system='amocrm_snapshot'
-              AND link_type='amo_contact_id' AND match_class IN ('strong_unique','manual')
-              AND customer_id IS NOT NULL AND customer_id != ''
-            GROUP BY customer_id
-            HAVING COUNT(DISTINCT link_value)=1
-            """,
-            (tenant_id,),
-        )
-        if str(row["customer_id"]) in customers
-        and str(row["customer_id"]) not in tallanto_customers
-        and str(row["customer_id"]) not in unsafe
+        customer_id
+        for customer_id, values in amo_contact_ids_by_customer.items()
+        if len(values) == 1
     }
+    tallanto_children_by_amo_contact: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        SELECT customer_id, link_value
+        FROM identity_links
+        WHERE tenant_id=? AND source_system='tallanto_snapshot'
+          AND link_type='amo_contact_id' AND match_class='ambiguous'
+          AND json_extract(record_json, '$.evidence.relationship')='family_amo_contact'
+          AND customer_id IS NOT NULL AND customer_id != ''
+        """,
+        (tenant_id,),
+    ):
+        child_id = str(row["customer_id"])
+        if child_id in eligible:
+            tallanto_children_by_amo_contact[str(row["link_value"])].add(child_id)
     amo_identity_values: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    direct_amo_family_members: set[str] = set()
     if amo_contact_customers:
         placeholders = ",".join("?" for _ in amo_contact_customers)
         for row in con.execute(
@@ -552,6 +573,19 @@ def _resolve_family_assignments(
             (tenant_id, *sorted(amo_contact_customers)),
         ):
             customer_id = str(row["customer_id"])
+            direct_children = {
+                child_id
+                for amo_contact_id in amo_contact_ids_by_customer.get(customer_id, set())
+                for child_id in tallanto_children_by_amo_contact.get(amo_contact_id, set())
+            }
+            if direct_children:
+                parents[customer_id] = customer_id
+                eligible.add(customer_id)
+                direct_amo_family_members.add(customer_id)
+                for child_id in sorted(direct_children):
+                    direct_amo_family_members.add(child_id)
+                    union(customer_id, child_id)
+                continue
             parent_key = _parent_identity_key(str(row["display_name"] or ""))
             roots = {
                 root
@@ -577,7 +611,8 @@ def _resolve_family_assignments(
         }
         safe_amo_attach = bool(attached_amo_parents & members) and len(non_amo_roots) == 1
         exact_tallanto_merge = members <= set(ids_by_customer)
-        if len(roots) > 1 and not (safe_amo_attach or exact_tallanto_merge):
+        exact_amo_family_merge = members <= direct_amo_family_members
+        if len(roots) > 1 and not (safe_amo_attach or exact_tallanto_merge or exact_amo_family_merge):
             for member in members:
                 assignments[member] = FamilyAssignment(
                     existing.get(member, _family_id(tenant_id, member)),
@@ -599,7 +634,9 @@ def _resolve_family_assignments(
                 "confident" if multi else "singleton",
                 "high" if multi else "medium",
                 (
-                    "exact_amo_parent_name_and_phone_or_email"
+                    "exact_tallanto_amo_family_reference"
+                    if member in direct_amo_family_members
+                    else "exact_amo_parent_name_and_phone_or_email"
                     if member in attached_amo_parents
                     else "exact_tallanto_parent_name_and_phone_or_email"
                 )

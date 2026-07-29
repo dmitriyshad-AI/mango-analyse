@@ -420,7 +420,7 @@ def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp
     assert report["summary"]["manual_review_customers_estimated"] == 2
     assert report["summary"]["with_mango_calls"] == 2
     assert _table_count(config.timeline_db, "customer_identities") == 2
-    assert _table_count(config.timeline_db, "customer_id_mappings") == 4
+    assert _table_count(config.timeline_db, "customer_id_mappings") == 2
     assert len(family_phone_links) == 4
     assert {item["link_type"] for item in family_phone_links} == {"phone", "mango_client_phone"}
     assert {item["match_class"] for item in family_phone_links} == {"ambiguous"}

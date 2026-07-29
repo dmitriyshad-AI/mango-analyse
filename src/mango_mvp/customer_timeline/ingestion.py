@@ -635,8 +635,12 @@ class TallantoSnapshotNormalizer:
                     link_value=amo_contact_id,
                     source_system=self.source_system,
                     source_ref=source_ref,
-                    match_class=IdentityMatchClass.STRONG_UNIQUE,
+                    # Tallanto stores the family's AMO contact on the student
+                    # card. It proves a family relation, not that parent and
+                    # student are the same person.
+                    match_class=IdentityMatchClass.AMBIGUOUS,
                     confidence=1.0,
+                    evidence={"relationship": "family_amo_contact"},
                     first_seen_at=event_at,
                     last_seen_at=event_at,
                 )
@@ -1508,6 +1512,14 @@ def resolve_customer_identity_batches(
         for identity_key, student_ids in contact_identity_to_tallanto_students.items()
         if len(student_ids) > 1
     }
+    family_contact_keys.update(
+        (link.tenant_id, "amo_contact_id", link.link_value)
+        for batch in normalized_batches
+        for link in batch.identity_links
+        if link.source_system == TallantoSnapshotNormalizer.source_system
+        and link.link_type.value == "amo_contact_id"
+        and link.evidence.get("relationship") == "family_amo_contact"
+    )
     authoritative_amo_contacts = {
         customer_id
         for customer_id, links in links_by_customer.items()
@@ -1667,13 +1679,31 @@ def resolve_customer_identity_batches(
     reason_by_old: dict[str, str] = {}
     merged_customers: dict[str, CustomerIdentity] = {}
     for members in groups.values():
+        member_ids = set(members)
         shared_phone = _single_shared_phone(members, phone_to_customers, family_phone_keys)
         tenant_id = customers_by_id[members[0]].tenant_id
         existing_members = sorted(customer_id for customer_id in members if customer_id in existing_customer_ids)
         has_tallanto_union = sum(member in tallanto_union_members for member in members) > 1
         has_amo_contact_union = sum(member in amo_contact_union_members for member in members) > 1
+        exact_tallanto_owners = sorted(
+            member_ids
+            & set().union(
+                *(
+                    stored_tallanto_owners.get((tenant_id, student_id), set())
+                    for member in members
+                    for student_id in tallanto_by_customer.get(member, set())
+                )
+            )
+        )
+        exact_tallanto_owner = exact_tallanto_owners[0] if len(exact_tallanto_owners) == 1 else None
         if len(members) > 1 and has_tallanto_union:
-            new_customer_id = existing_members[0] if existing_members else members[0]
+            # A current Tallanto card can carry an exact AMO contact too. Keep
+            # the existing exact student owner instead of choosing it alphabetically.
+            new_customer_id = (
+                exact_tallanto_owner
+                if exact_tallanto_owner
+                else existing_members[0] if existing_members else members[0]
+            )
             reason = "tallanto_identity_union"
         elif len(members) > 1 and has_amo_contact_union:
             new_customer_id = existing_members[0] if existing_members else members[0]
@@ -1789,19 +1819,20 @@ def resolve_customer_identity_batches(
             if new_customer_id not in seen_customer_ids:
                 rewritten_customers.append(merged_customers[new_customer_id])
                 seen_customer_ids.add(new_customer_id)
-            mappings.append(
-                CustomerIdResolutionMapping(
-                    tenant_id=customer.tenant_id,
-                    old_customer_id=customer.customer_id,
-                    new_customer_id=new_customer_id,
-                    reason=reason_by_old[customer.customer_id],
-                    source_refs=tuple(sorted(source_refs_by_customer.get(customer.customer_id, ()))),
-                    metadata={
-                        "brand_history": _customer_brand_values(customer),
-                        "changed": customer.customer_id != new_customer_id,
-                    },
+            if customer.customer_id != new_customer_id:
+                mappings.append(
+                    CustomerIdResolutionMapping(
+                        tenant_id=customer.tenant_id,
+                        old_customer_id=customer.customer_id,
+                        new_customer_id=new_customer_id,
+                        reason=reason_by_old[customer.customer_id],
+                        source_refs=tuple(sorted(source_refs_by_customer.get(customer.customer_id, ()))),
+                        metadata={
+                            "brand_history": _customer_brand_values(customer),
+                            "changed": True,
+                        },
+                    )
                 )
-            )
 
         rewritten_links = tuple(
             replace(
@@ -1916,13 +1947,21 @@ def resolve_customer_identity_batches(
                 conflicts=batch.conflicts,
             )
         )
-    if (exact_identity_updates or existing_family_link_updates or repair_conflicts) and resolved_batches:
+    if (
+        exact_identity_updates
+        or existing_family_link_updates
+        or repair_conflicts
+    ) and resolved_batches:
         first = resolved_batches[0]
         resolved_batches[0] = replace(
             first,
             # Historical exact conflicts are downgraded first; a current
             # authoritative source row may then promote exactly one link.
-            identity_links=(*exact_identity_updates, *first.identity_links, *existing_family_link_updates),
+            identity_links=(
+                *exact_identity_updates,
+                *first.identity_links,
+                *existing_family_link_updates,
+            ),
             conflicts=(*first.conflicts, *repair_conflicts),
         )
     return CustomerIdResolutionResult(batches=tuple(resolved_batches), mappings=tuple(mappings))
@@ -1961,12 +2000,19 @@ def _existing_family_link_updates(
                 link_values=tuple(sorted(values)),
             ):
                 link = identity_link_from_json(payload)
+                if kind == "amo_contact_id" and link.source_system != TallantoSnapshotNormalizer.source_system:
+                    continue
                 if link.match_class == IdentityMatchClass.AMBIGUOUS:
                     continue
                 updates[link.link_id] = replace(
                     link,
                     match_class=IdentityMatchClass.AMBIGUOUS,
                     confidence=min(float(link.confidence or 1.0), 0.5),
+                    evidence=(
+                        {**link.evidence, "relationship": "family_amo_contact"}
+                        if kind == "amo_contact_id"
+                        else link.evidence
+                    ),
                 )
     return tuple(updates[key] for key in sorted(updates))
 

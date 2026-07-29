@@ -5,6 +5,7 @@ import os
 import socket
 import sqlite3
 import subprocess
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -124,11 +125,11 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
     assert summary["counts"]["customer_identities"] == 2
     assert summary["counts"]["identity_links"] == 6
     assert summary["counts"]["timeline_conflicts"] == 1
-    assert summary["counts"]["customer_id_mappings"] == 2
+    assert summary["counts"]["customer_id_mappings"] == 0
     assert summary["counts"]["ingestion_runs"] == 1
     assert len({item["customer_id"] for item in email_links}) == 2
     assert {item["match_class"] for item in phone_links} == {"ambiguous"}
-    assert {item["reason"] for item in store.list_customer_id_mappings("foton")} == {"family_phone_ambiguous"}
+    assert store.list_customer_id_mappings("foton") == ()
     assert conflicts[0]["action"] == "timeline_conflict_created"
     assert second.write_status_counts["duplicate"] >= first.write_status_counts["created"]
     store.close()
@@ -164,10 +165,13 @@ def test_tallanto_normalizer_keeps_additional_contact_links() -> None:
         ("email", "parent@example.com"),
         ("email", "second@example.com"),
     }
-    assert any(
-        link.link_type.value == "amo_contact_id" and link.link_value == "12345"
+    amo_link = next(
+        link
         for link in batch.identity_links
+        if link.link_type.value == "amo_contact_id" and link.link_value == "12345"
     )
+    assert amo_link.match_class == IdentityMatchClass.AMBIGUOUS
+    assert amo_link.evidence == {"relationship": "family_amo_contact"}
 
 
 @pytest.mark.parametrize("amo_contact_id", ("", "-", "abc", "0", "-1"))
@@ -671,6 +675,187 @@ def test_fresh_tallanto_card_repairs_historical_duplicate_exact_links(tmp_path: 
     store.close()
 
 
+def test_fresh_tallanto_card_keeps_exact_student_owner_when_amo_contact_exists(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(
+        tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock()
+    )
+    service = TimelineImportService(store)
+    tallanto = TallantoSnapshotNormalizer(tenant_id="foton")
+    amo = AmoSnapshotNormalizer(tenant_id="foton")
+    student = TimelineSourceRecord(
+        source_system="tallanto_snapshot",
+        source_ref="student:2001",
+        payload={
+            "tallanto_id": "2001",
+            "display_name": "Анна Иванова",
+            "primary_phone": "+79161112233",
+            "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+    service.import_records(
+        (student,), normalizer=tallanto, tenant_id="foton",
+        source_ref="student-first", idempotency_key="student-first", actor="test",
+    )
+    student_owner = store.list_identity_links(
+        "foton", link_type="tallanto_student_id", link_value="2001"
+    )[0]["customer_id"]
+    service.import_records(
+        (
+            TimelineSourceRecord(
+                source_system="amocrm_snapshot",
+                source_ref="contact:1001",
+                payload={
+                    "entity_id": "1001",
+                    "entity_type": "contact",
+                    "name": "Ирина Иванова",
+                    "phone": "+79169998877",
+                    "updated_at": NOW.isoformat(),
+                },
+                observed_at=NOW,
+            ),
+        ),
+        normalizer=amo,
+        tenant_id="foton",
+        source_ref="amo-first",
+        idempotency_key="amo-first",
+        actor="test",
+    )
+    amo_owner = store.list_identity_links(
+        "foton", link_type="amo_contact_id", link_value="1001"
+    )[0]["customer_id"]
+    assert amo_owner != student_owner
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=student_owner,
+            link_type="amo_contact_id",
+            link_value="1001",
+            source_system="tallanto_snapshot",
+            source_ref="legacy:tallanto:student:2001:amo",
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=1.0,
+        )
+    )
+
+    current = replace(
+        student,
+        source_ref="student:2001:current",
+        payload={**student.payload, "amo_contact_id": "1001"},
+    )
+    first = service.import_records(
+        (current,), normalizer=tallanto, tenant_id="foton",
+        source_ref="student-current", idempotency_key="student-current", actor="test",
+    )
+    mapping_count = store.summary()["counts"]["customer_id_mappings"]
+    second = service.import_records(
+        (current,), normalizer=tallanto, tenant_id="foton",
+        source_ref="student-repeat", idempotency_key="student-repeat", actor="test",
+    )
+
+    assert first.validation_ok is True
+    assert second.validation_ok is True
+    assert store.list_identity_links(
+        "foton", link_type="tallanto_student_id", link_value="2001"
+    )[0]["customer_id"] == student_owner
+    amo_links = store.list_identity_links(
+        "foton", link_type="amo_contact_id", link_value="1001"
+    )
+    assert {
+        (row["customer_id"], row["match_class"])
+        for row in amo_links
+    } == {
+        (amo_owner, "strong_unique"),
+        (student_owner, "ambiguous"),
+    }
+    assert next(row for row in amo_links if row["customer_id"] == student_owner)["evidence"] == {
+        "relationship": "family_amo_contact"
+    }
+    assert {
+        row["match_class"]
+        for row in amo_links
+        if row["source_system"] == "tallanto_snapshot"
+    } == {"ambiguous"}
+    assert all(
+        row["evidence"].get("relationship") == "family_amo_contact"
+        for row in amo_links
+        if row["source_system"] == "tallanto_snapshot"
+    )
+    assert store.summary()["counts"]["customer_id_mappings"] == mapping_count == 0
+    store.close()
+
+
+@pytest.mark.parametrize("student_order", (("2001", "2002"), ("2002", "2001")))
+def test_shared_tallanto_amo_contact_never_merges_children(
+    tmp_path: Path,
+    student_order: tuple[str, str],
+) -> None:
+    store = CustomerTimelineSQLiteStore(
+        tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock()
+    )
+    service = TimelineImportService(store)
+    service.import_records(
+        (
+            TimelineSourceRecord(
+                source_system="amocrm_snapshot",
+                source_ref="contact:1001",
+                payload={
+                    "entity_id": "1001",
+                    "entity_type": "contact",
+                    "name": "Ирина Иванова",
+                    "phone": "+79169998877",
+                    "updated_at": NOW.isoformat(),
+                },
+                observed_at=NOW,
+            ),
+        ),
+        normalizer=AmoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="amo-parent",
+        idempotency_key="amo-parent",
+        actor="test",
+    )
+
+    records = {
+        student_id: TimelineSourceRecord(
+            source_system="tallanto_snapshot",
+            source_ref=f"student:{student_id}",
+            payload={
+                "tallanto_id": student_id,
+                "display_name": f"Ученик {student_id}",
+                "primary_phone": f"+7916000{student_id}",
+                "amo_contact_id": "1001",
+                "snapshot_at": NOW.isoformat(),
+            },
+            observed_at=NOW,
+        )
+        for student_id in student_order
+    }
+    normalizer = TallantoSnapshotNormalizer(tenant_id="foton")
+    for pass_no in (1, 2):
+        for student_id in student_order:
+            service.import_records(
+                (records[student_id],),
+                normalizer=normalizer,
+                tenant_id="foton",
+                source_ref=f"student-{student_id}-pass-{pass_no}",
+                idempotency_key=f"student-{student_id}-pass-{pass_no}",
+                actor="test",
+            )
+
+    tallanto_links = [
+        store.list_identity_links("foton", link_type="tallanto_student_id", link_value=student_id)[0]
+        for student_id in student_order
+    ]
+    amo_links = store.list_identity_links("foton", link_type="amo_contact_id", link_value="1001")
+    assert len({row["customer_id"] for row in tallanto_links}) == 2
+    assert {row["match_class"] for row in tallanto_links} == {"strong_unique"}
+    assert sum(row["match_class"] == "strong_unique" for row in amo_links) == 1
+    assert sum(row["match_class"] == "ambiguous" for row in amo_links) == 2
+    assert store.list_customer_id_mappings("foton") == ()
+    store.close()
+
+
 def test_tallanto_conflict_preserves_event_and_later_exact_contact_resolves_it(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
@@ -887,7 +1072,7 @@ def test_parent_and_single_tallanto_child_keep_separate_customer_ids_on_shared_p
 
     result = resolve_customer_identity_batches((child_batch, parent_batch))
 
-    assert {item.new_customer_id for item in result.mappings} == {"customer:child", "customer:parent"}
+    assert result.mappings == ()
     phone_links = [link for batch in result.batches for link in batch.identity_links if link.link_type.value == "phone"]
     assert {link.customer_id for link in phone_links} == {"customer:child", "customer:parent"}
     assert {link.match_class for link in phone_links} == {IdentityMatchClass.AMBIGUOUS}
@@ -1062,7 +1247,7 @@ def test_phone_identity_union_uses_existing_store_customer_across_import_runs(tm
     amo_event = next(item for item in events if item["event_type"] == "amo_deal_stage")
     assert amo_event["subject"] == "Сделка ЕГЭ"
     assert {item["new_customer_id"] for item in mappings} == {customer_id}
-    assert {item["reason"] for item in mappings} >= {"phone_identity_union", "unchanged"}
+    assert {item["reason"] for item in mappings} == {"phone_identity_union"}
     store.close()
 
 

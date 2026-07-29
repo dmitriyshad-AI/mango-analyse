@@ -22,6 +22,7 @@
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main`, после проверенной интеграции A-F главным Codex | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных; Wappi остановлен владельцем. | Оставить на `main`; runtime/live включать только отдельным этапом после реального staging и смысловой приёмки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_p0_model_led` | `codex/p0-model-led` | Временная разработка перевода P0 с регулярных выражений на решение модели; рабочие системы не использует. | После двух PASS на M1, вливания в `main` и проверки отсутствия процессов снять worktree и удалить ветку. |
 
 ## Удалено 2026-07-26
 

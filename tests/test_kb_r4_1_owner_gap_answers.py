@@ -28,11 +28,14 @@ def test_kb_r4_1_owner_gap_release_is_built_and_default() -> None:
         PROJECT_ROOT / "scripts" / "run_telegram_dynamic_client_sim.py",
         PROJECT_ROOT / "scripts" / "run_telegram_public_pilot_bots.py",
         PROJECT_ROOT / "scripts" / "run_amo_wappi_draft_loop.py",
+        PROJECT_ROOT / "scripts" / "run_telegram_pilot_concurrency_smoke.py",
+        PROJECT_ROOT / "scripts" / "run_telegram_night_shadow_replay.py",
     )
     for path in runners:
         runner = path.read_text(encoding="utf-8")
         assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in runner
         assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in runner
+        assert "kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json" not in runner
 
 
 def test_kb_r4_1_owner_gap_client_facts_for_both_brands() -> None:

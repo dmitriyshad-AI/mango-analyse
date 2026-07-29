@@ -32,7 +32,7 @@ from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS, 
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 
 
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 
 
 def build_replay_context(record: Mapping[str, Any], *, snapshot_path: Path) -> Mapping[str, Any]:

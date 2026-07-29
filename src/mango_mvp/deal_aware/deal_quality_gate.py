@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS, resolve_analysis_date
-from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
+from mango_mvp.deal_aware.stage1_snapshot import (
+    int_or_zero,
+    load_json,
+    quote_ident,
+    read_csv,
+    safe_text,
+    stringify,
+    write_csv,
+)
 from mango_mvp.question_catalog.source_index import load_source_index, split_tokens
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
@@ -595,16 +603,6 @@ def read_stage4_findings_by_review_id(path: Path) -> dict[str, list[dict[str, An
     return by_review_id
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def sha256_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -620,13 +618,6 @@ def split_pipe(value: Any) -> list[str]:
     if not text:
         return []
     return [part.strip(" .;,") for part in re.split(r"\s+\|\s+|\n|;", text) if part.strip(" .;,")]
-
-
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(float(safe_text(value).replace(",", ".")))
-    except ValueError:
-        return 0
 
 
 def write_sqlite(path: Path, tables: dict[str, list[dict[str, Any]]]) -> None:

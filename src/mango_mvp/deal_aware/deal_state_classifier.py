@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from mango_mvp.deal_aware.deal_attribution import CONFIDENCE_LOW_WARNING_THRESHOLD, CONFIDENCE_MEDIUM_THRESHOLD
-from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
+from mango_mvp.deal_aware.stage1_snapshot import (
+    int_or_zero,
+    load_json,
+    quote_ident,
+    read_csv,
+    safe_text,
+    stringify,
+    write_csv,
+)
 
 
 SCHEMA_VERSION = "deal_aware_stage3_deal_state_v1"
@@ -611,25 +619,8 @@ def parse_dt(value: Any) -> datetime | None:
         return None
 
 
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(float(safe_text(value).replace(",", ".")))
-    except ValueError:
-        return 0
-
-
 def float_or_zero(value: Any) -> float:
     try:
         return float(safe_text(value).replace(",", "."))
     except ValueError:
         return 0.0
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}

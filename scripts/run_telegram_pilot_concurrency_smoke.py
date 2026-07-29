@@ -26,7 +26,7 @@ from mango_mvp.channels.telegram_pilot_store import (
 )
 
 
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path(".codex_local/telegram_pilot/concurrency_smoke")
 SCHEMA_VERSION = "telegram_pilot_concurrency_smoke_v1_2026_05_23"
 

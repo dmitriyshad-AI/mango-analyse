@@ -18,7 +18,7 @@ from mango_mvp.deal_aware.deal_text_builder import (
     DISCOUNT_PROMISE_RE,
     resolve_analysis_date,
 )
-from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
+from mango_mvp.deal_aware.stage1_snapshot import int_or_zero, quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
 
@@ -584,13 +584,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(float(safe_text(value).replace(",", ".")))
-    except ValueError:
-        return 0
 
 
 def shell_quote(value: str) -> str:

@@ -9,7 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
+from mango_mvp.deal_aware.stage1_snapshot import (
+    int_or_zero,
+    load_json,
+    quote_ident,
+    read_csv,
+    safe_text,
+    stringify,
+    write_csv,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -617,23 +625,6 @@ def is_live_snapshot_available(summary: dict[str, Any]) -> bool:
         return False
     fetch = summary.get("fetch") if isinstance(summary.get("fetch"), dict) else {}
     return int_or_zero(fetch.get("contacts_seen")) > 0 and int_or_zero(fetch.get("leads_seen")) > 0
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(float(safe_text(value).replace(",", ".")))
-    except ValueError:
-        return 0
 
 
 def write_sqlite(path: Path, tables: dict[str, list[dict[str, Any]]]) -> None:

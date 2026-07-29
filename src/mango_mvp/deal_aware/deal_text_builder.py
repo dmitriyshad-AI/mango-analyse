@@ -13,7 +13,15 @@ from typing import Any, Iterable
 
 from mango_mvp.crm_card_aggregator import apply_deal_card_payload
 from mango_mvp.customer_timeline.context_provider import get_customer_context_for_phone
-from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
+from mango_mvp.deal_aware.stage1_snapshot import (
+    int_or_zero,
+    load_json,
+    quote_ident,
+    read_csv,
+    safe_text,
+    stringify,
+    write_csv,
+)
 from mango_mvp.quality.crm_text_quality_detector import (
     CrmTextQualityFinding,
     detect_crm_text_quality_batch_risks,
@@ -1412,23 +1420,6 @@ def stable_mod(value: str, modulo: int) -> int:
     if modulo <= 0:
         return 0
     return sum(ord(char) for char in safe_text(value)) % modulo
-
-
-def int_or_zero(value: Any) -> int:
-    try:
-        return int(float(safe_text(value).replace(",", ".")))
-    except ValueError:
-        return 0
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def findings_to_rows(review_id: str, deal_id: str, findings: Iterable[CrmTextQualityFinding]) -> list[dict[str, Any]]:

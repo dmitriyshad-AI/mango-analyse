@@ -85,7 +85,11 @@ def test_stage5_money_ingest_apply_is_idempotent_and_keeps_money_out_of_bot_cont
         assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == 0
 
 
-def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(tmp_path: Path) -> None:
+@pytest.mark.parametrize("match_status", ["strong_unique", "manual"])
+def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(
+    tmp_path: Path,
+    match_status: str,
+) -> None:
     db_path, source_path, out_dir = _fixture(tmp_path)
     run_stage5_money_ingest(
         Stage5MoneyIngestConfig(
@@ -109,7 +113,7 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(tmp_path: Path)
                 direction=TimelineDirection.SYSTEM,
                 subject="Tallanto payment",
                 summary="Оплата Tallanto",
-                match_status="strong_unique",
+                match_status=match_status,
                 record={"amount": 7000, "payment_direction": "in"},
                 created_at=NOW,
             )

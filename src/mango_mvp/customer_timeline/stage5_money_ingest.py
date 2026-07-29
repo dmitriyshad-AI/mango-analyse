@@ -301,7 +301,8 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tup
           AND superseded_by IS NULL
           AND (
             source_system = ?
-            OR (source_system = 'tallanto_crm_call' AND event_type = 'tallanto_payment' AND match_status = 'strong_unique')
+            OR (source_system = 'tallanto_crm_call' AND event_type = 'tallanto_payment'
+                AND match_status IN ('strong_unique', 'manual'))
           )
         """,
         (tenant_id, STAGE5_AMO_PRICE_SOURCE_SYSTEM),

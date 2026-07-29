@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, cast
-from urllib.parse import quote
 
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
@@ -49,6 +48,7 @@ from mango_mvp.customer_timeline.safety import (
 )
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
 )
 
@@ -126,10 +126,16 @@ class TallantoSnapshotStats:
 @dataclass(frozen=True)
 class TallantoCustomerLookup:
     unique_customer_ids: Mapping[str, str]
+    unique_match_classes: Mapping[str, IdentityMatchClass]
     ambiguous_customer_ids: Mapping[str, Sequence[str]]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "unique_customer_ids", dict(self.unique_customer_ids))
+        object.__setattr__(
+            self,
+            "unique_match_classes",
+            {key: IdentityMatchClass(value) for key, value in self.unique_match_classes.items()},
+        )
         object.__setattr__(
             self,
             "ambiguous_customer_ids",
@@ -410,7 +416,7 @@ class TallantoPaymentsTimelineNormalizer:
         if existing:
             return TallantoIdentityResolution(
                 customer_id=existing,
-                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                match_class=self._customer_lookup.unique_match_classes[contact_id],
                 identity_status=IdentityStatus.STRONG,
                 confidence=0.98,
             )
@@ -788,6 +794,7 @@ def run_tallanto_payments_import(
             config.timeline_db,
             tenant_id=config.tenant_id,
             records=records,
+            customer_lookup=customer_lookup,
         )
     else:
         import_report = TimelineImportService(cast(CustomerTimelineSQLiteStore, _DryRunStore())).import_records(
@@ -876,17 +883,19 @@ def close_relinked_payment_owner_conflicts(
     *,
     tenant_id: str,
     records: Sequence[TimelineSourceRecord],
+    customer_lookup: TallantoCustomerLookup,
 ) -> int:
-    resolved_refs = {
-        record.source_ref
-        for record in records
-        if record.payload.get("_tallanto_module") == PAYMENT_MODULE
-        and optional_text(record.payload.get("contact_id"))
-        and not (
-            optional_text(record.payload.get("_abonement_contact_id"))
-            and record.payload.get("_abonement_contact_id") != record.payload.get("contact_id")
-        )
-    }
+    resolved_refs: set[str] = set()
+    for record in records:
+        contact_id = optional_text(record.payload.get("contact_id"))
+        if record.payload.get("_tallanto_module") != PAYMENT_MODULE or not contact_id:
+            continue
+        if contact_id not in customer_lookup.unique_customer_ids:
+            continue
+        alternate_contact_id = optional_text(record.payload.get("_abonement_contact_id"))
+        if alternate_contact_id and alternate_contact_id != contact_id:
+            continue
+        resolved_refs.add(record.source_ref)
     if not resolved_refs:
         return 0
     now = datetime.now(timezone.utc).isoformat()
@@ -1114,22 +1123,22 @@ def load_tallanto_customer_lookup(
     contact_ids: set[str],
 ) -> TallantoCustomerLookup:
     if not contact_ids or not db_path.exists():
-        return TallantoCustomerLookup(unique_customer_ids={}, ambiguous_customer_ids={})
-    rows: list[tuple[str, str]] = []
+        return TallantoCustomerLookup(unique_customer_ids={}, unique_match_classes={}, ambiguous_customer_ids={})
+    rows: list[tuple[str, str, str]] = []
     with open_readonly_sqlite(db_path) as con:
         if not sqlite_table_exists(con, "identity_links"):
-            return TallantoCustomerLookup(unique_customer_ids={}, ambiguous_customer_ids={})
+            return TallantoCustomerLookup(unique_customer_ids={}, unique_match_classes={}, ambiguous_customer_ids={})
         for chunk in chunks(sorted(contact_ids), 800):
             placeholders = ",".join("?" for _ in chunk)
             rows.extend(
-                (str(row["link_value"]), str(row["customer_id"]))
+                (str(row["link_value"]), str(row["customer_id"]), str(row["match_class"]))
                 for row in con.execute(
                     f"""
-                    SELECT link_value, customer_id
+                    SELECT link_value, customer_id, match_class
                     FROM identity_links
                     WHERE tenant_id = ?
                       AND link_type = 'tallanto_student_id'
-                      AND match_class = 'strong_unique'
+                      AND match_class IN ('strong_unique', 'manual')
                       AND link_value IN ({placeholders})
                     """,
                     (tenant_id, *chunk),
@@ -1137,10 +1146,21 @@ def load_tallanto_customer_lookup(
                 if row["link_value"] and row["customer_id"]
             )
     by_contact: dict[str, set[str]] = {}
-    for contact_id, customer_id in rows:
+    match_classes: dict[str, set[IdentityMatchClass]] = {}
+    for contact_id, customer_id, match_class in rows:
         by_contact.setdefault(contact_id, set()).add(customer_id)
+        match_classes.setdefault(contact_id, set()).add(IdentityMatchClass(match_class))
+    unique_customer_ids = {
+        contact_id: next(iter(customer_ids)) for contact_id, customer_ids in by_contact.items() if len(customer_ids) == 1
+    }
     return TallantoCustomerLookup(
-        unique_customer_ids={contact_id: next(iter(customer_ids)) for contact_id, customer_ids in by_contact.items() if len(customer_ids) == 1},
+        unique_customer_ids=unique_customer_ids,
+        unique_match_classes={
+            contact_id: IdentityMatchClass.STRONG_UNIQUE
+            if IdentityMatchClass.STRONG_UNIQUE in match_classes[contact_id]
+            else IdentityMatchClass.MANUAL
+            for contact_id in unique_customer_ids
+        },
         ambiguous_customer_ids={contact_id: tuple(sorted(customer_ids)) for contact_id, customer_ids in by_contact.items() if len(customer_ids) > 1},
     )
 
@@ -1213,8 +1233,7 @@ def count_bot_safe_amount_leaks(db_path: Path) -> int:
 
 
 def open_readonly_sqlite(db_path: Path) -> sqlite3.Connection:
-    uri = f"file:{quote(str(db_path.resolve(strict=False)), safe='/:')}?mode=ro&immutable=1"
-    con = sqlite3.connect(uri, uri=True, timeout=15)
+    con = sqlite3.connect(customer_timeline_readonly_uri(db_path), uri=True, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only = ON")
     return con

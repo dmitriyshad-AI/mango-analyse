@@ -20,6 +20,7 @@ from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_pur
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
     fetch_tallanto_module_strict,
+    load_tallanto_customer_lookup,
     main,
     run_tallanto_money_api_increment,
     run_tallanto_payments_import,
@@ -105,6 +106,51 @@ def test_apply_links_existing_tallanto_customer_is_idempotent_and_keeps_amounts_
     assert "safe short note" not in db_dump(timeline_db)
     assert "contact_notice" not in db_dump(timeline_db)
     assert "internal_notice" not in db_dump(timeline_db)
+
+
+def test_first_payment_pass_sees_manual_identity_still_in_wal(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    writer = CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path)
+    try:
+        customer = CustomerIdentity(
+            tenant_id="foton",
+            customer_id="manual-owner",
+            identity_status=IdentityStatus.STRONG,
+            display_name="manual-owner",
+            source_ref="manual-card",
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+            touch_count=1,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        writer.upsert_customer(customer)
+        writer.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="tallanto_student_id",
+                link_value="contact-1",
+                source_system="tallanto_snapshot",
+                source_ref="manual-card",
+                match_class="manual",
+                confidence=1.0,
+                first_seen_at=NOW,
+                last_seen_at=NOW,
+            )
+        )
+        assert timeline_db.with_name(timeline_db.name + "-wal").exists()
+
+        lookup = load_tallanto_customer_lookup(
+            timeline_db,
+            tenant_id="foton",
+            contact_ids={"contact-1"},
+        )
+    finally:
+        writer.close()
+
+    assert lookup.unique_customer_ids == {"contact-1": "manual-owner"}
+    assert lookup.unique_match_classes["contact-1"].value == "manual"
 
 
 def test_payment_without_contact_uses_unambiguous_abonement_contact(tmp_path: Path) -> None:
@@ -239,7 +285,11 @@ def test_payment_without_any_identity_relation_is_reported_as_unresolved(tmp_pat
     assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
 
 
-def test_payment_arriving_before_card_relinks_after_identity_appears(tmp_path: Path) -> None:
+@pytest.mark.parametrize("match_class", ["strong_unique", "manual"])
+def test_payment_arriving_before_card_relinks_after_identity_appears(
+    tmp_path: Path,
+    match_class: str,
+) -> None:
     timeline_db = staging_timeline_db(tmp_path)
     payment = {**payment_row(), "most_abonements_id": "late-abonement"}
     payment.pop("contact_id")
@@ -251,19 +301,27 @@ def test_payment_arriving_before_card_relinks_after_identity_appears(tmp_path: P
         apply=True,
     )
     run_tallanto_payments_import(config, stdin_text=json.dumps({"most_finances": [payment]}))
+    resolved_payload = {
+        "most_finances": [payment],
+        "most_abonements": [{**abonement_row(), "id": "late-abonement", "contact_id": "contact-late"}],
+    }
+
+    incomplete = run_tallanto_payments_import(config, stdin_text=json.dumps(resolved_payload))
+    refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
+    assert incomplete["links"]["resolved_payment_owner_conflicts"] == 0
+    assert count_rows(timeline_db, "customer_purchases_v1") == 0
+
     actual_customer = seed_customer_with_tallanto_link(
         timeline_db,
         tmp_path,
         customer_id="late-card",
         tallanto_id="contact-late",
         source_ref="late-card",
+        match_class=match_class,
     )
-    resolved_payload = {
-        "most_finances": [payment],
-        "most_abonements": [{**abonement_row(), "id": "late-abonement", "contact_id": "contact-late"}],
-    }
-
     report = run_tallanto_payments_import(config, stdin_text=json.dumps(resolved_payload))
+    refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
+    repeat = run_tallanto_payments_import(config, stdin_text=json.dumps(resolved_payload))
     refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
 
     payment_event = next(
@@ -276,21 +334,30 @@ def test_payment_arriving_before_card_relinks_after_identity_appears(tmp_path: P
     ]
     assert report["stats"]["unresolved_payment_owners"] == 0
     assert report["links"]["resolved_payment_owner_conflicts"] == 1
+    assert repeat["links"]["resolved_payment_owner_conflicts"] == 0
     assert payment_event["customer_id"] == actual_customer
-    assert payment_event["match_status"] == "strong_unique"
+    assert payment_event["match_status"] == match_class
     assert open_unresolved == []
     assert count_rows(timeline_db, "customer_purchases_v1") == 1
+    assert count_rows(timeline_db, "timeline_events") == 2
 
 
-def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merge(tmp_path: Path) -> None:
+@pytest.mark.parametrize("match_class", ["strong_unique", "manual"])
+def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merge(
+    tmp_path: Path,
+    match_class: str,
+) -> None:
     timeline_db = staging_timeline_db(tmp_path)
-    first_id = seed_customer_with_tallanto_link(timeline_db, tmp_path, customer_id="existing-1", tallanto_id="contact-1")
+    first_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="existing-1", tallanto_id="contact-1", match_class=match_class
+    )
     second_id = seed_customer_with_tallanto_link(
         timeline_db,
         tmp_path,
         customer_id="existing-2",
         tallanto_id="contact-1",
         source_ref="seed-2",
+        match_class=match_class,
     )
 
     config = TallantoPaymentsImportConfig(
@@ -555,6 +622,7 @@ def seed_customer_with_tallanto_link(
     customer_id: str,
     tallanto_id: str,
     source_ref: str = "seed",
+    match_class: str = "strong_unique",
 ) -> str:
     customer = CustomerIdentity(
         tenant_id="foton",
@@ -575,7 +643,7 @@ def seed_customer_with_tallanto_link(
         link_value=tallanto_id,
         source_system="tallanto_snapshot",
         source_ref=source_ref,
-        match_class="strong_unique",
+        match_class=match_class,
         confidence=1.0,
         first_seen_at=NOW,
         last_seen_at=NOW,

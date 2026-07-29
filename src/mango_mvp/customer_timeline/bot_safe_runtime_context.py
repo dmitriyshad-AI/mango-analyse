@@ -297,7 +297,7 @@ def build_bot_safe_crm_context(
     if not items:
         return _empty_context("no_brand_scoped_bot_safe_context", active_brand=brand, customer_resolved=True)
     summary = _render_summary(items)
-    pii_findings = scan_bot_safe_context_pii(summary)
+    pii_findings = _bot_safe_item_pii_findings(items)
     if pii_findings:
         return _empty_context("bot_safe_context_pii_blocked", active_brand=brand, customer_resolved=True, pii_findings=pii_findings)
     return {
@@ -357,6 +357,16 @@ def scan_bot_safe_context_pii(text: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(findings))
 
 
+def _bot_safe_item_pii_findings(items: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            finding
+            for item in items
+            for finding in scan_bot_safe_context_pii(item.get("text") or item.get("summary"))
+        )
+    )
+
+
 def build_customer_memory_for_prompt(
     context: Mapping[str, Any] | None,
     *,
@@ -376,6 +386,10 @@ def build_customer_memory_for_prompt(
     raw_items = _bot_context_items_from_context(payload)
     items = _customer_memory_items_for_brand(raw_items, active_brand=brand, limit=max(1, int(item_limit or 10)))
     timeline_context = payload.get("timeline_context") if isinstance(payload.get("timeline_context"), Mapping) else {}
+    if not timeline_context:
+        read_only_context = payload.get("read_only_customer_context")
+        if isinstance(read_only_context, Mapping) and isinstance(read_only_context.get("timeline_context"), Mapping):
+            timeline_context = read_only_context["timeline_context"]
     family_projection = (
         timeline_context.get("family_dossier")
         if isinstance(timeline_context.get("family_dossier"), Mapping)
@@ -672,28 +686,30 @@ def _channel_history_item_visible_for_active_brand(
 
 
 def _bot_context_items_from_context(context: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
-    containers: list[Any] = []
-    timeline_context = context.get("timeline_context")
-    if isinstance(timeline_context, Mapping):
-        containers.append(timeline_context)
     read_only_context = context.get("read_only_customer_context")
+    nested_timeline = None
     if isinstance(read_only_context, Mapping):
         nested_timeline = read_only_context.get("timeline_context")
-        if isinstance(nested_timeline, Mapping):
-            containers.append(nested_timeline)
-        containers.append(read_only_context)
+    timeline_context = context.get("timeline_context")
+    # ponytail: the pilot payload mirrors the same timeline under both keys;
+    # consume one canonical container so a fact cannot be repeated in the prompt.
+    container = (
+        nested_timeline
+        if isinstance(nested_timeline, Mapping)
+        else timeline_context
+        if isinstance(timeline_context, Mapping)
+        else read_only_context
+        if isinstance(read_only_context, Mapping)
+        else None
+    )
 
     result: list[Mapping[str, Any]] = []
-    for container in containers:
-        if not isinstance(container, Mapping):
-            continue
+    if isinstance(container, Mapping):
         bot_context = container.get("bot_context")
-        if not isinstance(bot_context, Mapping) or bot_context.get("allowed_only") is not True:
-            continue
-        raw_items = bot_context.get("items")
-        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
-            continue
-        result.extend(dict(item) for item in raw_items if isinstance(item, Mapping))
+        if isinstance(bot_context, Mapping) and bot_context.get("allowed_only") is True:
+            raw_items = bot_context.get("items")
+            if isinstance(raw_items, Sequence) and not isinstance(raw_items, (str, bytes, bytearray)):
+                result.extend(dict(item) for item in raw_items if isinstance(item, Mapping))
     return tuple(result)
 
 

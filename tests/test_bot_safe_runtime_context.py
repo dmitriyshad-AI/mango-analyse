@@ -19,6 +19,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     _is_confirmed_payment_event,
     _is_current_access_event,
     _mango_call_item_visible_for_bot,
+    _bot_safe_item_pii_findings,
     _sanitize_channel_history_text_for_bot,
     scan_bot_safe_context_pii,
     scrub_customer_memory_text,
@@ -123,6 +124,10 @@ def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: 
     assert customer_id not in json.dumps(context, ensure_ascii=False)
     memory = build_customer_memory_for_prompt(context, active_brand="foton")
     assert "класс: 8" in memory.prompt_text
+
+    live_context = {"active_brand": "foton", "read_only_customer_context": context}
+    live_memory = build_customer_memory_for_prompt(live_context, active_brand="foton")
+    assert "класс: 8" in live_memory.prompt_text
 
 
 def test_bot_safe_crm_context_hides_history_when_child_is_ambiguous(tmp_path: Path) -> None:
@@ -383,6 +388,7 @@ def test_bot_safe_family_projection_scopes_deals_and_events_to_selected_child(tm
 
     assert context["timeline_context"]["family_dossier"]["child_scope"] == "lead_attributed"
     assert "активных сделок: 1" in context["summary"]
+    assert "история оплат: unknown" in context["summary"]
     assert "учебная активность: unknown" in context["summary"]
 
 
@@ -1102,6 +1108,14 @@ def test_scrub_customer_memory_text_masks_prompt_injection_and_exact_details() -
 
 def test_scan_bot_safe_context_pii_detects_parenthesized_phone() -> None:
     assert scan_bot_safe_context_pii("Телефон 8 (800) 550 25 88") == ("phone",)
+
+
+def test_item_pii_scan_does_not_join_digits_or_depend_on_summary_truncation() -> None:
+    safe_items = ({"text": "Контекст 12345"}, {"text": "67890 продолжение"})
+    unsafe_items = (*safe_items, {"text": "Телефон 8 (800) 550 25 88"})
+
+    assert _bot_safe_item_pii_findings(safe_items) == ()
+    assert _bot_safe_item_pii_findings(unsafe_items) == ("phone",)
 
 
 def test_phone_guard_keeps_date_ranges_and_hashes_but_masks_real_contacts() -> None:

@@ -41,9 +41,11 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     hydrate_wappi_widget_contacts,
     is_personal_wappi_dialog,
     load_existing_wappi_event_customers,
+    load_existing_wappi_source_ids,
     load_existing_unmatched_wappi_records,
     load_wappi_widget_links,
     open_readonly_sqlite,
+    pending_attribution_truthy,
     remove_orphaned_provisional_customers,
     run_wappi_history_import,
     safe_wappi_exception,
@@ -874,12 +876,16 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT source_id, customer_id, record_json FROM timeline_events WHERE source_system='wappi_telegram'"
+            "SELECT source_id, customer_id, opportunity_id, match_status, confidence, record_json "
+            "FROM timeline_events WHERE source_system='wappi_telegram'"
         ).fetchall()
         assert len(rows) == 2
         by_source = {str(row["source_id"]): row for row in rows}
         conflicted = by_source["p-tg:123456:m-1"]
-        assert conflicted["customer_id"] == "customer:first"
+        assert conflicted["customer_id"] is None
+        assert conflicted["opportunity_id"] is None
+        assert conflicted["match_status"] == "ambiguous"
+        assert float(conflicted["confidence"]) == 0.0
         conflicted_metadata = json.loads(conflicted["record_json"])["metadata"]
         assert conflicted_metadata["pending_attribution"] is True
         assert conflicted_metadata["brand_context_authorized"] is False
@@ -889,6 +895,11 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
             "SELECT COUNT(*) FROM bot_context_chunks WHERE event_id = ? AND superseded_by IS NULL",
             (json.loads(conflicted["record_json"])["event_id"],),
         ).fetchone()[0] == 0
+        fts_row = con.execute(
+            "SELECT customer_id FROM timeline_event_fts WHERE event_id = ?",
+            (json.loads(conflicted["record_json"])["event_id"],),
+        ).fetchone()
+        assert fts_row is None or fts_row[0] is None
         summary_row = con.execute(
             """
             SELECT allowed_for_bot, requires_manager_review, superseded_by, record_json
@@ -900,11 +911,6 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
         assert summary_row["requires_manager_review"] == 1
         assert summary_row["superseded_by"]
         assert json.loads(summary_row["record_json"])["metadata"]["retired_reason"] == "wappi_identity_conflict"
-        counts_before_repeat = tuple(
-            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("timeline_events", "timeline_conflicts", "identity_links", "bot_context_chunks")
-        )
-
     repeated = run_wappi_history_import(
         WappiHistoryImportConfig(
             timeline_db=db_path,
@@ -924,14 +930,17 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
     )
     assert repeated["mode"] == "apply"
     assert repeated["writes"]["status_counts"]["duplicate"] > 0
-    assert repeated["summary"]["writes_applied"] == 0
+    assert repeated["summary"]["writes_applied"] > 0
     assert repeated["summary"]["messages_newly_saved"] == 0
     assert repeated["summary"]["messages_present_in_timeline"] == 2
     with sqlite3.connect(db_path) as con:
-        assert tuple(
-            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("timeline_events", "timeline_conflicts", "identity_links", "bot_context_chunks")
-        ) == counts_before_repeat
+        repeated_assignment = con.execute(
+            "SELECT customer_id,match_status FROM timeline_events WHERE source_id='p-tg:123456:m-1'"
+        ).fetchone()
+        assert repeated_assignment == ("customer:second", "strong_unique")
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_conflicts WHERE status='open'"
+        ).fetchone()[0] == 0
 
     strict = run_wappi_history_import(
         replace(
@@ -953,8 +962,8 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
         ),
         client=client,
     )
-    assert strict["mode"] == "apply_blocked"
-    assert "wappi_amo_widget:existing_customer_conflict" in strict["limit_hits"]
+    assert strict["mode"] == "apply"
+    assert "wappi_amo_widget:existing_customer_conflict" not in strict["limit_hits"]
 
 
 def test_wappi_apply_keeps_unresolved_widget_chat_pending_when_linkage_is_optional(
@@ -1078,6 +1087,10 @@ def test_wappi_apply_never_calls_pending_attribution_complete_without_widget(tmp
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["pending_attribution"] == 1
     assert report["summary"]["messages_newly_saved"] == 1
+    assert report["source_persistence_complete"] is True
+    assert report["summary"]["messages_expected_in_timeline"] == 1
+    assert report["summary"]["messages_present_in_timeline"] == 1
+    assert report["summary"]["messages_missing_from_timeline"] == 0
     assert "wappi_identity:pending_attribution" in report["attribution_warnings"]
 
 
@@ -1138,6 +1151,12 @@ def test_wappi_superseded_exact_event_does_not_block_new_widget_owner(tmp_path: 
         source_systems={"wappi_telegram"},
         source_ids=(batch.events[0].source_id,),
     ) == {}
+    assert load_existing_wappi_source_ids(
+        db_path,
+        tenant_id="foton",
+        source_systems={"wappi_telegram"},
+        source_ids=(batch.events[0].source_id,),
+    ) == set()
     resolver = WappiPairCustomerResolver.from_store(
         db_path,
         tenant_id="foton",
@@ -1161,6 +1180,24 @@ def test_wappi_superseded_exact_event_does_not_block_new_widget_owner(tmp_path: 
     assert resolution.resolved is True
     assert resolution.customer_id == new_customer
     assert resolution.resolution_source == "wappi_amo_widget"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        (None, False),
+        (False, False),
+        (0, False),
+        ("false", False),
+        ("True", True),
+        (" TRUE ", True),
+        ("1", True),
+        ({"broken": True}, True),
+        (["broken"], True),
+    ),
+)
+def test_pending_attribution_truthy_fails_closed(value: Any, expected: bool) -> None:
+    assert pending_attribution_truthy(value) is expected
 
 
 def test_wappi_resolver_fails_closed_on_lead_contact_mismatch(tmp_path: Path) -> None:

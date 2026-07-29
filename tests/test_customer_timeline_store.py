@@ -537,7 +537,7 @@ def test_bulk_write_defers_commit_and_rolls_back_on_error(tmp_path: Path) -> Non
     store.close()
 
 
-def test_bulk_write_rebuilds_fts_after_commit(tmp_path: Path) -> None:
+def test_bulk_write_keeps_fts_searchable_after_commit(tmp_path: Path) -> None:
     store = open_store(tmp_path)
     customer = identity()
     ev = event(customer)
@@ -553,6 +553,190 @@ def test_bulk_write_rebuilds_fts_after_commit(tmp_path: Path) -> None:
     assert result["backend"] in {"fts5", "fallback_like"}
     assert "event" in scopes
     assert "bot_context" in scopes
+    store.close()
+
+
+def test_bulk_write_updates_fts_incrementally_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="Исходная формулировка")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: pytest.fail("global FTS rebuild"))
+
+    with store.bulk_write():
+        store.upsert_event(replace(original, summary="Точечное обновление"))
+    assert store.search_timeline("foton", "обновление")["items"]
+
+    with pytest.raises(RuntimeError, match="abort"):
+        with store.bulk_write():
+            store.upsert_event(replace(original, summary="Откат транзакции"))
+            raise RuntimeError("abort")
+    assert not store.search_timeline("foton", "транзакции")["items"]
+    assert store.search_timeline("foton", "обновление")["items"]
+    store.close()
+
+
+def test_bulk_write_uses_rowid_point_sync_without_global_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    store.upsert_customer(customer)
+    monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: pytest.fail("global FTS rebuild"))
+    with store.bulk_write():
+        for index in range(100):
+            store.upsert_event(event(customer, source_id=f"bulk-{index}", summary=f"Пакет {index}"))
+    assert len(store.search_timeline("foton", "Пакет", limit=200)["items"]) == 100
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM timeline_event_fts WHERE tenant_id='foton'"
+    ).fetchone()[0] == 100
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM timeline_event_fts_keys WHERE fts_rowid IS NOT NULL"
+    ).fetchone()[0] == 100
+    store.close()
+
+
+def test_new_fts_records_skip_linear_orphan_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    ev = event(customer, summary="Новая запись без полного скана")
+    original_fetch_one = store._fetch_one
+
+    def reject_linear_fts_lookup(query: str, params: tuple[object, ...] = ()):
+        assert "FROM timeline_event_fts WHERE event_id" not in query
+        assert "FROM bot_context_chunk_fts WHERE chunk_id" not in query
+        return original_fetch_one(query, params)
+
+    monkeypatch.setattr(store, "_fetch_one", reject_linear_fts_lookup)
+    with store.bulk_write():
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(chunk(ev))
+
+    assert store.search_timeline("foton", "полного скана", limit=10)["items"]
+    store.close()
+
+
+def test_old_fts_key_schema_is_backfilled_without_retokenizing(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="Сохранённый индекс")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    store.close()
+
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute("ALTER TABLE timeline_event_fts_keys RENAME TO old_event_fts_keys")
+        con.execute("CREATE TABLE timeline_event_fts_keys(event_id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO timeline_event_fts_keys SELECT event_id FROM old_event_fts_keys")
+        con.execute("DROP TABLE old_event_fts_keys")
+        con.execute("DROP TABLE bot_context_chunk_fts_keys")
+
+    reopened = open_store(tmp_path)
+    event_row = reopened._con.execute(
+        "SELECT k.fts_rowid, f.rowid FROM timeline_event_fts_keys k "
+        "JOIN timeline_event_fts f ON f.event_id=k.event_id WHERE k.event_id=?",
+        (original.event_id,),
+    ).fetchone()
+    assert event_row[0] == event_row[1]
+    assert reopened.search_timeline("foton", "Сохранённый")["items"]
+    assert reopened._con.execute(
+        "SELECT COUNT(*) FROM bot_context_chunk_fts_keys WHERE fts_rowid IS NOT NULL"
+    ).fetchone()[0] == reopened._con.execute("SELECT COUNT(*) FROM bot_context_chunk_fts").fetchone()[0]
+    reopened.close()
+
+
+def test_missing_single_fts_key_is_repaired_without_duplicate(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="Старый текст")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    store._con.execute("DELETE FROM timeline_event_fts_keys WHERE event_id=?", (original.event_id,))
+    store._con.commit()
+
+    store.upsert_event(replace(original, summary="Новый текст"))
+
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM timeline_event_fts WHERE event_id=?", (original.event_id,)
+    ).fetchone()[0] == 1
+    assert not store.search_timeline("foton", "Старый")["items"]
+    assert store.search_timeline("foton", "Новый")["items"]
+    store.close()
+
+
+def test_missing_fts_key_blocks_point_delete_and_requests_rebuild(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="Старый текст")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    store._con.execute("DELETE FROM timeline_event_fts_keys WHERE event_id=?", (original.event_id,))
+
+    assert store._delete_fts_rows_by_keys(
+        fts_table="timeline_event_fts",
+        key_table="timeline_event_fts_keys",
+        key_column="event_id",
+        keys=(original.event_id,),
+    ) is False
+    store.close()
+
+
+def test_legacy_fts_rebuild_rollback_preserves_old_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="Старый индекс")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    original_bootstrap = store._bootstrap_fts
+
+    def fail_after_create() -> None:
+        original_bootstrap()
+        raise RuntimeError("fts failed after create")
+
+    monkeypatch.setattr(store, "_bootstrap_fts", fail_after_create)
+    with pytest.raises(RuntimeError, match="fts failed after create"):
+        with store.bulk_write():
+            store._rebuild_fts_indexes()
+
+    assert store.search_timeline("foton", "Старый")["items"]
+    assert not store.search_timeline("foton", "Новый")["items"]
+    assert store._con.execute("SELECT COUNT(*) FROM timeline_event_fts").fetchone()[0] == 1
+    assert store._con.execute("SELECT COUNT(*) FROM timeline_event_fts_keys").fetchone()[0] == 1
+    store.close()
+
+    reopened = open_store(tmp_path)
+    assert reopened.search_timeline("foton", "Старый")["items"]
+    reopened.close()
+
+
+def test_legacy_fts_rebuild_keeps_old_index_visible_until_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    original = event(customer, summary="До переключения")
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    original_bootstrap = store._bootstrap_fts
+
+    def bootstrap_and_check_reader() -> None:
+        original_bootstrap()
+        with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as reader:
+            assert reader.execute("SELECT COUNT(*) FROM timeline_event_fts").fetchone()[0] == 1
+            assert reader.execute("SELECT COUNT(*) FROM timeline_event_fts_keys").fetchone()[0] == 1
+
+    monkeypatch.setattr(store, "_bootstrap_fts", bootstrap_and_check_reader)
+    with store.bulk_write():
+        store._rebuild_fts_indexes()
+        store.upsert_event(replace(original, summary="После переключения"))
+
+    assert not store.search_timeline("foton", "До переключения")["items"]
+    assert store.search_timeline("foton", "После переключения")["items"]
     store.close()
 
 

@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -245,11 +246,11 @@ def fetch_endpoint_checkpointed(
             start_page=start_page,
             page_snapshots=page_snapshots,
         )
-    all_items = carried_items + list(batch_items)
+    all_items, identical_duplicates, conflicting_duplicates = _dedupe_collection_items(
+        carried_items + list(batch_items)
+    )
     total_pages = pages_before + batch_pages
-    identifiers = [clean_id(item.get("id")) for item in all_items]
-    identifiers = [value for value in identifiers if value]
-    drift_detected = len(identifiers) != len(set(identifiers))
+    drift_detected = conflicting_duplicates > 0
     complete = not page_cap_hit and not drift_detected
     if not drift_detected:
         last_page = start_page + batch_pages - 1
@@ -276,8 +277,30 @@ def fetch_endpoint_checkpointed(
         "upper_bound": upper_bound.isoformat(),
         "checkpoint_reset_reason": checkpoint_reset_reason,
         "pagination_drift_detected": drift_detected,
+        "identical_duplicates_collapsed": identical_duplicates,
+        "conflicting_duplicates": conflicting_duplicates,
     }
     return all_items, stats
+
+
+def _dedupe_collection_items(
+    items: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], int, int]:
+    result: list[Mapping[str, Any]] = []
+    positions: dict[str, int] = {}
+    identical = conflicting = 0
+    for item in items:
+        item_id = clean_id(item.get("id"))
+        if not item_id or item_id not in positions:
+            if item_id:
+                positions[item_id] = len(result)
+            result.append(item)
+            continue
+        if stable_digest(result[positions[item_id]]) == stable_digest(item):
+            identical += 1
+        else:
+            conflicting += 1
+    return result, identical, conflicting
 
 
 def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
@@ -319,6 +342,13 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
 
     checkpoint = load_amo_incremental_checkpoint(out_root)
     next_checkpoint: dict[str, Any] = {}
+    pending_leads = [
+        item
+        for item in (_checkpoint_entry(checkpoint, "amo_leads_pending").get("items") or ())
+        if isinstance(item, Mapping)
+    ]
+    if pending_leads:
+        next_checkpoint["amo_leads_pending"] = {"items": pending_leads}
     lead_items, lead_fetch_stats = fetch_endpoint_checkpointed(
         client,
         key="amo_leads_updated_at",
@@ -416,6 +446,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         }
         write_json(out_root / "amo_incremental_report.json", report)
         return report
+    lead_items, _, _ = _dedupe_collection_items([*lead_items, *pending_leads])
     contact_rows, contact_stats = normalize_cards_source(
         contact_items,
         pages=contact_pages,
@@ -452,11 +483,11 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         config=config,
     )
     lead_fetched_ids = set(lead_stats.pop("_fetched_entity_ids", ()))
+    skipped_lead_ids = set(lead_stats.pop("_skipped_entity_ids", ()))
+    pending_leads = [item for item in lead_items if clean_id(item.get("id")) in skipped_lead_ids]
+    lead_stats["pending_retry_count"] = len(pending_leads)
     fetch_report["amo_leads_updated_at"] = {**lead_fetch_stats, **lead_stats}
     write_jsonl(paths["amo_leads_updated_at"], lead_rows)
-    skipped_leads = lead_stats.get("skipped") if isinstance(lead_stats.get("skipped"), Mapping) else {}
-    preserve_lead_cursor = any(int(count or 0) > 0 for count in skipped_leads.values())
-    preserve_cursor_sources = ("amo_leads_updated_at",) if preserve_lead_cursor else ()
     cards_config = nightly_config_for_sources(
         timeline_db=timeline_db,
         out_root=out_root,
@@ -465,7 +496,6 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         overlap_seconds=config.safety_overlap_seconds,
         paths=paths,
         source_names=("amo_leads_updated_at", "amo_contacts_updated_at"),
-        preserve_cursor_sources=preserve_cursor_sources,
     )
     cards_first = run_nightly_incremental(cards_config)
     link_index_after_cards = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
@@ -494,23 +524,38 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         source_names=("amo_events_created_at",),
     )
     events_first = run_nightly_incremental(events_config)
-    all_config = nightly_config_for_sources(
-        timeline_db=timeline_db,
-        out_root=out_root,
-        allowed_root=allowed_root,
-        tenant_id=config.tenant_id,
-        overlap_seconds=config.safety_overlap_seconds,
-        paths=paths,
-        source_names=("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at"),
-        preserve_cursor_sources=preserve_cursor_sources,
-    )
-    second = run_nightly_incremental(all_config)
     validation_ok = all(
         item.get("gate_passed") is True
-        for item in (contacts_first, cards_first, events_first, second)
+        for item in (contacts_first, cards_first, events_first)
     )
     if validation_ok:
-        save_amo_incremental_checkpoint(out_root, {})
+        # The private pending queue now owns unresolved leads. Advance the
+        # network watermark to the proven fetch boundary so they are retried
+        # locally instead of forcing the same AMO pages to be downloaded again.
+        fetch_boundary = parse_iso(lead_fetch_stats["upper_bound"]) - timedelta(
+            seconds=config.safety_overlap_seconds
+        )
+        with CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root) as store:
+            cursor = store.get_ingestion_cursor(config.tenant_id, "amo_leads_updated_at")
+            metadata = dict(cursor.metadata if cursor else {})
+            metadata.update(
+                {
+                    "last_status": "ok",
+                    "fetch_complete_upper_bound": lead_fetch_stats["upper_bound"],
+                    "pending_lead_retries": len(pending_leads),
+                }
+            )
+            store.upsert_ingestion_cursor(
+                config.tenant_id,
+                "amo_leads_updated_at",
+                last_cursor_ts=max(fetch_boundary, cursor.last_cursor_ts if cursor else fetch_boundary),
+                metadata=metadata,
+                actor="customer_timeline_amo_incremental",
+            )
+        save_amo_incremental_checkpoint(
+            out_root,
+            {"amo_leads_pending": {"items": pending_leads}} if pending_leads else {},
+        )
     cursor_after = load_cursor_snapshot(timeline_db, config.tenant_id)
     examples = sample_inserted_examples(timeline_db, config.tenant_id, limit=10)
     finished = datetime.now(timezone.utc)
@@ -547,14 +592,18 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
             "changed_customer_count": int(cards_first.get("changed_customer_count") or 0)
             + int(events_first.get("changed_customer_count") or 0),
         },
-        "second_run": compact_nightly_report(second),
-        "repeat_run_duplicates": import_duplicate_count(second),
         "event_body_status": body_status_counts(event_rows),
         "examples": examples,
         "checkpoint": {
             "path": str(_checkpoint_path(out_root)),
             "pending_endpoints": [] if validation_ok else ["database_import"],
-            "cleared": validation_ok,
+            "pending_lead_retries": len(pending_leads),
+            "cleared": validation_ok and not pending_leads,
+        },
+        "identity_resolution": {
+            "complete": not pending_leads,
+            "pending_lead_retries": len(pending_leads),
+            "pending_state": "private_checkpoint" if pending_leads else "none",
         },
         "safety": {
             "amo_write": False,
@@ -764,6 +813,7 @@ def normalize_cards_source(
             link_index=link_index,
         )
     fetched_entity_ids: set[str] = set()
+    skipped_entity_ids: set[str] = set()
     for item in items:
         entity_id = clean_id(item.get("id"))
         if not entity_id:
@@ -775,6 +825,7 @@ def normalize_cards_source(
         resolution_counts[resolution] += 1
         if len(customers) > 1:
             skipped["ambiguous"] += 1
+            skipped_entity_ids.add(entity_id)
             continue
         updated_at = epoch_to_iso(item.get("updated_at") or item.get("created_at"))
         significant_hash = stable_digest(significant_card_payload(item))
@@ -800,6 +851,7 @@ def normalize_cards_source(
         }
         if not row["customer_id"] and entity_type == "lead":
             skipped["unmatched"] += 1
+            skipped_entity_ids.add(entity_id)
             continue
         rows.append(row)
     return rows, {
@@ -814,6 +866,7 @@ def normalize_cards_source(
         "contact_identity_diagnostics": dict(contact_identity_diagnostics),
         "resolution_counts": dict(resolution_counts),
         "_fetched_entity_ids": tuple(sorted(fetched_entity_ids)),
+        "_skipped_entity_ids": tuple(sorted(skipped_entity_ids)),
     }
 
 
@@ -1285,15 +1338,6 @@ def compact_nightly_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
         "source_errors": report.get("source_errors"),
         "safety": report.get("safety"),
     }
-
-
-def import_duplicate_count(report: Mapping[str, Any]) -> int:
-    total = 0
-    for item in report.get("imports", ()):
-        counts = item.get("write_status_counts") if isinstance(item, Mapping) else {}
-        if isinstance(counts, Mapping):
-            total += int(counts.get("duplicate") or 0)
-    return total
 
 
 def body_status_counts(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, int]:

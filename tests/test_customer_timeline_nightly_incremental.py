@@ -85,6 +85,7 @@ def test_nightly_incremental_uses_overlap_and_repeat_adds_no_duplicates(tmp_path
                 "created_at": "2026-06-21T10:00:00+00:00",
                 "updated_at": "2026-06-21T10:00:00+00:00",
                 "summary": "Сделка создана",
+                "raw_payload": {"must_not_affect_change_detection": True},
             },
             {
                 "source_id": "lead-2",
@@ -104,8 +105,36 @@ def test_nightly_incremental_uses_overlap_and_repeat_adds_no_duplicates(tmp_path
     assert second["changed_customer_ids"] == []
     assert event_count(tmp_path) == 2
     assert second["imports"][0]["write_status_counts"]["duplicate"] >= 1
+    performance = second["sources"][0]["performance"]
+    assert performance["mode"] == "incremental"
+    assert performance["rows"]["fetched"] == 2
+    assert performance["rows"]["changed_customers"] == 0
+    assert performance["seconds"]["total"] >= 0
+    assert performance["cursor_used"] is True
     cursor = second["cursor_updates"][0]
     assert cursor["last_cursor_ts"] == "2026-06-21T10:04:00+00:00"
+
+
+def test_nightly_empty_success_records_source_freshness_without_rebuild(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "empty.jsonl"
+    source_path.write_text("", encoding="utf-8")
+
+    report = run_nightly_incremental(base_config(tmp_path, source_path))
+
+    assert report["gate_passed"] is True
+    assert report["changed_customer_ids"] == []
+    assert report["rebuild"]["selected_customer_count"] == 0
+    assert report["imports"][0]["accepted_count"] == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT status FROM ingestion_runs WHERE source_ref='test:amo_updates'"
+        ).fetchone()[0] == "completed"
+        cursor = con.execute(
+            "SELECT last_cursor_ts, updated_at FROM ingestion_cursors WHERE source_system='amocrm_snapshot'"
+        ).fetchone()
+        assert cursor[0] == "1970-01-01T00:00:00+00:00"
+        assert cursor[1]
 
 
 def test_nightly_missing_only_source_ignores_and_preserves_cursor(tmp_path: Path) -> None:

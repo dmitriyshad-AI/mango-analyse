@@ -514,10 +514,12 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
                 key: {"page_cap_hit": False, "complete": True, "pagination_drift_detected": False}
                 for key in ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
             },
-            "repeat_run_duplicates": 0,
             "safety": {"amo_write": False, "tallanto_write": False, "crm_write": False},
-            "first_run": {"cards": {"source_errors": []}, "events": {"source_errors": []}},
-            "second_run": {"source_errors": []},
+            "first_run": {
+                "contacts_bootstrap": {"source_errors": []},
+                "cards": {"source_errors": []},
+                "events": {"source_errors": []},
+            },
         }
 
     monkeypatch.setattr(nightly_service_module, "run_amo_incremental", fake_run)
@@ -551,7 +553,7 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
 
     assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
-    assert report["steps"][0]["summary"]["repeat_run_duplicates"] == 0
+    assert "repeat_run_duplicates" not in report["steps"][0]["summary"]
     assert captured["config"].timeline_db == db_path
     assert captured["config"].copy_db is False
 
@@ -632,7 +634,12 @@ def test_nightly_service_runs_wappi_then_refreshes_family_graph(
         calls.append("wappi")
         assert config.require_widget_linkage is True
         assert config.limits.show_all_chats is True
-        return {"validation_ok": True, "summary": {"records_built": 3}}
+        return {
+            "validation_ok": True,
+            "fetch_complete": True,
+            "source_persistence_complete": True,
+            "summary": {"records_built": 3},
+        }
 
     def fake_family(config):
         calls.append("family")
@@ -729,7 +736,58 @@ def test_nightly_service_does_not_publish_when_wappi_identity_is_incomplete(
 
     assert report["steps"][0]["status"] == "failed"
     assert report["overall_status"] == "partial"
+    assert report["data_quality_status"] == "blocked"
     assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_accepts_complete_wappi_read_with_quarantined_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_wappi_history_import",
+        lambda _config: {
+            "validation_ok": True,
+            "fetch_complete": True,
+            "source_persistence_complete": True,
+            "attribution_complete": False,
+            "summary": {"pending_attribution": 1},
+        },
+    )
+    config_path = staging / "service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(staging),
+                "out_root": str(staging / "runs"),
+                "publish_dir": str(staging / "published"),
+                "steps": [
+                    {
+                        "name": "wappi_history_incremental",
+                        "kind": "wappi_history",
+                        "required": True,
+                        "config": {
+                            "env_file": str(tmp_path / "wappi.env"),
+                            "phase1_config": str(tmp_path / "phase1.json"),
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["attribution_complete"] is False
+    assert report["overall_status"] == "ok"
+    assert report["data_quality_status"] == "pass_with_notes"
 
 
 def test_nightly_service_amo_incremental_failure_is_optional(
@@ -2247,7 +2305,12 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
-        lambda config: {"validation_ok": True, "summary": {"records_built": 0}},
+        lambda config: {
+            "validation_ok": True,
+            "fetch_complete": True,
+            "source_persistence_complete": True,
+            "summary": {"records_built": 0},
+        },
     )
     config_payload = {
         "timeline_db": str(db_path),
@@ -2375,7 +2438,7 @@ def test_nightly_service_required_source_proof_passes_on_fresh_no_op(
             "validation_ok": True,
             "cursor_before": config.initial_since.isoformat(),
             "cursor_after": config.initial_since.isoformat(),
-            "counts": {},
+            "counts": {"relationships_unique": 0, "existing_events_before": 1},
             "safety": {"writes_tallanto": False},
         },
     )
@@ -2408,6 +2471,33 @@ def test_nightly_service_required_attendance_proof_rejects_fresh_cursor_without_
 
     proof = report["required_sources_check"]["proofs"]["tallanto_attendance"]
     assert proof["status"] == "missing"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_required_attendance_proof_rejects_old_rows_without_current_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    _seed_tallanto_attendance_event(db_path, allowed_root=tmp_path)
+    _seed_tallanto_attendance_cursor(db_path, updated_at=datetime.now(timezone.utc))
+    config_path = tmp_path / "tallanto_api_service.json"
+    config_path.write_text(json.dumps(_tallanto_attendance_config(tmp_path, db_path)), encoding="utf-8")
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_attendance_api_increment",
+        lambda config: {
+            "validation_ok": True,
+            "counts": {},
+            "safety": {"writes_tallanto": False},
+        },
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    proof = report["required_sources_check"]["proofs"]["tallanto_attendance"]
+    assert proof["status"] == "unproven_current_run"
     assert report["snapshot_manifest"]["latest_published"] is False
 
 

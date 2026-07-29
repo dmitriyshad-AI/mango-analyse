@@ -81,10 +81,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "affected_customer_count": report.get("first_run", {}).get("affected_customer_count"),
                 "changed_customer_count": report.get("first_run", {}).get("changed_customer_count"),
             },
-            "second_run": {
-                "affected_customer_count": report.get("second_run", {}).get("affected_customer_count"),
-                "changed_customer_count": report.get("second_run", {}).get("changed_customer_count"),
-            },
             "event_body_status": report.get("event_body_status"),
             "safety": report.get("safety"),
         }

@@ -1028,6 +1028,10 @@ def test_phone_identity_union_writes_complete_mapping_and_keeps_brand_history(tm
     assert {item["reason"] for item in mappings} == {"phone_identity_union"}
     assert {item["old_customer_id"] for item in mappings}
     assert {item["new_customer_id"] for item in mappings} == {customers[0]["customer_id"]}
+    assert set(report.changed_customer_ids) == {
+        *(item["old_customer_id"] for item in mappings),
+        *(item["new_customer_id"] for item in mappings),
+    }
     assert len({item["customer_id"] for item in links}) == 1
     store.close()
 

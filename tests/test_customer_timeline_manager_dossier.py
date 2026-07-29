@@ -754,6 +754,31 @@ def test_manager_dossier_prefers_resolved_active_timeline_step(tmp_path: Path) -
     assert dossier.next_step_source == "timeline_events"
 
 
+def test_manager_dossier_ignores_pending_wappi_attribution(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(TimelineEvent(
+            tenant_id="foton", customer_id="customer:1",
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW + timedelta(minutes=1), source_system="wappi_telegram",
+            source_id="pending-wappi-next-step", direction=TimelineDirection.INBOUND,
+            record={"next_step": "Продать курс ошибочно привязанному клиенту"},
+            metadata={"pending_attribution": True}, match_status="strong_unique", created_at=NOW,
+        ))
+
+    with sqlite3.connect(db) as con:
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+        chronology = manager_dossier_module._chronology_rows(
+            con, tenant_id="foton", customer_id="customer:1", limit=100,
+        )
+
+    assert "ошибочно привязанному" not in dossier.next_step.casefold()
+    assert dossier.next_step_source != "timeline_events"
+    assert "ошибочно привязанному" not in "\n".join(row.text.casefold() for row in chronology)
+
+
 def test_manager_dossier_does_not_fall_back_to_signal_after_step_closed(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
@@ -938,6 +963,31 @@ def test_source_freshness_reads_attendance_increment_and_cursor() -> None:
     assert row["events"] == 1
 
 
+def test_source_freshness_rejects_newer_partial_after_completed_import() -> None:
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        """
+        CREATE TABLE timeline_events (tenant_id TEXT, source_system TEXT, event_at TEXT);
+        CREATE TABLE ingestion_cursors (tenant_id TEXT, source_system TEXT, last_cursor_ts TEXT, updated_at TEXT);
+        CREATE TABLE ingestion_runs (tenant_id TEXT, source_system TEXT, source_ref TEXT, run_kind TEXT, status TEXT, finished_at TEXT);
+        INSERT INTO timeline_events VALUES ('foton','tallanto_attendance_api','2026-07-21T12:00:00+00:00');
+        INSERT INTO ingestion_cursors VALUES ('foton','tallanto_attendance_api','2026-07-22T00:00:00+00:00','2026-07-22T00:10:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','tallanto_attendance_api','old','tallanto_attendance_api_increment','completed','2026-07-22T00:02:00+00:00');
+        INSERT INTO ingestion_runs VALUES ('foton','tallanto_attendance_api','new','tallanto_attendance_api_increment','partial','2026-07-22T00:09:00+00:00');
+        """
+    )
+
+    row = next(item for item in source_freshness_rows(
+        con, expected_sources=("tallanto_attendance_api",)
+    ) if item["source_system"] == "tallanto_attendance_api")
+    gate = manager_freshness_gate([row], now=datetime(2026, 7, 22, 1, tzinfo=timezone.utc))
+
+    assert row["latest_import_status"] == "partial"
+    assert gate["passed"] is False
+    assert {item["reason"] for item in gate["blockers"]} == {"latest_import_not_completed"}
+
+
 def test_source_freshness_rejects_local_payment_snapshot_as_api_proof() -> None:
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
@@ -1027,6 +1077,29 @@ def test_manager_freshness_gate_blocks_future_but_accepts_old_contact_after_fres
     gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
 
     assert gate["blockers"] == [{"source_system": "wappi_max", "reason": "max_event_at_in_future"}]
+
+
+def test_manager_freshness_gate_allows_future_tallanto_business_dates() -> None:
+    rows = [
+        {
+            "source_system": source,
+            "expected": True,
+            "missing": False,
+            "cursor_complete": True,
+            "cursor_updated_at": "2026-07-22T00:00:00+00:00",
+            "imported_at": "2026-07-22T00:00:00+00:00",
+            "max_event_at": future_at,
+        }
+        for source, future_at in (
+            ("tallanto_crm_call", "2026-12-29T00:00:00+00:00"),
+            ("tallanto_attendance_api", "2030-01-01T11:00:00+03:00"),
+        )
+    ]
+
+    gate = manager_freshness_gate(rows, now=datetime(2026, 7, 22, tzinfo=timezone.utc))
+
+    assert gate["passed"] is True
+    assert gate["blockers"] == []
 
 
 def test_manager_dossier_matches_canonical_call_id_and_prefixed_source_id(tmp_path: Path) -> None:
@@ -1201,6 +1274,7 @@ def test_manager_dossier_pain_quote_trims_adjacent_asr_tail(tmp_path: Path) -> N
 def test_manager_dossier_reads_family_chronology_without_merging_customer_records(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
     with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
         store.upsert_customer(
             CustomerIdentity(
@@ -1240,6 +1314,21 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
                 ("foton", "family:shared", "customer:2", "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), "hash-2", "{}"),
             ),
         )
+        con.execute(
+            "INSERT OR REPLACE INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:shared", "customer:2", "child:2", "Второй ученик", "[]",
+                '["7"]', '["физика"]', "foton", "confident", "high", "test", "[]", 1,
+                NOW.isoformat(), "hash-child-2", "{}",
+            ),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO customer_purchases_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "customer:2", "all_time", "fact", 22222, 0, 1,
+                "2026-05-01", "[]", "computed", "test",
+            ),
+        )
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
     chronology = "\n".join(row.text for row in dossier.chronology)
@@ -1247,6 +1336,8 @@ def test_manager_dossier_reads_family_chronology_without_merging_customer_record
     assert "второго ребёнка" in chronology
     assert "карточка: Второй ученик" in chronology
     assert any(row.source.endswith(":customer:2") for row in dossier.chronology)
+    assert any("Второй ученик" in row.text for row in dossier.family)
+    assert any("22 222" in row.text and "карточка: Второй ученик" in row.text for row in dossier.money)
 
 
 @pytest.fixture

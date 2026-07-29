@@ -528,7 +528,7 @@ class CustomerTimelineSQLiteStore:
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
-        self._bulk_fts_dirty = False
+        self._bulk_fts_rebuild = False
         self._writer_lock_path: Optional[Path] = None
         self._writer_lock_handle: Any = None
         if not self.read_only:
@@ -570,7 +570,7 @@ class CustomerTimelineSQLiteStore:
         self._ensure_writable()
         outermost = self._bulk_write_depth == 0
         if outermost:
-            self._bulk_fts_dirty = False
+            self._bulk_fts_rebuild = False
         self._bulk_write_depth += 1
         try:
             yield self
@@ -578,18 +578,21 @@ class CustomerTimelineSQLiteStore:
             if outermost:
                 self._con.rollback()
                 self._bulk_write_dirty = False
-                self._bulk_fts_dirty = False
             raise
         else:
             if outermost and self._bulk_write_dirty:
-                if self._bulk_fts_dirty:
-                    self._rebuild_fts_indexes()
-                self._con.commit()
+                try:
+                    if self._bulk_fts_rebuild:
+                        self._rebuild_fts_indexes()
+                    self._con.commit()
+                except Exception:
+                    self._con.rollback()
+                    raise
         finally:
             self._bulk_write_depth -= 1
             if outermost:
                 self._bulk_write_dirty = False
-                self._bulk_fts_dirty = False
+                self._bulk_fts_rebuild = False
 
     @property
     def open_result(self) -> CustomerTimelineSQLiteOpenResult:
@@ -1229,10 +1232,9 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        if result.status != "duplicate" and self._bulk_write_depth > 0:
-            self._bulk_fts_dirty = True
-        elif result.status != "duplicate":
-            self._sync_event_fts(event, payload, record_hash)
+        if result.status != "duplicate":
+            if not self._bulk_fts_rebuild:
+                self._sync_event_fts(event, payload, record_hash, created=result.created)
         self._commit()
         return result
 
@@ -1380,10 +1382,9 @@ class CustomerTimelineSQLiteStore:
                 metadata={"source_system": chunk.source_system},
                 now=self._now(),
             )
-        if (result.status != "duplicate" or was_superseded) and self._bulk_write_depth > 0:
-            self._bulk_fts_dirty = True
-        elif result.status != "duplicate" or was_superseded:
-            self._sync_chunk_fts(chunk, record_hash)
+        if result.status != "duplicate" or was_superseded:
+            if not self._bulk_fts_rebuild:
+                self._sync_chunk_fts(chunk, record_hash, created=result.created)
         self._commit()
         return result
 
@@ -2812,7 +2813,11 @@ class CustomerTimelineSQLiteStore:
         return result
 
     def _bootstrap_fts(self) -> None:
-        self._con.executescript(
+        # These statements must stay inside the caller's transaction. SQLite
+        # executescript() commits first and would expose an empty index mid-rebuild.
+        event_key_columns_before = self._table_columns("timeline_event_fts_keys")
+        chunk_key_columns_before = self._table_columns("bot_context_chunk_fts_keys")
+        self._con.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS timeline_event_fts USING fts5(
               tenant_id UNINDEXED,
@@ -2826,8 +2831,11 @@ class CustomerTimelineSQLiteStore:
               text_preview,
               summary,
               record_text
-            );
-
+            )
+            """
+        )
+        self._con.execute(
+            """
             CREATE VIRTUAL TABLE IF NOT EXISTS bot_context_chunk_fts USING fts5(
               tenant_id UNINDEXED,
               chunk_id UNINDEXED,
@@ -2837,16 +2845,41 @@ class CustomerTimelineSQLiteStore:
               event_at UNINDEXED,
               text,
               summary
-            );
-
-            CREATE TABLE IF NOT EXISTS timeline_event_fts_keys (
-              event_id TEXT PRIMARY KEY
-            );
-
-            INSERT OR IGNORE INTO timeline_event_fts_keys(event_id)
-            SELECT event_id FROM timeline_event_fts;
+            )
             """
         )
+        self._con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS timeline_event_fts_keys (
+              event_id TEXT PRIMARY KEY,
+              fts_rowid INTEGER
+            )
+            """
+        )
+        self._con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_context_chunk_fts_keys (
+              chunk_id TEXT PRIMARY KEY,
+              fts_rowid INTEGER
+            )
+            """
+        )
+        if event_key_columns_before and "fts_rowid" not in event_key_columns_before:
+            self._con.execute("ALTER TABLE timeline_event_fts_keys ADD COLUMN fts_rowid INTEGER")
+        if chunk_key_columns_before and "fts_rowid" not in chunk_key_columns_before:
+            self._con.execute("ALTER TABLE bot_context_chunk_fts_keys ADD COLUMN fts_rowid INTEGER")
+        # ponytail: old indexes are valid; attach their existing rowids in one
+        # sequential pass instead of re-tokenizing hundreds of thousands of rows.
+        if "fts_rowid" not in event_key_columns_before:
+            self._con.execute(
+                "INSERT OR REPLACE INTO timeline_event_fts_keys(event_id, fts_rowid) "
+                "SELECT event_id, rowid FROM timeline_event_fts"
+            )
+        if "fts_rowid" not in chunk_key_columns_before:
+            self._con.execute(
+                "INSERT OR REPLACE INTO bot_context_chunk_fts_keys(chunk_id, fts_rowid) "
+                "SELECT chunk_id, rowid FROM bot_context_chunk_fts"
+            )
 
     def _detect_existing_fts(self) -> bool:
         row = self._fetch_one(
@@ -2855,12 +2888,29 @@ class CustomerTimelineSQLiteStore:
         return row is not None
 
     def _rebuild_fts_indexes(self) -> None:
+        owns_transaction = not self._con.in_transaction
+        if owns_transaction:
+            self._con.execute("BEGIN IMMEDIATE")
+        try:
+            self._rebuild_fts_indexes_in_transaction()
+            if owns_transaction:
+                self._con.commit()
+        except Exception:
+            if owns_transaction:
+                self._con.rollback()
+            raise
+
+    def _rebuild_fts_indexes_in_transaction(self) -> None:
         if not sqlite_fts5_available(self._con):
             self._fts_enabled = False
             return
+        # ponytail: a full rebuild has no reusable FTS rows. Dropping the
+        # service indexes avoids token-by-token deletion of a multi-GB index.
+        self._con.execute("DROP TABLE IF EXISTS timeline_event_fts")
+        self._con.execute("DROP TABLE IF EXISTS bot_context_chunk_fts")
+        self._con.execute("DROP TABLE IF EXISTS timeline_event_fts_keys")
+        self._con.execute("DROP TABLE IF EXISTS bot_context_chunk_fts_keys")
         self._bootstrap_fts()
-        self._con.execute("DELETE FROM timeline_event_fts")
-        self._con.execute("DELETE FROM timeline_event_fts_keys")
         for row in self._con.execute(
             f"""
             SELECT
@@ -2873,7 +2923,7 @@ class CustomerTimelineSQLiteStore:
         ):
             payload = json_loads(row["record_json"])
             record_for_fts = event_record_for_fts(payload)
-            self._con.execute(
+            cursor = self._con.execute(
                 """
                 INSERT INTO timeline_event_fts (
                   tenant_id, event_id, customer_id, opportunity_id, event_type,
@@ -2895,8 +2945,10 @@ class CustomerTimelineSQLiteStore:
                     json_dumps({"hash": row["record_hash"], "record": record_for_fts}),
                 ),
             )
-            self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (row["event_id"],))
-        self._con.execute("DELETE FROM bot_context_chunk_fts")
+            self._con.execute(
+                "INSERT OR REPLACE INTO timeline_event_fts_keys(event_id, fts_rowid) VALUES (?, ?)",
+                (row["event_id"], cursor.lastrowid),
+            )
         for row in self._con.execute(
             f"""
             SELECT
@@ -2908,7 +2960,7 @@ class CustomerTimelineSQLiteStore:
             """
         ):
             payload = json_loads(row["record_json"])
-            self._con.execute(
+            cursor = self._con.execute(
                 """
                 INSERT INTO bot_context_chunk_fts (
                   tenant_id, chunk_id, customer_id, opportunity_id, event_id,
@@ -2927,19 +2979,46 @@ class CustomerTimelineSQLiteStore:
                     f"{payload.get('summary') or ''} {row['record_hash']}",
                 ),
             )
+            self._con.execute(
+                "INSERT OR REPLACE INTO bot_context_chunk_fts_keys(chunk_id, fts_rowid) VALUES (?, ?)",
+                (row["chunk_id"], cursor.lastrowid),
+            )
         self._fts_enabled = True
 
-    def _sync_event_fts(self, event: TimelineEvent, payload: Mapping[str, Any], record_hash: str) -> None:
+    def _sync_event_fts(
+        self,
+        event: TimelineEvent,
+        payload: Mapping[str, Any],
+        record_hash: str,
+        *,
+        created: bool = False,
+    ) -> None:
         if not self._fts_enabled and not self._detect_existing_fts():
             return
         record_for_fts = event_record_for_fts(payload)
-        existing_fts = self._fetch_one("SELECT 1 FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,))
+        existing_fts = self._fetch_one(
+            "SELECT fts_rowid FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,)
+        )
+        if existing_fts is None and not created:
+            orphan = self._fetch_one("SELECT rowid AS fts_rowid FROM timeline_event_fts WHERE event_id = ? LIMIT 1", (event.event_id,))
+            if orphan is not None:
+                self._con.execute(
+                    "INSERT INTO timeline_event_fts_keys(event_id, fts_rowid) VALUES (?, ?)",
+                    (event.event_id, orphan["fts_rowid"]),
+                )
+                existing_fts = orphan
         if existing_fts is not None:
-            self._con.execute("DELETE FROM timeline_event_fts WHERE event_id = ?", (event.event_id,))
+            if existing_fts["fts_rowid"] is None:
+                if self._bulk_write_depth > 0:
+                    self._bulk_fts_rebuild = True
+                    return
+                self._rebuild_fts_indexes()
+                return
+            self._con.execute("DELETE FROM timeline_event_fts WHERE rowid = ?", (existing_fts["fts_rowid"],))
         if self._is_superseded("timeline_events", "event_id", event.event_id):
             self._con.execute("DELETE FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,))
             return
-        self._con.execute(
+        cursor = self._con.execute(
             """
             INSERT INTO timeline_event_fts (
               tenant_id, event_id, customer_id, opportunity_id, event_type,
@@ -2961,16 +3040,40 @@ class CustomerTimelineSQLiteStore:
                 json_dumps({"hash": record_hash, "record": record_for_fts}),
             ),
         )
-        self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (event.event_id,))
+        self._con.execute(
+            "INSERT OR REPLACE INTO timeline_event_fts_keys(event_id, fts_rowid) VALUES (?, ?)",
+            (event.event_id, cursor.lastrowid),
+        )
         self._fts_enabled = True
 
-    def _sync_chunk_fts(self, chunk: BotContextChunk, record_hash: str) -> None:
+    def _sync_chunk_fts(self, chunk: BotContextChunk, record_hash: str, *, created: bool = False) -> None:
         if not self._fts_enabled and not self._detect_existing_fts():
             return
-        self._con.execute("DELETE FROM bot_context_chunk_fts WHERE chunk_id = ?", (chunk.chunk_id,))
+        existing_fts = self._fetch_one(
+            "SELECT fts_rowid FROM bot_context_chunk_fts_keys WHERE chunk_id = ?", (chunk.chunk_id,)
+        )
+        if existing_fts is None and not created:
+            orphan = self._fetch_one(
+                "SELECT rowid AS fts_rowid FROM bot_context_chunk_fts WHERE chunk_id = ? LIMIT 1", (chunk.chunk_id,)
+            )
+            if orphan is not None:
+                self._con.execute(
+                    "INSERT INTO bot_context_chunk_fts_keys(chunk_id, fts_rowid) VALUES (?, ?)",
+                    (chunk.chunk_id, orphan["fts_rowid"]),
+                )
+                existing_fts = orphan
+        if existing_fts is not None:
+            if existing_fts["fts_rowid"] is None:
+                if self._bulk_write_depth > 0:
+                    self._bulk_fts_rebuild = True
+                    return
+                self._rebuild_fts_indexes()
+                return
+            self._con.execute("DELETE FROM bot_context_chunk_fts WHERE rowid = ?", (existing_fts["fts_rowid"],))
         if self._is_superseded("bot_context_chunks", "chunk_id", chunk.chunk_id):
+            self._con.execute("DELETE FROM bot_context_chunk_fts_keys WHERE chunk_id = ?", (chunk.chunk_id,))
             return
-        self._con.execute(
+        cursor = self._con.execute(
             """
             INSERT INTO bot_context_chunk_fts (
               tenant_id, chunk_id, customer_id, opportunity_id, event_id,
@@ -2988,6 +3091,10 @@ class CustomerTimelineSQLiteStore:
                 chunk.text,
                 f"{chunk.summary or ''} {record_hash}",
             ),
+        )
+        self._con.execute(
+            "INSERT OR REPLACE INTO bot_context_chunk_fts_keys(chunk_id, fts_rowid) VALUES (?, ?)",
+            (chunk.chunk_id, cursor.lastrowid),
         )
         self._fts_enabled = True
 
@@ -3279,39 +3386,77 @@ class CustomerTimelineSQLiteStore:
     def _delete_superseded_from_fts(self, event_ids: Sequence[str]) -> None:
         if not event_ids:
             return
-        placeholders = ", ".join("?" for _ in event_ids)
-        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts'") is not None:
-            self._con.execute(f"DELETE FROM timeline_event_fts WHERE event_id IN ({placeholders})", tuple(event_ids))
-        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts_keys'") is not None:
-            self._con.execute(f"DELETE FROM timeline_event_fts_keys WHERE event_id IN ({placeholders})", tuple(event_ids))
+        if not self._delete_fts_rows_by_keys(
+            fts_table="timeline_event_fts",
+            key_table="timeline_event_fts_keys",
+            key_column="event_id",
+            keys=event_ids,
+        ):
+            self._rebuild_or_defer_fts()
+            return
         self._delete_bot_context_fts_for_event_ids(event_ids)
 
     def _delete_bot_context_fts_for_event_ids(self, event_ids: Sequence[str]) -> None:
         if not event_ids:
             return
-        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is None:
-            return
         placeholders = ", ".join("?" for _ in event_ids)
-        self._con.execute(
-            f"""
-            DELETE FROM bot_context_chunk_fts
-            WHERE chunk_id IN (
-              SELECT chunk_id FROM bot_context_chunks WHERE event_id IN ({placeholders})
-            )
-            """,
-            tuple(event_ids),
-        )
+        chunk_ids = [
+            str(row["chunk_id"])
+            for row in self._con.execute(
+                f"SELECT chunk_id FROM bot_context_chunks WHERE event_id IN ({placeholders})", tuple(event_ids)
+            ).fetchall()
+        ]
+        if not self._delete_fts_rows_by_keys(
+            fts_table="bot_context_chunk_fts",
+            key_table="bot_context_chunk_fts_keys",
+            key_column="chunk_id",
+            keys=chunk_ids,
+        ):
+            self._rebuild_or_defer_fts()
 
     def _delete_bot_context_fts_for_chunk_ids(self, chunk_ids: Sequence[str]) -> None:
         if not chunk_ids:
             return
-        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_context_chunk_fts'") is None:
-            return
-        placeholders = ", ".join("?" for _ in chunk_ids)
-        self._con.execute(
-            f"DELETE FROM bot_context_chunk_fts WHERE chunk_id IN ({placeholders})",
-            tuple(chunk_ids),
-        )
+        if not self._delete_fts_rows_by_keys(
+            fts_table="bot_context_chunk_fts",
+            key_table="bot_context_chunk_fts_keys",
+            key_column="chunk_id",
+            keys=chunk_ids,
+        ):
+            self._rebuild_or_defer_fts()
+
+    def _delete_fts_rows_by_keys(
+        self,
+        *,
+        fts_table: str,
+        key_table: str,
+        key_column: str,
+        keys: Sequence[str],
+    ) -> bool:
+        selected = tuple(dict.fromkeys(str(item) for item in keys if str(item)))
+        if not selected or self._fetch_one(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (fts_table,)
+        ) is None:
+            return True
+        placeholders = ", ".join("?" for _ in selected)
+        rows = self._con.execute(
+            f"SELECT {key_column}, fts_rowid FROM {key_table} WHERE {key_column} IN ({placeholders})",
+            selected,
+        ).fetchall()
+        if len(rows) != len(selected) or any(row["fts_rowid"] is None for row in rows):
+            return False
+        rowids = tuple(int(row["fts_rowid"]) for row in rows)
+        if rowids:
+            rowid_placeholders = ", ".join("?" for _ in rowids)
+            self._con.execute(f"DELETE FROM {fts_table} WHERE rowid IN ({rowid_placeholders})", rowids)
+        self._con.execute(f"DELETE FROM {key_table} WHERE {key_column} IN ({placeholders})", selected)
+        return True
+
+    def _rebuild_or_defer_fts(self) -> None:
+        if self._bulk_write_depth > 0:
+            self._bulk_fts_rebuild = True
+        else:
+            self._rebuild_fts_indexes()
 
     def _table_count(self, table_name: str) -> int:
         if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)) is None:

@@ -5,9 +5,10 @@ import json
 import re
 import sqlite3
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Sequence
+from zoneinfo import ZoneInfo
 
 from mango_mvp.customer_timeline.contracts import (
     ArtifactType,
@@ -52,6 +53,7 @@ from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTE
 
 
 CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION = "customer_timeline_ingestion_v1"
+TALLANTO_TIMEZONE = ZoneInfo("Europe/Moscow")
 PHONE_IDENTITY_LINK_TYPES = frozenset({"phone", "mango_client_phone", "whatsapp_phone"})
 CONTACT_IDENTITY_LINK_TYPES = PHONE_IDENTITY_LINK_TYPES | {"email"}
 FORBIDDEN_IMPORT_HINTS = (
@@ -193,6 +195,7 @@ class TimelineImportReport:
     rejected_count: int
     normalized_counts: Mapping[str, int]
     write_status_counts: Mapping[str, int]
+    changed_customer_ids: Sequence[str]
     errors: Sequence[TimelineImportError]
     source_inventory: Sequence[Mapping[str, Any]]
     source_unchanged: bool
@@ -214,6 +217,7 @@ class TimelineImportReport:
             "rejected_count": self.rejected_count,
             "normalized_counts": dict(self.normalized_counts),
             "write_status_counts": dict(self.write_status_counts),
+            "changed_customer_ids": list(self.changed_customer_ids),
             "errors": [item.to_json_dict() for item in self.errors],
             "source_inventory": [dict(item) for item in self.source_inventory],
             "source_unchanged": self.source_unchanged,
@@ -264,6 +268,7 @@ class TimelineImportService:
         errors: list[TimelineImportError] = []
         normalized_counts = zero_normalized_counts()
         write_status_counts: dict[str, int] = {}
+        changed_customer_ids: set[str] = set()
         raw_batches: list[TimelineNormalizedBatch] = []
         for record in normalized_records:
             try:
@@ -280,6 +285,11 @@ class TimelineImportService:
                 )
         resolution = resolve_customer_identity_batches(raw_batches, store=self.store if not dry_run else None)
         batches = tuple(resolution.batches)
+        resolved_batch_customer_ids = {
+            customer_id
+            for batch in batches
+            for customer_id in _batch_customer_ids(batch)
+        }
         for batch in batches:
             merge_counts(normalized_counts, batch.counts())
         normalized_counts["customer_id_mappings"] = len(resolution.mappings)
@@ -303,8 +313,11 @@ class TimelineImportService:
                 )
                 run_id = run.run_id
                 for batch in batches:
-                    for result in self._apply_batch(batch, actor=actor, ingestion_run_id=run_id):
+                    batch_results = self._apply_batch(batch, actor=actor, ingestion_run_id=run_id)
+                    for result in batch_results:
                         write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+                    if any(result.status != "duplicate" for result in batch_results):
+                        changed_customer_ids.update(_batch_customer_ids(batch))
                 for conflict in inferred_conflicts:
                     result = self.store.record_conflict(
                         conflict["tenant_id"],
@@ -318,6 +331,8 @@ class TimelineImportService:
                         ingestion_run_id=run_id,
                     )
                     write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+                    if result.status != "duplicate":
+                        changed_customer_ids.update(resolved_batch_customer_ids)
                 for mapping in resolution.mappings:
                     result = self.store.record_customer_id_mapping(
                         mapping.tenant_id,
@@ -330,6 +345,9 @@ class TimelineImportService:
                         ingestion_run_id=run_id,
                     )
                     write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+                    if result.status != "duplicate":
+                        changed_customer_ids.add(mapping.old_customer_id)
+                        changed_customer_ids.add(mapping.new_customer_id)
                 if run_id:
                     self.store.finish_ingestion_run(
                         run_id,
@@ -354,6 +372,7 @@ class TimelineImportService:
             rejected_count=len(errors),
             normalized_counts=dict(normalized_counts),
             write_status_counts=dict(write_status_counts),
+            changed_customer_ids=tuple(sorted(changed_customer_ids)),
             errors=tuple(errors),
             source_inventory=tuple(source_inventory_after),
             source_unchanged=source_inventory_before == source_inventory_after,
@@ -397,6 +416,25 @@ class TimelineImportService:
                 )
             )
         return tuple(results)
+
+
+def _batch_customer_ids(batch: TimelineNormalizedBatch) -> set[str]:
+    customer_ids: set[str] = set()
+    for collection in (
+        batch.customers,
+        batch.identity_links,
+        batch.opportunities,
+        batch.events,
+        batch.artifacts,
+        batch.signals,
+        batch.bot_context_chunks,
+    ):
+        customer_ids.update(
+            str(customer_id)
+            for item in collection
+            if (customer_id := getattr(item, "customer_id", None))
+        )
+    return customer_ids
 
 
 class AmoSnapshotNormalizer:
@@ -563,6 +601,7 @@ class TallantoSnapshotNormalizer:
         event_at = parse_source_datetime(
             first_value(payload, ("snapshot_at", "captured_at", "updated_at", "created_at", "event_at")),
             record.observed_at,
+            naive_timezone=TALLANTO_TIMEZONE,
         )
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
@@ -2554,7 +2593,12 @@ def first_value(payload: Mapping[str, Any], keys: Sequence[str]) -> Any:
     return None
 
 
-def parse_source_datetime(value: Any, fallback: Optional[datetime] = None) -> datetime:
+def parse_source_datetime(
+    value: Any,
+    fallback: Optional[datetime] = None,
+    *,
+    naive_timezone: tzinfo = timezone.utc,
+) -> datetime:
     if isinstance(value, datetime):
         parsed = value
     else:
@@ -2571,7 +2615,7 @@ def parse_source_datetime(value: Any, fallback: Optional[datetime] = None) -> da
             except ValueError:
                 parsed = fallback or datetime.now(timezone.utc)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=naive_timezone)
     return parsed
 
 

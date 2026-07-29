@@ -546,7 +546,7 @@ def build_service_config(
                 "mcp_env": str(DEFAULT_AMO_MCP_ENV),
                 "safety_overlap_seconds": 300,
                 "page_limit": 20,
-                "max_pages": 100,
+                "max_pages": 200,
                 "sleep_sec": 1.05,
             },
         }

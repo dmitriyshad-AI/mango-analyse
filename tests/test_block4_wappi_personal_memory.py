@@ -9,7 +9,7 @@ re-implementing the seeding/fake-client plumbing.
 
 Mapping:
   1. test_exact_widget_pair_gets_family_scoped_memory
-  2. test_generic_auto_pair_gets_no_memory_but_dialog_continues
+  2. test_generic_auto_pair_gets_memory_after_strong_amo_check
   3. test_contact_id_change_blocks_old_memory_as_conflict
   4. test_shared_family_phone_and_ambiguous_identity_block_memory
   5. test_wrong_brand_blocks_memory_at_resolver_and_draft_loop
@@ -92,9 +92,9 @@ def test_exact_widget_pair_gets_family_scoped_memory(tmp_path: Path, monkeypatch
     assert "botsafe:" not in raw
 
 
-# 2. Unconfirmed generic "auto" pair keeps the dialog alive (a draft/manager-review
-#    outcome is still produced) but never receives the real DB-backed family memory.
-def test_generic_auto_pair_gets_no_memory_but_dialog_continues(tmp_path: Path, monkeypatch) -> None:
+# 2. An auto-discovered pair receives memory only after the canonical Timeline
+#    resolver independently proves its AMO identity strong and unique.
+def test_generic_auto_pair_gets_memory_after_strong_amo_check(tmp_path: Path, monkeypatch) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     monkeypatch.setenv(BOT_SAFE_CRM_CONTEXT_ENV, "1")
     key = DraftLoopKey("profile-foton", "chat-1")
@@ -110,14 +110,14 @@ def test_generic_auto_pair_gets_no_memory_but_dialog_continues(tmp_path: Path, m
     amo = FakeAmo()
     loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: auto_pair}, bot=bot, amo=amo)
     loop.context_builder = build_context
+    loop.trusted_auto_customer_context_builder = build_context
 
     summary = loop.run_once(dry_run=False)
 
     assert summary["bot_calls"] == 1  # the dialog is NOT dropped/excluded
     assert len(bot.calls) == 1
     context = bot.calls[0]["context"]
-    assert "read_only_customer_context" not in context
-    assert "timeline_context" not in context
+    assert context["read_only_customer_context"]["found"] is True
     assert customer_id not in json.dumps(context, ensure_ascii=False)
     assert amo.notes, "a neutral draft / manager-review note must still be written"
 

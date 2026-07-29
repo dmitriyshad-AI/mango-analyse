@@ -437,6 +437,7 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
             import_reports: list[Mapping[str, Any]] = []
             cursor_updates: list[Mapping[str, Any]] = []
             for source in config.sources:
+                source_started = time.monotonic()
                 try:
                     loaded = load_incremental_jsonl_source(
                         store,
@@ -450,16 +451,26 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                     report["sources"].append(source_failure_report(source, reason=reason, error=exc))
                     report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
-                report["sources"].append(loaded.to_json_dict())
+                source_report = dict(loaded.to_json_dict())
+                source_report["performance"] = {
+                    "mode": "pre_filtered" if source.ignore_cursor else "incremental",
+                    "rows": {
+                        "fetched": loaded.rows_total,
+                        "selected": loaded.rows_selected,
+                        "reused": loaded.rows_total - loaded.rows_selected,
+                        "changed_customers": 0,
+                    },
+                    "seconds": {"load": round(time.monotonic() - source_started, 3)},
+                    "cursor_used": loaded.fetch_from is not None,
+                }
+                report["sources"].append(source_report)
                 if loaded.skipped_reason:
                     if not source.preserve_cursor:
                         update_source_failure_cursor(store, source, skipped_reason=loaded.skipped_reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=loaded.skipped_reason))
                     continue
-                if not loaded.records:
-                    affected.update(loaded.affected_customer_ids)
-                    continue
                 try:
+                    import_started = time.monotonic()
                     imported = TimelineImportService(store).import_records(
                         loaded.records,
                         normalizer=normalizer_for_source(source),
@@ -481,9 +492,14 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                         update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=reason, error=exc))
                     continue
+                source_report["performance"]["seconds"]["write"] = round(time.monotonic() - import_started, 3)
+                source_report["performance"]["seconds"]["total"] = round(time.monotonic() - source_started, 3)
                 affected.update(loaded.affected_customer_ids)
-                would_change.update(loaded.would_change_customer_ids)
                 imported_payload = imported.to_json_dict()
+                actual_changed = set(imported.changed_customer_ids)
+                source_report["would_change_customer_ids"] = sorted(actual_changed)
+                source_report["performance"]["rows"]["changed_customers"] = len(actual_changed)
+                would_change.update(actual_changed)
                 import_reports.append(imported_payload)
                 if not imported.validation_ok:
                     reason = f"import_validation_failed:rejected_count={imported.rejected_count}"
@@ -491,12 +507,23 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                         update_source_failure_cursor(store, source, skipped_reason=reason, actor=config.actor)
                     report["source_errors"].append(source_error(source, reason=reason))
                     continue
-                if loaded.max_source_ts is not None and not source.preserve_cursor:
-                    cursor_ts = loaded.max_source_ts - timedelta(seconds=config.safety_margin_seconds)
+                if not source.preserve_cursor:
                     existing_cursor = store.get_ingestion_cursor(source.tenant_id, source.source_system)
-                    persisted_cursor_ts = cursor_ts
-                    if existing_cursor is not None and existing_cursor.last_cursor_ts > persisted_cursor_ts:
-                        persisted_cursor_ts = existing_cursor.last_cursor_ts
+                    if loaded.max_source_ts is not None:
+                        cursor_ts = loaded.max_source_ts - timedelta(seconds=config.safety_margin_seconds)
+                        persisted_cursor_ts = max(
+                            cursor_ts,
+                            existing_cursor.last_cursor_ts if existing_cursor else cursor_ts,
+                        )
+                    else:
+                        # Empty success advances proof freshness, not the data
+                        # watermark. Epoch is safe for a genuinely empty first run.
+                        cursor_ts = (
+                            existing_cursor.last_cursor_ts
+                            if existing_cursor
+                            else datetime(1970, 1, 1, tzinfo=timezone.utc)
+                        )
+                        persisted_cursor_ts = cursor_ts
                     cursor = store.upsert_ingestion_cursor(
                         source.tenant_id,
                         source.source_system,
@@ -508,7 +535,12 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                             last_cursor_ts=cursor_ts,
                             max_source_ts=loaded.max_source_ts,
                         )
-                        | {"max_source_ts": loaded.max_source_ts.isoformat(), "consecutive_failures": 0},
+                        | (
+                            {"max_source_ts": loaded.max_source_ts.isoformat()}
+                            if loaded.max_source_ts is not None
+                            else {}
+                        )
+                        | {"consecutive_failures": 0},
                         actor=config.actor,
                         ingestion_run_id=imported.run_id,
                     )
@@ -621,9 +653,7 @@ def load_incremental_jsonl_source(
     selected_rows = []
     max_ts: Optional[datetime] = None
     affected: set[str] = set()
-    would_change: set[str] = set()
     records: list[TimelineSourceRecord] = []
-    normalizer = normalizer_for_source(source)
     for row in rows:
         ts = parse_datetime(normalized_timestamp(row), "source_timestamp")
         max_ts = ts if max_ts is None else max(max_ts, ts)
@@ -643,10 +673,6 @@ def load_incremental_jsonl_source(
             observed_at=ts,
         )
         records.append(record)
-        batch = normalizer.normalize(record)
-        for event in batch.events:
-            if event.customer_id and event_would_change(store, event):
-                would_change.add(event.customer_id)
     return SourceLoadResult(
         source=source,
         cursor_before=cursor.last_cursor_ts.isoformat() if cursor else None,
@@ -656,7 +682,7 @@ def load_incremental_jsonl_source(
         records=tuple(records),
         max_source_ts=max_ts,
         affected_customer_ids=tuple(sorted(affected)),
-        would_change_customer_ids=tuple(sorted(would_change)),
+        would_change_customer_ids=(),
     )
 
 
@@ -686,16 +712,6 @@ def update_source_failure_cursor(
         metadata=metadata,
         actor=actor,
     )
-
-
-def event_would_change(store: CustomerTimelineSQLiteStore, event: TimelineEvent) -> bool:
-    row = store._fetch_one(  # noqa: SLF001 - local low-level check avoids a duplicate import pass.
-        "SELECT record_hash FROM timeline_events WHERE dedupe_key = ?",
-        (event.dedupe_key,),
-    )
-    if row is None:
-        return True
-    return str(row["record_hash"]) != stable_digest(event.to_json_dict())
 
 
 def rebuild_affected_outputs(config: NightlyIncrementalConfig, *, customer_ids: Sequence[str]) -> Mapping[str, Any]:

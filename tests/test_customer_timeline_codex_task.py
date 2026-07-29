@@ -146,7 +146,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 "kind": "amo_incremental",
                 "enabled": True,
                 "required": True,
-                "config": {"max_pages": 100},
+                "config": {"max_pages": 200, "page_limit": 20},
             },
             {
                 "name": "wappi_history_incremental",
@@ -399,6 +399,19 @@ def test_nightly_config_accepts_calls_step_without_optional_amo_sources(tmp_path
     reason = module.validate_nightly_config(config)
 
     assert reason == ""
+
+
+def test_nightly_config_rejects_oversized_amo_pages(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    amo = next(step for step in payload["steps"] if step["name"] == "amo_incremental_shadow")
+    amo["config"]["page_limit"] = 50
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "page_limit must be 20" in module.validate_nightly_config(config)
 
 
 @pytest.mark.parametrize("step_name", [name for name, _kind in module.REQUIRED_MUTATING_NIGHTLY_CHAIN])
@@ -754,7 +767,8 @@ def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, mon
     config = tmp_path / "nightly.json"
 
     cases = (
-        ("AMO page budget", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(max_pages=20), "100 pages"),
+        ("AMO page budget", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(max_pages=20), "200 pages"),
+        ("AMO page size", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(page_limit=50), "page_limit"),
         ("Wappi checkpoint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("checkpoint_dir"), "checkpoint"),
         ("Wappi strict nightly", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(require_widget_linkage=True), "quarantine"),
         ("mail pending reconsider", lambda payload: config_step(payload, "mail_link_enrich")["config"].pop("reconsider_pending"), "reconsider pending"),
@@ -863,7 +877,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert amo["kind"] == "amo_incremental"
     assert amo["required"] is True
     assert amo["config"]["page_limit"] == 20
-    assert amo["config"]["max_pages"] == 100
+    assert amo["config"]["max_pages"] == 200
     assert amo["config"]["timeline_db"] == str(staging_root / "customer_timeline_staging.sqlite")
     wappi = steps["wappi_history_incremental"]
     assert wappi["config"]["require_widget_linkage"] is False

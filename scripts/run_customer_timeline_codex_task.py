@@ -185,8 +185,10 @@ def validate_nightly_config(path: Path | None = None) -> str:
     if inactive:
         return "nightly config has inactive required steps: " + ",".join(inactive)
     amo_config = steps.get("amo_incremental_shadow", {}).get("config")
-    if not isinstance(amo_config, Mapping) or amo_config.get("max_pages") != 100:
-        return "amo_incremental_shadow must read up to 100 pages per run"
+    if not isinstance(amo_config, Mapping) or amo_config.get("max_pages") != 200:
+        return "amo_incremental_shadow must read up to 200 pages per run"
+    if amo_config.get("page_limit") != 20:
+        return "amo_incremental_shadow page_limit must be 20 to avoid truncated MCP responses"
     wappi_config = steps["wappi_history_incremental"].get("config")
     if not isinstance(wappi_config, Mapping) or wappi_config.get("require_widget_linkage") is not False:
         return "wappi_history_incremental must quarantine incomplete identity linkage"

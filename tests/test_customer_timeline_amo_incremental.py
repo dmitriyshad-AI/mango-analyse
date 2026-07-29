@@ -225,7 +225,15 @@ def test_run_amo_incremental_imports_new_contact_before_linked_lead(tmp_path, mo
 
     assert report["fetch"]["amo_leads_updated_at"]["normalized"] == 1
     assert report["fetch"]["amo_leads_updated_at"]["skipped"]["unmatched"] == 1
-    assert report["cursor_after"]["amo_leads_updated_at"] == original_lead_cursor
+    assert report["cursor_after"]["amo_leads_updated_at"] > original_lead_cursor
+    assert report["checkpoint"]["pending_lead_retries"] == 1
+    assert report["identity_resolution"] == {
+        "complete": False,
+        "pending_lead_retries": 1,
+        "pending_state": "private_checkpoint",
+    }
+    checkpoint = json.loads((tmp_path / "out" / "amo_incremental_checkpoint.json").read_text())
+    assert [item["id"] for item in checkpoint["endpoints"]["amo_leads_pending"]["items"]] == [43]
     with sqlite3.connect(db_path) as con:
         contact_owner = con.execute(
             "SELECT customer_id FROM identity_links WHERE link_type='amo_contact_id' AND link_value='30'"
@@ -829,14 +837,11 @@ def test_run_amo_incremental_checkpoint_completes_large_backlog_across_bounded_r
     assert "apply_blocked" not in final
     assert final["fetch"]["amo_leads_updated_at"]["fetched"] == 1000
     assert final["fetch"]["amo_leads_updated_at"]["pages"] == 25
-    assert final["checkpoint"]["cleared"] is True
-    # NOTE: 999 of the 1000 leads never resolve to a known customer in this
-    # fixture, which triggers the pre-existing (unrelated to D1)
-    # preserve_cursor safety behavior in normalize_cards_source/
-    # run_amo_incremental -- the leads cursor intentionally does not advance
-    # while unmatched leads exist, so they remain eligible for a future
-    # retry instead of being silently skipped past. That is orthogonal to
-    # what this test proves (bounded checkpoint pagination completeness).
+    assert final["checkpoint"]["cleared"] is False
+    assert final["checkpoint"]["pending_lead_retries"] == 999
+    assert final["identity_resolution"]["complete"] is False
+    # The 999 unresolved leads remain in the private checkpoint, while the
+    # network cursor advances; future runs retry only this local subset.
     with sqlite3.connect(db_path) as con:
         # The one lead wired to a known contact (id=1, fetched on page 1
         # during run 1, carried through the checkpoint over 4 more runs)
@@ -857,13 +862,37 @@ def test_run_amo_incremental_checkpoint_completes_large_backlog_across_bounded_r
     assert sum(path == "events" for path, _page in client.calls) == 1
     for source_path in (tmp_path / "out" / "amo_incremental_sources").glob("*.jsonl"):
         assert source_path.stat().st_mode & 0o777 == 0o600
-    assert not (tmp_path / "out" / "amo_incremental_checkpoint.json").exists()
+    checkpoint = json.loads((tmp_path / "out" / "amo_incremental_checkpoint.json").read_text())
+    assert len(checkpoint["endpoints"]["amo_leads_pending"]["items"]) == 999
 
 
-def test_fetch_endpoint_checkpointed_blocks_duplicate_ids(tmp_path) -> None:
+def test_fetch_endpoint_checkpointed_collapses_identical_duplicate_ids(tmp_path) -> None:
     class DuplicateClient:
         def amo_api_get(self, *, path, params=None, limit=50):
             return {"_embedded": {"leads": [{"id": "same"}, {"id": "same"}]}}
+
+    config = AmoIncrementalConfig(
+        source_db=tmp_path / "source.sqlite", out_root=tmp_path / "out",
+        mcp_env=tmp_path / "amo.env", max_pages=1, sleep_sec=0.0,
+    )
+    next_checkpoint: dict = {}
+
+    items, stats = fetch_endpoint_checkpointed(
+        DuplicateClient(), key="amo_leads_updated_at", path="leads", embedded_key="leads",
+        params={"order[id]": "asc"}, lower_bound=NOW, config=config,
+        checkpoint={}, next_checkpoint=next_checkpoint,
+    )
+
+    assert items == [{"id": "same"}]
+    assert stats["complete"] is True
+    assert stats["pagination_drift_detected"] is False
+    assert stats["identical_duplicates_collapsed"] == 1
+
+
+def test_fetch_endpoint_checkpointed_blocks_conflicting_duplicate_ids(tmp_path) -> None:
+    class DuplicateClient:
+        def amo_api_get(self, *, path, params=None, limit=50):
+            return {"_embedded": {"leads": [{"id": "same", "name": "A"}, {"id": "same", "name": "B"}]}}
 
     config = AmoIncrementalConfig(
         source_db=tmp_path / "source.sqlite", out_root=tmp_path / "out",
@@ -879,6 +908,7 @@ def test_fetch_endpoint_checkpointed_blocks_duplicate_ids(tmp_path) -> None:
 
     assert stats["complete"] is False
     assert stats["pagination_drift_detected"] is True
+    assert stats["conflicting_duplicates"] == 1
     assert next_checkpoint == {}
 
 

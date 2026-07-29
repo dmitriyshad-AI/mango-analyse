@@ -77,7 +77,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v6"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v7"
 DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
@@ -457,7 +457,6 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                             "cursor_before": step_report.get("cursor_before"),
                             "cursor_after": step_report.get("cursor_after"),
                             "fetch": step_report.get("fetch"),
-                            "repeat_run_duplicates": step_report.get("repeat_run_duplicates"),
                             "safety": step_report.get("safety"),
                         },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
@@ -668,9 +667,10 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
+                step_summary = step_report.get("summary") or {}
                 status = "ok" if (
-                    step_report.get("validation_ok")
-                    and step_report.get("attribution_complete", True)
+                    step_report.get("fetch_complete") is True
+                    and step_report.get("source_persistence_complete") is True
                 ) else "failed"
                 if status == "failed" and step.required:
                     failed_required_steps.append(step.name)
@@ -682,7 +682,10 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "status": status,
                         "required": step.required,
                         "report_path": str(step_path),
-                        "summary": step_report.get("summary"),
+                        "summary": {
+                            **step_summary,
+                            "attribution_complete": bool(step_report.get("attribution_complete")),
+                        },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
                 )
@@ -878,6 +881,17 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         report["failed_required_steps"] = failed_required_steps
         report["partial_failure"] = bool(failed_required_steps)
         report["overall_status"] = "partial" if failed_required_steps else "ok"
+        report["data_quality_status"] = (
+            "blocked"
+            if failed_required_steps
+            else "pass_with_notes"
+            if any(
+                step.get("kind") == "wappi_history"
+                and step.get("summary", {}).get("attribution_complete") is False
+                for step in report["steps"]
+            )
+            else "pass"
+        )
         manifest_path = publish_dir / f"customer_timeline_snapshot_{run_id}.json"
         write_json(manifest_path, manifest)
         latest_path = publish_dir / "latest_customer_timeline_snapshot.json"
@@ -1284,9 +1298,8 @@ def amo_incremental_report_ok(report: Mapping[str, Any]) -> bool:
         for item in fetch.values()
     ):
         return False
-    reports = [report.get("second_run")]
     first = report.get("first_run") if isinstance(report.get("first_run"), Mapping) else {}
-    reports.extend((first.get("cards"), first.get("events")))
+    reports = [first.get("contacts_bootstrap"), first.get("cards"), first.get("events")]
     return not any(
         isinstance(item, Mapping) and item.get("source_errors")
         for item in reports
@@ -2384,7 +2397,8 @@ def _proof_tallanto_payments_subscriptions(ctx: "_SourceProofContext") -> Mappin
 
 def _proof_tallanto_attendance(ctx: "_SourceProofContext") -> Mapping[str, Any]:
     label = "tallanto_attendance"
-    status = _step_status(ctx, "tallanto_attendance_api_incremental")
+    step = ctx.steps_by_name.get("tallanto_attendance_api_incremental")
+    status = str(step.get("status")) if step is not None else None
     if status is None:
         return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
                       reason="step tallanto_attendance_api_incremental did not run in this run")
@@ -2404,6 +2418,14 @@ def _proof_tallanto_attendance(ctx: "_SourceProofContext") -> Mapping[str, Any]:
                 "ingestion_cursors.tallanto_attendance_api.updated_at is missing or older than "
                 f"{SOURCE_PROOF_STALE_AFTER_HOURS:.0f}h"
             ),
+        )
+    summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), Mapping) else {}
+    if not {"relationships_unique", "existing_events_before"}.issubset(counts):
+        return _proof(
+            label, ctx, status="unproven_current_run", records=records,
+            cursor_or_max_event_at=cursor_ts,
+            reason="current attendance step did not report its source-processing counters",
         )
     return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
                   reason="tallanto_attendance_api_incremental ok; ingestion cursor fresh")

@@ -12,10 +12,13 @@ import pytest
 
 import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
-from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_recent_messages
+from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    _direct_path_bot_safe_context_prompt_block,
+    _direct_path_recent_messages,
+)
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
 from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile, WappiHistoryMessage
-from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
+from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline, _seed_family_rows
 
 
 def test_wappi_launchd_renderer_targets_current_clean_code_root() -> None:
@@ -228,6 +231,7 @@ def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
     timeline_db, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(timeline_db, customer_id=customer_id)
     key = DraftLoopKey("profile-foton", "chat-1")
     config = DraftLoopConfig(
         profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton")},
@@ -257,9 +261,12 @@ def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path
     assert customer_id not in raw
     assert "botsafe:" not in raw
     assert context["read_only_customer_context"]["timeline_context"]["safety"]["customer_profile_included"] is False
+    prompt_block = _direct_path_bot_safe_context_prompt_block(context)
+    assert prompt_block.count("онлайн-курс") == 1
+    assert prompt_block.count("Подтверждённый учебный профиль") == 1
 
 
-def test_context_builder_blocks_customer_memory_for_unconfirmed_auto_pair(tmp_path: Path, monkeypatch) -> None:
+def test_context_builder_accepts_auto_pair_after_strong_amo_identity_check(tmp_path: Path, monkeypatch) -> None:
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
     timeline_db, _customer_id = _seed_bot_safe_timeline(tmp_path)
@@ -286,7 +293,7 @@ def test_context_builder_blocks_customer_memory_for_unconfirmed_auto_pair(tmp_pa
 
     context = build_context(key, (), "Что дальше?", "foton")
 
-    assert "read_only_customer_context" not in context
+    assert context["read_only_customer_context"]["found"] is True
 
 
 def test_context_builder_keeps_bot_safe_crm_context_off_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -404,7 +411,8 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
         shared_phone_stoplist=tmp_path / "stoplist.json",
     )
 
-    runner.build_runner(args)
+    built = runner.build_runner(args)
+    assert built["context_builder"] is built["trusted_auto_customer_context_builder"]
     assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
 
     monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")

@@ -253,16 +253,19 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     db_path = Path(config.timeline_db).expanduser()
     allowed_root = Path(config.allowed_root).expanduser()
     before_counts = _allowed_chunk_counts(db_path)
-    existing_chunks = _existing_bot_safe_chunks(db_path, config.tenant_id)
     customers = _customers_with_history(
         db_path,
         config.tenant_id,
         limit=config.limit,
         customer_ids=config.customer_ids,
     )
-    opportunities = _opportunities_by_customer(db_path, config.tenant_id)
-    events = _events_by_customer(db_path, config.tenant_id)
-    source_chunks = _source_chunks_by_customer(db_path, config.tenant_id)
+    selected_scope = tuple(config.customer_ids) if config.customer_ids else (
+        customers if config.limit is not None else ()
+    )
+    existing_chunks = _existing_bot_safe_chunks(db_path, config.tenant_id, customer_ids=selected_scope)
+    opportunities = _opportunities_by_customer(db_path, config.tenant_id, customer_ids=selected_scope)
+    events = _events_by_customer(db_path, config.tenant_id, customer_ids=selected_scope)
+    source_chunks = _source_chunks_by_customer(db_path, config.tenant_id, customer_ids=selected_scope)
     conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
     drafts = [
         draft
@@ -280,7 +283,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         )
     ]
     expected_source_refs = {draft.chunk.source_ref or "" for draft in drafts}
-    retire_customer_scope = set(customers) if config.customer_ids else None
+    retire_customer_scope = set(config.customer_ids) if config.customer_ids else None
     stale_chunks = [
         existing
         for source_ref, existing in existing_chunks.items()
@@ -1001,39 +1004,47 @@ def _customers_with_history(
     return tuple(str(row[0]) for row in rows)
 
 
-def _opportunities_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+def _opportunities_by_customer(
+    db_path: Path, tenant_id: str, *, customer_ids: Sequence[str] = ()
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
+    customer_filter, customer_params = _customer_filter_sql("customer_id", customer_ids)
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            """
+            f"""
             SELECT customer_id, record_json
             FROM customer_opportunities
             WHERE tenant_id = ?
+              {customer_filter}
             ORDER BY COALESCE(opened_at, closed_at, '' ) DESC, opportunity_id
             """,
-            (tenant_id,),
+            (tenant_id, *customer_params),
         )
         for row in rows:
             grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
     return {customer_id: tuple(items) for customer_id, items in grouped.items()}
 
 
-def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+def _events_by_customer(
+    db_path: Path, tenant_id: str, *, customer_ids: Sequence[str] = ()
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
+    customer_filter, customer_params = _customer_filter_sql("customer_id", customer_ids)
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            """
+            f"""
             SELECT customer_id, record_json
             FROM timeline_events
             WHERE tenant_id = ?
+              {customer_filter}
               AND customer_id IS NOT NULL
               AND customer_id != ''
               AND superseded_by IS NULL
             ORDER BY event_at ASC, event_id ASC
             """,
-            (tenant_id,),
+            (tenant_id, *customer_params),
         )
         for row in rows:
             event = _json_mapping(row["record_json"])
@@ -1057,6 +1068,11 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
     if str(event.get("event_type") or "") == "mango_call" and is_non_contentful_call_record(event):
         return False
     metadata = _mapping(event.get("metadata"))
+    pending_attribution = metadata.get("pending_attribution")
+    if isinstance(pending_attribution, str):
+        pending_attribution = pending_attribution.strip().casefold()
+    if pending_attribution not in (None, False, 0, "", "false"):
+        return False
     authorization = metadata.get("brand_context_authorized")
     if str(event.get("source_system") or "") in {
         "mail_archive",
@@ -1081,9 +1097,12 @@ def _event_authorized_for_bot_safe_summary(event: Mapping[str, Any]) -> bool:
     )
 
 
-def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+def _source_chunks_by_customer(
+    db_path: Path, tenant_id: str, *, customer_ids: Sequence[str] = ()
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     placeholders = ",".join("?" for _ in BOT_SAFE_SOURCE_CHUNK_TYPES)
+    customer_filter, customer_params = _customer_filter_sql("c.customer_id", customer_ids)
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
@@ -1093,6 +1112,7 @@ def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple
             LEFT JOIN timeline_events e
               ON e.tenant_id = c.tenant_id AND e.event_id = c.event_id
             WHERE c.tenant_id = ?
+              {customer_filter}
               AND c.customer_id IS NOT NULL
               AND c.customer_id != ''
               AND c.chunk_type IN ({placeholders})
@@ -1100,7 +1120,7 @@ def _source_chunks_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple
               AND (c.event_id IS NULL OR (e.event_id IS NOT NULL AND e.superseded_by IS NULL))
             ORDER BY c.event_at ASC, c.created_at ASC, c.chunk_id ASC
             """,
-            (tenant_id, *sorted(BOT_SAFE_SOURCE_CHUNK_TYPES)),
+            (tenant_id, *customer_params, *sorted(BOT_SAFE_SOURCE_CHUNK_TYPES)),
         )
         for row in rows:
             chunk = _json_mapping(row["record_json"])
@@ -1152,17 +1172,28 @@ def _customer_ids_from_conflict(conflict: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
-def _existing_bot_safe_chunks(db_path: Path, tenant_id: str) -> dict[str, ExistingBotSafeChunk]:
+def _customer_filter_sql(column: str, customer_ids: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+    selected = tuple(dict.fromkeys(str(item).strip() for item in customer_ids if str(item).strip()))
+    if not selected:
+        return "", ()
+    return f"AND {column} IN ({','.join('?' for _ in selected)})", selected
+
+
+def _existing_bot_safe_chunks(
+    db_path: Path, tenant_id: str, *, customer_ids: Sequence[str] = ()
+) -> dict[str, ExistingBotSafeChunk]:
     result: dict[str, ExistingBotSafeChunk] = {}
+    customer_filter, customer_params = _customer_filter_sql("customer_id", customer_ids)
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            """
+            f"""
             SELECT source_ref, record_hash, record_json
             FROM bot_context_chunks
             WHERE tenant_id = ? AND chunk_type = ? AND source_system = ?
+              {customer_filter}
             """,
-            (tenant_id, BOT_SAFE_SUMMARY_CHUNK_TYPE, BOT_SAFE_SUMMARY_SOURCE_SYSTEM),
+            (tenant_id, BOT_SAFE_SUMMARY_CHUNK_TYPE, BOT_SAFE_SUMMARY_SOURCE_SYSTEM, *customer_params),
         )
         for row in rows:
             source_ref = str(row["source_ref"] or "")

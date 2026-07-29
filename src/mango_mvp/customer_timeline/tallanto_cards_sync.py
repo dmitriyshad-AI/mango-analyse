@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -16,41 +17,13 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     run_nightly_incremental,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
-from mango_mvp.customer_timeline.tallanto_attendance_import import _build_tallanto_client
+from mango_mvp.customer_timeline.tallanto_attendance_import import _api_datetime, _build_tallanto_client
 
 
-# BLOCK C: the real tallanto_cards_sync step. Reuses the existing read-only
-# TallantoApiClient (mango_mvp.amocrm_runtime.tallanto_api), the existing
-# TallantoSnapshotNormalizer / TimelineImportService import contract
-# (mango_mvp.customer_timeline.ingestion), and the existing generic
-# run_nightly_incremental step (mango_mvp.customer_timeline.nightly_incremental)
-# -- no second API client, no second XLS/JSON parser, no second identity
-# engine. This module only adds: (1) a thin adapter from raw Tallanto
-# Contact fields to the flat payload shape TallantoSnapshotNormalizer already
-# consumes (the same shape scripts/normalize_tallanto_contacts.py produces
-# from the bootstrap Contacts *.xls), and (2) bounded/checkpointed pagination
-# over the Contact module so a run never blocks forever on a large contact
-# list and never claims freshness on a partial read.
-#
-# Design note on "daily increment": Tallanto's Contact module exposes no
-# confirmed date-filter query syntax in this codebase, so this step walks
-# the FULL current Contact module every completed cycle (bounded across
-# possibly several runs for a large universe -- see the checkpoint below)
-# rather than guessing at an unverified server-side filter. Freshness is not
-# an unbounded re-scan risk here: TimelineImportService's dedupe_key/
-# record_hash upsert already makes an unchanged contact a pure no-op
-# ("duplicate", zero new events), which is exactly what "a repeat run after
-# a full cycle with the same universe creates zero new events" requires.
-TALLANTO_CARDS_SYNC_SCHEMA_VERSION = "customer_timeline_tallanto_cards_sync_v1"
-# Cursor bucket for THIS daily live-API cycle. Deliberately distinct from
-# TallantoSnapshotNormalizer.source_system ("tallanto_snapshot", used on the
-# events/identity links it emits -- unchanged, so identity resolution still
-# merges correctly with any other tallanto_snapshot-sourced data) and from
-# any manual bootstrap `customer_timeline_import.py --source-kind
-# tallanto_snapshot` run (which never touches ingestion_cursors at all). A
-# manual bootstrap import can therefore never be mistaken for proof this
-# live cycle ran -- "Contacts 10.07.2026.xls = bootstrap only, NOT proof of
-# freshness".
+# Read-only Tallanto Contact adapter. The first run is complete; later runs
+# ask Tallanto only for the overlap since the last successful import. The
+# existing normalizer, identity engine and nightly importer remain canonical.
+TALLANTO_CARDS_SYNC_SCHEMA_VERSION = "customer_timeline_tallanto_cards_sync_v2"
 TALLANTO_CARDS_SOURCE_SYSTEM = "tallanto_cards_daily"
 DEFAULT_ORDER_BY = "id ASC"
 DEFAULT_SELECT_FIELDS = (
@@ -130,15 +103,8 @@ def save_tallanto_cards_checkpoint(out_root: Path, state: Optional[Mapping[str, 
     )
 
 
-def universe_fingerprint(*, select_fields: Optional[Sequence[str]], order_by: str) -> str:
-    # Block C: freezes the paginated Contact-module "universe" (field
-    # selection + ordering -- the only two things that vary this fetch,
-    # since there is no time-window filter, see module docstring) at the
-    # start of a checkpoint cycle. A fingerprint mismatch (e.g. select_fields
-    # changed in a later code revision) discards the old, incomplete
-    # checkpoint and restarts at offset 0 instead of silently resuming a
-    # different read into it.
-    return stable_digest({"module": "Contact", "select_fields": list(select_fields or ()), "order_by": order_by})
+def universe_fingerprint(*, select_fields: Optional[Sequence[str]], order_by: str, query: str | None = None) -> str:
+    return stable_digest({"module": "Contact", "select_fields": list(select_fields or ()), "order_by": order_by, "query": query})
 
 
 def _fetch_contact_page_batch(
@@ -149,6 +115,7 @@ def _fetch_contact_page_batch(
     start_offset: int,
     max_pages: int,
     expected_total_count: Optional[int] = None,
+    query: str | None = None,
 ) -> tuple[list[Mapping[str, Any]], int, bool, int, int, Mapping[str, Any]]:
     """Bounded (<= max_pages), validated read of the Tallanto Contact module.
 
@@ -173,7 +140,9 @@ def _fetch_contact_page_batch(
         if offset in seen_offsets:
             raise ValueError(f"Tallanto Contact pagination repeated offset: {offset}")
         seen_offsets.add(offset)
-        payload = client.get_entry_list(module="Contact", select_fields=select_fields, order_by=order_by, offset=offset)
+        payload = client.get_entry_list(
+            module="Contact", select_fields=select_fields, query=query, order_by=order_by, offset=offset
+        )
         pages += 1
         page = payload.get("entry_list")
         if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
@@ -235,13 +204,14 @@ def _resume_anchor_matches(
     *,
     select_fields: Optional[Sequence[str]],
     order_by: str,
+    query: str | None,
     anchor: Mapping[str, Any],
 ) -> bool:
     if not anchor:
         return False
     offset = int(anchor.get("offset") or 0)
     payload = client.get_entry_list(
-        module="Contact", select_fields=select_fields, order_by=order_by, offset=offset
+        module="Contact", select_fields=select_fields, query=query, order_by=order_by, offset=offset
     )
     page = payload.get("entry_list")
     if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
@@ -361,7 +331,14 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
 
     select_fields = tuple(config.select_fields or DEFAULT_SELECT_FIELDS)
     checkpoint = load_tallanto_cards_checkpoint(out_root)
-    fingerprint = universe_fingerprint(select_fields=select_fields, order_by=DEFAULT_ORDER_BY)
+    last_sync = _latest_completed_cards_sync(timeline_db, config.tenant_id)
+    mode = str(checkpoint.get("mode") or ("full" if last_sync is None else "incremental"))
+    query = str(checkpoint.get("query") or "") or (
+        f"contacts.date_modified >= '{_api_datetime(last_sync - timedelta(seconds=config.safety_margin_seconds))}'"
+        if mode == "incremental" and last_sync else None
+    )
+    order_by = "date_modified ASC,id ASC" if query else DEFAULT_ORDER_BY
+    fingerprint = universe_fingerprint(select_fields=select_fields, order_by=order_by, query=query)
     if checkpoint.get("fingerprint") == fingerprint:
         start_offset = max(0, int(checkpoint.get("next_offset") or 0))
         carried_items = [item for item in (checkpoint.get("items") or ()) if isinstance(item, Mapping)]
@@ -386,7 +363,8 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
     if start_offset and not _resume_anchor_matches(
         client,
         select_fields=select_fields,
-        order_by=DEFAULT_ORDER_BY,
+        order_by=order_by,
+        query=query,
         anchor=checkpoint.get("last_page_anchor") if isinstance(checkpoint.get("last_page_anchor"), Mapping) else {},
     ):
         start_offset = 0
@@ -396,13 +374,15 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
         checkpoint_reset_reason = "pagination_universe_changed"
 
     try:
+        fetch_started = time.monotonic()
         batch_rows, batch_pages, complete, resume_offset, total_count, last_page_anchor = _fetch_contact_page_batch(
             client,
             select_fields=select_fields,
-            order_by=DEFAULT_ORDER_BY,
+            order_by=order_by,
             start_offset=start_offset,
             max_pages=config.max_pages,
             expected_total_count=expected_total_count,
+            query=query,
         )
     except (TallantoApiError, ValueError) as exc:
         # D3-style safe failure: never leak the raw exception body, never
@@ -436,6 +416,8 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             out_root,
             {
                 "fingerprint": fingerprint,
+                "mode": mode,
+                "query": query,
                 "next_offset": resume_offset,
                 "items": all_items,
                 "pages_fetched": total_pages,
@@ -490,11 +472,36 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             },
         )
 
+    if not all_items and last_sync is None:
+        save_tallanto_cards_checkpoint(out_root, None)
+        return _finish(
+            out_root,
+            started=started,
+            timeline_db=timeline_db,
+            extra={
+                "validation_ok": False,
+                "apply_blocked": True,
+                "blocked_reason": "no_tallanto_cards",
+                "complete": False,
+                "checked": 0,
+                "checked_with_id": 0,
+                "skipped_missing_id": 0,
+                "updated": 0,
+                "unchanged": 0,
+                "unmatched": 0,
+                "conflict": 0,
+                "cursor_time": None,
+                "safety": _safety(staging_db_write=False),
+            },
+        )
+
     # Keep the complete source checkpoint until the DB import succeeds.
     save_tallanto_cards_checkpoint(
         out_root,
         {
             "fingerprint": fingerprint,
+            "mode": mode,
+            "query": query,
             "next_offset": resume_offset,
             "items": all_items,
             "pages_fetched": total_pages,
@@ -503,9 +510,7 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
         },
     )
 
-    # Full fixed universe read -- map and import via
-    # the existing generic nightly_incremental + TallantoSnapshotNormalizer
-    # contract (never a second parser/importer/identity engine).
+    # Import the fetched full or incremental universe through the canonical normalizer.
     snapshot_at = started.isoformat()
     mapped_rows: list[Mapping[str, Any]] = []
     skipped_missing_id = 0
@@ -559,14 +564,12 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
                 tenant_id=config.tenant_id,
                 source_ref="tallanto:contacts:daily",
                 normalizer="tallanto_snapshot",
-                # See module docstring: this step reads the full current
-                # Contact module every completed cycle, so there is no
-                # source-side time window to advance through -- idempotent
-                # upsert alone makes a repeat of unchanged rows a no-op.
+                # The API already applied the date_modified overlap window.
                 ignore_cursor=True,
             ),
         ),
     )
+    import_started = time.monotonic()
     imported = run_nightly_incremental(nightly_config)
     after_hashes = _tallanto_event_hashes(timeline_db, tenant_id=config.tenant_id, tallanto_ids=tallanto_ids)
     # Proof counts are per-CHECKED-CONTACT (matching "checked"/"unmatched"/
@@ -603,6 +606,17 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             "conflict": conflict_count,
             "cursor_time": finished.isoformat() if validation_ok else None,
             "total_pages_read": total_pages,
+            "performance": {
+                "mode": mode,
+                "rows": {"fetched": len(all_items), "changed": updated, "skipped": skipped_missing_id, "reused": unchanged},
+                "seconds": {
+                    "fetch": round(import_started - fetch_started, 3),
+                    "write": round(time.monotonic() - import_started, 3),
+                    "total": round(time.monotonic() - fetch_started, 3),
+                },
+                "pages": total_pages,
+                "cursor_used": bool(query),
+            },
             "checkpoint": {
                 "path": str(_checkpoint_path(out_root)),
                 "pending_endpoints": [] if validation_ok else [TALLANTO_CARDS_SOURCE_SYSTEM],
@@ -612,6 +626,21 @@ def run_tallanto_cards_sync(config: TallantoCardsSyncConfig) -> Mapping[str, Any
             "safety": _safety(staging_db_write=True),
         },
     )
+
+
+def _latest_completed_cards_sync(db_path: Path, tenant_id: str) -> datetime | None:
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+            row = con.execute(
+                "SELECT started_at FROM ingestion_runs WHERE tenant_id=? AND source_system='tallanto_snapshot' "
+                "AND source_ref='tallanto:contacts:daily' AND status='completed' ORDER BY started_at DESC LIMIT 1",
+                (tenant_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")) if row else None
 
 
 def _tallanto_event_hashes(db_path: Path, *, tenant_id: str, tallanto_ids: Sequence[str]) -> Mapping[str, str]:

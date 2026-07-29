@@ -174,6 +174,7 @@ def run_tallanto_attendance_api_increment(
         link_type="amo_contact_id",
     )
     customer_families = _load_confident_customer_families(db, tenant_id=config.tenant_id)
+    family_amo_contacts = _load_family_amo_contacts(db, tenant_id=config.tenant_id)
     contact_rows = _fetch_contact_rows(
         api,
         {_required_text(item.get("contact_id"), "contact_id") for item in relationships.values()},
@@ -182,6 +183,8 @@ def run_tallanto_attendance_api_increment(
     counters: Counter[str] = Counter()
     events: list[TimelineEvent] = []
     unresolved: list[dict[str, Any]] = []
+    resolved_identity_conflicts: list[dict[str, Any]] = []
+    open_identity_conflicts = _load_open_attendance_identity_conflicts(db, tenant_id=config.tenant_id)
     for relationship_id, relationship in sorted(relationships.items()):
         contact_id = _required_text(relationship.get("contact_id"), "contact_id")
         class_id = _required_text(relationship.get("most_class_id"), "most_class_id")
@@ -190,8 +193,21 @@ def run_tallanto_attendance_api_increment(
         amo_customer = amo_customers.get(amo_contact_id) if amo_contact_id else None
         if tallanto_customer and amo_customer and tallanto_customer != amo_customer:
             tallanto_family = customer_families.get(tallanto_customer)
-            if tallanto_family and tallanto_family == customer_families.get(amo_customer):
+            same_family = bool(tallanto_family and tallanto_family == customer_families.get(amo_customer))
+            direct_family = (tallanto_customer, amo_contact_id) in family_amo_contacts
+            if same_family or direct_family:
                 counters["identity_same_family"] += 1
+                if direct_family:
+                    counters["identity_direct_family"] += 1
+                resolved_identity_conflicts.append(
+                    _unresolved_relationship(
+                        "identity_conflict",
+                        relationship,
+                        amo_contact_id=amo_contact_id,
+                        tallanto_customer=tallanto_customer,
+                        amo_customer=amo_customer,
+                    )
+                )
             else:
                 counters["identity_conflict"] += 1
                 unresolved.append(
@@ -229,6 +245,16 @@ def run_tallanto_attendance_api_increment(
                 )
             )
             continue
+        for reason in open_identity_conflicts.get((relationship_id, contact_id), ()):
+            resolved_identity_conflicts.append(
+                _unresolved_relationship(
+                    reason,
+                    relationship,
+                    amo_contact_id=amo_contact_id,
+                    tallanto_customer=tallanto_customer,
+                    amo_customer=amo_customer,
+                )
+            )
         class_row = class_by_id.get(class_id)
         if class_row is None:
             raise ValueError(f"Tallanto most_class was not resolved: {class_id}")
@@ -271,6 +297,7 @@ def run_tallanto_attendance_api_increment(
     unresolved_count = len(unresolved)
     run_status = "partial" if validation_errors else "completed"
     cursor_may_advance = config.apply and not validation_errors
+    class_overlap_after = run_started if cursor_may_advance else overlap_start
 
     if config.apply:
         with CustomerTimelineSQLiteStore(db, allowed_root=root) as store:
@@ -282,7 +309,7 @@ def run_tallanto_attendance_api_increment(
                 idempotency_key=stable_digest(
                     {
                         "upper_bound": upper_bound.isoformat(),
-                        "class_overlap_until": run_started.isoformat(),
+                        "class_overlap_until": class_overlap_after.isoformat(),
                         "events": [event.to_json_dict() for event in events],
                         "unresolved": unresolved,
                     }
@@ -310,18 +337,40 @@ def run_tallanto_attendance_api_increment(
                             ingestion_run_id=run.run_id,
                         )
                         counters[f"unresolved_{result.status}"] += 1
-                    if cursor_may_advance:
-                        store.upsert_ingestion_cursor(
+                    resolved_keys: set[tuple[str, str, str]] = set()
+                    for item in resolved_identity_conflicts:
+                        resolved_key = (item["reason"], item["relationship_id"], item["contact_id"])
+                        if resolved_key in resolved_keys:
+                            continue
+                        resolved_keys.add(resolved_key)
+                        store.record_conflict(
                             config.tenant_id,
-                            API_SOURCE_SYSTEM,
-                            last_cursor_ts=upper_bound,
-                            metadata={
-                                "class_overlap_until": run_started.isoformat(),
-                                "upper_bound": upper_bound.isoformat(),
-                            },
+                            conflict_type=f"{API_SOURCE_SYSTEM}_{item['reason']}",
+                            entity_refs=(
+                                f"tallanto:class-contact:{item['relationship_id']}",
+                                f"tallanto:contact:{item['contact_id']}",
+                            ),
+                            status="resolved",
+                            severity=_UNRESOLVED_SEVERITY_BY_REASON.get(item["reason"], "medium"),
+                            summary="Tallanto attendance identity was resolved",
+                            metadata=item,
                             actor=config.actor,
                             ingestion_run_id=run.run_id,
                         )
+                    # Keep the relationship cursor on unresolved identities, but do not
+                    # rescan every old class: those relationships remain covered by the
+                    # held relationship window on the next run.
+                    store.upsert_ingestion_cursor(
+                        config.tenant_id,
+                        API_SOURCE_SYSTEM,
+                        last_cursor_ts=upper_bound if cursor_may_advance else cursor_before,
+                        metadata={
+                            "class_overlap_until": class_overlap_after.isoformat(),
+                            "upper_bound": upper_bound.isoformat(),
+                        },
+                        actor=config.actor,
+                        ingestion_run_id=run.run_id,
+                    )
             except Exception:
                 store.finish_ingestion_run(
                     run.run_id,
@@ -362,9 +411,7 @@ def run_tallanto_attendance_api_increment(
         "cursor_before": cursor_before.isoformat(),
         "cursor_after": upper_bound.isoformat() if cursor_may_advance else cursor_before.isoformat(),
         "class_overlap_before": overlap_start.isoformat(),
-        "class_overlap_after": (
-            run_started.isoformat() if cursor_may_advance else overlap_start.isoformat()
-        ),
+        "class_overlap_after": class_overlap_after.isoformat(),
         "counts": dict(counters),
         "safety": {
             "network_read_only": True,
@@ -612,6 +659,45 @@ def _load_confident_customer_families(db: Path, *, tenant_id: str) -> dict[str, 
             for customer_id, family_id in con.execute(
                 "SELECT customer_id, family_id FROM family_members_v1 "
                 "WHERE tenant_id=? AND membership_status='confident' AND confidence='high'",
+                (tenant_id,),
+            )
+        }
+
+
+def _load_open_attendance_identity_conflicts(
+    db: Path, *, tenant_id: str
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    result: dict[tuple[str, str], list[str]] = defaultdict(list)
+    conflict_types = tuple(f"{API_SOURCE_SYSTEM}_{reason}" for reason in _UNRESOLVED_SEVERITY_BY_REASON)
+    placeholders = ",".join("?" for _ in conflict_types)
+    with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
+        rows = con.execute(
+            f"SELECT conflict_type, record_json FROM timeline_conflicts "
+            f"WHERE tenant_id=? AND status='open' AND conflict_type IN ({placeholders})",
+            (tenant_id, *conflict_types),
+        ).fetchall()
+    for conflict_type, raw in rows:
+        try:
+            metadata = json.loads(str(raw or "{}")).get("metadata") or {}
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        relationship_id = _scalar_text(metadata.get("relationship_id"))
+        contact_id = _scalar_text(metadata.get("contact_id"))
+        reason = str(conflict_type).removeprefix(f"{API_SOURCE_SYSTEM}_")
+        if relationship_id and contact_id:
+            result[(relationship_id, contact_id)].append(reason)
+    return {key: tuple(dict.fromkeys(reasons)) for key, reasons in result.items()}
+
+
+def _load_family_amo_contacts(db: Path, *, tenant_id: str) -> set[tuple[str, str]]:
+    with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
+        return {
+            (str(customer_id), str(link_value))
+            for customer_id, link_value in con.execute(
+                "SELECT customer_id, link_value FROM identity_links "
+                "WHERE tenant_id=? AND source_system='tallanto_snapshot' "
+                "AND link_type='amo_contact_id' AND match_class='ambiguous' "
+                "AND json_extract(record_json, '$.evidence.relationship')='family_amo_contact'",
                 (tenant_id,),
             )
         }

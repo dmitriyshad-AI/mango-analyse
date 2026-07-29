@@ -26,6 +26,8 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_tallanto_linkage` | `codex/tallanto-linkage-root` | Корневое исправление порядка Tallanto, связи оплат с учениками и разделения детей одной семьи; только код и синтетические тесты. | После staging-проходов 2-3, смысловой приёмки и вливания в `main` снять worktree и удалить ветку. |
 | `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_mail_relink` | `codex/customer-timeline-mail-relink` | Изолированная доработка повторной привязки старых писем после обновления Tallanto; исполнитель не пишет в runtime. | После проверки и переноса полезного патча в `main` запросить отдельное разрешение на снятие worktree и удаление ветки. |
 | `/Users/dmitrijfabarisov/Projects/Mango_owner50_manager_dossier` | `codex/owner50-manager-dossier` | Изолированная доработка доказательства реального человека в Owner50 через общие identity links; исполнитель не пишет в runtime. | После проверки и переноса полезного патча в `main` запросить отдельное разрешение на снятие worktree и удаление ветки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_call_dialogue_timing_20260728` | `codex/call-dialogue-timing-20260728`, чистый | Изолированный анализ длительности реплик звонков; текущая задача Timeline его не использует. | Проверить поглощение перед отдельным решением о снятии; до этого не переключать и не удалять. |
+| `/Users/dmitrijfabarisov/Projects/Mango_nightly_source_gate_20260729` | detached `d9dd3cb4`, временный | Изолированное исправление честного подтверждения источников ночной Timeline; только `nightly_service.py` и узкие тесты. | После переноса принятого патча в `main` и проверки отсутствия процессов запросить снятие worktree; ветки нет. |
 
 ## Удалено 2026-07-26
 

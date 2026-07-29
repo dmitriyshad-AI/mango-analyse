@@ -670,6 +670,7 @@ class AmoWappiDraftLoop:
         journal: DraftLoopJournal | None = None,
         state: DraftLoopState | None = None,
         auto_resolver: AutoResolver | None = None,
+        trusted_auto_customer_context_builder: ContextBuilder | None = None,
         now_fn: Callable[[], datetime] | None = None,
         code_identity: Mapping[str, str] | None = None,
     ) -> None:
@@ -681,6 +682,7 @@ class AmoWappiDraftLoop:
         self.journal = journal or DraftLoopJournal(config.journal_path)
         self.state = state or DraftLoopState(config.state_path)
         self.auto_resolver = auto_resolver
+        self.trusted_auto_customer_context_builder = trusted_auto_customer_context_builder
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self.code_identity = dict(code_identity or build_draft_loop_code_identity())
 
@@ -1334,7 +1336,12 @@ class AmoWappiDraftLoop:
             else inbound_new[-1].text
         )
         auto_unconfirmed = str(pair.source or "").strip().casefold() == "auto"
-        previous_memory = {} if auto_unconfirmed else self.state.dialogue_memory_for(key)
+        auto_context_trusted = self.context_builder is self.trusted_auto_customer_context_builder
+        previous_memory = (
+            {}
+            if auto_unconfirmed and not auto_context_trusted
+            else self.state.dialogue_memory_for(key)
+        )
         history = _prompt_history_lines(
             messages,
             recent_limit=self.config.history_limit,
@@ -1350,7 +1357,9 @@ class AmoWappiDraftLoop:
             dialogue_memory=previous_memory,
             current_message_id=inbound_new[-1].message_id,
         )
-        if auto_unconfirmed:
+        if auto_unconfirmed and not (
+            auto_context_trusted and _confirmed_auto_customer_context(context)
+        ):
             context = _without_unconfirmed_auto_customer_memory(context)
             memory_status = "unavailable_auto_unconfirmed"
         elif isinstance(context.get("read_only_customer_context"), Mapping):
@@ -1788,6 +1797,34 @@ def _without_unconfirmed_auto_customer_memory(context: Mapping[str, Any]) -> Map
             if str(key) not in _UNCONFIRMED_AUTO_MEMORY_KEYS
         }
     return cleaned
+
+
+def _confirmed_auto_customer_context(context: Mapping[str, Any]) -> bool:
+    customer_context = context.get("read_only_customer_context")
+    if not isinstance(customer_context, Mapping):
+        return False
+    timeline_context = customer_context.get("timeline_context")
+    if not isinstance(timeline_context, Mapping):
+        return False
+    safety = timeline_context.get("safety")
+    return bool(
+        customer_context.get("schema_version") == "bot_safe_crm_context_v1_2026_06_21"
+        and customer_context.get("source") == "customer_timeline_bot_context"
+        and customer_context.get("found") is True
+        and customer_context.get("allowed_only") is True
+        and timeline_context.get("schema_version") == customer_context.get("schema_version")
+        and timeline_context.get("source") == customer_context.get("source")
+        and timeline_context.get("found") is True
+        and timeline_context.get("allowed_only") is True
+        and isinstance(timeline_context.get("bot_context"), Mapping)
+        and timeline_context["bot_context"].get("allowed_only") is True
+        and isinstance(safety, Mapping)
+        and safety.get("source_api") == "bot_context"
+        and safety.get("customer_profile_included") is False
+        and safety.get("raw_timeline_events_included") is False
+        and safety.get("raw_ids_included") is False
+        and safety.get("pii_scan_passed") is True
+    )
 
 
 def _message_event(event: str, message: WappiHistoryMessage, *, status: str) -> dict[str, Any]:

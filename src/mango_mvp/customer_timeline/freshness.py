@@ -12,6 +12,8 @@ _CURSOR_GROUPS = {
     "tallanto_attendance_api": ("tallanto_attendance_api",),
 }
 _REQUIRED_DATA_BOUNDARY = {"tallanto_snapshot", "tallanto_crm_call", "tallanto_attendance_api"}
+# Tallanto stores scheduled lessons and subscription/payment dates in event_at.
+_FUTURE_EVENT_AT_ALLOWED = {"tallanto_crm_call", "tallanto_attendance_api"}
 MANAGER_REQUIRED_SOURCE_SYSTEMS = (
     "amocrm_snapshot",
     "amocrm_event",
@@ -53,6 +55,7 @@ def source_freshness_rows(
         ).fetchall()
     cursors = {str(row["source_system"]): dict(row) for row in cursor_rows}
     successful_imports: dict[str, str] = {}
+    latest_imports: dict[str, Mapping[str, str]] = {}
     if _table_exists(con, "ingestion_runs"):
         payment_proof = (
             "(source_system != 'tallanto_crm_call' OR source_ref = 'tallanto_api:get_entry_list')"
@@ -75,6 +78,22 @@ def source_freshness_rows(
                 (tenant_id,),
             ).fetchall()
         }
+        for row in con.execute(
+            f"""
+            SELECT source_system, status, finished_at
+            FROM ingestion_runs
+            WHERE tenant_id = ?
+              AND run_kind IN ('timeline_import', 'tallanto_attendance_api_increment')
+              AND finished_at IS NOT NULL
+              AND {payment_proof}
+            ORDER BY finished_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall():
+            latest_imports.setdefault(
+                str(row["source_system"]),
+                {"status": str(row["status"]), "finished_at": str(row["finished_at"])},
+            )
 
     result: list[Mapping[str, Any]] = []
     event_by_source = {str(row["source_system"]): row for row in event_rows}
@@ -83,7 +102,7 @@ def source_freshness_rows(
         for source_system, cursor_names in _CURSOR_GROUPS.items()
         for cursor_name in cursor_names
     }
-    source_systems = set(event_by_source) | set(successful_imports)
+    source_systems = set(event_by_source) | set(successful_imports) | set(latest_imports)
     source_systems.update(cursor_aliases.get(name, name) for name in cursors)
     source_systems.update(expected_sources)
     for source_system in source_systems:
@@ -99,12 +118,20 @@ def source_freshness_rows(
             for name in (source_system, *preferred)
             if name in successful_imports
         ]
+        latest_candidates = [
+            latest_imports[name]
+            for name in (source_system, *preferred)
+            if name in latest_imports
+        ]
+        latest_import = max(latest_candidates, key=lambda item: item["finished_at"], default={})
         result.append(
             {
                 "source_system": source_system,
                 "cursor_at": min((str(row["last_cursor_ts"]) for row in selected), default=None),
                 "cursor_updated_at": min((str(row["updated_at"]) for row in selected), default=None),
                 "imported_at": max(imported_candidates, default=None),
+                "latest_import_at": latest_import.get("finished_at"),
+                "latest_import_status": latest_import.get("status"),
                 "max_event_at": event_row["max_event_at"] if event_row is not None else None,
                 "events": int(event_row["events"] or 0) if event_row is not None else 0,
                 "cursor_complete": cursor_complete,
@@ -147,6 +174,11 @@ def manager_freshness_gate(
             elif checked_at - cursor_updated_at > timedelta(hours=max_cursor_check_age_hours):
                 blockers.append({"source_system": source, "reason": "cursor_check_stale"})
         imported_at = _parse_datetime(row.get("imported_at"))
+        latest_import_status = str(row.get("latest_import_status") or "")
+        if latest_import_status and latest_import_status != "completed":
+            blockers.append(
+                {"source_system": source, "reason": "latest_import_not_completed", "status": latest_import_status}
+            )
         if imported_at is None:
             blockers.append({"source_system": source, "reason": "successful_import_missing"})
             continue
@@ -155,7 +187,11 @@ def manager_freshness_gate(
         elif checked_at - imported_at > timedelta(hours=max_import_age_hours):
             blockers.append({"source_system": source, "reason": "successful_import_stale"})
         max_event_at = _parse_datetime(row.get("max_event_at"))
-        if max_event_at is not None and max_event_at > checked_at + timedelta(minutes=5):
+        if (
+            source not in _FUTURE_EVENT_AT_ALLOWED
+            and max_event_at is not None
+            and max_event_at > checked_at + timedelta(minutes=5)
+        ):
             blockers.append({"source_system": source, "reason": "max_event_at_in_future"})
         if source in _REQUIRED_DATA_BOUNDARY and max_event_at is None:
             blockers.append({"source_system": source, "reason": "data_boundary_missing"})

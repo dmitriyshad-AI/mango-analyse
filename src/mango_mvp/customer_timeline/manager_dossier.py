@@ -924,6 +924,7 @@ def build_customer_dossier(
           AND event_type = 'mango_call'
           AND match_status = 'strong_unique'
           AND (superseded_by IS NULL OR superseded_by = '')
+          AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
         ORDER BY event_at DESC, event_id DESC
         LIMIT 100
         """,
@@ -1330,7 +1331,8 @@ def manager_outreach_eligibility(
         if event_id:
             event = con.execute(
                 "SELECT event_at,event_type,match_status,superseded_by FROM timeline_events "
-                "WHERE tenant_id=? AND customer_id=? AND event_id=? LIMIT 1",
+                "WHERE tenant_id=? AND customer_id=? AND event_id=? "
+                "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') LIMIT 1",
                 (tenant_id, customer_id, event_id),
             ).fetchone()
             if event is None:
@@ -1362,6 +1364,7 @@ def manager_outreach_eligibility(
     event_rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
         "FROM timeline_events WHERE tenant_id=? AND customer_id=? AND (superseded_by IS NULL OR superseded_by='') "
+        "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') "
         "AND julianday(event_at)>=julianday(?) ORDER BY event_at,event_id",
         (tenant_id, customer_id, scan_from.isoformat()),
     ).fetchall()
@@ -1422,6 +1425,7 @@ def _has_active_customer_access(con: sqlite3.Connection, *, tenant_id: str, cust
     rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
         "FROM timeline_events WHERE tenant_id=? AND customer_id=? "
+        "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') "
         "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
         (tenant_id, customer_id),
     ).fetchall()
@@ -1452,6 +1456,7 @@ def _durable_contact_risks(con: sqlite3.Connection, *, tenant_id: str, customer_
     rows = con.execute(
         "SELECT event_id,event_at,event_type,source_system,source_id,source_ref,subject,text_preview,summary,direction,record_json "
         f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({','.join('?' for _ in customer_ids)}) "
+        "AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true') "
         "AND (superseded_by IS NULL OR superseded_by='') ORDER BY event_at DESC,event_id DESC",
         (tenant_id, *customer_ids),
     ).fetchall()
@@ -2658,6 +2663,7 @@ def _owner50_snapshot(
               ON member.tenant_id=event.tenant_id AND member.customer_id=event.customer_id
             JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE event.tenant_id=?
+              AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
             LIMIT ?
             """,
             (tenant_id, OWNER50_EVENT_SCAN_LIMIT + 1),
@@ -2899,6 +2905,7 @@ def _full_dossier_segment_customer_ids(con: sqlite3.Connection, *, tenant_id: st
           AND e.customer_id IS NOT NULL
           AND e.customer_id != ''
           AND (e.superseded_by IS NULL OR e.superseded_by = '')
+          AND COALESCE(json_extract(e.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
           AND ci.identity_status='strong'
           AND COALESCE(json_array_length(json_extract(ci.record_json, '$.metadata.brands')), 0)=1
           AND LOWER(json_extract(ci.record_json, '$.metadata.brands[0]')) IN ('foton','unpk')
@@ -2928,6 +2935,7 @@ def _full_dossier_segment_count(con: sqlite3.Connection, *, tenant_id: str) -> i
             AND e.customer_id IS NOT NULL
             AND e.customer_id != ''
             AND (e.superseded_by IS NULL OR e.superseded_by = '')
+            AND COALESCE(json_extract(e.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
             AND ci.identity_status='strong'
             AND COALESCE(json_array_length(json_extract(ci.record_json, '$.metadata.brands')), 0)=1
             AND LOWER(json_extract(ci.record_json, '$.metadata.brands[0]')) IN ('foton','unpk')
@@ -3029,14 +3037,16 @@ def _family_rows(
 ) -> list[DossierRow]:
     if not _table_exists(con, "family_links_v1"):
         return []
+    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
+    placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
-        """
+        f"""
         SELECT canonical_name, name_variants_json, grades_json, subjects_json, brand, status, confidence, reason
         FROM family_links_v1
-        WHERE tenant_id = ? AND customer_id = ?
+        WHERE tenant_id = ? AND customer_id IN ({placeholders})
         ORDER BY status, confidence DESC, canonical_name
         """,
-        (tenant_id, customer_id),
+        (tenant_id, *customer_ids),
     ).fetchall()
     result: list[DossierRow] = []
     for row in rows:
@@ -3067,14 +3077,20 @@ def _family_rows(
 def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) -> list[DossierRow]:
     if not _table_exists(con, "customer_purchases_v1"):
         return []
+    customer_ids = _family_scope_customer_ids(con, tenant_id=tenant_id, customer_id=customer_id)
+    placeholders = ",".join("?" for _ in customer_ids)
     rows = con.execute(
-        """
-        SELECT period, money_kind, total_in, total_out, deals_cnt, last_purchase_at, computability
-        FROM customer_purchases_v1
-        WHERE tenant_id = ? AND customer_id = ?
-        ORDER BY period, money_kind
+        f"""
+        SELECT purchase.customer_id, identity.display_name, purchase.period, purchase.money_kind,
+               purchase.total_in, purchase.total_out, purchase.deals_cnt,
+               purchase.last_purchase_at, purchase.computability
+        FROM customer_purchases_v1 AS purchase
+        LEFT JOIN customer_identities AS identity
+          ON identity.tenant_id = purchase.tenant_id AND identity.customer_id = purchase.customer_id
+        WHERE purchase.tenant_id = ? AND purchase.customer_id IN ({placeholders})
+        ORDER BY purchase.customer_id, purchase.period, purchase.money_kind
         """,
-        (tenant_id, customer_id),
+        (tenant_id, *customer_ids),
     ).fetchall()
     result: list[DossierRow] = []
     labels = {"fact": "факт оплат", "plan": "план сделок"}
@@ -3089,6 +3105,9 @@ def _money_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: str) ->
             text += f"; последнее событие {row['last_purchase_at']}"
         if row["computability"]:
             text += f"; вычислимость {row['computability']}"
+        if len(customer_ids) > 1:
+            member = _clean_text(row["display_name"]) or str(row["customer_id"])
+            text += f" [карточка: {member}]"
         result.append(DossierRow("Деньги", text, "customer_purchases_v1"))
     return result
 
@@ -3154,6 +3173,7 @@ def _next_step_for_dossier(
         FROM timeline_events
         WHERE tenant_id = ? AND customer_id = ?
           AND (superseded_by IS NULL OR superseded_by = '')
+          AND COALESCE(json_extract(record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
           AND (event_type != 'mango_call' OR match_status = 'strong_unique')
         ORDER BY event_at DESC, event_id DESC
         LIMIT 500
@@ -3251,6 +3271,7 @@ def _chronology_rows(con: sqlite3.Connection, *, tenant_id: str, customer_id: st
         WHERE event.tenant_id = ?
           AND event.customer_id IN ({placeholders})
           AND (event.superseded_by IS NULL OR event.superseded_by = '')
+          AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
           AND (event.event_type != 'mango_call' OR event.match_status = 'strong_unique')
         ORDER BY event.event_at DESC, event.event_id DESC
         LIMIT ?

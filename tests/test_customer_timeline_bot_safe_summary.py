@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import mango_mvp.customer_timeline.bot_safe_summary as bot_safe_summary_module
+
 from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
@@ -331,6 +333,52 @@ def test_bot_safe_summary_ignores_event_without_brand_context_authorization(tmp_
             allowed_for_bot=False,
             requires_manager_review=True,
             metadata={"brand": "foton"},
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+
+    assert report.created == 0
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type = ?",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_ignores_pending_attribution_even_if_brand_is_authorized(
+    tmp_path: Path,
+) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_event(
+        TimelineEvent(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            event_type=TimelineEventType.TELEGRAM_MESSAGE,
+            event_at=NOW,
+            source_system="wappi_telegram",
+            source_id="pending-but-brand-authorized",
+            direction=TimelineDirection.INBOUND,
+            match_status="strong_unique",
+            confidence=0.9,
+            summary="Секретный интерес из неверно привязанного диалога.",
+            record={"brand": "foton"},
+            metadata={
+                "brand": "foton",
+                "brand_context_authorized": True,
+                "pending_attribution": "True",
+            },
             created_at=NOW,
         )
     )
@@ -715,6 +763,90 @@ def test_bot_safe_summary_customer_id_scope_does_not_retire_other_customers(tmp_
         (other.customer_id, 1, 0),
         (selected.customer_id, 1, 0),
     ]
+
+
+def test_bot_safe_summary_customer_scope_retires_stale_summary_without_history(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer("customer:stale")
+    store.upsert_customer(customer)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+            text="Устаревшая разрешённая выжимка.",
+            summary="Устаревшая разрешённая выжимка.",
+            source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+            source_ref=f"botsafe:{customer.customer_id}:foton",
+            event_at=NOW,
+            relevance_tags=("bot_safe", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+            customer_ids=(customer.customer_id,),
+        )
+    )
+
+    assert report.retired_stale == 1
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        row = con.execute(
+            "SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks WHERE source_ref=?",
+            (f"botsafe:{customer.customer_id}:foton",),
+        ).fetchone()
+    assert row == (0, 1)
+
+
+def test_bot_safe_summary_customer_id_scope_does_not_parse_other_customer_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _open_store(tmp_path)
+    selected = _customer("customer:selected")
+    other = _customer("customer:other")
+    for customer in (selected, other):
+        store.upsert_customer(customer)
+        store.upsert_opportunity(_opportunity(customer, source_id=f"lead-{customer.customer_id}"))
+        event = _event(customer, source_id=f"call-{customer.customer_id}", brand="foton")
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(_raw_chunk(customer, event))
+    store.close()
+
+    db = tmp_path / "customer_timeline.sqlite"
+    with sqlite3.connect(db) as con:
+        for table in ("customer_opportunities", "timeline_events", "bot_context_chunks"):
+            con.execute(
+                f"UPDATE {table} SET record_json = ? WHERE customer_id = ?",
+                ('{"sentinel":"unselected"}', other.customer_id),
+            )
+
+    original = bot_safe_summary_module._json_mapping
+
+    def reject_unselected(value):
+        if "unselected" in str(value):
+            raise AssertionError("targeted rebuild parsed unrelated customer data")
+        return original(value)
+
+    monkeypatch.setattr(bot_safe_summary_module, "_json_mapping", reject_unselected)
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=False,
+            customer_ids=(selected.customer_id,),
+        )
+    )
+
+    assert report.considered_customers == 1
 
 
 def test_bot_safe_summary_cross_brand_customer_gets_separate_brand_scoped_chunks(tmp_path: Path) -> None:

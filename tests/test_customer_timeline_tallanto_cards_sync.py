@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -94,6 +96,24 @@ class FailingContactClient:
         raise TallantoApiError("Tallanto Contact request failed.", status_code=502, category="server_error")
 
 
+class QueryAwareContactClient(FakeContactClient):
+    def get_entry_list(self, **kwargs: Any) -> Mapping[str, Any]:
+        query = str(kwargs.get("query") or "")
+        match = re.search(r"date_modified >= '([^']+)'", query)
+        contacts = self.contacts
+        if match:
+            cutoff = datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone(timedelta(hours=3)))
+            contacts = [
+                row for row in contacts
+                if datetime.fromisoformat(str(row["date_modified"])).replace(tzinfo=cutoff.tzinfo) >= cutoff
+            ]
+        original, self.contacts = self.contacts, contacts
+        try:
+            return super().get_entry_list(**kwargs)
+        finally:
+            self.contacts = original
+
+
 def _contact(*, contact_id: str, phone: Optional[str] = None, email: Optional[str] = None, amo_id: Optional[str] = None, parent_fio: Optional[str] = None, first_name: str = "Имя", last_name: str = "Фамилия", date_modified: str = "2026-07-20 10:00:00") -> dict[str, Any]:
     row: dict[str, Any] = {"id": contact_id, "first_name": first_name, "last_name": last_name, "date_modified": date_modified}
     if phone is not None:
@@ -157,6 +177,30 @@ def test_tallanto_cards_sync_completes_in_one_run_and_writes_staging_only(tmp_pa
             "SELECT match_class FROM identity_links WHERE link_type='phone' AND link_value='+79161112233'"
         ).fetchone()
         assert phone_link[0] == "strong_unique"
+        assert con.execute("SELECT event_at FROM timeline_events").fetchone()[0].endswith("+03:00")
+
+
+def test_tallanto_cards_sync_reuses_db_and_fetches_only_recent_changes(tmp_path: Path) -> None:
+    old = (datetime.now() - timedelta(days=3)).replace(microsecond=0).isoformat(sep=" ")
+    stale_overlap = (datetime.now() - timedelta(hours=12)).replace(microsecond=0).isoformat(sep=" ")
+    recent = datetime.now().replace(microsecond=0).isoformat(sep=" ")
+    first = QueryAwareContactClient([
+        _contact(contact_id="old", date_modified=old),
+        _contact(contact_id="stale-overlap", date_modified=stale_overlap),
+    ])
+    assert run_tallanto_cards_sync(_config(tmp_path, first))["performance"]["mode"] == "full"
+
+    second = run_tallanto_cards_sync(
+        _config(tmp_path, QueryAwareContactClient([
+            _contact(contact_id="old", date_modified=old),
+            _contact(contact_id="stale-overlap", date_modified=stale_overlap),
+            _contact(contact_id="new", date_modified=recent),
+        ]))
+    )
+
+    assert second["performance"]["mode"] == "incremental"
+    assert second["performance"]["rows"]["fetched"] == 1
+    assert _event_count(tmp_path / "staging.sqlite") == 3
 
 
 def test_tallanto_cards_sync_repeated_import_does_not_increase_raw_events(tmp_path: Path) -> None:
@@ -550,6 +594,16 @@ def test_tallanto_cards_sync_api_unavailable_fails_source_and_publishes_nothing(
     assert load_tallanto_cards_checkpoint(tmp_path / "out") == {}
 
 
+def test_tallanto_cards_sync_empty_first_run_is_not_fresh_success(tmp_path: Path) -> None:
+    report = run_tallanto_cards_sync(_config(tmp_path, FakeContactClient([])))
+
+    assert report["validation_ok"] is False
+    assert report["complete"] is False
+    assert report["blocked_reason"] == "no_tallanto_cards"
+    assert report["checked"] == 0
+    assert not (tmp_path / "staging.sqlite").exists()
+
+
 def test_tallanto_cards_sync_bounded_checkpoint_completes_large_contact_list_across_runs(tmp_path: Path) -> None:
     contacts = [_contact(contact_id=str(index), phone=f"+7916{index:07d}") for index in range(1, 251)]
     client = FakeContactClient(contacts, page_size=50)
@@ -593,6 +647,22 @@ def test_tallanto_cards_sync_restarts_when_resume_boundary_changes(tmp_path: Pat
     assert second["checkpoint"]["checkpoint_reset_reason"] == "pagination_universe_changed"
     assert client.offsets_called == [0, 0, 0]
     assert not (tmp_path / "staging.sqlite").exists()
+
+
+def test_tallanto_cards_sync_restarts_when_total_changes_after_saved_page(tmp_path: Path) -> None:
+    contacts = [_contact(contact_id=str(index), phone=f"+7916{index:07d}") for index in range(1, 151)]
+    client = FakeContactClient(contacts, page_size=50)
+    config = _config(tmp_path, client, max_pages=1)
+
+    first = run_tallanto_cards_sync(config)
+    assert first["blocked_reason"] == "page_cap_hit"
+
+    client.contacts.append(_contact(contact_id="151", phone="+79160000151"))
+    second = run_tallanto_cards_sync(config)
+
+    assert second["blocked_reason"] == "page_cap_hit"
+    assert second["checkpoint"]["checkpoint_reset_reason"] == "pagination_universe_changed"
+    assert client.offsets_called == [0, 0, 0]
 
 
 def test_tallanto_cards_sync_blocks_duplicate_contact_ids(tmp_path: Path) -> None:

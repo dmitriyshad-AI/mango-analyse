@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Import read-only Tallanto payment/abonement snapshots into customer_timeline.
+"""Import Tallanto payments/abonements from a local snapshot or read-only API.
 
-The importer consumes a local JSON snapshot, or stdin, that was produced by the
-read-only crm_call.sh MCP wrapper. It does not call AMO, Tallanto, ASR, LLM, or
-any network API itself. Use --apply to write only the local customer timeline DB.
+Use --apply to write only the local staging Customer Timeline DB. The importer
+never writes to Tallanto and never calls ASR or an LLM.
 """
 from __future__ import annotations
 
@@ -11,8 +10,9 @@ import argparse
 import json
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, cast
@@ -36,6 +36,7 @@ from mango_mvp.customer_timeline.ingestion import (
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineSourceRecord,
+    TALLANTO_TIMEZONE,
     build_source_inventory,
     compact_text,
     guard_customer_timeline_source_path,
@@ -186,6 +187,7 @@ class TallantoPaymentsTimelineNormalizer:
         event_at = parse_source_datetime(
             first_value(payload, ("date_payment", "date_entered", "date_modified", "event_at")),
             record.observed_at,
+            naive_timezone=TALLANTO_TIMEZONE,
         )
         unresolved_owner = payload.get("_contact_id_source") in {"unresolved_abonement", "unresolved_owner"}
         resolution = TallantoIdentityResolution(
@@ -310,6 +312,7 @@ class TallantoPaymentsTimelineNormalizer:
         event_at = parse_source_datetime(
             first_value(payload, ("date_modified", "date_entered", "start_date", "finish_date", "event_at")),
             record.observed_at,
+            naive_timezone=TALLANTO_TIMEZONE,
         )
         resolution = self._resolve_contact(contact_id)
         source_ref = f"tallanto:{ABONEMENT_MODULE}:{abonement_id}"
@@ -615,6 +618,10 @@ def run_tallanto_money_api_increment(
     env_file: Path,
     client: Any = None,
 ) -> Mapping[str, Any]:
+    started = datetime.now(timezone.utc)
+    previous = _latest_money_sync(config.timeline_db, config.tenant_id)
+    fetch_from = previous - timedelta(minutes=5) if previous else None
+    query_suffix = f"date_modified >= '{fetch_from.astimezone(TALLANTO_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}'" if fetch_from else None
     if client is None:
         from mango_mvp.integrations.amo_wappi_phase1 import load_env_file
 
@@ -624,20 +631,44 @@ def run_tallanto_money_api_increment(
         client = TallantoApiClient(build_tallanto_api_config())
     snapshot: dict[str, list[Mapping[str, Any]]] = {}
     api_stats: dict[str, Mapping[str, int]] = {}
+    fetch_started = time.monotonic()
     for module in (PAYMENT_MODULE, ABONEMENT_MODULE):
-        rows, stats = fetch_tallanto_module_strict(client, module=module)
+        rows, stats = fetch_tallanto_module_strict(
+            client, module=module, query=f"{module}.{query_suffix}" if query_suffix else None
+        )
         snapshot[module] = list(rows)
         api_stats[module] = stats
+    import_started = time.monotonic()
     report = dict(
         run_tallanto_payments_import(
             config,
             stdin_text=json.dumps(snapshot, ensure_ascii=False),
         )
     )
+    if report.get("validation_ok") and config.apply:
+        with CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root) as store:
+            store.upsert_ingestion_cursor(
+                config.tenant_id,
+                "tallanto_money_api",
+                last_cursor_ts=started,
+                metadata={"last_status": "ok", "mode": "incremental" if previous else "full"},
+                actor=config.actor,
+            )
     report["api"] = {
         "modules": api_stats,
         "raw_payload_persisted": False,
-        "full_rescan": True,
+        "full_rescan": previous is None,
+        "performance": {
+            "mode": "incremental" if previous else "full",
+            "rows": {"fetched": sum(item["records"] for item in api_stats.values())},
+            "seconds": {
+                "fetch": round(import_started - fetch_started, 3),
+                "write": round(time.monotonic() - import_started, 3),
+                "total": round(time.monotonic() - fetch_started, 3),
+            },
+            "pages": sum(item["pages"] for item in api_stats.values()),
+            "cursor_used": previous is not None,
+        },
     }
     report["source"] = {
         **dict(report.get("source") or {}),
@@ -658,6 +689,7 @@ def fetch_tallanto_module_strict(
     client: Any,
     *,
     module: str,
+    query: str | None = None,
 ) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, int]]:
     rows: list[Mapping[str, Any]] = []
     seen_ids: set[str] = set()
@@ -670,6 +702,7 @@ def fetch_tallanto_module_strict(
             raise ValueError(f"Tallanto pagination exceeded limit for {module}")
         payload = client.get_entry_list(
             module=module,
+            query=query,
             order_by="date_modified ASC,id ASC",
             offset=offset,
         )
@@ -697,6 +730,8 @@ def fetch_tallanto_module_strict(
                 raise ValueError(f"Tallanto {module} pagination returned missing or duplicate id")
             seen_ids.add(row_id)
             rows.append(row)
+        if expected_total is not None and len(rows) == expected_total:
+            break
         next_raw = payload.get("next_offset")
         if next_raw in (None, ""):
             break
@@ -709,6 +744,26 @@ def fetch_tallanto_module_strict(
             f"Tallanto {module} pagination incomplete: expected {expected_total}, got {len(rows)}"
         )
     return tuple(rows), {"pages": pages, "records": len(rows)}
+
+
+def _latest_money_sync(db_path: Path, tenant_id: str) -> datetime | None:
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+            row = con.execute(
+                "SELECT last_cursor_ts FROM ingestion_cursors WHERE tenant_id=? AND source_system='tallanto_money_api'",
+                (tenant_id,),
+            ).fetchone()
+            if row is None:
+                row = con.execute(
+                    "SELECT started_at FROM ingestion_runs WHERE tenant_id=? AND source_system=? AND status='completed' "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (tenant_id, SOURCE_SYSTEM),
+                ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")) if row else None
 
 
 def assert_tallanto_import_apply_staging_path(path: Path, allowed_root: Path, *, allow_test_paths: bool = False) -> None:
@@ -736,6 +791,7 @@ def run_tallanto_payments_import(
     records, stats, class_lookup = build_tallanto_records(
         snapshot,
         source_path=str(config.source) if config.source else None,
+        existing_abonement_contacts=load_existing_abonement_contacts(config.timeline_db, config.tenant_id),
     )
     contact_ids = {
         str(record.payload.get(key))
@@ -950,6 +1006,7 @@ def build_tallanto_records(
     snapshot: Mapping[str, Any],
     *,
     source_path: Optional[str],
+    existing_abonement_contacts: Optional[Mapping[str, str]] = None,
 ) -> tuple[tuple[TimelineSourceRecord, ...], TallantoSnapshotStats, Mapping[str, Mapping[str, Any]]]:
     payment_rows = extract_module_rows(snapshot, PAYMENT_MODULE, aliases=("finances", "payments", "most_finances"))
     abonement_rows = extract_module_rows(snapshot, ABONEMENT_MODULE, aliases=("abonements", "subscriptions", "most_abonements"))
@@ -959,7 +1016,7 @@ def build_tallanto_records(
         for row in class_rows
         if optional_text(first_value(row, ("id", "class_id", "most_class_id")))
     }
-    abonement_contacts: dict[str, Optional[str]] = {}
+    abonement_contacts: dict[str, Optional[str]] = dict(existing_abonement_contacts or {})
     for row in abonement_rows:
         abonement_id = clean_text(first_value(row, ("id", "abonement_id", "most_abonements_id")))
         if abonement_id:
@@ -996,6 +1053,24 @@ def build_tallanto_records(
                 )
             )
     return tuple(records), stats, class_lookup
+
+
+def load_existing_abonement_contacts(db_path: Path, tenant_id: str) -> Mapping[str, str]:
+    if not db_path.exists():
+        return {}
+    with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+        rows = con.execute(
+            "SELECT source_id, record_json FROM timeline_events WHERE tenant_id=? AND source_system=? "
+            "AND source_id LIKE 'most_abonements:%' AND superseded_by IS NULL",
+            (tenant_id, SOURCE_SYSTEM),
+        ).fetchall()
+    result: dict[str, str] = {}
+    for source_id, record_json in rows:
+        record = (json.loads(record_json).get("record") or {}) if record_json else {}
+        contact_id = clean_text(record.get("contact_id"))
+        if contact_id:
+            result[str(source_id).split(":", 1)[-1]] = contact_id
+    return result
 
 
 def extract_module_rows(snapshot: Mapping[str, Any], module: str, *, aliases: Sequence[str]) -> tuple[Mapping[str, Any], ...]:

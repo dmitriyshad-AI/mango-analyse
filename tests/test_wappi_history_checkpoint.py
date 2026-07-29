@@ -14,6 +14,7 @@ from typing import Any, Mapping, Optional
 
 import pytest
 
+import mango_mvp.customer_timeline.wappi_history_import as wappi_history_module
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.wappi_history_import import (
     WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
@@ -1287,6 +1288,29 @@ def test_dry_run_never_commits_a_checkpoint(tmp_path: Path) -> None:
     assert report["checkpoint"]["committed"] is False
     assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
     assert wappi_row_count(db_path) == 0
+
+
+def test_checkpoint_does_not_advance_when_current_source_id_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    monkeypatch.setattr(
+        wappi_history_module,
+        "load_existing_wappi_source_ids",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    report = run_wappi_history_import(
+        make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
+        client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+    )
+
+    assert report["source_persistence_complete"] is False
+    assert report["publish_ready"] is False
+    assert report["summary"]["messages_missing_from_timeline"] > 0
+    assert report["checkpoint"]["committed"] is False
+    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
 
 
 def test_catalog_snapshot_drift_blocks_terminal_complete(tmp_path: Path) -> None:

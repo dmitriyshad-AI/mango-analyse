@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -15,10 +15,11 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_contract
-from mango_mvp.customer_timeline.ingestion import timeline_ingestion_safety_contract
+from mango_mvp.customer_timeline.ingestion import TALLANTO_TIMEZONE, timeline_ingestion_safety_contract
 from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
+    build_tallanto_records,
     fetch_tallanto_module_strict,
     load_tallanto_customer_lookup,
     main,
@@ -463,13 +464,36 @@ def test_tallanto_money_api_full_rescan_imports_sanitized_rows_idempotently(tmp_
     second = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=client)
 
     assert first["validation_ok"] is True
-    assert first["api"]["modules"]["most_finances"] == {"pages": 2, "records": 1}
-    assert first["api"]["modules"]["most_abonements"] == {"pages": 2, "records": 1}
+    assert first["api"]["modules"]["most_finances"] == {"pages": 1, "records": 1}
+    assert first["api"]["modules"]["most_abonements"] == {"pages": 1, "records": 1}
     assert first["api"]["raw_payload_persisted"] is False
     assert first["safety"]["network_calls"] is True
     assert first["safety"]["write_tallanto"] is False
     assert second["import_report"]["write_status_counts"]["duplicate"] >= 4
+    assert client.queries[:2] == [("most_finances", None), ("most_abonements", None)]
+    assert all(query and query.startswith(f"{module}.date_modified >=") for module, query in client.queries[2:])
+    incremental_cutoff = datetime.fromisoformat(client.queries[2][1].split("'", 2)[1]).replace(
+        tzinfo=TALLANTO_TIMEZONE
+    )
+    assert datetime.now(TALLANTO_TIMEZONE) - incremental_cutoff < timedelta(minutes=10)
     assert "must_not_be_stored" not in db_dump(timeline_db)
+    with sqlite3.connect(timeline_db) as con:
+        assert con.execute(
+            "SELECT event_at FROM timeline_events WHERE source_id='most_finances:payment-1'"
+        ).fetchone()[0].endswith("+03:00")
+
+
+def test_incremental_payment_reuses_existing_abonement_owner() -> None:
+    row = {**payment_row(), "contact_id": ""}
+    records, stats, _ = build_tallanto_records(
+        {"most_finances": [row]},
+        source_path=None,
+        existing_abonement_contacts={"abonement-1": "contact-1"},
+    )
+
+    assert stats.unresolved_payment_owners == 0
+    assert records[0].payload["contact_id"] == "contact-1"
+    assert records[0].payload["_contact_id_source"] == "abonement"
 
 
 def test_tallanto_money_api_rejects_duplicate_ids_across_pages() -> None:
@@ -532,7 +556,12 @@ def mcp_snapshot() -> dict[str, object]:
 
 
 class _TallantoMoneyClient:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, object]] = []
+
     def get_entry_list(self, *, module: str, offset: int, **_kwargs):  # type: ignore[no-untyped-def]
+        if offset == 0:
+            self.queries.append((module, _kwargs.get("query")))
         if offset:
             return {"entry_list": [], "next_offset": None, "total_count": 1}
         if module == "most_finances":

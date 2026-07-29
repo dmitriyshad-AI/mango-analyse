@@ -1918,13 +1918,23 @@ def quarantine_conflicting_wappi_events(
             }
         )
         payload["metadata"] = metadata
+        payload.update(
+            {
+                "customer_id": None,
+                "opportunity_id": None,
+                "match_status": IdentityMatchClass.AMBIGUOUS.value,
+                "confidence": 0.0,
+            }
+        )
         safe_payload = scrub_timeline_persisted_json(payload)
         after_hash = stable_digest(safe_payload)
         if after_hash != str(row["record_hash"]):
             store._con.execute(
-                "UPDATE timeline_events SET record_json = ?, record_hash = ? WHERE event_id = ?",
-                (json_dumps(safe_payload), after_hash, row["event_id"]),
+                "UPDATE timeline_events SET customer_id=NULL, opportunity_id=NULL, "
+                "match_status=?, confidence=0, record_json=?, record_hash=? WHERE event_id=?",
+                (IdentityMatchClass.AMBIGUOUS.value, json_dumps(safe_payload), after_hash, row["event_id"]),
             )
+            store._delete_superseded_from_fts((str(row["event_id"]),))
             store._append_audit_log(
                 tenant_id=tenant_id,
                 action="wappi_identity_conflict_quarantined",
@@ -2256,6 +2266,7 @@ def run_wappi_history_import(
     duplicate_count = 0
     blocked_customer_relink_conflicts = 0
     unresolved_kept_existing = 0
+    pending_existing_source_ids: dict[str, set[str]] = defaultdict(set)
     conflicting_existing_events: list[tuple[str, str, str, str]] = []
     guarded_records: list[TimelineSourceRecord] = []
     for record in records:
@@ -2272,6 +2283,13 @@ def run_wappi_history_import(
         )
         proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
         proposed_authority = str(record.payload.get("identity_authority") or "")
+        if existing_authority == "pending_attribution" and not (
+            proposed_customer and proposed_authority in WAPPI_EXACT_AMO_AUTHORITIES
+        ):
+            unresolved_kept_existing += 1
+            blocked_customer_relink_conflicts += 1
+            pending_existing_source_ids[record.source_system].add(source_id)
+            continue
         candidate_customers = {
             str(item)
             for item in (record.payload.get("candidate_customer_ids") or ())
@@ -2547,35 +2565,6 @@ def run_wappi_history_import(
         ) as store_ro:
             store_summary_after = store_ro.summary()
     checkpoint_committed = False
-    if next_checkpoint is not None and apply_effective:
-        # Commit the checkpoint only AFTER the rows it vouches for are in the DB.
-        # A crash before this point simply replays the window; source_id keeps the
-        # replay idempotent, so the checkpoint can lag but can never run ahead.
-        current_timeline_state = wappi_timeline_state(
-            config.timeline_db, tenant_id=config.tenant_id, profiles=profiles
-        )
-        stamp = datetime.now(timezone.utc).isoformat()
-        # Merge, do not overwrite: a profile that was not touched this run (dropped from
-        # the phase1 config, or written by a concurrent run) must keep its progress.
-        merged = dict(checkpoint_state.get("profiles") or {})
-        merged.update(
-            {
-                key: {
-                    **entry,
-                    "timeline_rows": int(current_timeline_state.get(str(key), {}).get("rows", 0)),
-                    "timeline_source_digest": str(
-                        current_timeline_state.get(str(key), {}).get("source_digest") or ""
-                    ),
-                    "updated_at": stamp,
-                }
-                for key, entry in next_checkpoint.items()
-            }
-        )
-        save_wappi_history_checkpoint(
-            config.checkpoint_dir,
-            merged,
-        )
-        checkpoint_committed = True
     amo_read_active = bool(
         amo_auto_resolver is not None or widget_contact_hydrate_report.get("requested")
     )
@@ -2612,7 +2601,6 @@ def run_wappi_history_import(
         if full_audit_profiles == 0
         else "mixed"
     )
-    publish_ready = validation_ok and attribution_complete
     records_reliably_linked = sum(
         stats.linked_by_pair
         + stats.linked_by_timeline
@@ -2639,6 +2627,43 @@ def run_wappi_history_import(
         )
         for source_system, group in grouped.items()
     )
+    messages_present_in_timeline += sum(
+        len(load_existing_wappi_source_ids(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            source_systems={source_system},
+            source_ids=tuple(source_ids),
+        ))
+        for source_system, source_ids in pending_existing_source_ids.items()
+    )
+    messages_expected_in_timeline = len(records) + sum(
+        len(source_ids) for source_ids in pending_existing_source_ids.values()
+    )
+    messages_missing_from_timeline = max(0, messages_expected_in_timeline - messages_present_in_timeline)
+    source_persistence_complete = apply_effective and messages_missing_from_timeline == 0
+    publish_ready = validation_ok and attribution_complete and source_persistence_complete
+    if next_checkpoint is not None and source_persistence_complete:
+        # A checkpoint may only advance after every current source_id is visible.
+        current_timeline_state = wappi_timeline_state(
+            config.timeline_db, tenant_id=config.tenant_id, profiles=profiles
+        )
+        stamp = datetime.now(timezone.utc).isoformat()
+        merged = dict(checkpoint_state.get("profiles") or {})
+        merged.update(
+            {
+                key: {
+                    **entry,
+                    "timeline_rows": int(current_timeline_state.get(str(key), {}).get("rows", 0)),
+                    "timeline_source_digest": str(
+                        current_timeline_state.get(str(key), {}).get("source_digest") or ""
+                    ),
+                    "updated_at": stamp,
+                }
+                for key, entry in next_checkpoint.items()
+            }
+        )
+        save_wappi_history_checkpoint(config.checkpoint_dir, merged)
+        checkpoint_committed = True
     code_identity_end = dict(build_draft_loop_code_identity())
     worktree_end = git_worktree_provenance(code_root)
     db_identity_end = timeline_db_identity(config.timeline_db)
@@ -2688,6 +2713,7 @@ def run_wappi_history_import(
             "full_audit_interval_days": WAPPI_INCREMENTAL_FULL_AUDIT_DAYS,
         },
         "fetch_complete": validation_ok,
+        "source_persistence_complete": source_persistence_complete,
         "attribution_complete": attribution_complete,
         "publish_ready": publish_ready,
         "limit_hits": limit_hits,
@@ -2719,6 +2745,8 @@ def run_wappi_history_import(
             "records_built": len(records),
             "messages_newly_saved": messages_newly_saved,
             "messages_present_in_timeline": messages_present_in_timeline,
+            "messages_expected_in_timeline": messages_expected_in_timeline,
+            "messages_missing_from_timeline": messages_missing_from_timeline,
             "records_reliably_linked": records_reliably_linked,
             "attribution_complete": attribution_complete,
             "linked_by_pair": sum(stats.linked_by_pair for stats in fetch_stats_by_profile.values()),
@@ -5123,6 +5151,7 @@ def load_existing_wappi_source_ids(
                         WHERE tenant_id = ?
                           AND source_system = ?
                           AND source_id IN ({placeholders})
+                          AND superseded_by IS NULL
                         """,
                         (tenant, source_system, *chunk),
                     )
@@ -5150,8 +5179,7 @@ def load_existing_wappi_event_customers(
                 placeholders = ",".join("?" for _ in chunk)
                 for row in con.execute(
                     f"""
-                    SELECT source_system, source_id, customer_id,
-                           COALESCE(json_extract(record_json, '$.metadata.identity_authority'), '') AS identity_authority
+                    SELECT source_system, source_id, customer_id, record_json
                     FROM timeline_events
                     WHERE tenant_id = ?
                       AND source_system = ?
@@ -5162,10 +5190,22 @@ def load_existing_wappi_event_customers(
                 ):
                     source_id = str(row["source_id"] or "").strip()
                     customer_id = str(row["customer_id"] or "").strip()
-                    if source_id and customer_id:
+                    payload = json.loads(str(row["record_json"] or "{}"))
+                    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+                    pending_conflict = (
+                        pending_attribution_truthy(metadata.get("pending_attribution"))
+                        and str(metadata.get("resolution_reason") or "")
+                        in {"existing_wappi_chat_customer_conflict", "existing_wappi_source_customer_conflict"}
+                    )
+                    authority = (
+                        "pending_attribution"
+                        if pending_conflict
+                        else str(metadata.get("identity_authority") or "")
+                    )
+                    if source_id and (customer_id or authority == "pending_attribution"):
                         found[(str(row["source_system"]), source_id)] = (
                             customer_id,
-                            str(row["identity_authority"] or ""),
+                            authority,
                         )
     return found
 
@@ -5560,6 +5600,15 @@ def truthy(value: Any) -> bool:
     if value in (None, 0):
         return False
     return str(value).strip().casefold() in {"1", "true", "yes", "on", "y", "да", "allowed"}
+
+
+def pending_attribution_truthy(value: Any) -> bool:
+    """Fail closed for malformed persisted quarantine flags."""
+    if value in (None, False, 0):
+        return False
+    if isinstance(value, str):
+        return value.strip().casefold() not in {"", "0", "false", "no", "off"}
+    return True
 
 
 def sleep_if_needed(seconds: float) -> None:

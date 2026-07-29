@@ -1082,6 +1082,46 @@ def test_unconfirmed_auto_pair_core_strips_customer_memory_from_custom_builder(t
     assert context["dialogue_memory_view"]["conversation_summary_short"] == "Текущий диалог"
 
 
+def test_auto_pair_keeps_only_canonical_confirmed_customer_context(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton", source="auto")
+    bot = FakeBot()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, bot=bot)
+    received_memory: list[Mapping[str, object]] = []
+
+    def canonical_builder(*_args, dialogue_memory=None, **_kwargs):
+        received_memory.append(dict(dialogue_memory or {}))
+        return {"read_only_customer_context": {
+            "schema_version": "bot_safe_crm_context_v1_2026_06_21",
+            "source": "customer_timeline_bot_context",
+            "found": True,
+            "allowed_only": True,
+            "timeline_context": {
+                "schema_version": "bot_safe_crm_context_v1_2026_06_21",
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "allowed_only": True,
+                "bot_context": {"allowed_only": True, "items": []},
+                "safety": {
+                    "source_api": "bot_context",
+                    "customer_profile_included": False,
+                    "raw_timeline_events_included": False,
+                    "raw_ids_included": False,
+                    "pii_scan_passed": True,
+                },
+            },
+        }}
+
+    loop.context_builder = canonical_builder
+    loop.trusted_auto_customer_context_builder = canonical_builder
+    loop.state.set_dialogue_memory(key, {"conversation_summary_short": "Ранее обсуждали расписание."})
+
+    loop.run_once(dry_run=True)
+
+    assert received_memory == [{"conversation_summary_short": "Ранее обсуждали расписание."}]
+    assert bot.calls[0]["context"]["read_only_customer_context"]["found"] is True
+
+
 def test_draft_loop_stop_fetches_but_does_not_call_bot_or_mark_processed(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")

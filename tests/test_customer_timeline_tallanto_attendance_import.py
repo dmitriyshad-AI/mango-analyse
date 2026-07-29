@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -487,9 +488,13 @@ def test_attendance_api_preserves_tallanto_amo_identity_conflict_without_advanci
     assert report["validation_ok"] is False
     assert report["validation_errors"] == ["identity_conflict"]
     with sqlite3.connect(db) as con:
-        assert con.execute(
-            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == 0
+        cursor = con.execute(
+            "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+        assert cursor is not None
+        assert cursor[0] == report["cursor_before"]
+        assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
         assert con.execute(
             "SELECT status FROM ingestion_runs WHERE source_system='tallanto_attendance_api'"
         ).fetchone()[0] == "partial"
@@ -550,9 +555,13 @@ def test_attendance_api_partially_imports_reliable_events_and_retries_idempotent
             "SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
         ).fetchone()[0] == 1
         assert con.execute("SELECT count(*) FROM timeline_conflicts WHERE status='open'").fetchone()[0] == 2
-        assert con.execute(
-            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == 0
+        cursor = con.execute(
+            "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+        assert cursor is not None
+        assert cursor[0] == second["cursor_before"]
+        assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == second["class_overlap_after"]
         assert con.execute(
             "SELECT count(*) FROM ingestion_runs WHERE source_system='tallanto_attendance_api' AND status='partial'"
         ).fetchone()[0] == 2
@@ -602,6 +611,52 @@ def test_attendance_api_accepts_exact_student_and_parent_in_same_confident_famil
     assert report["counts"]["identity_same_family"] == 1
     assert report["counts"]["events_resolved"] == 1
     assert report["counts"].get("identity_conflict", 0) == 0
+
+
+def test_attendance_api_resolves_prior_conflict_from_direct_family_amo_link(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_customer(db, tmp_path, "customer:student")
+    _seed_customer(db, tmp_path, "customer:parent")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:student",
+            link_type=IdentityLinkType.TALLANTO_STUDENT_ID, link_value="101",
+            source_system="tallanto_snapshot", source_ref="tallanto:101",
+        ))
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:parent",
+            link_type=IdentityLinkType.AMO_CONTACT_ID, link_value="amo-101",
+            source_system="amo", source_ref="amo:amo-101",
+        ))
+
+    first = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+    assert first["counts"]["identity_conflict"] == 1
+
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:student",
+            link_type=IdentityLinkType.AMO_CONTACT_ID, link_value="amo-101",
+            source_system="tallanto_snapshot", source_ref="tallanto:101",
+            match_class="ambiguous", confidence=1.0,
+            evidence={"relationship": "family_amo_contact"},
+        ))
+
+    second = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert second["status"] == "completed"
+    assert second["counts"]["identity_direct_family"] == 1
+    assert second["counts"]["events_resolved"] == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_type='tallanto_attendance_api_identity_conflict'"
+        ).fetchone()[0] == "resolved"
 
 
 def test_attendance_api_fails_loud_on_incomplete_pagination(tmp_path: Path) -> None:
@@ -739,10 +794,14 @@ def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(t
     assert report["validation_ok"] is False
     assert report["validation_errors"] == ["identity_unmatched_expected"]
     assert report["cursor_after"] == report["cursor_before"]
+    assert report["class_overlap_after"] == report["class_overlap_before"]
     with sqlite3.connect(db) as con:
-        assert con.execute(
-            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == 0
+        cursor = con.execute(
+            "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+        assert cursor[0] == report["cursor_before"]
+        assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
         # Still visible, never silenced: recorded as a (low severity) conflict.
         assert con.execute(
             "SELECT conflict_type, severity FROM timeline_conflicts"
@@ -777,6 +836,12 @@ def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(t
     )
     assert retried["counts"]["created"] == 1
     assert retried["cursor_after"] != retried["cursor_before"]
+    assert retried["class_overlap_after"] != retried["class_overlap_before"]
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_attendance_api_identity_unmatched_expected'"
+        ).fetchone() == ("resolved",)
 
 
 def test_attendance_api_infrastructure_gap_blocks_freshness_and_cursor(tmp_path: Path) -> None:
@@ -809,9 +874,12 @@ def test_attendance_api_infrastructure_gap_blocks_freshness_and_cursor(tmp_path:
     assert report["validation_errors"] == ["identity_infrastructure_gap"]
     assert report["cursor_after"] == report["cursor_before"]
     with sqlite3.connect(db) as con:
-        assert con.execute(
-            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == 0
+        cursor = con.execute(
+            "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+        assert cursor[0] == report["cursor_before"]
+        assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
         assert con.execute(
             "SELECT conflict_type, severity FROM timeline_conflicts"
         ).fetchone() == ("tallanto_attendance_api_identity_infrastructure_gap", "medium")
@@ -880,9 +948,12 @@ def test_attendance_api_empty_first_run_does_not_advance_cursor(tmp_path: Path) 
     assert report["validation_errors"] == ["no_attendance_events"]
     assert report["cursor_after"] == report["cursor_before"]
     with sqlite3.connect(db) as con:
-        assert con.execute(
-            "SELECT count(*) FROM ingestion_cursors WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == 0
+        cursor = con.execute(
+            "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+        assert cursor[0] == report["cursor_before"]
+        assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
 
 
 def test_attendance_api_empty_repeat_with_existing_history_is_valid_no_op(tmp_path: Path) -> None:

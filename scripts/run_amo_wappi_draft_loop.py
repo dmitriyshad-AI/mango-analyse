@@ -231,8 +231,6 @@ def _build_bot_safe_crm_context_for_draft(
     pair = draft_config.pair_for(key) if draft_config is not None else None
     if pair is None:
         return {}
-    if str(pair.source or "").strip().casefold() == "auto":
-        return {}
     db_path = customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     allowed_root = customer_timeline_allowed_root or db_path.parent
     context = build_bot_safe_crm_context(
@@ -1015,6 +1013,13 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     stoplist_phones, stoplist_error = _load_phone_stoplist(
         getattr(args, "shared_phone_stoplist", DEFAULT_STOPLIST_PATH)
     )
+    context_builder = build_context_builder(
+        args.snapshot,
+        draft_config=config,
+        customer_timeline_db=args.customer_timeline_db,
+        customer_timeline_allowed_root=args.customer_timeline_allowed_root,
+        customer_timeline_tenant=args.customer_timeline_tenant,
+    )
     return AmoWappiDraftLoop(
         config=config,
         wappi_client=wappi_client,
@@ -1024,13 +1029,7 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
             read_client=amo_read_client,
         ),
         bot_provider=bot_provider,
-        context_builder=build_context_builder(
-            args.snapshot,
-            draft_config=config,
-            customer_timeline_db=args.customer_timeline_db,
-            customer_timeline_allowed_root=args.customer_timeline_allowed_root,
-            customer_timeline_tenant=args.customer_timeline_tenant,
-        ),
+        context_builder=context_builder,
         state=DraftLoopState(config.state_path),
         auto_resolver=build_authoritative_resolver(
             wappi_client=wappi_client,
@@ -1039,6 +1038,7 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
             shared_phone_stoplist=frozenset(stoplist_phones),
             stoplist_error=stoplist_error,
         ),
+        trusted_auto_customer_context_builder=context_builder,
     )
 
 

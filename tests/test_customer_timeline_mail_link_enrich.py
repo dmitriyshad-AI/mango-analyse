@@ -1076,7 +1076,7 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
                     source_id=f"tallanto-{index}",
                     direction="system",
                     match_status="strong_unique",
-                    record={"payload": {"parent_fio": "Ирина Иванова"}},
+                        record={"payload": {"parent_fio": "Ирина Иванова", "primary_email": "parent@example.com"}},
                 )
             )
         store.upsert_identity_link(
@@ -1470,7 +1470,7 @@ def test_mail_link_enrich_accepts_historical_email_for_one_tallanto_family(tmp_p
                     source_id=f"family-student-{index}",
                     direction="system",
                     match_status="strong_unique",
-                    record={"payload": {"parent_fio": "Ирина Иванова"}},
+                    record={"payload": {"parent_fio": "Ирина Иванова", "primary_phone": "+79990000001"}},
                 )
             )
     identity_dbs = tuple(

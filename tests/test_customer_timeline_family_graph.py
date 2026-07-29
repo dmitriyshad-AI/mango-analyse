@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import mango_mvp.customer_timeline.family_graph as family_graph_module
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     CustomerOpportunity,
@@ -54,7 +55,8 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
     assert event[3]
 
 
-def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path) -> None:
+@pytest.mark.parametrize("match_status", ("strong_unique", "manual"))
+def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path, match_status: str) -> None:
     db_path = _timeline_db(tmp_path)
     profiles_db = _profiles_db(tmp_path)
     for index, (customer_id, child_name) in enumerate(
@@ -70,6 +72,7 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path) -
             customer_id,
             f"tallanto-{index}",
             "parent@example.com",
+            match_status=match_status,
         )
 
     report = build_family_graph(
@@ -191,11 +194,11 @@ def test_store_bootstrap_migrates_early_family_members_table(tmp_path: Path) -> 
     assert "updated_at" in columns
 
 
-def test_family_graph_does_not_merge_shared_email_with_different_parents(tmp_path: Path) -> None:
+def test_family_graph_does_not_merge_same_surname_with_different_parents(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     for customer_id, student_id, parent_name in (
         ("customer:left", "student-left", "Ирина Иванова"),
-        ("customer:right", "student-right", "Мария Петрова"),
+        ("customer:right", "student-right", "Мария Иванова"),
     ):
         _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=f"+7900000000{len(customer_id)}")
         _seed_tallanto_identity(
@@ -215,6 +218,44 @@ def test_family_graph_does_not_merge_shared_email_with_different_parents(tmp_pat
         ).fetchall()
     assert len({row[0] for row in rows}) == 2
     assert {row[1] for row in rows} == {"singleton"}
+
+
+def test_family_graph_ignores_stale_tallanto_contact_links(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, student_id, email in (
+        ("customer:a", "student-a", "old@example.com"),
+        ("customer:b", "student-b", "old@example.com"),
+        ("customer:c", "student-c", "isolated@example.com"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=f"+7900000000{len(customer_id)}")
+        _seed_tallanto_identity(db_path, tmp_path, customer_id, student_id, email)
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        before = dict(con.execute("SELECT customer_id,family_id FROM family_members_v1"))
+    assert before["customer:a"] == before["customer:b"]
+    assert before["customer:c"] != before["customer:b"]
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for customer_id in ("customer:b", "customer:c"):
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="email",
+                    link_value="new@example.com",
+                    source_system="tallanto_snapshot",
+                    source_ref=f"stale:{customer_id}",
+                    match_class="strong_unique",
+                    confidence=1.0,
+                )
+            )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        after = dict(con.execute("SELECT customer_id,family_id FROM family_members_v1"))
+    assert after["customer:a"] == after["customer:b"]
+    assert after["customer:c"] != after["customer:b"]
 
 
 def test_family_graph_attaches_exact_amo_parent_and_attributes_parent_event_to_child(tmp_path: Path) -> None:
@@ -609,7 +650,119 @@ def test_family_graph_keeps_historical_tallanto_students_distinct_under_one_cust
     assert report["family_links_total"] == 2
 
 
-def test_family_root_does_not_merge_two_persisted_roots(tmp_path: Path) -> None:
+def test_profile_name_cannot_bridge_two_exact_tallanto_children(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    customer_id = "customer:bridge"
+    _seed_customer(db_path, tmp_path, customer_id=customer_id, phone="+79000000003")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for student_id in ("student-one", "student-two"):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=student_id,
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"display_name": "Иван Иванов"}},
+                )
+            )
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id=customer_id, phone="+79000000003")
+    _insert_field(profiles_db, profile_id=customer_id, field="child_name", value="Иван Иванов", child_key="profile-child")
+
+    build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, profiles_db=profiles_db, apply=True)
+    )
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT child_key,record_json FROM family_links_v1 WHERE customer_id=? ORDER BY child_key",
+            (customer_id,),
+        ).fetchall()
+    assert len(rows) == 2
+    assert {tuple(json.loads(row[1])["tallanto_student_ids"]) for row in rows} == {
+        ("student-one",),
+        ("student-two",),
+    }
+
+
+def test_wrong_historical_attribution_cannot_reuse_another_students_key(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    customer_id = "customer:wrong-history"
+    _seed_customer(db_path, tmp_path, customer_id=customer_id, phone="+79000000004")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for student_id, name in (("student-one", "Анна Иванова"), ("student-two", "Мария Иванова")):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=student_id,
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"display_name": name}},
+                )
+            )
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        event_ids = dict(con.execute("SELECT source_id,event_id FROM timeline_events"))
+        key_one = con.execute(
+            "SELECT child_key FROM event_child_attribution_v1 WHERE event_id=?",
+            (event_ids["student-one"],),
+        ).fetchone()[0]
+        con.execute("DELETE FROM event_child_attribution_v1 WHERE event_id=?", (event_ids["student-one"],))
+        con.execute(
+            "UPDATE event_child_attribution_v1 SET child_key=? WHERE event_id=?",
+            (key_one, event_ids["student-two"]),
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        child_keys = {
+            row[0] for row in con.execute("SELECT child_key FROM family_links_v1 WHERE customer_id=?", (customer_id,))
+        }
+    assert len(child_keys) == 2
+
+
+def test_exact_tallanto_child_key_survives_customer_relink(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:old", phone="+79000000005")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        "customer:old",
+        "student-moving",
+        "parent@example.com",
+        student_name="Анна Иванова",
+    )
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        before = con.execute(
+            "SELECT child_key FROM family_links_v1 WHERE customer_id='customer:old'"
+        ).fetchone()[0]
+
+    _seed_customer(db_path, tmp_path, customer_id="customer:new", phone="+79000000006")
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE timeline_events SET customer_id='customer:new' WHERE source_id='student-moving'"
+        )
+        con.execute(
+            "UPDATE identity_links SET customer_id='customer:new' WHERE source_system='tallanto_snapshot'"
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT customer_id,child_key FROM family_links_v1 ORDER BY customer_id"
+        ).fetchall()
+    assert rows == [("customer:new", before)]
+
+
+def test_family_root_merges_two_persisted_roots_on_exact_tallanto_proof(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     for customer_id, student_id, phone in (
         ("customer:left", "student-left", "+79000000001"),
@@ -620,10 +773,12 @@ def test_family_root_does_not_merge_two_persisted_roots(tmp_path: Path) -> None:
     build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
     with sqlite3.connect(db_path) as con:
         original = dict(con.execute("SELECT customer_id, family_id FROM family_members_v1"))
-        con.execute(
-            "UPDATE identity_links SET link_value='parent@example.com' "
-            "WHERE source_system='tallanto_snapshot' AND link_type='email'"
-        )
+        for event_id, record_json in con.execute(
+            "SELECT event_id,record_json FROM timeline_events WHERE event_type='tallanto_student_snapshot'"
+        ).fetchall():
+            payload = json.loads(record_json)
+            payload["record"]["payload"]["primary_email"] = "parent@example.com"
+            con.execute("UPDATE timeline_events SET record_json=? WHERE event_id=?", (json.dumps(payload), event_id))
 
     build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
 
@@ -631,9 +786,130 @@ def test_family_root_does_not_merge_two_persisted_roots(tmp_path: Path) -> None:
         rows = con.execute(
             "SELECT customer_id, family_id, membership_status, reason FROM family_members_v1 ORDER BY customer_id"
         ).fetchall()
-    assert {row[0]: row[1] for row in rows} == original
-    assert {row[2] for row in rows} == {"conflict"}
-    assert {row[3] for row in rows} == {"conflicting_persisted_family_roots"}
+    assert len(set(original.values())) == 2
+    assert len({row[1] for row in rows}) == 1
+    assert rows[0][1] in set(original.values())
+    assert {row[2] for row in rows} == {"confident"}
+    assert {row[3] for row in rows} == {"exact_tallanto_parent_name_and_phone_or_email"}
+
+
+def test_family_graph_attributes_tallanto_events_only_by_exact_student_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, student_id, phone, student_name in (
+        ("customer:left", "student-left", "+79000000011", "Анна Иванова"),
+        ("customer:right", "student-right", "+79000000012", "Мария Иванова"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            student_id,
+            "parent@example.com",
+            student_name=student_name,
+        )
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        right_customer, right_key = con.execute(
+            "SELECT customer_id,child_key FROM family_links_v1 WHERE canonical_name='Мария Иванова'"
+        ).fetchone()
+        legacy_key = "child:stable-existing"
+        con.execute(
+            "UPDATE family_links_v1 SET child_key=? WHERE customer_id=? AND child_key=?",
+            (legacy_key, right_customer, right_key),
+        )
+        con.execute(
+            "UPDATE event_child_attribution_v1 SET child_key=? WHERE customer_id=? AND child_key=?",
+            (legacy_key, right_customer, right_key),
+        )
+
+    event_records = (
+        ("payment-exact", "tallanto_payment", {"contact_id": "student-right"}, "strong_unique"),
+        ("abonement-exact", "tallanto_abonement", {"contact_id": "student-right"}, "manual"),
+        ("attendance-xls-exact", "tallanto_attendance", {"logical_key": {"tallanto_id": "student-right"}}, "strong_unique"),
+        ("attendance-api-exact", "tallanto_attendance", {"tallanto_student_id": "student-right"}, "manual"),
+        ("payment-name-trap", "tallanto_payment", {"contact_id": "unknown-student"}, "strong_unique"),
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for source_id, event_type, record, match_status in event_records:
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:left",
+                    event_type=event_type,
+                    event_at=NOW,
+                    source_system="tallanto_test",
+                    source_id=source_id,
+                    direction="system",
+                    match_status=match_status,
+                    summary="Оплата Марии Ивановой",
+                    record=record,
+                )
+            )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            """
+            SELECT event.source_id, attribution.customer_id, attribution.child_key, attribution.reason
+            FROM timeline_events AS event
+            JOIN event_child_attribution_v1 AS attribution ON attribution.event_id=event.event_id
+            WHERE event.source_id IN (?,?,?,?,?,?) ORDER BY event.source_id
+            """,
+            ("student-right", *(item[0] for item in event_records)),
+        ).fetchall()
+        stable_key = con.execute(
+            "SELECT child_key FROM family_links_v1 WHERE customer_id=?",
+            (right_customer,),
+        ).fetchone()[0]
+    exact = [row for row in rows if row[0] != "payment-name-trap"]
+    name_trap = next(row for row in rows if row[0] == "payment-name-trap")
+    assert stable_key == legacy_key
+    assert {(row[1], row[2], row[3]) for row in exact} == {
+        (right_customer, legacy_key, "exact_tallanto_identity")
+    }
+    assert name_trap[2:] == ("", "tallanto_student_id_not_in_family")
+
+    monkeypatch.setattr(family_graph_module, "_event_tallanto_student_id", lambda _event: "")
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        disabled = con.execute(
+            "SELECT child_key,reason FROM event_child_attribution_v1 AS attribution "
+            "JOIN timeline_events AS event ON event.event_id=attribution.event_id "
+            "WHERE event.source_id='payment-exact'"
+        ).fetchone()
+    assert disabled == ("", "missing_exact_tallanto_student_id")
+
+
+def test_tallanto_payment_before_student_card_stays_in_explicit_quarantine(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:no-family", phone="+79000000091")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:no-family",
+            event_type="tallanto_payment",
+            event_at=NOW,
+            source_system="tallanto_crm_call",
+            source_id="payment-orphan",
+            direction="system",
+            match_status="strong_unique",
+            record={"contact_id": "student-late", "amount": 1000},
+        )
+        store.upsert_event(event)
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT status,child_key,reason FROM event_child_attribution_v1 WHERE event_id=?",
+            (event.event_id,),
+        ).fetchone()
+    assert row == ("ambiguous", "", "tallanto_student_id_not_in_family")
 
 
 def test_family_root_preserves_distinct_roots_on_shared_amo_contact_id(tmp_path: Path) -> None:
@@ -1008,6 +1284,7 @@ def _seed_tallanto_identity(
     parent_email: str,
     parent_name: str = "Ирина Иванова",
     match_status: str = "strong_unique",
+    student_name: str = "",
 ) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for link_type, link_value in (("tallanto_student_id", student_id), ("email", parent_email)):
@@ -1035,9 +1312,16 @@ def _seed_tallanto_identity(
                 event_at=NOW,
                 source_system="tallanto_snapshot",
                 source_id=student_id,
+                source_ref=f"tallanto:student:{student_id}",
                 direction="system",
                 match_status=match_status,
-                record={"payload": {"parent_fio": parent_name}},
+                record={
+                    "payload": {
+                        "parent_fio": parent_name,
+                        "primary_email": parent_email,
+                        **({"display_name": student_name} if student_name else {}),
+                    }
+                },
             )
         )
 

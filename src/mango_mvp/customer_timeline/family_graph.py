@@ -12,14 +12,16 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from mango_mvp.customer_profile.builder import child_name_keys, normalized_name_tokens
-from mango_mvp.customer_timeline.ids import normalize_key, stable_digest, stable_prefixed_id
+from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest, stable_prefixed_id
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri, guard_customer_timeline_sqlite_path
+from mango_mvp.utils.phone import normalize_phone
 
 
 FAMILY_GRAPH_SCHEMA_VERSION = "family_graph_v1"
 FAMILY_GRAPH_RUN_KIND = "family_graph_v1"
 FAMILY_GRAPH_ACTOR = "family_graph_v1_builder"
 VALID_BRANDS = {"foton", "unpk", "unknown"}
+TALLANTO_CHILD_EVENT_TYPES = {"tallanto_student_snapshot", "tallanto_payment", "tallanto_abonement", "tallanto_attendance"}
 CHILD_RELEVANT_RE = re.compile(
     r"\b(?:реб[её]нок|дет[еи]|сын|дочь|дочка|ученик|ученица|класс|егэ|огэ|"
     r"математик|физик|информатик|русск|английск|курс|заняти|школ)\w*\b",
@@ -55,6 +57,7 @@ class ChildEvidence:
     source_system: str
     source_ref: str
     event_at: str
+    tallanto_student_id: str = ""
     name: str = ""
     grade: str = ""
     subject: str = ""
@@ -152,13 +155,14 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             for customer_id, row in customers.items()
         }
         evidence_by_customer: dict[str, list[ChildEvidence]] = defaultdict(list)
+        stable_child_keys = _load_stable_tallanto_child_keys(con, tenant_id=tenant_id)
         has_new_child_evidence = False
         persisted_groups = _load_persisted_family_groups(con, tenant_id=tenant_id) if preserve_child_graph else {}
         tallanto_snapshot_customers: set[str] = set()
         for row in con.execute(
-            "SELECT customer_id,source_ref,event_at,record_json FROM timeline_events "
+            "SELECT customer_id,source_id,source_ref,event_at,record_json FROM timeline_events "
             "WHERE tenant_id=? AND source_system='tallanto_snapshot' "
-            "AND event_type='tallanto_student_snapshot' AND match_status='strong_unique' "
+            "AND event_type='tallanto_student_snapshot' AND match_status IN ('strong_unique','manual') "
             "AND superseded_by IS NULL AND customer_id IS NOT NULL",
             (tenant_id,),
         ):
@@ -173,21 +177,27 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                     source_system="tallanto_snapshot",
                     source_ref=str(row["source_ref"] or ""),
                     event_at=str(row["event_at"] or ""),
+                    tallanto_student_id=str(row["source_id"] or ""),
                     name=name,
                     grade=str(payload.get("student_type") or ""),
                     subject=str(payload.get("subjects") or ""),
                 )
             )
             has_new_child_evidence = True
+        current_tallanto_student_ids = {item.tallanto_student_id for items in evidence_by_customer.values() for item in items if item.tallanto_student_id}
         for customer_id, groups in persisted_groups.items():
             if customer_id in tallanto_snapshot_customers:
                 continue
             for group in groups:
+                group_student_ids = set(group.get("tallanto_student_ids", ()))
+                if group_student_ids & current_tallanto_student_ids:
+                    continue
                 evidence_by_customer[customer_id].append(
                     ChildEvidence(
                         source_system="persisted_family_graph",
                         source_ref=f"family_graph:{group['child_key']}",
                         event_at=generated_at,
+                        tallanto_student_id=(next(iter(group_student_ids)) if len(group_student_ids) == 1 else ""),
                         name=str(group["canonical_name"]),
                         grade="; ".join(group["grades"]),
                         subject="; ".join(group["subjects"]),
@@ -233,7 +243,10 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             groups_by_customer = _load_persisted_family_groups(con, tenant_id=tenant_id)
         else:
             family_rows, groups_by_customer = _build_family_rows(
-                contexts, evidence_by_customer, generated_at=generated_at
+                contexts,
+                evidence_by_customer,
+                stable_child_keys=stable_child_keys,
+                generated_at=generated_at,
             )
         groups_by_family: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for owner_id, groups in groups_by_customer.items():
@@ -388,7 +401,7 @@ def _resolve_family_assignments(
         if customer_id not in customers:
             continue
         ids_by_customer[customer_id].add(student_id)
-        if str(row["match_class"] or "") != "strong_unique":
+        if str(row["match_class"] or "") not in {"strong_unique", "manual"}:
             unsafe.add(customer_id)
     for owners in customers_by_id.values():
         if len(owners) != 1:
@@ -408,7 +421,7 @@ def _resolve_family_assignments(
         SELECT customer_id, link_value
         FROM identity_links
         WHERE tenant_id=? AND source_system='amocrm_snapshot'
-          AND link_type='amo_contact_id' AND match_class='strong_unique'
+          AND link_type='amo_contact_id' AND match_class IN ('strong_unique','manual')
           AND customer_id IS NOT NULL AND customer_id != '' AND link_value != ''
         """,
         (tenant_id,),
@@ -424,11 +437,16 @@ def _resolve_family_assignments(
     eligible = set(ids_by_customer) - unsafe
     parents = {customer_id: customer_id for customer_id in eligible}
     parent_keys_by_customer: dict[str, set[str]] = defaultdict(set)
+    current_contacts_by_customer: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for row in con.execute(
         """
         WITH ranked AS (
           SELECT customer_id, source_id,
                  json_extract(record_json, '$.record.payload.parent_fio') AS parent_fio,
+                 json_extract(record_json, '$.record.payload.primary_phone') AS primary_phone,
+                 json_extract(record_json, '$.record.payload.phone_extra') AS phone_extra,
+                 json_extract(record_json, '$.record.payload.primary_email') AS primary_email,
+                 json_extract(record_json, '$.record.payload.email_extra') AS email_extra,
                  ROW_NUMBER() OVER (
                    PARTITION BY customer_id, source_id ORDER BY event_at DESC, event_id DESC
                  ) AS row_number
@@ -437,13 +455,21 @@ def _resolve_family_assignments(
             AND event_type = 'tallanto_student_snapshot'
             AND customer_id IS NOT NULL AND customer_id != '' AND superseded_by IS NULL
         )
-        SELECT customer_id, parent_fio FROM ranked WHERE row_number = 1
+        SELECT customer_id, parent_fio, primary_phone, phone_extra, primary_email, email_extra
+        FROM ranked WHERE row_number = 1
         """,
         (tenant_id,),
     ):
+        customer_id = str(row["customer_id"])
         parent_key = _parent_identity_key(str(row["parent_fio"] or ""))
         if parent_key:
-            parent_keys_by_customer[str(row["customer_id"])].add(parent_key)
+            parent_keys_by_customer[customer_id].add(parent_key)
+        for value in (row["primary_phone"], *str(row["phone_extra"] or "").split("|")):
+            if normalized := normalize_phone(value):
+                current_contacts_by_customer[customer_id].add(("phone", normalized))
+        for value in (row["primary_email"], *str(row["email_extra"] or "").split("|")):
+            if normalized := normalize_email(value):
+                current_contacts_by_customer[customer_id].add(("email", normalized))
 
     def find(customer_id: str) -> str:
         while parents[customer_id] != customer_id:
@@ -457,22 +483,11 @@ def _resolve_family_assignments(
             parents[max(left_root, right_root)] = min(left_root, right_root)
 
     by_parent_identity: dict[tuple[str, str, str], set[str]] = defaultdict(set)
-    for row in con.execute(
-        """
-        SELECT link_type, link_value, customer_id
-        FROM identity_links
-        WHERE tenant_id = ? AND source_system = 'tallanto_snapshot'
-          AND link_type IN ('phone', 'email')
-          AND customer_id IS NOT NULL AND customer_id != '' AND link_value != ''
-        """,
-        (tenant_id,),
-    ):
-        customer_id = str(row["customer_id"])
+    for customer_id, contacts in current_contacts_by_customer.items():
         parent_keys = parent_keys_by_customer.get(customer_id, set())
         if customer_id in eligible and len(parent_keys) == 1:
-            by_parent_identity[
-                (str(row["link_type"]), str(row["link_value"]), next(iter(parent_keys)))
-            ].add(customer_id)
+            for link_type, link_value in contacts:
+                by_parent_identity[(link_type, link_value, next(iter(parent_keys)))].add(customer_id)
     for members in by_parent_identity.values():
         # ponytail: larger groups are likely shared/system contacts; review them manually.
         if 2 <= len(members) <= 8:
@@ -501,7 +516,7 @@ def _resolve_family_assignments(
             SELECT customer_id
             FROM identity_links
             WHERE tenant_id=? AND source_system='amocrm_snapshot'
-              AND link_type='amo_contact_id' AND match_class='strong_unique'
+              AND link_type='amo_contact_id' AND match_class IN ('strong_unique','manual')
               AND customer_id IS NOT NULL AND customer_id != ''
             GROUP BY customer_id
             HAVING COUNT(DISTINCT link_value)=1
@@ -521,7 +536,7 @@ def _resolve_family_assignments(
             FROM identity_links
             WHERE tenant_id=? AND customer_id IN ({placeholders})
               AND source_system='amocrm_snapshot' AND link_type IN ('phone','email')
-              AND match_class IN ('strong_unique','ambiguous') AND link_value != ''
+              AND match_class IN ('strong_unique','manual','ambiguous') AND link_value != ''
             """,
             (tenant_id, *sorted(amo_contact_customers)),
         ):
@@ -561,7 +576,8 @@ def _resolve_family_assignments(
             if member in existing and member not in attached_amo_parents
         }
         safe_amo_attach = bool(attached_amo_parents & members) and len(non_amo_roots) == 1
-        if len(roots) > 1 and not safe_amo_attach:
+        exact_tallanto_merge = members <= set(ids_by_customer)
+        if len(roots) > 1 and not (safe_amo_attach or exact_tallanto_merge):
             for member in members:
                 assignments[member] = FamilyAssignment(
                     existing.get(member, _family_id(tenant_id, member)),
@@ -863,6 +879,7 @@ def _build_family_rows(
     contexts: Mapping[str, CustomerContext],
     evidence_by_customer: Mapping[str, Sequence[ChildEvidence]],
     *,
+    stable_child_keys: Mapping[str, str],
     generated_at: str,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     rows: list[dict[str, Any]] = []
@@ -873,11 +890,18 @@ def _build_family_rows(
         valid_groups = [group for group in groups.values() if not group.suspicious_reasons and group.canonical_name]
         identity_risks = _identity_risks(context)
         for group in sorted(groups.values(), key=lambda item: (item.canonical_name.casefold(), item.name_key)):
-            tallanto_refs = sorted(
-                {item.source_ref for item in group.evidence if item.source_system == "tallanto_snapshot" and item.source_ref}
+            tallanto_student_ids = sorted(
+                {
+                    item.tallanto_student_id
+                    for item in group.evidence
+                    if item.source_system == "tallanto_snapshot" and item.tallanto_student_id
+                }
             )
-            child_identity = f"tallanto:{tallanto_refs[0]}" if len(tallanto_refs) == 1 else group.name_key
-            child_key = _child_key(customer_id, child_identity)
+            child_key = (
+                stable_child_keys.get(tallanto_student_ids[0], _tallanto_child_key(context.tenant_id, tallanto_student_ids[0]))
+                if len(tallanto_student_ids) == 1
+                else _child_key(customer_id, group.name_key)
+            )
             status, confidence, reason = _family_confidence(group, valid_groups=valid_groups, identity_risks=identity_risks)
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
@@ -896,6 +920,7 @@ def _build_family_rows(
                 "suspicious_reasons": sorted(group.suspicious_reasons),
                 "identity_risks": identity_risks,
                 "source_refs": list(group.source_refs[:12]),
+                "tallanto_student_ids": tallanto_student_ids,
                 "evidence_count": len(group.evidence),
                 "created_at": generated_at,
             }
@@ -932,7 +957,8 @@ def _load_persisted_family_groups(
     for row in con.execute(
         """
         SELECT family_id,customer_id,child_key,canonical_name,name_variants_json,
-               grades_json,subjects_json,brand,status,confidence,reason
+               grades_json,subjects_json,brand,status,confidence,reason,
+               source_refs_json,record_json
         FROM family_links_v1 WHERE tenant_id=?
         ORDER BY customer_id,child_key
         """,
@@ -951,9 +977,53 @@ def _load_persisted_family_groups(
                 "status": str(row["status"] or "unknown"),
                 "confidence": str(row["confidence"] or "low"),
                 "reason": str(row["reason"] or "persisted_family_graph"),
+                "source_refs": _json_list(row["source_refs_json"]),
+                "tallanto_student_ids": _json_list(
+                    _json_loads(row["record_json"]).get("tallanto_student_ids", [])
+                ),
             }
         )
     return groups
+
+
+def _load_stable_tallanto_child_keys(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+) -> dict[str, str]:
+    if not (_table_exists(con, "family_links_v1") and _table_exists(con, "event_child_attribution_v1")):
+        return {}
+    candidates: dict[str, set[str]] = defaultdict(set)
+    students_by_key: dict[str, set[str]] = defaultdict(set)
+    for row in con.execute(
+        """
+        SELECT event.source_id AS student_id, attribution.child_key, child.record_json AS child_record_json
+        FROM timeline_events AS event
+        JOIN event_child_attribution_v1 AS attribution
+          ON attribution.tenant_id=event.tenant_id AND attribution.event_id=event.event_id
+        JOIN family_links_v1 AS child
+          ON child.tenant_id=attribution.tenant_id
+         AND child.customer_id=attribution.customer_id AND child.child_key=attribution.child_key
+        WHERE event.tenant_id=? AND event.source_system='tallanto_snapshot'
+          AND event.event_type='tallanto_student_snapshot'
+          AND event.match_status IN ('strong_unique','manual')
+          AND event.superseded_by IS NULL
+          AND attribution.status='matched' AND attribution.child_key!=''
+        """,
+        (tenant_id,),
+    ):
+        student_id = str(row["student_id"])
+        child_student_ids = set(_json_list(_json_loads(row["child_record_json"]).get("tallanto_student_ids", [])))
+        if student_id not in child_student_ids:
+            continue
+        key = str(row["child_key"])
+        candidates[student_id].add(key)
+        students_by_key[key].add(student_id)
+    return {
+        student_id: next(iter(keys))
+        for student_id, keys in candidates.items()
+        if len(keys) == 1 and len(students_by_key[next(iter(keys))]) == 1
+    }
 
 
 def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequence[ChildEvidence]) -> dict[str, ChildGroup]:
@@ -964,8 +1034,8 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
         name_key = _name_key(item.name)
         if not name_key:
             continue
-        if item.source_system == "tallanto_snapshot" and item.source_ref:
-            name_key = f"{name_key}|{item.source_ref}"
+        if item.source_system == "tallanto_snapshot" and item.tallanto_student_id:
+            name_key = f"{name_key}|{item.tallanto_student_id}"
         group = groups.setdefault(name_key, ChildGroup(name_key=name_key))
         group.names.add(item.name.strip())
         if item.grade.strip():
@@ -983,6 +1053,9 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
 def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[str, ChildGroup]:
     keys = sorted(groups)
     parents = {key: key for key in keys}
+    tallanto_ids = {
+        key: {item.tallanto_student_id for item in group.evidence if item.tallanto_student_id} for key, group in groups.items()
+    }
     ambiguous_bridges = _ambiguous_patronymic_bridge_keys(groups)
 
     def find(key: str) -> str:
@@ -996,9 +1069,12 @@ def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[st
         root_right = find(right)
         if root_left == root_right:
             return
+        if tallanto_ids[root_left] and tallanto_ids[root_right] and tallanto_ids[root_left] != tallanto_ids[root_right]:
+            return
         canonical = min((root_left, root_right))
         other = root_right if canonical == root_left else root_left
         parents[other] = canonical
+        tallanto_ids[canonical].update(tallanto_ids[other])
 
     for left_index, left_key in enumerate(keys):
         for right_key in keys[left_index + 1 :]:
@@ -1103,9 +1179,9 @@ def _child_groups_have_matching_full_names(left: ChildGroup, right: ChildGroup) 
 
 
 def _distinct_tallanto_children(left: ChildGroup, right: ChildGroup) -> bool:
-    left_refs = {item.source_ref for item in left.evidence if item.source_system == "tallanto_snapshot"}
-    right_refs = {item.source_ref for item in right.evidence if item.source_system == "tallanto_snapshot"}
-    return bool(left_refs and right_refs and left_refs.isdisjoint(right_refs))
+    left_ids = {item.tallanto_student_id for item in left.evidence if item.tallanto_student_id}
+    right_ids = {item.tallanto_student_id for item in right.evidence if item.tallanto_student_id}
+    return bool(left_ids and right_ids and left_ids.isdisjoint(right_ids))
 
 
 def _full_child_names_match(left: str, right: str) -> bool:
@@ -1307,7 +1383,7 @@ def _build_event_attributions(
     contexts: Mapping[str, CustomerContext],
     generated_at: str,
 ) -> list[dict[str, Any]]:
-    customer_ids = [customer_id for customer_id, groups in groups_by_customer.items() if groups]
+    customer_ids = sorted(contexts)
     if not customer_ids:
         return []
     rows: list[dict[str, Any]] = []
@@ -1315,7 +1391,7 @@ def _build_event_attributions(
         placeholders = ",".join("?" for _ in chunk)
         events = con.execute(
             f"""
-            SELECT event_id, tenant_id, customer_id, opportunity_id, event_type, source_ref,
+            SELECT event_id, tenant_id, customer_id, opportunity_id, event_type, source_id, source_ref,
                    match_status, subject, text_preview, summary, record_json
             FROM timeline_events
             WHERE tenant_id = ?
@@ -1329,6 +1405,7 @@ def _build_event_attributions(
             customer_id = str(event["customer_id"])
             groups = groups_by_customer.get(customer_id, ())
             exact_group = _exact_tallanto_child_group(event, groups)
+            exact_student_id = _event_tallanto_student_id(event)
             attribution = (
                 {
                     "child_customer_id": str(exact_group.get("customer_id") or customer_id),
@@ -1339,6 +1416,18 @@ def _build_event_attributions(
                     "matched_names": [str(exact_group.get("canonical_name") or "")],
                 }
                 if exact_group
+                else {
+                    "child_key": "",
+                    "status": "ambiguous",
+                    "confidence": "low",
+                    "reason": (
+                        "tallanto_student_id_not_in_family"
+                        if exact_student_id
+                        else "missing_exact_tallanto_student_id"
+                    ),
+                    "matched_names": [],
+                }
+                if str(event["event_type"] or "") in TALLANTO_CHILD_EVENT_TYPES
                 else _attribute_text(
                     groups,
                     _event_text(event),
@@ -1366,17 +1455,25 @@ def _exact_tallanto_child_group(
     event: sqlite3.Row,
     groups: Sequence[Mapping[str, Any]],
 ) -> Optional[Mapping[str, Any]]:
-    usable = [group for group in groups if group.get("status") in {"confident", "needs_review"}]
-    event_type = str(event["event_type"] or "")
-    if event_type == "tallanto_student_snapshot":
-        matches = [group for group in usable if str(event["source_ref"] or "") in group.get("source_refs", ())]
-    elif event_type in {"tallanto_payment", "tallanto_abonement", "tallanto_attendance"} and str(
-        event["match_status"] or ""
-    ) == "strong_unique":
-        matches = [group for group in usable if str(group.get("customer_id") or "") == str(event["customer_id"])]
-    else:
-        matches = []
+    usable = [group for group in groups if group.get("status") in {"confident", "needs_review", "ambiguous"}]
+    student_id = _event_tallanto_student_id(event)
+    matches = [group for group in usable if student_id in group.get("tallanto_student_ids", ())]
     return matches[0] if len(matches) == 1 else None
+
+
+def _event_tallanto_student_id(event: sqlite3.Row) -> str:
+    if (
+        str(event["event_type"] or "") not in TALLANTO_CHILD_EVENT_TYPES
+        or str(event["match_status"] or "") not in {"strong_unique", "manual"}
+    ):
+        return ""
+    if str(event["event_type"]) == "tallanto_student_snapshot":
+        return str(event["source_id"] or "")
+    record = _json_loads(event["record_json"]).get("record") or {}
+    if str(event["event_type"]) in {"tallanto_payment", "tallanto_abonement"}:
+        return str(record.get("contact_id") or "")
+    logical_key = record.get("logical_key") or {}
+    return str(record.get("tallanto_student_id") or logical_key.get("tallanto_id") or "")
 
 
 def _build_opportunity_attributions(
@@ -1793,6 +1890,10 @@ def _child_key(customer_id: str, name_key: str) -> str:
     return f"child:{digest}"
 
 
+def _tallanto_child_key(tenant_id: str, student_id: str) -> str:
+    return _child_key(tenant_id, f"tallanto:{student_id}")
+
+
 def _chunks(values: Sequence[str], size: int) -> Iterable[Sequence[str]]:
     for index in range(0, len(values), size):
         yield values[index : index + size]
@@ -1815,6 +1916,8 @@ def _json_loads(value: Any) -> Any:
 
 
 def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
     parsed = _json_loads(value)
     return parsed if isinstance(parsed, list) else []
 

@@ -14,6 +14,9 @@ from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     CustomerOpportunity,
     DerivedSignal,
+    IdentityLink,
+    IdentityLinkType,
+    IdentityMatchClass,
     IdentityStatus,
     OpportunityType,
     SignalSeverity,
@@ -1279,6 +1282,8 @@ def test_owner50_deduplicates_family_and_uses_best_family_signal(owner50_workboo
     assert rows[1][8] == (NOW - timedelta(days=10)).isoformat()
     assert rows[1][11] == "Проверить историю и написать клиенту."
     assert rows[1][16] == "tier=0; due=1; fresh_intent=0; specific_offer=1; child_fit=1; payment_history=1"
+    assert "customer:a" in rows[1][-1]
+    assert "customer:b" in rows[1][-1]
 
 
 def test_owner50_has_source_evidence_for_every_family(owner50_workbook: tuple[Path, dict[str, object]]) -> None:
@@ -1529,10 +1534,11 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
             ((NOW - timedelta(days=1)).isoformat(),),
         )
         con.execute(
-            "UPDATE timeline_events SET match_status='ambiguous' WHERE customer_id='customer:j'"
+            "UPDATE timeline_events SET match_status='ambiguous' WHERE source_id='event-customer:j'"
         )
         con.execute(
-            "UPDATE timeline_events SET superseded_by='replacement' WHERE customer_id='customer:l'"
+            "UPDATE timeline_events SET superseded_by='replacement' "
+            "WHERE source_id IN ('event-customer:l','superseded-refund')"
         )
         con.execute(
             "UPDATE customer_identities SET identity_status='partial' WHERE customer_id='customer:m'"
@@ -1586,15 +1592,15 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         )
         con.execute(
             "UPDATE timeline_events SET summary='Обсуждали программу УНПК.' "
-            "WHERE customer_id='customer:event-brand'"
+            "WHERE source_id='event-customer:event-brand'"
         )
         con.execute(
             "UPDATE timeline_events SET summary='Тестовый клиент для проверки импорта.' "
-            "WHERE customer_id='customer:event-test'"
+            "WHERE source_id='event-customer:event-test'"
         )
         con.execute(
             "UPDATE timeline_events SET summary='', text_preview='', subject='' "
-            "WHERE customer_id='customer:empty-event'"
+            "WHERE source_id='event-customer:empty-event'"
         )
         brand_record = json.loads(
             con.execute(
@@ -1782,7 +1788,7 @@ def test_owner50_accepts_only_evidence_backed_brand_child_and_channels(tmp_path:
         con.execute("DELETE FROM family_links_v1 WHERE customer_id='customer:h'")
         con.execute(
             "UPDATE timeline_events SET event_type='channel_message', source_system='wappi_max' "
-            "WHERE customer_id='customer:i'"
+            "WHERE source_id='event-customer:i'"
         )
         foreign_record = json.loads(
             con.execute(
@@ -1893,10 +1899,10 @@ def test_owner50_rejects_bad_signal_evidence_without_family_fallback(tmp_path: P
         con.row_factory = sqlite3.Row
         con.execute(
             "UPDATE timeline_events SET superseded_by='replacement', summary='Хочу возврат денег.' "
-            "WHERE customer_id='customer:u'"
+            "WHERE source_id='event-customer:u'"
         )
         con.execute(
-            "UPDATE timeline_events SET match_status='ambiguous' WHERE customer_id='customer:ambig'"
+            "UPDATE timeline_events SET match_status='ambiguous' WHERE source_id='event-customer:ambig'"
         )
         missing_record = json.loads(
             con.execute(
@@ -2139,10 +2145,14 @@ def test_owner50_family_without_any_signal_is_classified_not_silently_dropped(tm
         store.upsert_customer(
             CustomerIdentity(
                 tenant_id="foton", customer_id="customer:no-signal", identity_status=IdentityStatus.STRONG,
-                display_name="Родитель без сигнала", primary_phone="+79000007777",
+                display_name="Мария Иванова", primary_phone="+79000007777",
                 primary_email="no-signal@example.com", source_ref="amocrm:contact:customer:no-signal",
                 metadata={"brands": ["foton"]},
             )
+        )
+        _seed_owner50_person_origin(
+            store, customer_id="customer:no-signal", display_name="Мария Иванова",
+            link_value="contact-no-signal",
         )
     finally:
         store.close()
@@ -2248,10 +2258,14 @@ def test_owner50_does_not_retarget_an_older_child_signal_to_a_younger_sibling(tm
         store.upsert_customer(
             CustomerIdentity(
                 tenant_id="foton", customer_id="customer:mixed-b", identity_status=IdentityStatus.STRONG,
-                display_name="Родитель customer:mixed-b", primary_phone="+79000009999",
+                display_name="Второй Родитель", primary_phone="+79000009999",
                 primary_email="mixed-b@example.com", source_ref="amocrm:contact:customer:mixed-b",
                 metadata={"brands": ["foton"]},
             )
+        )
+        _seed_owner50_person_origin(
+            store, customer_id="customer:mixed-b", display_name="Второй Родитель",
+            link_value="contact-mixed-b",
         )
     finally:
         store.close()
@@ -2502,6 +2516,302 @@ def test_owner50_fake_client_name_os_ot_roditelya_never_ready(tmp_path: Path) ->
     assert ("family:fake-name-3", "excluded", "person_origin_unproven") in {row[:3] for row in control}
 
 
+@pytest.mark.parametrize(
+    ("identity_source_ref", "link_type", "match_class"),
+    (
+        ("identity_resolution:customer:amo", IdentityLinkType.AMO_CONTACT_ID, IdentityMatchClass.STRONG_UNIQUE),
+        ("master_contact:+79000000001", IdentityLinkType.TALLANTO_STUDENT_ID, IdentityMatchClass.MANUAL),
+        ("mail_stage2:message:42", IdentityLinkType.AMO_CONTACT_ID, IdentityMatchClass.MANUAL),
+    ),
+)
+def test_owner50_person_origin_uses_strong_manual_identity_link_index(
+    tmp_path: Path,
+    identity_source_ref: str,
+    link_type: IdentityLinkType,
+    match_class: IdentityMatchClass,
+) -> None:
+    db = _timeline_db(tmp_path)
+    suffix = link_type.value + "-" + match_class.value + "-" + identity_source_ref.split(":", 1)[0]
+    family_id = f"family:{suffix}"
+    customer_id = f"customer:{suffix}"
+    _seed_owner50_member(
+        db, tmp_path, family_id=family_id, customer_id=customer_id,
+        signal_type="client_returned", source_ref=identity_source_ref,
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        _seed_owner50_person_origin(
+            store, customer_id=customer_id, display_name="Родитель Манго",
+            link_type=link_type, link_value=f"person-{suffix}", match_class=match_class,
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert family_id in {row["family_id"] for row in candidates}
+    assert not any(row[0] == family_id and row[2] == "person_origin_unproven" for row in control)
+
+
+@pytest.mark.parametrize(
+    ("link_type", "match_class"),
+    (
+        (IdentityLinkType.AMO_LEAD_ID, IdentityMatchClass.STRONG_UNIQUE),
+        (IdentityLinkType.AMO_CONTACT_ID, IdentityMatchClass.AMBIGUOUS),
+        (IdentityLinkType.TALLANTO_STUDENT_ID, IdentityMatchClass.INFERRED),
+    ),
+)
+def test_owner50_non_person_or_non_strong_identity_link_stays_excluded(
+    tmp_path: Path,
+    link_type: IdentityLinkType,
+    match_class: IdentityMatchClass,
+) -> None:
+    db = _timeline_db(tmp_path)
+    suffix = link_type.value + "-" + match_class.value
+    family_id = f"family:unsafe-{suffix}"
+    customer_id = f"customer:unsafe-{suffix}"
+    _seed_owner50_member(
+        db, tmp_path, family_id=family_id, customer_id=customer_id,
+        signal_type="client_returned", display_name="лвш 2 часть", source_ref="",
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type=link_type,
+                link_value=f"unsafe-{suffix}", source_system="synthetic",
+                source_ref=f"synthetic:{suffix}", match_class=match_class,
+            ),
+            actor="test",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert family_id not in {row["family_id"] for row in candidates}
+    assert (family_id, "excluded", "person_origin_unproven") in {row[:3] for row in control}
+
+
+def test_owner50_duplicate_authoritative_exact_id_blocks_every_owner(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    for suffix in ("a", "b"):
+        _seed_owner50_member(
+            db, tmp_path, family_id=f"family:duplicate-{suffix}",
+            customer_id=f"customer:duplicate-{suffix}", signal_type="client_returned",
+        )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id="customer:duplicate-b",
+                link_type=IdentityLinkType.AMO_CONTACT_ID,
+                link_value="contact-customer:duplicate-a", source_system="amocrm_snapshot",
+                source_ref="synthetic:duplicate", match_class=IdentityMatchClass.STRONG_UNIQUE,
+            ),
+            actor="test",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert not {"family:duplicate-a", "family:duplicate-b"} & {
+        row["family_id"] for row in candidates
+    }
+    assert {
+        row[0] for row in control if row[2] == "open_identity_conflict"
+    } >= {"family:duplicate-a", "family:duplicate-b"}
+
+
+def test_owner50_open_tallanto_identity_conflict_blocks_ready(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:tallanto-conflict",
+        customer_id="customer:tallanto-conflict", signal_type="client_returned",
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id="customer:tallanto-conflict",
+                link_type=IdentityLinkType.TALLANTO_STUDENT_ID, link_value="student-conflict",
+                source_system="tallanto_snapshot", source_ref="synthetic:tallanto-conflict",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+            ),
+            actor="test",
+        )
+        store.record_conflict(
+            "foton", conflict_type="tallanto_identity_conflict",
+            entity_refs=("tallanto_student_id:student-conflict",), status="open",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:tallanto-conflict" not in {row["family_id"] for row in candidates}
+    assert ("family:tallanto-conflict", "excluded", "open_identity_conflict") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_technical_display_name_stays_excluded_even_with_exact_id(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:technical-name",
+        customer_id="customer:technical-name", signal_type="client_returned",
+        display_name="Лвш Вторая Часть", offer_title="Лвш Вторая Часть", source_ref="",
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        _seed_owner50_person_origin(
+            store, customer_id="customer:technical-name", display_name="Лвш Вторая Часть",
+            link_value="contact-technical-name",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:technical-name" not in {row["family_id"] for row in candidates}
+    assert ("family:technical-name", "excluded", "human_name_unproven") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_empty_parent_name_stays_excluded_with_person_snapshot(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:empty-parent",
+        customer_id="customer:empty-parent", signal_type="client_returned",
+        display_name="", source_ref="",
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        _seed_owner50_person_origin(
+            store, customer_id="customer:empty-parent", display_name="",
+            link_value="contact-empty-parent",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:empty-parent" not in {row["family_id"] for row in candidates}
+    assert ("family:empty-parent", "excluded", "human_name_unproven") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_all_work_sheets_show_every_family_member(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    for suffix in ("a", "b"):
+        _seed_owner50_member(
+            db, tmp_path, family_id="family:two-parents",
+            customer_id=f"customer:two-parents-{suffix}", signal_type="client_returned",
+            display_name=f"Родитель {suffix.upper()}",
+        )
+    out = tmp_path / ".codex_local" / "owner50-members.xlsx"
+    build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=out,
+        as_of=NOW, enforce_freshness=False,
+    )
+
+    workbook = load_workbook(out, read_only=True)
+    for sheet_name in ("READY_50", "CANDIDATES", "EXCLUDED"):
+        headers = next(workbook[sheet_name].iter_rows(values_only=True))
+        assert "Члены семьи" in headers
+    family_row = None
+    members_index = -1
+    for sheet_name in ("READY_50", "CANDIDATES", "EXCLUDED"):
+        rows = list(workbook[sheet_name].iter_rows(values_only=True))
+        headers = list(rows[0])
+        candidate = next((row for row in rows[1:] if "family:two-parents" in row[:2]), None)
+        if candidate is not None:
+            family_row = candidate
+            members_index = headers.index("Члены семьи")
+            break
+    assert family_row is not None
+    assert "customer:two-parents-a" in family_row[members_index]
+    assert "customer:two-parents-b" in family_row[members_index]
+
+
+def test_owner50_exact_origin_guard_is_on_workbook_live_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:negative-control",
+        customer_id="customer:negative-control", signal_type="client_returned",
+    )
+    baseline = tmp_path / ".codex_local" / "owner50-baseline.xlsx"
+    broken = tmp_path / ".codex_local" / "owner50-broken.xlsx"
+    baseline_summary = build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=baseline,
+        as_of=NOW, enforce_freshness=False,
+    )
+
+    monkeypatch.setattr(manager_dossier_module, "_owner50_has_person_contact_origin", lambda *_: False)
+    broken_summary = build_owner50_family_workbook(
+        timeline_db=db, allowed_root=tmp_path, out_xlsx=broken,
+        as_of=NOW, enforce_freshness=False,
+    )
+
+    assert baseline_summary["families"] == 1
+    assert broken_summary["families"] == 0
+    assert broken_summary["exclusion_counts"]["person_origin_unproven"] == 1
+
+
+@pytest.mark.parametrize(
+    ("display_name", "suffix"), (("АННА ИВАНОВА", "upper"), ("елена петрова", "lower")),
+)
+def test_owner50_person_snapshot_accepts_real_name_regardless_of_case(
+    tmp_path: Path, display_name: str, suffix: str,
+) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id=f"family:case-{suffix}",
+        customer_id=f"customer:case-{suffix}", signal_type="client_returned",
+        display_name=display_name,
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, _control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert f"family:case-{suffix}" in {row["family_id"] for row in candidates}
+
+
+def test_owner50_empty_child_name_never_reaches_ready(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:empty-child-name",
+        customer_id="customer:empty-child-name", signal_type="client_returned",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE family_links_v1 SET canonical_name='' "
+            "WHERE family_id='family:empty-child-name'"
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:empty-child-name" not in {row["family_id"] for row in candidates}
+    assert ("family:empty-child-name", "candidate", "target_child_unproven") in {
+        row[:3] for row in control
+    }
+
+
+def test_owner50_invalid_signal_date_never_reaches_ready(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:invalid-signal-date",
+        customer_id="customer:invalid-signal-date", signal_type="client_returned",
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE derived_signals SET created_at='not-a-date' "
+            "WHERE customer_id='customer:invalid-signal-date'"
+        )
+        con.commit()
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert "family:invalid-signal-date" not in {row["family_id"] for row in candidates}
+    assert ("family:invalid-signal-date", "candidate", "signal_date_invalid") in {
+        row[:3] for row in control
+    }
+
+
 def test_owner50_refund_mention_excludes_regardless_of_age_without_structural_resolution(tmp_path: Path) -> None:
     """Требование аудиторов BLOCKED #2 (отменяет прежнее требование архитектора #6): без
     ДОКАЗАННОГО структурного статуса резолюции refund-упоминание исключает семью НАВСЕГДА,
@@ -2649,10 +2959,14 @@ def test_owner50_objection_from_another_family_member_also_downgrades(tmp_path: 
         store.upsert_customer(
             CustomerIdentity(
                 tenant_id="foton", customer_id="customer:other-parent", identity_status=IdentityStatus.STRONG,
-                display_name="Другой родитель", primary_phone="+79000008888",
+                display_name="Ирина Петрова", primary_phone="+79000008888",
                 primary_email="other-parent@example.com", source_ref="amocrm:contact:customer:other-parent",
                 metadata={"brands": ["foton"]},
             )
+        )
+        _seed_owner50_person_origin(
+            store, customer_id="customer:other-parent", display_name="Ирина Петрова",
+            link_value="contact-other-parent",
         )
     finally:
         store.close()
@@ -3398,6 +3712,42 @@ def _seed_customer_with_call_and_opportunity(db: Path, tmp_path: Path) -> None:
         store.close()
 
 
+def _seed_owner50_person_origin(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    customer_id: str,
+    display_name: str,
+    link_type: IdentityLinkType = IdentityLinkType.AMO_CONTACT_ID,
+    link_value: str | None = None,
+    match_class: IdentityMatchClass = IdentityMatchClass.STRONG_UNIQUE,
+) -> None:
+    value = link_value or f"contact-{customer_id}"
+    is_amo = link_type == IdentityLinkType.AMO_CONTACT_ID
+    source_system = "amocrm_snapshot" if is_amo else "tallanto_snapshot"
+    event_type = (
+        TimelineEventType.AMO_CONTACT_SNAPSHOT
+        if is_amo
+        else TimelineEventType.TALLANTO_STUDENT_SNAPSHOT
+    )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton", customer_id=customer_id, link_type=link_type,
+            link_value=value, source_system=source_system,
+            source_ref=f"{source_system}:{value}", match_class=match_class,
+        ),
+        actor="test",
+    )
+    store.upsert_event(
+        TimelineEvent(
+            tenant_id="foton", customer_id=customer_id, event_type=event_type,
+            event_at=NOW, source_system=source_system, source_id=value,
+            direction=TimelineDirection.SYSTEM, subject=display_name,
+            summary="Структурный снимок человека.", match_status=match_class.value,
+            created_at=NOW,
+        )
+    )
+
+
 def _seed_owner50_member(
     db: Path,
     tmp_path: Path,
@@ -3418,6 +3768,7 @@ def _seed_owner50_member(
 ) -> None:
     number = ord(customer_id[-1].casefold()) - ord("a") + 1 if customer_id[-1].isalpha() else 9
     resolved_source_ref = f"amocrm:contact:{customer_id}" if source_ref is None else source_ref
+    resolved_display_name = "Родитель Манго" if display_name is None else display_name
     event = TimelineEvent(
         tenant_id="foton",
         customer_id=customer_id,
@@ -3448,13 +3799,17 @@ def _seed_owner50_member(
                 tenant_id="foton",
                 customer_id=customer_id,
                 identity_status=IdentityStatus.STRONG,
-                display_name=display_name or f"Родитель {customer_id}",
+                display_name=resolved_display_name,
                 primary_phone=f"+790000000{number:02d}",
                 primary_email=f"{customer_id.replace(':', '-')}@example.com",
                 source_ref=resolved_source_ref or None,
                 metadata={"brands": ["foton"], "no_contact": no_contact, "source_ref": resolved_source_ref},
             )
         )
+        if source_ref is None:
+            _seed_owner50_person_origin(
+                store, customer_id=customer_id, display_name=resolved_display_name,
+            )
         store.upsert_opportunity(opportunity)
         store.upsert_event(event)
         store.upsert_signal(

@@ -77,6 +77,47 @@ def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((customer, f"customer:{customer}")))
 
 
+def authoritative_exact_identity_rows(
+    con: sqlite3.Connection,
+    tenant_id: str,
+    *,
+    link_types: Sequence[str] | None = None,
+) -> tuple[sqlite3.Row, ...]:
+    """One read-only source for exact-ID ownership and unresolved conflicts."""
+    tenant = normalize_key(tenant_id, "tenant_id")
+    normalized_types = tuple(sorted(link_types or UNIQUE_IDENTITY_LINK_TYPES))
+    placeholders = ",".join("?" for _ in normalized_types)
+    return tuple(
+        con.execute(
+            f"""
+            WITH authoritative AS (
+              SELECT record_json, link_id, link_type, link_value, customer_id
+              FROM identity_links
+              WHERE tenant_id=? AND link_type IN ({placeholders})
+                AND match_class IN ('strong_unique','manual')
+                AND customer_id IS NOT NULL AND customer_id!=''
+            ), ownership AS (
+              SELECT link_type, link_value, COUNT(DISTINCT customer_id) AS owner_count
+              FROM authoritative GROUP BY link_type, link_value
+            ), open_refs AS (
+              SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref
+              FROM timeline_conflicts AS conflict,
+                   json_each(conflict.record_json, '$.entity_refs') AS ref
+              WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
+            )
+            SELECT authoritative.*, ownership.owner_count,
+                   CASE WHEN open_refs.entity_ref IS NULL THEN 0 ELSE 1 END AS has_open_conflict
+            FROM authoritative
+            JOIN ownership USING (link_type, link_value)
+            LEFT JOIN open_refs
+              ON open_refs.entity_ref=authoritative.link_type || ':' || authoritative.link_value
+            ORDER BY authoritative.link_type, authoritative.link_value, authoritative.link_id
+            """,
+            (tenant, *normalized_types, tenant),
+        ).fetchall()
+    )
+
+
 FORBIDDEN_PERSISTED_PAYLOAD_KEYS = {
     "raw_payload",
     "provider_raw_payload",
@@ -1982,29 +2023,11 @@ class CustomerTimelineSQLiteStore:
 
     def list_conflicting_unique_identity_links(self, tenant_id: str) -> tuple[Mapping[str, Any], ...]:
         """Return authoritative exact IDs that currently name several customers."""
-        tenant = normalize_key(tenant_id, "tenant_id")
-        link_types = tuple(sorted(UNIQUE_IDENTITY_LINK_TYPES))
-        placeholders = ",".join("?" for _ in link_types)
-        rows = self._con.execute(
-            f"""
-            WITH authoritative AS (
-              SELECT record_json, link_id, link_type, link_value, customer_id
-              FROM identity_links
-              WHERE tenant_id = ? AND link_type IN ({placeholders})
-                AND match_class IN ('strong_unique', 'manual') AND customer_id IS NOT NULL
-            ), conflicting AS (
-              SELECT link_type, link_value
-              FROM authoritative
-              GROUP BY link_type, link_value
-              HAVING COUNT(DISTINCT customer_id) > 1
-            )
-            SELECT authoritative.record_json
-            FROM authoritative JOIN conflicting USING (link_type, link_value)
-            ORDER BY authoritative.link_type, authoritative.link_value, authoritative.link_id
-            """,
-            (tenant, *link_types),
-        ).fetchall()
-        return tuple(json_loads(row["record_json"]) for row in rows)
+        return tuple(
+            json_loads(row["record_json"])
+            for row in authoritative_exact_identity_rows(self._con, tenant_id)
+            if int(row["owner_count"]) > 1
+        )
 
     def list_open_tallanto_identity_conflict_values(self, tenant_id: str) -> tuple[str, ...]:
         tenant = normalize_key(tenant_id, "tenant_id")

@@ -26,7 +26,11 @@ from mango_mvp.customer_timeline.next_step_resolver import (
 )
 from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
-from mango_mvp.customer_timeline.store import customer_entity_ref_values, customer_timeline_readonly_uri
+from mango_mvp.customer_timeline.store import (
+    authoritative_exact_identity_rows,
+    customer_entity_ref_values,
+    customer_timeline_readonly_uri,
+)
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
 
 
@@ -159,6 +163,7 @@ OWNER50_REASON_TEXT = {
     # E5 (26.07): READY требует структурного person-contact origin (AMO-контакт или Tallanto
     # person ID), не только identity_status=="strong" -- см. _owner50_has_person_contact_origin.
     "person_origin_unproven": "Нет структурного происхождения контакта (AMO-контакт или Tallanto ID) -- имя не подтверждено как клиент",
+    "human_name_unproven": "Имя человека не подтверждено структурным источником",
 }
 # требование E2 (26.07): три новых поля в самом конце -- НЕ вставлять в середину, позиционные
 # индексы существующих колонок (в т.ч. в тестах) на них полагаются.
@@ -168,6 +173,7 @@ OWNER50_REQUIRED_COLUMNS = (
     "Следующий шаг", "Сигнал действует до", "Предложение", "Ребёнок/класс", "Оплаты",
     "Формула ранга", "Действие одной фразой",
     "ID ребёнка (адресат)", "Ребёнок (адресат)", "Класс (адресат)",
+    "Члены семьи",
 )
 MANAGER_OPTOUT_PHRASES = (
     "не пишите",
@@ -283,6 +289,7 @@ OWNER50_TIER_REASON_TEXT: dict[str, str] = {
     "active_work_recent_manager_touch": "Менеджер уже ведёт эту сделку недавно — не лезть под руку",
     "capture_stale_beyond_sla": "Данные источника устарели относительно SLA свежести",
     "stale_signal": "Сигнал старше 30 дней — уже не повод писать сегодня",
+    "signal_date_invalid": "Дата сигнала отсутствует или записана в неверном формате",
     "signal_date_in_future": "Дата сигнала в будущем — данные недостоверны",
     # E2 (26.07): несколько РАЗНЫХ верифицированных детей подходят по классу, а адресат
     # предложения (кому конкретно продукт) ничем не доказан -- не гадаем, кому из них.
@@ -484,7 +491,9 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
     signal_created_at = _parse_iso_datetime(signal.get("created_at")) if signal else None
     if not signal_ok:
         missing.append("no_active_outreach_signal")
-    elif signal_created_at is not None and signal_created_at > now:
+    elif signal_created_at is None:
+        missing.append("signal_date_invalid")
+    elif signal_created_at > now:
         # требование архитектора #5 (ужесточено по итогам ревью): _owner50_days_since
         # клэмпит отрицательную разницу к 0.0 -- без этой явной проверки сигнал с датой в
         # будущем читался бы как "0 дней назад", то есть максимально свежий. Будущее -- не
@@ -495,7 +504,10 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         missing.append("stale_signal")
 
     next_step = _mapping(family.get("next_step"))
-    next_step_ok = _owner50_is_concrete_next_step(str(next_step.get("action") or "")) and bool(_clean_text(next_step.get("due")))
+    next_step_ok = (
+        _owner50_is_concrete_next_step(str(next_step.get("action") or ""))
+        and _parse_iso_datetime(next_step.get("due")) is not None
+    )
     if not next_step_ok:
         missing.append("next_step_missing_or_vague")
 
@@ -517,7 +529,9 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
     eligible_child_keys = {
         _clean_text(child.get("child_key"))
         for child in children
-        if _clean_text(child.get("child_key")) and not _owner50_child_is_graduate(child, now)
+        if _clean_text(child.get("child_key"))
+        and _clean_text(child.get("name"))
+        and not _owner50_child_is_graduate(child, now)
     }
     if not family.get("target_child_ambiguous") and len(eligible_child_keys) != 1:
         missing.append("target_child_unproven")
@@ -1623,23 +1637,17 @@ def _owner50_evidence_item(
 
 
 # требование E5 (26.07): "человек" в owner50 -- ТОЛЬКО структурное происхождение, никогда смысл
-# текста. ingestion.py штампует record.source_ref (и дублирует в metadata.source_ref) как
-# f"amocrm:{entity_type}:{entity_id}" (entity_type=="contact" для настоящих людей, "lead"/
-# "deal"/"amo_deal" для сделок -- display_name сделки туда даже не попадает, см. entity_name
-# guard в ingestion.py) и f"tallanto:student:{entity_id}" -- эти два префикса и есть "стабильный
-# AMO-контакт или Tallanto person ID" из ТЗ. Название сделки/следующего шага, случайно попавшее
-# в display_name БЕЗ такого происхождения (synthetic regressions: "очно два предмета", "лвш 2
-# часть", "ОС от родителя + предложить 26/27 уч.г."), таким префиксом не обладает -- reasons
-# получает "person_origin_unproven" тем же путём, что и identity_not_strong.
-OWNER50_PERSON_CONTACT_ORIGIN_PREFIXES = ("amocrm:contact:", "tallanto:student:")
+# текста. Старые AMO/Tallanto identity хранят его в record.source_ref; объединённые identities
+# доказывают его strong/manual связью amo_contact_id/tallanto_student_id. Название сделки или
+# следующего шага без такого доказательства получает person_origin_unproven независимо от имени.
+OWNER50_PERSON_CONTACT_LINK_TYPES = ("amo_contact_id", "tallanto_student_id")
 
 
-def _owner50_has_person_contact_origin(record: Mapping[str, Any], metadata: Mapping[str, Any]) -> bool:
-    source_ref = _clean_text(record.get("source_ref")) or _clean_text(metadata.get("source_ref"))
-    if not source_ref:
-        return False
-    folded = source_ref.casefold()
-    return any(folded.startswith(prefix) for prefix in OWNER50_PERSON_CONTACT_ORIGIN_PREFIXES)
+def _owner50_has_person_contact_origin(
+    customer_id: str,
+    linked_person_origins: frozenset[str],
+) -> bool:
+    return customer_id in linked_person_origins
 
 
 def _owner50_family_rows(
@@ -1649,8 +1657,8 @@ def _owner50_family_rows(
     as_of: datetime,
     price_axes_catalog: Mapping[str, Any] | Sequence[Any] | Path | str | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, ...]]]:
-    required = ("family_members_v1", "family_links_v1", "customer_identities", "customer_opportunities",
-                "derived_signals", "timeline_events", "timeline_conflicts")
+    required = ("family_members_v1", "family_links_v1", "customer_identities", "identity_links",
+                "customer_opportunities", "derived_signals", "timeline_events", "timeline_conflicts")
     optional = ("customer_purchases_v1", "customer_objections_v1")
     # required+optional -- ОДНИМ запросом (не отдельными _table_exists) -- держит число
     # запросов на семью константным, см. test_owner50_bulk_selection_has_constant_query_count.
@@ -1682,6 +1690,50 @@ def _owner50_family_rows(
         for row in snapshot["conflicts"]
         for ref in (_safe_json(row["record_json"]).get("entity_refs") or ())
     }
+    exact_origins = authoritative_exact_identity_rows(
+        con, tenant_id, link_types=OWNER50_PERSON_CONTACT_LINK_TYPES,
+    )
+    safe_origin_keys: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for row in exact_origins:
+        if int(row["owner_count"] or 0) == 1 and not int(row["has_open_conflict"] or 0):
+            safe_origin_keys[str(row["customer_id"])].add((str(row["link_type"]), str(row["link_value"])))
+    linked_person_origins = frozenset(safe_origin_keys)
+    conflicted_person_origins = frozenset(
+        str(row["customer_id"])
+        for row in exact_origins
+        if int(row["owner_count"] or 0) > 1 or int(row["has_open_conflict"] or 0)
+    )
+    identity_names = {
+        str(row["customer_id"]): _clean_text(row["display_name"])
+        for row in snapshot["members"]
+    }
+    technical_labels: dict[str, set[str]] = defaultdict(set)
+    for row in snapshot["opportunities"]:
+        label = _clean_text(row["title"]).casefold()
+        if label:
+            technical_labels[str(row["customer_id"])].add(label)
+    for row in snapshot["signals"]:
+        signal_record = _safe_json(row["record_json"])
+        for field in ("recommended_action", "next_step", "task_title"):
+            label = _clean_text(signal_record.get(field)).casefold()
+            if label:
+                technical_labels[str(row["customer_id"])].add(label)
+    verified_person_names = frozenset(
+        str(event["customer_id"])
+        for event in snapshot["events"]
+        if not _clean_text(event["superseded_by"])
+        and bool(identity_names.get(str(event["customer_id"]), ""))
+        and _clean_text(event["subject"]) == identity_names.get(str(event["customer_id"]), "")
+        and identity_names[str(event["customer_id"])].casefold()
+        not in technical_labels.get(str(event["customer_id"]), set())
+        and (
+            ("amo_contact_id", str(event["source_id"]))
+            if str(event["event_type"]) == "amo_contact_snapshot"
+            else ("tallanto_student_id", str(event["source_id"]))
+            if str(event["event_type"]) == "tallanto_student_snapshot"
+            else ("", "")
+        ) in safe_origin_keys.get(str(event["customer_id"]), set())
+    )
     candidates: list[dict[str, Any]] = []
     control: list[tuple[str, ...]] = []
     for family_id, family in grouped.items():
@@ -1698,6 +1750,10 @@ def _owner50_family_rows(
         signals = family["signals"]
         members = family["members"]
         member_by_id = {str(row["customer_id"]): row for row in members}
+        member_texts = _dedupe_texts(
+            f"{_clean_text(row['display_name']) or 'Имя не подтверждено'} [{row['customer_id']}]"
+            for row in members
+        )
         reasons: list[str] = []
         identity_brands: set[str] = set()
         unrecognized_brand_present = False
@@ -1733,14 +1789,18 @@ def _owner50_family_rows(
                 reasons.append("staff_test_system")
             if set(customer_entity_ref_values(str(member["customer_id"]))) & conflict_refs:
                 reasons.append("open_identity_conflict")
+            if str(member["customer_id"]) in conflicted_person_origins:
+                reasons.append("open_identity_conflict")
             # требование E5 (26.07): identity_status=="strong" одного недостаточно -- READY
             # требует ещё и структурного person-contact origin (стабильный AMO-контакт или
-            # Tallanto person ID). Проверка ТОЛЬКО по структурному полю record.source_ref
-            # (штампуется ingestion.py: "amocrm:contact:<id>" / "tallanto:student:<id>" для
-            # настоящих людей, entity_type in {lead,deal,amo_deal} для сделок никогда его не
-            # получает) -- НЕ по смыслу текста display_name, никакого нового regex понимания.
-            if not _owner50_has_person_contact_origin(record, metadata):
+            # Tallanto person ID). Его доказывает source_ref либо общий strong/manual индекс
+            # identity_links; НЕ смысл display_name и не новый regex.
+            if not _owner50_has_person_contact_origin(
+                str(member["customer_id"]), linked_person_origins,
+            ):
                 reasons.append("person_origin_unproven")
+            if str(member["customer_id"]) not in verified_person_names:
+                reasons.append("human_name_unproven")
 
         opportunities = [
             row for row in family["opportunities"]
@@ -1952,6 +2012,7 @@ def _owner50_family_rows(
                 _owner50_control_rows(
                     family_id, reasons,
                     brand="; ".join(sorted(brands)) if brands else "",
+                    family_members="; ".join(member_texts),
                 )
             )
             continue
@@ -2406,6 +2467,7 @@ def _owner50_family_rows(
                 "target_child_key": target_child_key,
                 "target_child_name": target_child_name,
                 "target_child_grade": str(target_grade) if target_grade is not None else "",
+                "family_members": "; ".join(member_texts),
             }
             # требование архитектора #1: READY/CANDIDATE/EXCLUDED -- CANDIDATE никогда не
             # попадает в READY_50 (candidates), только в CANDIDATES со статусом candidate.
@@ -2426,6 +2488,7 @@ def _owner50_family_rows(
                         brand=row_common["brand"], channel=row_common["channel"],
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
+                        family_members=row_common["family_members"],
                     )
                 )
             else:
@@ -2440,6 +2503,7 @@ def _owner50_family_rows(
                         brand=row_common["brand"], channel=row_common["channel"],
                         evidence_at=row_common["evidence_at"], next_action=row_common["next_action"],
                         offer=row_common["offer"], payment=row_common["payment"],
+                        family_members=row_common["family_members"],
                     )
                 )
             break
@@ -2477,6 +2541,7 @@ def _owner50_family_rows(
                     # вовсе, "Предложение" не может быть старым названием сделки AMO.
                     children="; ".join(child_texts), brand=family_brand,
                     offer="", payment=payment_summary,
+                    family_members="; ".join(member_texts),
                 )
             )
     return candidates, control
@@ -2668,7 +2733,10 @@ def _owner50_snapshot(
         raise RuntimeError("owner50 candidate signal budget exceeded")
     if len(result["events"]) > OWNER50_EVENT_SCAN_LIMIT:
         raise RuntimeError("owner50 event budget exceeded")
-    for kind in ("members", "children", "opportunities", "risk_signals", "conflicts", "purchases", "objections"):
+    for kind in (
+        "members", "children", "opportunities", "risk_signals", "conflicts",
+        "purchases", "objections",
+    ):
         if len(result[kind]) > OWNER50_RELATED_SCAN_LIMIT:
             raise RuntimeError(f"owner50 {kind} budget exceeded")
     return result
@@ -2768,6 +2836,7 @@ OWNER50_CONTROL_COLUMNS = (
     "family_id", "Статус", "Код причины", "Пояснение",
     "Бренд", "Контакт", "Телефон", "Email", "Канал", "Дата основания",
     "Дети", "Сигнал", "Основание", "Следующий шаг", "Предложение", "Оплаты", "Действие",
+    "Члены семьи",
 )
 
 
@@ -2789,12 +2858,14 @@ def _owner50_control_rows(
     next_action: str = "",
     offer: str = "",
     payment: str = "",
+    family_members: str = "",
 ) -> list[tuple[str, ...]]:
     return [
         (
             family_id, status, reason, _owner50_reason_text(reason),
             brand, name, phone, email, channel, evidence_at,
             children, signal_type, evidence_text, next_action, offer, payment, action_text,
+            family_members,
         )
         for reason in dict.fromkeys(reasons)
     ]
@@ -2807,7 +2878,7 @@ def _owner50_control_row_from_ready(row: Mapping[str, Any], *, status: str, code
         row["family_id"], status, code, row["rank_reason"],
         row["brand"], row["name"], row["phone"], row["email"], row["channel"], row["evidence_at"],
         row["children"], row["signal_type"], row["evidence_text"], row["next_action"],
-        row["offer"], row["payment"], row["action_text"],
+        row["offer"], row["payment"], row["action_text"], row["family_members"],
     )
 
 
@@ -3576,6 +3647,7 @@ def _write_owner50_workbook(
                 row["target_child_key"],
                 row["target_child_name"],
                 row["target_child_grade"],
+                row["family_members"],
             )
         )
         for item in row["evidence"]:

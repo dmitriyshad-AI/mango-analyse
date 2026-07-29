@@ -76,7 +76,8 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v4"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v5"
+DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
 # by the *external* process-group wrapper
@@ -907,6 +908,11 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError("nightly service config must be a JSON object")
+    required_sources = tuple(str(item) for item in payload.get("required_manifest_sources") or ())
+    if set(REQUIRED_MANIFEST_SOURCE_STEP_MAP).issubset(required_sources) and (
+        payload.get("config_schema_version") != NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
+    ):
+        raise ValueError("full nightly service config schema is stale")
     timeline_db = Path(str(payload["timeline_db"]))
     allowed_root = Path(str(payload.get("allowed_root") or timeline_db.parent))
     out_root = Path(str(payload["out_root"]))
@@ -935,9 +941,7 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
         lock_timeout_seconds=float(payload.get("lock_timeout_seconds", 30.0)),
         actor=str(payload.get("actor") or "customer_timeline_nightly_service"),
         step_timeout_seconds=float(payload.get("step_timeout_seconds", 1800.0)),
-        required_manifest_sources=tuple(
-            str(item) for item in payload.get("required_manifest_sources") or ()
-        ),
+        required_manifest_sources=required_sources,
         total_runtime_budget_seconds=float(
             payload.get("total_runtime_budget_seconds", DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS)
         ),
@@ -1074,7 +1078,7 @@ def service_step_from_json(
             tallanto_env_file=Path(str(raw_config["tallanto_env_file"])).expanduser(),
             tenant_id=str(raw_config.get("tenant_id") or tenant_id),
             select_fields=tuple(str(item) for item in raw_config.get("select_fields") or ()),
-            max_pages=int(raw_config.get("max_pages", 5)),
+            max_pages=int(raw_config.get("max_pages", DEFAULT_TALLANTO_CARDS_MAX_PAGES)),
             safety_margin_seconds=int(raw_config.get("safety_margin_seconds", 300)),
             actor=str(raw_config.get("actor") or actor),
         )

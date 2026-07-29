@@ -20,6 +20,17 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
+    DEFAULT_TALLANTO_CARDS_MAX_PAGES,
+    DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS,
+    NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
+    REQUIRED_MANIFEST_SOURCE_STEP_MAP,
+)
+
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
 MANGO_READY_PACKAGE_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/"
@@ -63,33 +74,9 @@ REQUIRED_NIGHTLY_STEPS = {
     "bot_safe_rebuild",
 }
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
-# B1: this lightweight wrapper deliberately avoids importing mango_mvp (it
-# only needs to preflight-check the config file as raw JSON, not pull in the
-# full nightly step dependency graph), so these two are kept in sync by hand
-# with mango_mvp.customer_timeline.nightly_service.NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
-# and REQUIRED_MANIFEST_SOURCE_STEP_MAP (which build_customer_timeline_nightly_dv2_sources.py
-# writes into the config from the same source of truth).
-EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v4"
-REQUIRED_MANIFEST_SOURCES = frozenset(
-    {
-        "amo_contacts_leads_events",
-        "tallanto_cards",
-        "tallanto_payments_subscriptions",
-        "tallanto_attendance",
-        "calls",
-        "email",
-        "wappi_telegram",
-        "wappi_max",
-        "family_child_graph",
-        "bot_safe_chunks_and_dossier",
-    }
-)
-# B3: keep in sync with
-# mango_mvp.customer_timeline.nightly_service.DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS.
-# Used only as a fallback when the nightly config on disk omits
-# total_runtime_budget_seconds (e.g. an older config not yet self-healed by
-# ensure_nightly_config()).
-DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS = 6.0 * 3600.0
+EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION = NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
+REQUIRED_MANIFEST_SOURCES = frozenset(REQUIRED_MANIFEST_SOURCE_STEP_MAP)
+DEFAULT_NIGHTLY_RUNTIME_BUDGET_SECONDS = DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS
 # B3: bounded wait after SIGTERM before escalating to SIGKILL.
 NIGHTLY_TERM_GRACE_SECONDS = 20.0
 GIT_CONTEXT_ENV_KEYS = (
@@ -241,6 +228,8 @@ def validate_nightly_config(path: Path | None = None) -> str:
     cards_db = Path(str(cards_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
     if cards_db != STAGING_TIMELINE_DB.resolve(strict=False):
         return "tallanto_cards_sync must target persistent staging DB"
+    if cards_config.get("max_pages") != DEFAULT_TALLANTO_CARDS_MAX_PAGES:
+        return f"tallanto_cards_sync must read up to {DEFAULT_TALLANTO_CARDS_MAX_PAGES} pages per run"
     raw_steps = payload.get("steps") or ()
     positions_by_name = {
         str(step.get("name") or ""): index

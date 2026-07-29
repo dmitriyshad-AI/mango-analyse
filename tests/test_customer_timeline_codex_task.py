@@ -190,6 +190,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     "allowed_root": str(staging_root),
                     "out_root": str(staging_root / "tallanto_cards_sync"),
                     "tallanto_env_file": str(staging_root / "tallanto.env"),
+                    "max_pages": module.DEFAULT_TALLANTO_CARDS_MAX_PAGES,
                 },
             },
             {
@@ -732,7 +733,7 @@ def _write_ready_package_db(path: Path) -> None:
         con.commit()
 
 
-def test_nightly_config_v4_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
+def test_nightly_config_v5_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     ready_package_db = tmp_path / "drop/mango_calls_ready.sqlite"
     _write_ready_package_db(ready_package_db)
@@ -747,6 +748,7 @@ def test_nightly_config_v4_rejects_missing_runtime_contract_fields(tmp_path, mon
         ("Wappi checkpoint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("checkpoint_dir"), "checkpoint"),
         ("Wappi strict nightly", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(require_widget_linkage=True), "quarantine"),
         ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
+        ("Tallanto cards page budget", lambda payload: config_step(payload, "tallanto_cards_sync")["config"].update(max_pages=20), "500 pages"),
     )
     for _name, mutate, expected in cases:
         payload = json.loads(json.dumps(base))

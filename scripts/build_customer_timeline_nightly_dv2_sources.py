@@ -33,6 +33,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
 from mango_mvp.existing_clients.amo_step1_snapshot import DEFAULT_ENV_PATH as DEFAULT_AMO_MCP_ENV  # noqa: E402
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri  # noqa: E402
 from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
+    DEFAULT_TALLANTO_CARDS_MAX_PAGES,
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
 )
@@ -668,7 +669,7 @@ def build_service_config(
                 "out_root": str(out_root / "tallanto_cards_sync"),
                 "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
                 "tenant_id": "foton",
-                "max_pages": 20,
+                "max_pages": DEFAULT_TALLANTO_CARDS_MAX_PAGES,
             },
         },
     )

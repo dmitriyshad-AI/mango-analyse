@@ -243,6 +243,32 @@ def write_service_config(tmp_path: Path, *, enabled: bool = True) -> Path:
     return path
 
 
+def test_full_nightly_config_rejects_stale_schema_before_opening_db(tmp_path: Path) -> None:
+    config_path = tmp_path / "full-nightly.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "config_schema_version": "customer_timeline_nightly_service_config_v4",
+                "timeline_db": str(tmp_path / "missing.sqlite"),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "required_manifest_sources": list(nightly_service_module.REQUIRED_MANIFEST_SOURCE_STEP_MAP),
+                "steps": [{"name": "placeholder", "kind": "unsupported", "enabled": False}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="schema is stale"):
+        service_config_from_json(config_path)
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["required_manifest_sources"].append("future_required_source")
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema is stale"):
+        service_config_from_json(config_path)
+
+
 def test_nightly_service_publishes_manifest_and_second_run_has_no_changes(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

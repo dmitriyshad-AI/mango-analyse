@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import re
 import sqlite3
@@ -18,6 +17,7 @@ from mango_mvp.crm_card_aggregator import (
 )
 from mango_mvp.crm_card_amo_writeback import build_crm_card_amo_payloads
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.safe_copy import file_sha256 as _sha256_file
 from mango_mvp.customer_timeline.manager_dossier import build_customer_dossier, load_canonical_call_client_texts
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import guard_customer_timeline_sqlite_path
@@ -1208,14 +1208,6 @@ def _json_loads(value: Any) -> Any:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _count(con: sqlite3.Connection, table: str, where: str, params: Sequence[Any]) -> int:

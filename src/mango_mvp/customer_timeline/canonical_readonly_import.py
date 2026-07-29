@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import re
 import sqlite3
@@ -25,6 +24,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import customer_entity_ref, normalize_email, normalize_key, stable_digest
 from mango_mvp.customer_timeline.safety import customer_timeline_safety_contract, guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safe_copy import file_sha256
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_sqlite_safety_contract
 from mango_mvp.productization.mail_archive import (
     CANONICAL_MAIL_HISTORY_HANDOFF_DB,
@@ -1668,14 +1668,6 @@ def sqlite_table_counts(path: Path) -> dict[str, int]:
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
                 counts[table] = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     return counts
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def resolve_existing(path: Path) -> Path:

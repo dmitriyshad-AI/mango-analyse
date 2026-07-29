@@ -12,7 +12,8 @@ CopyFn = Callable[[Path, Path], object]
 SleepFn = Callable[[float], object]
 
 
-def file_sha256(path: Path) -> str:
+def file_sha256(path: Path | str) -> str:
+    path = Path(path)
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):

@@ -27,6 +27,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import normalize_key
 from mango_mvp.customer_timeline.ingestion import compact_text
+from mango_mvp.customer_timeline.safe_copy import file_sha256
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     existing_timeline_email_content_signatures,
@@ -124,14 +125,6 @@ class MailStage2RelinkDecision:
             "source_csv": self.source_csv,
             "line_number": self.line_number,
         }
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:

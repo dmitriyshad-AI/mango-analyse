@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -23,6 +22,7 @@ from mango_mvp.customer_timeline.import_cli import (
     run_timeline_import_cli,
 )
 from mango_mvp.customer_timeline.nightly_service import mango_processed_cursor
+from mango_mvp.customer_timeline.safe_copy import file_sha256 as sha256_file
 from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     is_customer_timeline_prod_path,
@@ -1681,14 +1681,6 @@ def hardlink_or_copy(source: Path, target: Path) -> str:
     except OSError:
         shutil.copy2(source, target)
         return "copy"
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> None:

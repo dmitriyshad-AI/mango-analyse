@@ -2845,6 +2845,7 @@ class TranscribeService:
                         combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
                         variants_payload = {
                             "mode": "stereo",
+                            "dialogue_lines": dialogue_lines,
                             "primary_provider": primary_provider,
                             "secondary_provider": secondary_provider if dual_enabled else None,
                             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
@@ -2981,6 +2982,7 @@ class TranscribeService:
                 )
         variants_payload = {
             "mode": "mono_or_fallback",
+            "dialogue_lines": dialogue_lines,
             "primary_provider": primary_provider,
             "secondary_provider": secondary_provider if dual_enabled else None,
             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
@@ -3084,6 +3086,7 @@ class TranscribeService:
             "transcript_manager": call.transcript_manager,
             "transcript_client": call.transcript_client,
             "transcript_text": call.transcript_text,
+            "dialogue_lines": updated_payload.get("dialogue_lines"),
             "transcript_variants_json": json.dumps(updated_payload, ensure_ascii=False),
         }
 

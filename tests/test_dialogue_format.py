@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from mango_mvp.config import Settings
+from mango_mvp.models import CallRecord
 from mango_mvp.services.transcribe import TranscribeService
 
 
@@ -133,6 +135,48 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertTrue(lines[1].startswith("[00:02.1] Клиент: Да, слушаю"))
         self.assertTrue(lines[2].startswith("[00:04.4] Менеджер (Иван): Давайте проверим"))
         self.assertTrue(all("[~" not in line for line in lines))
+
+    def test_transcribe_result_persists_ordered_dialogue_lines_in_variants(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_dialogue_persist_") as td:
+            root = Path(td)
+            source, left, right = root / "call.mp3", root / "left.wav", root / "right.wav"
+            source.write_bytes(b"audio")
+            left.write_bytes(b"left")
+            right.write_bytes(b"right")
+            split_dir = root / "split"
+            split_dir.mkdir()
+            service = TranscribeService(make_settings())
+            call = CallRecord(source_file=str(source), source_filename=source.name, channels=2, duration_sec=20)
+
+            def fake_asr(path: Path, provider: str) -> dict[str, object]:
+                del provider
+                return {"text": "Здравствуйте" if path == left else "Добрый день", "segments": [{"start": 1.0 if path == left else 2.0, "text": "Здравствуйте" if path == left else "Добрый день"}]}
+
+            with patch("mango_mvp.services.transcribe.split_stereo_to_mono", return_value=(left, right, split_dir)):
+                with patch.object(service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
+                    result = service._transcribe_call(call)
+        stored = json.loads(str(result["transcript_variants_json"]))["dialogue_lines"]
+        self.assertEqual(stored, result["dialogue_lines"])
+        self.assertIn("Менеджер", stored[0])
+        self.assertIn("Клиент", stored[1])
+
+    def test_secondary_backfill_preserves_existing_dialogue_lines(self) -> None:
+        lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
+        call = CallRecord(
+            source_file="call.mp3", source_filename="call.mp3", channels=2,
+            transcript_manager="Добрый день.", transcript_client="Здравствуйте.",
+            transcript_text="MANAGER:\nДобрый день.\n\nCLIENT:\nЗдравствуйте.",
+            transcript_variants_json=json.dumps({
+                "mode": "stereo", "dialogue_lines": lines,
+                "manager": {"variant_a": "Добрый день."}, "client": {"variant_a": "Здравствуйте."},
+            }, ensure_ascii=False),
+        )
+        service = TranscribeService(make_settings())
+        with patch("mango_mvp.services.transcribe.split_stereo_to_mono", return_value=(Path("left"), Path("right"), Path("split"))):
+            with patch("mango_mvp.services.transcribe.shutil.rmtree"):
+                with patch.object(service, "_try_transcribe_file_with_meta", return_value={"text": "вариант", "segments": []}):
+                    result = service._backfill_secondary_only(call, secondary_provider="gigaam")
+        self.assertEqual(result["dialogue_lines"], lines)
 
     def test_stereo_fallback_uses_estimated_timecodes(self) -> None:
         lines = self.service._build_dialogue_lines(

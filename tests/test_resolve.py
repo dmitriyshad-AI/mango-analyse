@@ -75,6 +75,15 @@ class ResolveServiceTest(unittest.TestCase):
         self.assertIn("[00:10.0] Менеджер (Иван):", out_lines[0])
         self.assertIn("[00:10.1] Клиент:", out_lines[1])
 
+    def test_dialogue_lines_are_loaded_from_variants_before_export_file(self) -> None:
+        lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
+        call = CallRecord(
+            source_file="calls/a.mp3",
+            source_filename="a.mp3",
+            transcript_variants_json=json.dumps({"dialogue_lines": lines}, ensure_ascii=False),
+        )
+        self.assertEqual(ResolveService(make_settings())._load_dialogue_lines_from_export(call), lines)
+
     def test_short_calls_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_skip_") as td:
             db_path = Path(td) / "resolve.db"

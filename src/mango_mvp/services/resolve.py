@@ -284,6 +284,10 @@ class ResolveService:
         return Path(export_dir) / source_path.parent.name / f"{source_path.stem}_text.txt"
 
     def _load_dialogue_lines_from_export(self, call: CallRecord) -> List[str]:
+        payload = self._safe_json(call.transcript_variants_json or "")
+        stored = payload.get("dialogue_lines")
+        if isinstance(stored, list) and stored:
+            return [str(line).strip() for line in stored if str(line).strip()]
         path = self._dialogue_export_path(call)
         if not path or not path.exists():
             return []
@@ -1359,6 +1363,7 @@ class ResolveService:
             "warnings": normalized_result.get("warnings", []),
             "global_notes": str(normalized_result.get("global_notes") or "").strip(),
         }
+        payload["dialogue_lines"] = dialogue_lines
         if isinstance(llm_meta, dict) and llm_meta:
             payload["dialogue_resolve"]["llm_meta"] = llm_meta
         manager_block = payload.get("manager")
@@ -1485,7 +1490,7 @@ class ResolveService:
                 "transcript_manager": manager_text,
                 "transcript_client": client_text,
                 "transcript_text": transcript_text,
-                "dialogue_lines": None,
+                "dialogue_lines": payload.get("dialogue_lines"),
                 "transcript_variants_json": json.dumps(payload, ensure_ascii=False),
                 "meta": {
                     "mode": "stereo",

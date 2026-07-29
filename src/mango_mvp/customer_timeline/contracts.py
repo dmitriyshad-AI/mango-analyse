@@ -54,6 +54,22 @@ class IdentityLinkType(str, Enum):
     CHANNEL_SESSION_ID = "channel_session_id"
 
 
+# These values name one external entity, unlike phone/email/username which
+# may be shared by a family or change over time.
+UNIQUE_IDENTITY_LINK_TYPES = frozenset(
+    {
+        IdentityLinkType.AMO_CONTACT_ID.value,
+        IdentityLinkType.AMO_LEAD_ID.value,
+        IdentityLinkType.TALLANTO_STUDENT_ID.value,
+        IdentityLinkType.TELEGRAM_USER_ID.value,
+        IdentityLinkType.WHATSAPP_USER_ID.value,
+        IdentityLinkType.MAX_USER_ID.value,
+        IdentityLinkType.WEB_CHAT_USER_ID.value,
+        IdentityLinkType.CHANNEL_SESSION_ID.value,
+    }
+)
+
+
 class IdentityMatchClass(str, Enum):
     STRONG_UNIQUE = "strong_unique"
     DUPLICATE = "duplicate"

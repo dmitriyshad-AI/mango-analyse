@@ -290,6 +290,69 @@ def test_nightly_service_publishes_manifest_and_second_run_has_no_changes(tmp_pa
     assert manifest["files"]["sqlite"]["sha256"]
 
 
+@pytest.mark.parametrize(
+    ("link_type", "link_value"),
+    (
+        (IdentityLinkType.TALLANTO_STUDENT_ID, "student-duplicate"),
+        (IdentityLinkType.AMO_CONTACT_ID, "10001"),
+        (IdentityLinkType.TELEGRAM_USER_ID, "20002"),
+    ),
+)
+def test_nightly_service_blocks_duplicate_authoritative_exact_identity(
+    tmp_path: Path,
+    link_type: IdentityLinkType,
+    link_value: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    second_customer = CustomerIdentity(
+        tenant_id="foton", customer_id="customer:nightly-2", identity_status=IdentityStatus.STRONG,
+        created_at=NOW, updated_at=NOW,
+    )
+    second_link = IdentityLink(
+        tenant_id="foton", customer_id=second_customer.customer_id,
+        link_type=link_type, link_value=link_value,
+        source_system="test", source_ref="test:second",
+        match_class=IdentityMatchClass.MANUAL,
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(second_customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id="customer:nightly-1",
+                link_type=link_type, link_value=link_value,
+                source_system="test", source_ref="test:first",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+            )
+        )
+        store.upsert_identity_link(second_link)
+
+    config = service_config_from_json(write_service_config(tmp_path))
+    blocked = run_nightly_service(config)
+
+    assert blocked["snapshot_manifest"]["latest_published"] is False
+    assert "identity_unique_invariant" in blocked["failed_required_steps"]
+    assert blocked["snapshot_manifest"]["counts"]["identity_links"] == 2
+    blocked_manifest = json.loads(Path(blocked["snapshot_manifest"]["path"]).read_text(encoding="utf-8"))
+    assert blocked_manifest["identity_integrity"] == {
+        "conflicting_unique_values": 1,
+        "conflicting_authoritative_links": 2,
+        "open_tallanto_identity_conflicts": 0,
+    }
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id=second_link.tenant_id, customer_id=second_link.customer_id,
+                link_type=second_link.link_type, link_value=second_link.link_value,
+                source_system=second_link.source_system, source_ref=second_link.source_ref,
+                match_class=IdentityMatchClass.AMBIGUOUS, confidence=0.5,
+            )
+        )
+    repaired = run_nightly_service(config)
+    assert repaired["snapshot_manifest"]["latest_published"] is True
+
+
 def test_nightly_service_keeps_service_lock_through_manifest_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)

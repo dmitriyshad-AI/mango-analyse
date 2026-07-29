@@ -42,6 +42,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     WappiHistoryImportConfig,
     run_wappi_history_import,
 )
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 GIT_CONTEXT_ENV_KEYS = (
     "GIT_DIR",
@@ -867,6 +868,8 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
         # self-reported status.
         if manifest.get("quick_check") != "ok":
             failed_required_steps.append("timeline_db_quick_check")
+        if manifest["identity_integrity"]["conflicting_unique_values"]:
+            failed_required_steps.append("identity_unique_invariant")
         manifest["run_id"] = run_id
         manifest["service_report_path"] = str(run_dir / "service_report.json")
         manifest["published_at"] = datetime.now(timezone.utc).isoformat()
@@ -1297,7 +1300,6 @@ def run_local_freshness_monitor(
     tenant_id: str,
     actor: str,
 ) -> Mapping[str, Any]:
-    from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
     from mango_mvp.customer_timeline.nightly_incremental import parse_datetime
 
     config = dict(step.monitor_config or {})
@@ -1877,6 +1879,20 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
             row["last_cursor_age_days"] = iso_age_days(row.get("last_cursor_ts"), now=now)
             row["updated_age_days"] = iso_age_days(row.get("updated_at"), now=now)
         mail_link_enrich = build_mail_link_enrich_manifest_metrics(con, tenant_id=tenant_id)
+        open_tallanto_identity_conflicts = int(
+            con.execute(
+                """
+                SELECT COUNT(*) FROM timeline_conflicts
+                WHERE tenant_id = ? AND conflict_type = 'tallanto_identity_conflict' AND status = 'open'
+                """,
+                (tenant_id,),
+            ).fetchone()[0]
+        )
+    with CustomerTimelineSQLiteStore.open_read_only(db, allowed_root=db.parent) as store:
+        conflicting_unique_links = store.list_conflicting_unique_identity_links(tenant_id)
+    conflicting_unique_values = {
+        (str(row["link_type"]), str(row["link_value"])) for row in conflicting_unique_links
+    }
     return {
         "schema_version": "customer_timeline_snapshot_manifest_v1",
         "timeline_db": str(db),
@@ -1886,6 +1902,11 @@ def build_snapshot_manifest(db_path: Path, *, tenant_id: str) -> dict[str, Any]:
         "source_counts": source_counts,
         "ingestion_cursors": cursors,
         "mail_link_enrich": mail_link_enrich,
+        "identity_integrity": {
+            "conflicting_unique_values": len(conflicting_unique_values),
+            "conflicting_authoritative_links": len(conflicting_unique_links),
+            "open_tallanto_identity_conflicts": open_tallanto_identity_conflicts,
+        },
     }
 
 

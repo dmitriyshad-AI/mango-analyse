@@ -1397,6 +1397,7 @@ def resolve_customer_identity_batches(
     existing_customer_ids: set[str] = set()
     incoming_tallanto_by_value: dict[tuple[str, str], set[str]] = {}
     incoming_ambiguous_tallanto_keys: set[tuple[str, str]] = set()
+    repairable_tallanto_keys: set[tuple[str, str]] = set()
 
     for batch in normalized_batches:
         for customer in batch.customers:
@@ -1414,6 +1415,11 @@ def resolve_customer_identity_batches(
             if link.link_type.value == "tallanto_student_id":
                 tallanto_key = (link.tenant_id, link.link_value)
                 incoming_tallanto_by_value.setdefault(tallanto_key, set()).add(link.customer_id)
+                if (
+                    link.source_system == TallantoSnapshotNormalizer.source_system
+                    and link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
+                ):
+                    repairable_tallanto_keys.add(tallanto_key)
                 if link.match_class == IdentityMatchClass.AMBIGUOUS:
                     incoming_ambiguous_tallanto_keys.add(tallanto_key)
     if store is not None:
@@ -1424,11 +1430,59 @@ def resolve_customer_identity_batches(
             source_refs_by_customer=source_refs_by_customer,
             phone_to_customers=phone_to_customers,
         )
+    incoming_link_ids = {
+        link.link_id for batch in normalized_batches for link in batch.identity_links
+    }
+    exact_identity_updates = _existing_unique_identity_link_updates(
+        store,
+        tenant_ids={customer.tenant_id for customer in customers_by_id.values()},
+        refreshed_link_ids=incoming_link_ids,
+        refreshed_tallanto_keys=repairable_tallanto_keys,
+    )
+    downgraded_exact_link_ids = {link.link_id for link in exact_identity_updates}
+    historical_tallanto_conflict_keys = {
+        (link.tenant_id, link.link_value)
+        for link in exact_identity_updates
+        if link.link_type.value == "tallanto_student_id"
+    }
+    if store is not None:
+        historical_tallanto_conflict_keys.update(
+            (tenant_id, value)
+            for tenant_id in {customer.tenant_id for customer in customers_by_id.values()}
+            for value in store.list_open_tallanto_identity_conflict_values(tenant_id)
+            if (tenant_id, value) in repairable_tallanto_keys
+        )
+
+    stored_tallanto_links: dict[str, IdentityLink] = {}
+    stored_tallanto_owners: dict[tuple[str, str], set[str]] = {}
+    if store is not None:
+        values_by_tenant: dict[str, set[str]] = {}
+        for tenant_id, value in repairable_tallanto_keys:
+            values_by_tenant.setdefault(tenant_id, set()).add(value)
+        for tenant_id, values in values_by_tenant.items():
+            for payload in store.list_identity_links_for_values(
+                tenant_id,
+                link_type="tallanto_student_id",
+                link_values=tuple(sorted(values)),
+            ):
+                link = identity_link_from_json(payload)
+                stored_tallanto_links[link.link_id] = link
+                if (
+                    link.customer_id
+                    and link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
+                ):
+                    stored_tallanto_owners.setdefault((tenant_id, link.link_value), set()).add(link.customer_id)
+
+    def is_authoritative_exact(link: IdentityLink) -> bool:
+        return (
+            link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
+            and link.link_id not in downgraded_exact_link_ids
+        )
 
     tallanto_by_customer: dict[str, set[str]] = {}
     for customer_id, links in links_by_customer.items():
         for link in links:
-            if link.link_type.value == "tallanto_student_id":
+            if link.link_type.value == "tallanto_student_id" and is_authoritative_exact(link):
                 tallanto_by_customer.setdefault(customer_id, set()).add(link.link_value)
     contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
     for customer_id, links in links_by_customer.items():
@@ -1460,7 +1514,7 @@ def resolve_customer_identity_batches(
         if any(
             link.link_type.value == "amo_contact_id"
             and link.source_system == "amocrm_snapshot"
-            and link.match_class == IdentityMatchClass.STRONG_UNIQUE
+            and is_authoritative_exact(link)
             for link in links
         )
     }
@@ -1499,9 +1553,9 @@ def resolve_customer_identity_batches(
     amo_contact_id_to_customers: dict[tuple[str, str], set[str]] = {}
     for customer_id, links in links_by_customer.items():
         for link in links:
-            if link.link_type.value == "tallanto_student_id":
+            if link.link_type.value == "tallanto_student_id" and is_authoritative_exact(link):
                 tallanto_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
-            elif link.link_type.value == "amo_contact_id" and link.match_class == IdentityMatchClass.STRONG_UNIQUE:
+            elif link.link_type.value == "amo_contact_id" and is_authoritative_exact(link):
                 amo_contact_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
     for (tenant_id, amo_contact_id), customer_ids in amo_contact_id_to_customers.items():
         student_ids = {
@@ -1561,11 +1615,42 @@ def resolve_customer_identity_batches(
                     )
                     & existing_customer_ids
                 )
-            if len(existing_contact_holders) > 1 or (
+            if (
+                tallanto_key in historical_tallanto_conflict_keys
+                and len(existing_contact_holders) != 1
+            ) or len(existing_contact_holders) > 1 or (
                 existing_tallanto_holders
                 and existing_contact_holders - existing_tallanto_holders
             ):
                 conflicting_tallanto_ids.add(tallanto_key)
+
+    refreshed_tallanto_keys = {
+        (link.tenant_id, link.link_value)
+        for batch in normalized_batches
+        for link in batch.identity_links
+        if link.link_type.value == "tallanto_student_id"
+        and link.source_system == TallantoSnapshotNormalizer.source_system
+        and is_authoritative_exact(link)
+    }
+    repair_conflicts = tuple(
+        {
+            "tenant_id": tenant_id,
+            "conflict_type": "tallanto_identity_conflict",
+            "entity_refs": (f"tallanto_student_id:{value}",),
+            "severity": "high",
+            "status": (
+                "resolved"
+                if (tenant_id, value) in refreshed_tallanto_keys
+                and (tenant_id, value) not in conflicting_tallanto_ids
+                else "open"
+            ),
+            "summary": "Historical Tallanto exact identity was rechecked against the current complete card.",
+            "metadata": {"identity_repair": "full_tallanto_card"},
+        }
+        for tenant_id, value in sorted(historical_tallanto_conflict_keys)
+        if (tenant_id, value) not in conflicting_tallanto_ids
+        or (tenant_id, value) not in refreshed_tallanto_keys
+    )
 
     for phone_key, customer_ids in sorted(phone_to_customers.items()):
         if phone_key in family_phone_keys or len(customer_ids) < 2:
@@ -1643,9 +1728,44 @@ def resolve_customer_identity_batches(
         ]
         if batch_tallanto_conflicts:
             refs = tuple(f"tallanto_student_id:{value}" for _, value in batch_tallanto_conflicts)
+            stored_owners = set().union(
+                *(stored_tallanto_owners.get(key, set()) for key in batch_tallanto_conflicts)
+            )
+            preserved_owner = next(iter(stored_owners)) if len(stored_owners) == 1 else None
+            conflict_links: list[IdentityLink] = []
+            for link in batch.identity_links:
+                if link.link_type.value == "tallanto_student_id" and link.link_id in stored_tallanto_links:
+                    # A mutable contact must not move an already-known exact
+                    # student ID to another family. Keep the stored link; the
+                    # conflict remains explicit and the raw card stays visible.
+                    continue
+                conflict_links.append(
+                    replace(
+                        link,
+                        customer_id=preserved_owner,
+                        match_class=IdentityMatchClass.AMBIGUOUS,
+                        confidence=min(float(link.confidence or 1.0), 0.5),
+                    )
+                )
             resolved_batches.append(
                 TimelineNormalizedBatch(
                     source_record=batch.source_record,
+                    customers=(),
+                    identity_links=tuple(conflict_links),
+                    # The raw card is preserved by the event; a customer-bound
+                    # sales opportunity would assert the identity we just rejected.
+                    opportunities=(),
+                    events=tuple(
+                        replace(
+                            event,
+                            customer_id=preserved_owner,
+                            opportunity_id=None,
+                            match_status=IdentityMatchClass.AMBIGUOUS,
+                            confidence=min(float(event.confidence or 1.0), 0.5),
+                        )
+                        for event in batch.events
+                    ),
+                    artifacts=batch.artifacts,
                     conflicts=(
                         *batch.conflicts,
                         {
@@ -1796,11 +1916,14 @@ def resolve_customer_identity_batches(
                 conflicts=batch.conflicts,
             )
         )
-    if existing_family_link_updates and resolved_batches:
+    if (exact_identity_updates or existing_family_link_updates or repair_conflicts) and resolved_batches:
         first = resolved_batches[0]
         resolved_batches[0] = replace(
             first,
-            identity_links=(*first.identity_links, *existing_family_link_updates),
+            # Historical exact conflicts are downgraded first; a current
+            # authoritative source row may then promote exactly one link.
+            identity_links=(*exact_identity_updates, *first.identity_links, *existing_family_link_updates),
+            conflicts=(*first.conflicts, *repair_conflicts),
         )
     return CustomerIdResolutionResult(batches=tuple(resolved_batches), mappings=tuple(mappings))
 
@@ -1845,6 +1968,33 @@ def _existing_family_link_updates(
                     match_class=IdentityMatchClass.AMBIGUOUS,
                     confidence=min(float(link.confidence or 1.0), 0.5),
                 )
+    return tuple(updates[key] for key in sorted(updates))
+
+
+def _existing_unique_identity_link_updates(
+    store: CustomerTimelineSQLiteStore | None,
+    *,
+    tenant_ids: set[str],
+    refreshed_link_ids: set[str],
+    refreshed_tallanto_keys: set[tuple[str, str]],
+) -> tuple[IdentityLink, ...]:
+    if store is None:
+        return ()
+    updates: dict[str, IdentityLink] = {}
+    for tenant_id in sorted(tenant_ids):
+        for payload in store.list_conflicting_unique_identity_links(tenant_id):
+            link = identity_link_from_json(payload)
+            if (
+                link.link_id in refreshed_link_ids
+                or link.link_type.value != "tallanto_student_id"
+                or (link.tenant_id, link.link_value) not in refreshed_tallanto_keys
+            ):
+                continue
+            updates[link.link_id] = replace(
+                link,
+                match_class=IdentityMatchClass.AMBIGUOUS,
+                confidence=min(float(link.confidence or 1.0), 0.5),
+            )
     return tuple(updates[key] for key in sorted(updates))
 
 

@@ -18,6 +18,7 @@ from mango_mvp.customer_timeline.contracts import (
     EventArtifact,
     IdentityLink,
     TimelineEvent,
+    UNIQUE_IDENTITY_LINK_TYPES,
 )
 from mango_mvp.customer_timeline.ids import (
     normalize_key,
@@ -1645,11 +1646,15 @@ class CustomerTimelineSQLiteStore:
         )
         existing = self._fetch_one("SELECT record_json FROM timeline_conflicts WHERE conflict_id = ?", (conflict_id,))
         existing_payload = json_loads(existing["record_json"]) if existing is not None else {}
+        now = self._now()
         created_at = (
             parse_datetime(existing_payload["created_at"], "created_at")
             if existing_payload.get("created_at")
-            else self._now()
+            else now
         )
+        resolved_at = existing_payload.get("resolved_at")
+        if normalized_status == "resolved" and not resolved_at:
+            resolved_at = now.isoformat()
         payload = {
             "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
             "tenant_id": tenant,
@@ -1661,7 +1666,7 @@ class CustomerTimelineSQLiteStore:
             "summary": optional_text(summary),
             "metadata": dict(metadata or {}),
             "created_at": created_at.isoformat(),
-            "resolved_at": existing_payload.get("resolved_at"),
+            "resolved_at": resolved_at,
         }
         return self._upsert_record(
             table="timeline_conflicts",
@@ -1676,7 +1681,7 @@ class CustomerTimelineSQLiteStore:
                 "severity": normalized_severity,
                 "status": normalized_status,
                 "created_at": created_at.isoformat(),
-                "resolved_at": existing_payload.get("resolved_at"),
+                "resolved_at": resolved_at,
             },
             actor=actor,
             ingestion_run_id=ingestion_run_id,
@@ -1974,6 +1979,52 @@ class CustomerTimelineSQLiteStore:
             (tenant, *normalized_types),
         ).fetchall()
         return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_conflicting_unique_identity_links(self, tenant_id: str) -> tuple[Mapping[str, Any], ...]:
+        """Return authoritative exact IDs that currently name several customers."""
+        tenant = normalize_key(tenant_id, "tenant_id")
+        link_types = tuple(sorted(UNIQUE_IDENTITY_LINK_TYPES))
+        placeholders = ",".join("?" for _ in link_types)
+        rows = self._con.execute(
+            f"""
+            WITH authoritative AS (
+              SELECT record_json, link_id, link_type, link_value, customer_id
+              FROM identity_links
+              WHERE tenant_id = ? AND link_type IN ({placeholders})
+                AND match_class IN ('strong_unique', 'manual') AND customer_id IS NOT NULL
+            ), conflicting AS (
+              SELECT link_type, link_value
+              FROM authoritative
+              GROUP BY link_type, link_value
+              HAVING COUNT(DISTINCT customer_id) > 1
+            )
+            SELECT authoritative.record_json
+            FROM authoritative JOIN conflicting USING (link_type, link_value)
+            ORDER BY authoritative.link_type, authoritative.link_value, authoritative.link_id
+            """,
+            (tenant, *link_types),
+        ).fetchall()
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_open_tallanto_identity_conflict_values(self, tenant_id: str) -> tuple[str, ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        rows = self._con.execute(
+            """
+            SELECT record_json FROM timeline_conflicts
+            WHERE tenant_id = ? AND conflict_type = 'tallanto_identity_conflict' AND status = 'open'
+            """,
+            (tenant,),
+        ).fetchall()
+        return tuple(
+            sorted(
+                {
+                    str(ref).split(":", 1)[1]
+                    for row in rows
+                    for ref in json_loads(row["record_json"]).get("entity_refs", ())
+                    if str(ref).startswith("tallanto_student_id:")
+                }
+            )
+        )
 
     def list_identity_links_for_customers(
         self,

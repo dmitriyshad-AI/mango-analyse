@@ -5,7 +5,7 @@ import os
 import socket
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -44,6 +44,35 @@ SHA = "b" * 64
 class FixedClock:
     def __call__(self) -> datetime:
         return NOW
+
+
+class StepClock:
+    def __init__(self) -> None:
+        self.value = NOW
+
+    def __call__(self) -> datetime:
+        current = self.value
+        self.value += timedelta(seconds=1)
+        return current
+
+
+def test_resolving_same_identity_conflict_twice_is_idempotent(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
+    first = store.record_conflict(
+        "foton", conflict_type="tallanto_identity_conflict",
+        entity_refs=("tallanto_student_id:student-1",), status="resolved",
+    )
+    first_payload = store.list_conflicts("foton", statuses=("resolved",))["items"][0]
+    second = store.record_conflict(
+        "foton", conflict_type="tallanto_identity_conflict",
+        entity_refs=("tallanto_student_id:student-1",), status="resolved",
+    )
+    second_payload = store.list_conflicts("foton", statuses=("resolved",))["items"][0]
+
+    assert first.created is True
+    assert second.status == "duplicate"
+    assert second_payload["resolved_at"] == first_payload["resolved_at"]
+    store.close()
 
 
 def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict(tmp_path: Path) -> None:
@@ -554,12 +583,167 @@ def test_tallanto_does_not_merge_two_existing_customers_on_conflicting_contact(t
     )
 
     links = store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-conflict")
-    assert {link["customer_id"] for link in links} == {first_customer}
+    assert len(links) == 1 and links[0]["customer_id"] == first_customer
     assert store.summary()["counts"]["customer_identities"] == 2
     assert report.normalized_counts["conflicts"] == 1
     store.close()
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT conflict_type FROM timeline_conflicts").fetchone()[0] == "tallanto_identity_conflict"
+
+
+def test_fresh_tallanto_card_repairs_historical_duplicate_exact_links(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    for customer_id, phone in (("customer:first", "+79161112233"), ("customer:wrong", "+79169998877")):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id=customer_id, identity_status="strong",
+                primary_phone=phone, created_at=NOW, updated_at=NOW,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="phone", link_value=phone,
+                source_system="legacy", source_ref=f"legacy:phone:{customer_id}",
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="tallanto_student_id",
+                link_value="student-repair", source_system="legacy",
+                source_ref=f"legacy:tallanto:{customer_id}",
+            )
+        )
+    assert len(store.list_conflicting_unique_identity_links("foton")) == 2
+    record = TimelineSourceRecord(
+        source_system="tallanto_snapshot", source_ref="snapshot#current",
+        payload={
+            "tallanto_id": "student-repair", "display_name": "Ученик",
+            "primary_phone": "+79161112233", "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+    service = TimelineImportService(store)
+    unrelated = TimelineSourceRecord(
+        source_system="tallanto_snapshot", source_ref="snapshot#other",
+        payload={
+            "tallanto_id": "student-other", "display_name": "Ученик",
+            "primary_phone": "+79160000001", "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+    service.import_records(
+        (unrelated,), normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton", source_ref="unrelated", idempotency_key="unrelated", actor="test",
+    )
+    assert len(store.list_conflicting_unique_identity_links("foton")) == 2
+
+    first = service.import_records(
+        (record,), normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton", source_ref="repair-1", idempotency_key="repair-1", actor="test",
+    )
+    state_after_first = tuple(
+        (row["link_id"], row["customer_id"], row["match_class"])
+        for row in store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-repair")
+    )
+    second = service.import_records(
+        (record,), normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton", source_ref="repair-2", idempotency_key="repair-2", actor="test",
+    )
+    state_after_second = tuple(
+        (row["link_id"], row["customer_id"], row["match_class"])
+        for row in store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-repair")
+    )
+
+    assert first.normalized_counts["conflicts"] == 1
+    assert state_after_second == state_after_first
+    assert sum(match_class == "strong_unique" for _, _, match_class in state_after_first) == 1
+    assert sum(match_class == "ambiguous" for _, _, match_class in state_after_first) == 2
+    assert {customer_id for _, customer_id, match_class in state_after_first if match_class == "strong_unique"} == {
+        "customer:first"
+    }
+    assert store.list_conflicting_unique_identity_links("foton") == ()
+    conflicts = store.list_conflicts("foton", statuses=("resolved",))["items"]
+    assert [(row["conflict_type"], row["status"]) for row in conflicts] == [
+        ("tallanto_identity_conflict", "resolved")
+    ]
+    assert conflicts[0]["resolved_at"] is not None
+    assert store.summary()["counts"]["customer_identities"] == 3
+    store.close()
+
+
+def test_tallanto_conflict_preserves_event_and_later_exact_contact_resolves_it(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
+    for customer_id in ("customer:first", "customer:wrong"):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id=customer_id, identity_status="strong",
+                created_at=NOW, updated_at=NOW,
+            )
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="tallanto_student_id",
+                link_value="student-retry", source_system="legacy",
+                source_ref=f"legacy:tallanto:{customer_id}",
+            )
+        )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton", customer_id="customer:first", link_type="phone",
+            link_value="+79161112233", source_system="legacy", source_ref="legacy:phone:first",
+        )
+    )
+    service = TimelineImportService(store)
+    normalizer = TallantoSnapshotNormalizer(tenant_id="foton")
+
+    unresolved = TimelineSourceRecord(
+        source_system="tallanto_snapshot", source_ref="snapshot#retry",
+        payload={"tallanto_id": "student-retry", "display_name": "Ученик", "snapshot_at": NOW.isoformat()},
+        observed_at=NOW,
+    )
+    first = service.import_records(
+        (unresolved,), normalizer=normalizer, tenant_id="foton",
+        source_ref="retry-1", idempotency_key="retry-1", actor="test",
+    )
+    assert first.normalized_counts["events"] == 1
+    assert store.list_open_tallanto_identity_conflict_values("foton") == ("student-retry",)
+    assert not [
+        row for row in store.list_identity_links(
+            "foton", link_type="tallanto_student_id", link_value="student-retry"
+        )
+        if row["match_class"] in {"strong_unique", "manual"}
+    ]
+    with sqlite3.connect(db_path) as con:
+        event_before = con.execute(
+            "SELECT event_id, customer_id, match_status FROM timeline_events WHERE source_id = 'student-retry'"
+        ).fetchone()
+    assert event_before is not None and event_before[2] == "ambiguous"
+
+    resolved = TimelineSourceRecord(
+        source_system="tallanto_snapshot", source_ref="snapshot#retry",
+        payload={
+            "tallanto_id": "student-retry", "display_name": "Ученик",
+            "primary_phone": "+79161112233", "snapshot_at": NOW.isoformat(),
+        },
+        observed_at=NOW,
+    )
+    second = service.import_records(
+        (resolved,), normalizer=normalizer, tenant_id="foton",
+        source_ref="retry-2", idempotency_key="retry-2", actor="test",
+    )
+    links = store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-retry")
+    with sqlite3.connect(db_path) as con:
+        events_after = con.execute(
+            "SELECT event_id, customer_id, match_status FROM timeline_events WHERE source_id = 'student-retry'"
+        ).fetchall()
+
+    assert second.normalized_counts["conflicts"] == 1
+    assert store.list_open_tallanto_identity_conflict_values("foton") == ()
+    assert sum(row["match_class"] == "strong_unique" for row in links) == 1
+    assert [row[0] for row in events_after] == [event_before[0]]
+    assert events_after[0][1:] == ("customer:first", "strong_unique")
+    store.close()
 
 
 def test_tallanto_does_not_merge_phone_and_email_owned_by_different_customers(tmp_path: Path) -> None:
@@ -610,7 +794,14 @@ def test_tallanto_does_not_merge_phone_and_email_owned_by_different_customers(tm
     )
 
     assert report.normalized_counts["conflicts"] == 1
-    assert store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-new") == ()
+    links = store.list_identity_links("foton", link_type="tallanto_student_id", link_value="student-new")
+    assert len(links) == 1 and links[0]["match_class"] == "ambiguous"
+    assert links[0]["customer_id"] is None
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT match_status FROM timeline_events WHERE source_id = 'student-new'"
+        ).fetchone()[0] == "ambiguous"
+    assert store.list_open_tallanto_identity_conflict_values("foton") == ("student-new",)
     assert store.summary()["counts"]["customer_identities"] == 2
     store.close()
 

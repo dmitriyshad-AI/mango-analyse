@@ -568,6 +568,47 @@ def test_family_root_accepts_multiple_students_for_one_parent(tmp_path: Path) ->
     assert report["family_membership_status_counts"] == {"singleton": 1}
 
 
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    (("Анна Иванова", "Мария Иванова"), ("Даня", "Даниил Иванов")),
+)
+def test_family_graph_keeps_historical_tallanto_students_distinct_under_one_customer(
+    tmp_path: Path,
+    first_name: str,
+    second_name: str,
+) -> None:
+    db_path = _timeline_db(tmp_path)
+    customer_id = "customer:historically-merged"
+    _seed_customer(db_path, tmp_path, customer_id=customer_id, phone="+79000000003")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for student_id, name in (("student-one", first_name), ("student-two", second_name)):
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=student_id,
+                    source_ref=f"tallanto:contact:{student_id}",
+                    direction="system",
+                    match_status="strong_unique",
+                    record={"payload": {"display_name": name}},
+                )
+            )
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        children = con.execute(
+            "SELECT canonical_name,child_key FROM family_links_v1 WHERE customer_id=? ORDER BY canonical_name",
+            (customer_id,),
+        ).fetchall()
+    assert {row[0] for row in children} == {first_name, second_name}
+    assert len({row[1] for row in children}) == 2
+    assert report["family_links_total"] == 2
+
+
 def test_family_root_does_not_merge_two_persisted_roots(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     for customer_id, student_id, phone in (

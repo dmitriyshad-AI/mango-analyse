@@ -6,11 +6,18 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 import pytest
+from openpyxl import Workbook
 
 import mango_mvp.customer_timeline.tallanto_cards_sync as cards_sync
 from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiError
 from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
+from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
+from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
+from mango_mvp.customer_timeline.tallanto_attendance_import import (
+    TallantoAttendanceImportConfig,
+    run_tallanto_attendance_import,
+)
 from mango_mvp.customer_timeline.tallanto_cards_sync import (
     TALLANTO_CARDS_SOURCE_SYSTEM,
     TallantoCardsSyncConfig,
@@ -18,6 +25,10 @@ from mango_mvp.customer_timeline.tallanto_cards_sync import (
     map_raw_contact_to_snapshot_payload,
     run_tallanto_cards_sync,
     universe_fingerprint,
+)
+from scripts.import_tallanto_payments_to_timeline import (
+    TallantoPaymentsImportConfig,
+    run_tallanto_payments_import,
 )
 
 
@@ -83,18 +94,28 @@ class FailingContactClient:
         raise TallantoApiError("Tallanto Contact request failed.", status_code=502, category="server_error")
 
 
-def _contact(*, contact_id: str, phone: Optional[str] = None, email: Optional[str] = None, first_name: str = "Имя", last_name: str = "Фамилия", date_modified: str = "2026-07-20 10:00:00") -> dict[str, Any]:
+def _contact(*, contact_id: str, phone: Optional[str] = None, email: Optional[str] = None, amo_id: Optional[str] = None, parent_fio: Optional[str] = None, first_name: str = "Имя", last_name: str = "Фамилия", date_modified: str = "2026-07-20 10:00:00") -> dict[str, Any]:
     row: dict[str, Any] = {"id": contact_id, "first_name": first_name, "last_name": last_name, "date_modified": date_modified}
     if phone is not None:
         row["phone_mobile"] = phone
     if email is not None:
         row["email1"] = email
+    if amo_id is not None:
+        row["amo_id"] = amo_id
+    if parent_fio is not None:
+        row["marital_status_c"] = parent_fio
     return row
 
 
-def _config(tmp_path: Path, client: Any, *, max_pages: int = 5) -> TallantoCardsSyncConfig:
+def _config(
+    tmp_path: Path,
+    client: Any,
+    *,
+    max_pages: int = 5,
+    timeline_db: Optional[Path] = None,
+) -> TallantoCardsSyncConfig:
     return TallantoCardsSyncConfig(
-        timeline_db=tmp_path / "staging.sqlite",
+        timeline_db=timeline_db or tmp_path / "staging.sqlite",
         out_root=tmp_path / "out",
         allowed_root=tmp_path,
         client=client,
@@ -155,16 +176,21 @@ def test_tallanto_cards_sync_repeated_import_does_not_increase_raw_events(tmp_pa
 
 def test_tallanto_cards_sync_two_children_of_one_family_do_not_collapse(tmp_path: Path) -> None:
     shared_phone = "+7 916 333-44-55"
+    db = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db.parent.mkdir(parents=True)
     contacts = [
-        _contact(contact_id="child-1", phone=shared_phone, first_name="Аня"),
-        _contact(contact_id="child-2", phone=shared_phone, first_name="Оля"),
+        _contact(contact_id="child-1", phone=shared_phone, parent_fio="Иванова Мария", first_name="Аня"),
+        _contact(contact_id="child-2", phone=shared_phone, parent_fio="Иванова Мария", first_name="Оля"),
     ]
 
-    report = run_tallanto_cards_sync(_config(tmp_path, FakeContactClient(contacts)))
+    report = run_tallanto_cards_sync(_config(tmp_path, FakeContactClient(contacts), timeline_db=db))
+    family = build_family_graph(
+        FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True)
+    )
 
     assert report["complete"] is True
     assert report["checked"] == 2
-    with sqlite3.connect(tmp_path / "staging.sqlite") as con:
+    with sqlite3.connect(db) as con:
         links = con.execute(
             "SELECT customer_id FROM identity_links WHERE link_type='tallanto_student_id' AND link_value IN ('child-1','child-2')"
         ).fetchall()
@@ -176,6 +202,254 @@ def test_tallanto_cards_sync_two_children_of_one_family_do_not_collapse(tmp_path
         ).fetchall()
         assert {row[0] for row in phone_links} == customer_ids
         assert {row[1] for row in phone_links} == {"ambiguous"}
+        family_ids = {
+            row[0]
+            for row in con.execute(
+                "SELECT family_id FROM family_members_v1 WHERE customer_id IN (?,?)",
+                tuple(sorted(customer_ids)),
+            ).fetchall()
+        }
+        child_keys = {
+            row[0]
+            for row in con.execute(
+                "SELECT child_key FROM family_links_v1 WHERE customer_id IN (?,?)",
+                tuple(sorted(customer_ids)),
+            ).fetchall()
+        }
+        assert len(family_ids) == 1
+        assert len(child_keys) == 2
+        assert family["family_links_total"] == 2
+
+    payment_payload = {
+        "most_finances": [{
+            "id": "payment-child-2",
+            "contact_id": "child-2",
+            "cost": "12000",
+            "direction": "in",
+            "date_payment": "2026-07-01 09:00:00",
+        }],
+        "most_abonements": [],
+    }
+    run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        ),
+        stdin_text=json.dumps(payment_payload),
+    )
+    contacts_path = tmp_path / "contacts.xlsx"
+    contacts_book = Workbook()
+    contacts_book.active.append(("ID", "Текстовое значение штрихкода"))
+    contacts_book.active.append(("child-2", "barcode-child-2"))
+    contacts_book.save(contacts_path)
+    attendance_path = tmp_path / "attendance.xlsx"
+    attendance_book = Workbook()
+    attendance_book.active.append((
+        "Фамилия", "Имя", "Штрихкод", "Абонемент", "Сумма списания", "Дата списания",
+        "Тип списания", "Занятие", "Филиал занятия", "Дата занятия", "День рождения",
+    ))
+    attendance_book.active.append((
+        "Фамилия", "Оля", "barcode-child-2", "Абонемент", "1000", "01.07.2026 12:00",
+        "Безналичный расчёт", "Физика 8 класс", "МФТИ", "01.07.2026 10:00", "",
+    ))
+    attendance_book.save(attendance_path)
+    run_tallanto_attendance_import(
+        TallantoAttendanceImportConfig(db, tmp_path, contacts_path, attendance_path, apply=True)
+    )
+    build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db) as con:
+        child_2 = con.execute(
+            "SELECT customer_id FROM identity_links WHERE link_type='tallanto_student_id' AND link_value='child-2'"
+        ).fetchone()[0]
+        child_2_key = con.execute(
+            "SELECT child_key FROM family_links_v1 WHERE customer_id=?", (child_2,)
+        ).fetchone()[0]
+        attributions = con.execute(
+            "SELECT e.event_type,a.customer_id,a.child_key,a.status,a.reason "
+            "FROM timeline_events e JOIN event_child_attribution_v1 a ON a.event_id=e.event_id "
+            "WHERE e.event_type IN ('tallanto_payment','tallanto_attendance')"
+        ).fetchall()
+    assert attributions == [
+        (event_type, child_2, child_2_key, "matched", "exact_tallanto_identity")
+        for event_type in ("tallanto_payment", "tallanto_attendance")
+    ]
+
+
+def test_tallanto_cards_sync_shared_parent_amo_does_not_collapse_two_children(tmp_path: Path) -> None:
+    contacts = [
+        _contact(contact_id="child-amo-1", phone="+7 916 100-00-01", amo_id="12345", first_name="Аня"),
+        _contact(contact_id="child-amo-2", phone="+7 916 100-00-02", amo_id="12345", first_name="Оля"),
+    ]
+
+    report = run_tallanto_cards_sync(_config(tmp_path, FakeContactClient(contacts)))
+
+    assert report["complete"] is True
+    with sqlite3.connect(tmp_path / "staging.sqlite") as con:
+        rows = con.execute(
+            "SELECT DISTINCT customer_id FROM identity_links "
+            "WHERE link_type='tallanto_student_id' AND link_value IN ('child-amo-1','child-amo-2')"
+        ).fetchall()
+    assert len({row[0] for row in rows}) == 2
+
+
+def test_family_graph_adds_second_tallanto_child_after_first_graph_build(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    phone = "+7 916 777-66-55"
+    first = _contact(contact_id="late-child-1", phone=phone, parent_fio="Петрова Мария", first_name="Аня")
+    second = _contact(contact_id="late-child-2", phone=phone, parent_fio="Петрова Мария", first_name="Оля")
+    run_tallanto_cards_sync(_config(tmp_path, FakeContactClient([first]), timeline_db=db))
+    build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+
+    run_tallanto_cards_sync(_config(tmp_path, FakeContactClient([first, second]), timeline_db=db))
+    build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db) as con:
+        children = con.execute(
+            "SELECT customer_id,family_id,child_key,canonical_name FROM family_links_v1 ORDER BY canonical_name"
+        ).fetchall()
+        second_attribution = con.execute(
+            "SELECT a.child_key FROM event_child_attribution_v1 a "
+            "JOIN timeline_events e ON e.event_id=a.event_id "
+            "WHERE e.source_system='tallanto_snapshot' AND e.source_id='late-child-2'"
+        ).fetchone()
+    assert len(children) == 2
+    assert len({row[0] for row in children}) == 2
+    assert len({row[1] for row in children}) == 1
+    assert len({row[2] for row in children}) == 2
+    assert second_attribution == (next(row[2] for row in children if row[3] == "Оля Фамилия"),)
+
+
+def test_family_graph_tallanto_name_correction_does_not_create_second_child(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    phone = "+7 916 777-66-44"
+    first = _contact(contact_id="renamed-child", phone=phone, parent_fio="Петрова Мария", first_name="Аня")
+    corrected = _contact(
+        contact_id="renamed-child",
+        phone=phone,
+        parent_fio="Петрова Мария",
+        first_name="Мария",
+        date_modified="2026-07-21 10:00:00",
+    )
+    run_tallanto_cards_sync(_config(tmp_path, FakeContactClient([first]), timeline_db=db))
+    build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db) as con:
+        child_key_before = con.execute("SELECT child_key FROM family_links_v1").fetchone()[0]
+
+    run_tallanto_cards_sync(_config(tmp_path, FakeContactClient([corrected]), timeline_db=db))
+    build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db) as con:
+        children = con.execute(
+            "SELECT customer_id,child_key,canonical_name FROM family_links_v1"
+        ).fetchall()
+    assert len(children) == 1
+    assert children[0][1] == child_key_before
+    assert children[0][2] == "Мария Фамилия"
+
+
+def test_tallanto_cards_payments_attendance_build_one_customer_and_family(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    cards = _config(
+        tmp_path,
+        FakeContactClient([_contact(contact_id="101", phone="+7 916 555-44-33", first_name="Аня")]),
+        timeline_db=db,
+    )
+    assert run_tallanto_cards_sync(cards)["validation_ok"] is True
+    payment_payload = {
+        "most_finances": [{
+            "id": "payment-e2e",
+            "contact_id": "101",
+            "most_abonements_id": "abonement-e2e",
+            "cost": "12163",
+            "direction": "in",
+            "date_payment": "2026-07-01 09:00:00",
+        }],
+        "most_abonements": [{
+            "id": "abonement-e2e",
+            "contact_id": "101",
+            "date_modified": "2026-07-01 09:00:00",
+        }],
+    }
+    payment_config = TallantoPaymentsImportConfig(
+        source=None,
+        timeline_db=db,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        apply=True,
+    )
+    first_money = run_tallanto_payments_import(payment_config, stdin_text=json.dumps(payment_payload))
+    second_money = run_tallanto_payments_import(payment_config, stdin_text=json.dumps(payment_payload))
+
+    contacts_path = tmp_path / "contacts.xlsx"
+    contacts_book = Workbook()
+    contacts_book.active.append(("ID", "Текстовое значение штрихкода"))
+    contacts_book.active.append(("101", "barcode-101"))
+    contacts_book.save(contacts_path)
+    attendance_path = tmp_path / "attendance.xlsx"
+    attendance_book = Workbook()
+    attendance_book.active.append((
+        "Фамилия", "Имя", "Штрихкод", "Абонемент", "Сумма списания", "Дата списания",
+        "Тип списания", "Занятие", "Филиал занятия", "Дата занятия", "День рождения",
+    ))
+    attendance_book.active.append((
+        "Иванова", "Анна", "barcode-101", "Абонемент", "1000", "01.07.2026 12:00",
+        "Безналичный расчёт", "Физика 8 класс", "МФТИ", "01.07.2026 10:00", "",
+    ))
+    attendance_book.save(attendance_path)
+    attendance = run_tallanto_attendance_import(
+        TallantoAttendanceImportConfig(db, tmp_path, contacts_path, attendance_path, apply=True)
+    )
+    purchases = refresh_customer_purchases_v1(db, allowed_root=tmp_path, tenant_id="foton")
+    family = build_family_graph(FamilyGraphConfig(timeline_db=db, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db) as con:
+        child_id = con.execute(
+            "SELECT customer_id FROM identity_links WHERE link_type='tallanto_student_id' AND link_value='101'"
+        ).fetchone()[0]
+        event_owners = {
+            row[0]
+            for row in con.execute(
+                "SELECT customer_id FROM timeline_events WHERE event_type IN ('tallanto_payment','tallanto_attendance')"
+            ).fetchall()
+        }
+        fact = con.execute(
+            "SELECT total_in,deals_cnt FROM customer_purchases_v1 WHERE customer_id=? AND money_kind='fact'",
+            (child_id,),
+        ).fetchone()
+        family_member = con.execute(
+            "SELECT family_id FROM family_members_v1 WHERE customer_id=?",
+            (child_id,),
+        ).fetchone()
+        child = con.execute(
+            "SELECT family_id,child_key,canonical_name FROM family_links_v1 WHERE customer_id=?",
+            (child_id,),
+        ).fetchone()
+        attributed_child_keys = {
+            row[0]
+            for row in con.execute(
+                "SELECT child_key FROM event_child_attribution_v1 WHERE customer_id=? AND status='matched'",
+                (child_id,),
+            ).fetchall()
+        }
+    assert first_money["validation_ok"] is True
+    assert second_money["import_report"]["write_status_counts"].get("created", 0) == 0
+    assert attendance["counts"]["created"] == 1
+    assert purchases["money_kind"]["fact"] == 1
+    assert event_owners == {child_id}
+    assert fact == (12163.0, 1)
+    assert family_member is not None
+    assert family["family_members_total"] == 1
+    assert family["family_links_total"] == 1
+    assert child[0] == family_member[0]
+    assert child[1] in attributed_child_keys
+    assert child[2] == "Аня Фамилия"
 
 
 def test_tallanto_cards_sync_phone_change_under_same_student_id_updates_same_child(tmp_path: Path) -> None:

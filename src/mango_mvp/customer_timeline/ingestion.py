@@ -1503,6 +1503,14 @@ def resolve_customer_identity_batches(
                 tallanto_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
             elif link.link_type.value == "amo_contact_id" and link.match_class == IdentityMatchClass.STRONG_UNIQUE:
                 amo_contact_id_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
+    for (tenant_id, amo_contact_id), customer_ids in amo_contact_id_to_customers.items():
+        student_ids = {
+            student_id
+            for customer_id in customer_ids
+            for student_id in tallanto_by_customer.get(customer_id, set())
+        }
+        if len(student_ids) > 1:
+            family_contact_keys.add((tenant_id, "amo_contact_id", amo_contact_id))
     tallanto_union_members: set[str] = set()
     conflicting_tallanto_ids: set[tuple[str, str]] = set()
     for tallanto_key, customer_ids in tallanto_id_to_customers.items():
@@ -1522,7 +1530,9 @@ def resolve_customer_identity_batches(
             union(ordered_ids[0], customer_id)
 
     amo_contact_union_members: set[str] = set()
-    for customer_ids in amo_contact_id_to_customers.values():
+    for (tenant_id, amo_contact_id), customer_ids in amo_contact_id_to_customers.items():
+        if (tenant_id, "amo_contact_id", amo_contact_id) in family_contact_keys:
+            continue
         ordered_ids = sorted(customer_ids)
         if len(ordered_ids) > 1:
             amo_contact_union_members.update(ordered_ids)

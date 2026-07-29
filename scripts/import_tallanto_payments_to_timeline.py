@@ -100,6 +100,7 @@ class TallantoSnapshotStats:
     linked_existing: int = 0
     ambiguous_contact_ids: int = 0
     unmatched_contact_ids: int = 0
+    unresolved_payment_owners: int = 0
     amount_fields_in_events: int = 0
     balance_fields_in_events: int = 0
     bot_safe_amount_leaks: int = 0
@@ -115,6 +116,7 @@ class TallantoSnapshotStats:
             "linked_existing": self.linked_existing,
             "ambiguous_contact_ids": self.ambiguous_contact_ids,
             "unmatched_contact_ids": self.unmatched_contact_ids,
+            "unresolved_payment_owners": self.unresolved_payment_owners,
             "amount_fields_in_events": self.amount_fields_in_events,
             "balance_fields_in_events": self.balance_fields_in_events,
             "bot_safe_amount_leaks": self.bot_safe_amount_leaks,
@@ -172,13 +174,24 @@ class TallantoPaymentsTimelineNormalizer:
         payload = dict(record.payload)
         payment_id = require_nonempty(first_value(payload, ("id", "finance_id", "payment_id")), "Tallanto payment id")
         contact_id = clean_text(first_value(payload, ("contact_id", "student_id", "tallanto_id", "Contact_ID")))
+        abonement_contact_id = clean_text(payload.get("_abonement_contact_id"))
         abonement_id = clean_text(first_value(payload, ("most_abonements_id", "abonement_id", "subscription_id")))
         class_id = clean_text(first_value(payload, ("most_class_id", "class_id")))
         event_at = parse_source_datetime(
             first_value(payload, ("date_payment", "date_entered", "date_modified", "event_at")),
             record.observed_at,
         )
-        resolution = self._resolve_contact(contact_id)
+        unresolved_owner = payload.get("_contact_id_source") in {"unresolved_abonement", "unresolved_owner"}
+        resolution = TallantoIdentityResolution(
+            customer_id=None,
+            match_class=IdentityMatchClass.AMBIGUOUS,
+            identity_status=IdentityStatus.AMBIGUOUS,
+            confidence=0.0,
+        ) if unresolved_owner else (
+            self._resolve_conflicting_contacts(contact_id, abonement_contact_id)
+            if contact_id and abonement_contact_id and contact_id != abonement_contact_id
+            else self._resolve_contact(contact_id)
+        )
         source_ref = f"tallanto:{PAYMENT_MODULE}:{payment_id}"
         customer, link = self._customer_and_link(
             contact_id=contact_id,
@@ -245,6 +258,8 @@ class TallantoPaymentsTimelineNormalizer:
                     "module": PAYMENT_MODULE,
                     "payment_id": payment_id,
                     "contact_id": contact_id,
+                    "contact_id_source": payload.get("_contact_id_source") or ("direct" if contact_id else "missing"),
+                    "contact_id_conflict": bool(contact_id and abonement_contact_id and contact_id != abonement_contact_id),
                     "amount": amount,
                     "currency": "RUB" if amount is not None else None,
                     "payment_direction": direction,
@@ -265,7 +280,14 @@ class TallantoPaymentsTimelineNormalizer:
             },
             created_at=event_at,
         )
-        conflicts = self._conflicts(contact_id=contact_id, source_ref=source_ref, resolution=resolution)
+        conflicts = self._conflicts(
+            contact_id=contact_id,
+            alternate_contact_id=abonement_contact_id,
+            abonement_id=abonement_id,
+            unresolved_owner=unresolved_owner,
+            source_ref=source_ref,
+            resolution=resolution,
+        )
         return TimelineNormalizedBatch(
             source_record=record,
             customers=() if resolution.customer_id else (customer,),
@@ -408,6 +430,21 @@ class TallantoPaymentsTimelineNormalizer:
             confidence=0.55,
         )
 
+    def _resolve_conflicting_contacts(self, *contact_ids: Optional[str]) -> TallantoIdentityResolution:
+        candidates: set[str] = set()
+        for contact_id in filter(None, contact_ids):
+            existing = self._customer_lookup.unique_customer_ids.get(str(contact_id))
+            if existing:
+                candidates.add(existing)
+            candidates.update(self._customer_lookup.ambiguous_customer_ids.get(str(contact_id), ()))
+        return TallantoIdentityResolution(
+            customer_id=None,
+            match_class=IdentityMatchClass.AMBIGUOUS,
+            identity_status=IdentityStatus.AMBIGUOUS,
+            confidence=0.0,
+            candidate_customer_ids=tuple(sorted(candidates)),
+        )
+
     def _opportunity_id(self, source_id: str) -> str:
         return self._opportunity_lookup.get(source_id) or stable_tallanto_opportunity_id(self.tenant_id, source_id)
 
@@ -465,6 +502,9 @@ class TallantoPaymentsTimelineNormalizer:
         self,
         *,
         contact_id: Optional[str],
+        alternate_contact_id: Optional[str] = None,
+        abonement_id: Optional[str] = None,
+        unresolved_owner: bool = False,
         source_ref: str,
         resolution: TallantoIdentityResolution,
     ) -> tuple[Mapping[str, Any], ...]:
@@ -473,17 +513,26 @@ class TallantoPaymentsTimelineNormalizer:
         refs = [source_ref]
         if contact_id:
             refs.append(f"tallanto_student_id:{contact_id}")
+        if alternate_contact_id and alternate_contact_id != contact_id:
+            refs.append(f"tallanto_student_id:{alternate_contact_id}")
+        if abonement_id:
+            refs.append(f"tallanto_abonement_id:{abonement_id}")
         refs.extend(f"customer:{item}" for item in resolution.candidate_customer_ids)
         return (
             {
                 "tenant_id": self.tenant_id,
-                "conflict_type": "tallanto_identity_ambiguous",
+                "conflict_type": "tallanto_payment_owner_unresolved" if unresolved_owner else "tallanto_identity_ambiguous",
                 "entity_refs": tuple(refs),
                 "severity": "medium",
                 "status": "open",
-                "summary": "Tallanto contact id is linked to multiple customer identities; no first-match merge",
+                "summary": (
+                    "Tallanto payment owner is unresolved because its abonement relation is missing"
+                    if unresolved_owner
+                    else "Tallanto contact id is linked to multiple customer identities; no first-match merge"
+                ),
                 "metadata": {
                     "contact_id": contact_id,
+                    "alternate_contact_id": alternate_contact_id,
                     "candidate_customer_count": len(resolution.candidate_customer_ids),
                     "source_kind": SOURCE_KIND,
                 },
@@ -683,9 +732,10 @@ def run_tallanto_payments_import(
         source_path=str(config.source) if config.source else None,
     )
     contact_ids = {
-        str(record.payload.get("contact_id"))
+        str(record.payload.get(key))
         for record in records
-        if optional_text(record.payload.get("contact_id"))
+        for key in ("contact_id", "_abonement_contact_id")
+        if optional_text(record.payload.get(key))
     }
     customer_lookup = load_tallanto_customer_lookup(
         config.timeline_db,
@@ -716,6 +766,7 @@ def run_tallanto_payments_import(
     store_summary_before: Optional[Mapping[str, Any]] = None
     store_summary_after: Optional[Mapping[str, Any]] = None
     source_inventory_before = build_source_inventory(records)
+    resolved_owner_conflicts = 0
     if config.apply:
         store = CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root)
         try:
@@ -733,6 +784,11 @@ def run_tallanto_payments_import(
             stats.bot_safe_amount_leaks = count_bot_safe_amount_leaks(config.timeline_db)
         finally:
             store.close()
+        resolved_owner_conflicts = close_relinked_payment_owner_conflicts(
+            config.timeline_db,
+            tenant_id=config.tenant_id,
+            records=records,
+        )
     else:
         import_report = TimelineImportService(cast(CustomerTimelineSQLiteStore, _DryRunStore())).import_records(
             records,
@@ -797,6 +853,7 @@ def run_tallanto_payments_import(
             "unique_existing_tallanto_matches": len(customer_lookup.unique_customer_ids),
             "ambiguous_tallanto_matches": len(customer_lookup.ambiguous_customer_ids),
             "unmatched_tallanto_contact_ids": stats.unmatched_contact_ids,
+            "resolved_payment_owner_conflicts": resolved_owner_conflicts,
         },
         "import_report": import_report_payload,
         "store_summary_before": store_summary_before,
@@ -812,6 +869,47 @@ def run_tallanto_payments_import(
             "ok": safety_ok(safety),
         },
     }
+
+
+def close_relinked_payment_owner_conflicts(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    records: Sequence[TimelineSourceRecord],
+) -> int:
+    resolved_refs = {
+        record.source_ref
+        for record in records
+        if record.payload.get("_tallanto_module") == PAYMENT_MODULE
+        and optional_text(record.payload.get("contact_id"))
+        and not (
+            optional_text(record.payload.get("_abonement_contact_id"))
+            and record.payload.get("_abonement_contact_id") != record.payload.get("contact_id")
+        )
+    }
+    if not resolved_refs:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    closed = 0
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT conflict_id,record_json FROM timeline_conflicts "
+            "WHERE tenant_id=? AND conflict_type='tallanto_payment_owner_unresolved' AND status='open'",
+            (tenant_id,),
+        ).fetchall()
+        for conflict_id, raw in rows:
+            payload = json.loads(str(raw or "{}"))
+            if not resolved_refs.intersection(payload.get("entity_refs") or ()):
+                continue
+            payload.update(status="resolved", resolved_at=now)
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            con.execute(
+                "UPDATE timeline_conflicts SET status='resolved',resolved_at=?,record_json=?,record_hash=? "
+                "WHERE conflict_id=?",
+                (now, encoded, stable_digest(payload), conflict_id),
+            )
+            closed += 1
+    return closed
 
 
 def load_snapshot(source: Optional[Path], *, stdin_text: Optional[str]) -> Mapping[str, Any]:
@@ -852,6 +950,13 @@ def build_tallanto_records(
         for row in class_rows
         if optional_text(first_value(row, ("id", "class_id", "most_class_id")))
     }
+    abonement_contacts: dict[str, Optional[str]] = {}
+    for row in abonement_rows:
+        abonement_id = clean_text(first_value(row, ("id", "abonement_id", "most_abonements_id")))
+        if abonement_id:
+            abonement_contacts[abonement_id] = clean_text(
+                first_value(row, ("contact_id", "student_id", "tallanto_id", "Contact_ID"))
+            )
     records: list[TimelineSourceRecord] = []
     stats = TallantoSnapshotStats(payment_rows=len(payment_rows), abonement_rows=len(abonement_rows), class_rows=len(class_rows))
     for module, rows in ((PAYMENT_MODULE, payment_rows), (ABONEMENT_MODULE, abonement_rows)):
@@ -861,6 +966,17 @@ def build_tallanto_records(
             if not record_id:
                 stats.skipped += 1
                 continue
+            if module == PAYMENT_MODULE:
+                abonement_id = clean_text(first_value(sanitized, ("most_abonements_id", "abonement_id")))
+                abonement_contact = abonement_contacts.get(abonement_id or "")
+                if abonement_contact:
+                    sanitized["_abonement_contact_id"] = abonement_contact
+                    if not clean_text(first_value(sanitized, ("contact_id", "student_id", "tallanto_id", "Contact_ID"))):
+                        sanitized["contact_id"] = abonement_contact
+                        sanitized["_contact_id_source"] = "abonement"
+                elif not clean_text(first_value(sanitized, ("contact_id", "student_id", "tallanto_id", "Contact_ID"))):
+                    sanitized["_contact_id_source"] = "unresolved_abonement" if abonement_id else "unresolved_owner"
+                    stats.unresolved_payment_owners += 1
             sanitized["_tallanto_module"] = module
             records.append(
                 TimelineSourceRecord(
@@ -886,14 +1002,17 @@ def extract_module_rows(snapshot: Mapping[str, Any], module: str, *, aliases: Se
                 rows.extend(extract_rows(mcp_responses[key], expected_module=module))
     if not rows and str(snapshot.get("module") or "") == module:
         rows.extend(extract_rows(snapshot, expected_module=module))
-    seen: set[str] = set()
+    seen: dict[str, Mapping[str, Any]] = {}
     unique: list[Mapping[str, Any]] = []
     for idx, row in enumerate(rows, start=1):
         key = str(first_value(row, ("id", "finance_id", "payment_id", "abonement_id", "most_abonements_id")) or idx)
+        sanitized = sanitize_source_row(row)
         if key in seen:
+            if sanitized != seen[key]:
+                raise ValueError(f"Tallanto {module} conflicting duplicate id: {key}")
             continue
-        seen.add(key)
-        unique.append(row)
+        seen[key] = sanitized
+        unique.append(sanitized)
     return tuple(unique)
 
 

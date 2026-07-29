@@ -133,6 +133,59 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(tmp_path: Path)
     assert json.loads(rows["fact"]["sources_json"])["money_source"] == "tallanto_payment"
 
 
+def test_purchase_refresh_replaces_stale_owner_after_payment_relink(tmp_path: Path) -> None:
+    db_path, _, _ = _fixture(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer-2",
+                identity_status=IdentityStatus.STRONG,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+
+    def write_payment(customer_id: str, match_status: str) -> None:
+        with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type=TimelineEventType.TALLANTO_PAYMENT,
+                    event_at=NOW,
+                    source_system="tallanto_crm_call",
+                    source_id="most_finances:relinked-payment",
+                    source_ref="tallanto:most_finances:relinked-payment",
+                    direction=TimelineDirection.SYSTEM,
+                    match_status=match_status,
+                    record={"amount": 1000, "payment_direction": "in"},
+                    created_at=NOW,
+                )
+            )
+
+    write_payment("customer-1", "strong_unique")
+    refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT customer_id,total_in FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchall() == [("customer-1", 1000.0)]
+
+    write_payment("customer-2", "ambiguous")
+    refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT customer_id,total_in FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchall() == []
+
+    write_payment("customer-2", "strong_unique")
+    refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT customer_id,total_in FROM customer_purchases_v1 WHERE money_kind='fact'"
+        ).fetchall() == [("customer-2", 1000.0)]
+
+
 def test_stage5_tallanto_balance_charge_does_not_become_refund_or_new_purchase(tmp_path: Path) -> None:
     db_path, _, _ = _fixture(tmp_path)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:

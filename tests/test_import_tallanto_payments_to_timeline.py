@@ -16,6 +16,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_contract
 from mango_mvp.customer_timeline.ingestion import timeline_ingestion_safety_contract
+from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
     fetch_tallanto_module_strict,
@@ -104,6 +105,181 @@ def test_apply_links_existing_tallanto_customer_is_idempotent_and_keeps_amounts_
     assert "safe short note" not in db_dump(timeline_db)
     assert "contact_notice" not in db_dump(timeline_db)
     assert "internal_notice" not in db_dump(timeline_db)
+
+
+def test_payment_without_contact_uses_unambiguous_abonement_contact(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    existing_customer_id = seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="existing-1",
+        tallanto_id="contact-1",
+    )
+    payment = {**payment_row()}
+    payment.pop("contact_id")
+    snapshot = {
+        "most_finances": [payment],
+        "most_abonements": [abonement_row()],
+    }
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        ),
+        stdin_text=json.dumps(snapshot, ensure_ascii=False),
+    )
+
+    payment_event = next(
+        item for item in fetch_all_json(timeline_db, "timeline_events") if item["event_type"] == "tallanto_payment"
+    )
+    assert report["validation_ok"] is True
+    assert payment_event["customer_id"] == existing_customer_id
+    assert payment_event["record"]["contact_id"] == "contact-1"
+    assert payment_event["record"]["contact_id_source"] == "abonement"
+
+
+def test_conflicting_direct_and_abonement_contacts_do_not_pick_first_customer(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    direct_customer = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="direct", tallanto_id="contact-direct"
+    )
+    abonement_customer = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="abonement", tallanto_id="contact-abonement", source_ref="seed-2"
+    )
+    payment = {**payment_row(), "contact_id": "contact-direct"}
+    abonement = {**abonement_row(), "contact_id": "contact-abonement"}
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        ),
+        stdin_text=json.dumps({"most_finances": [payment], "most_abonements": [abonement]}),
+    )
+
+    payment_event = next(
+        item for item in fetch_all_json(timeline_db, "timeline_events") if item["event_type"] == "tallanto_payment"
+    )
+    assert report["validation_ok"] is True
+    assert payment_event["match_status"] == "ambiguous"
+    assert payment_event["customer_id"] not in {direct_customer, abonement_customer}
+    assert payment_event["record"]["contact_id_conflict"] is True
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert conflict["metadata"]["alternate_contact_id"] == "contact-abonement"
+
+
+def test_conflicting_duplicate_abonement_rows_fail_instead_of_picking_input_order(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    first = {**abonement_row(), "contact_id": "contact-first"}
+    second = {**abonement_row(), "contact_id": "contact-second"}
+
+    with pytest.raises(ValueError, match="conflicting duplicate id"):
+        run_tallanto_payments_import(
+            TallantoPaymentsImportConfig(
+                source=None,
+                timeline_db=timeline_db,
+                allowed_root=tmp_path,
+                tenant_id="foton",
+                apply=True,
+            ),
+            stdin_text=json.dumps({"most_abonements": [first, second]}),
+        )
+
+
+def test_payment_with_missing_abonement_owner_is_reported_as_unresolved(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    payment = {**payment_row(), "most_abonements_id": "missing-abonement"}
+    payment.pop("contact_id")
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(
+            source=None,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        ),
+        stdin_text=json.dumps({"most_finances": [payment]}),
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
+    assert report["stats"]["unresolved_payment_owners"] == 1
+    assert event["match_status"] == "ambiguous"
+    assert event["record"]["contact_id_source"] == "unresolved_abonement"
+    assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
+    assert "tallanto_abonement_id:missing-abonement" in conflict["entity_refs"]
+    assert count_rows(timeline_db, "customer_purchases_v1") == 0
+
+
+def test_payment_without_any_identity_relation_is_reported_as_unresolved(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    payment = payment_row()
+    payment.pop("contact_id")
+    payment.pop("most_abonements_id")
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text=json.dumps({"most_finances": [payment]}),
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert report["stats"]["unresolved_payment_owners"] == 1
+    assert event["match_status"] == "ambiguous"
+    assert event["record"]["contact_id_source"] == "unresolved_owner"
+    assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
+
+
+def test_payment_arriving_before_card_relinks_after_identity_appears(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    payment = {**payment_row(), "most_abonements_id": "late-abonement"}
+    payment.pop("contact_id")
+    config = TallantoPaymentsImportConfig(
+        source=None,
+        timeline_db=timeline_db,
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        apply=True,
+    )
+    run_tallanto_payments_import(config, stdin_text=json.dumps({"most_finances": [payment]}))
+    actual_customer = seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="late-card",
+        tallanto_id="contact-late",
+        source_ref="late-card",
+    )
+    resolved_payload = {
+        "most_finances": [payment],
+        "most_abonements": [{**abonement_row(), "id": "late-abonement", "contact_id": "contact-late"}],
+    }
+
+    report = run_tallanto_payments_import(config, stdin_text=json.dumps(resolved_payload))
+    refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
+
+    payment_event = next(
+        item for item in fetch_all_json(timeline_db, "timeline_events") if item["event_type"] == "tallanto_payment"
+    )
+    open_unresolved = [
+        item
+        for item in fetch_all_json(timeline_db, "timeline_conflicts")
+        if item["conflict_type"] == "tallanto_payment_owner_unresolved" and item["status"] == "open"
+    ]
+    assert report["stats"]["unresolved_payment_owners"] == 0
+    assert report["links"]["resolved_payment_owner_conflicts"] == 1
+    assert payment_event["customer_id"] == actual_customer
+    assert payment_event["match_status"] == "strong_unique"
+    assert open_unresolved == []
+    assert count_rows(timeline_db, "customer_purchases_v1") == 1
 
 
 def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merge(tmp_path: Path) -> None:

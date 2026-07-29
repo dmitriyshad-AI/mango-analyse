@@ -247,8 +247,14 @@ def validate_nightly_config(path: Path | None = None) -> str:
         for index, step in enumerate(raw_steps)
         if isinstance(step, Mapping)
     }
-    if positions_by_name["tallanto_cards_sync"] >= positions_by_name["tallanto_attendance_api_incremental"]:
-        return "nightly config requires tallanto_cards_sync before tallanto_attendance_api_incremental"
+    tallanto_chain = (
+        positions_by_name["tallanto_cards_sync"],
+        positions_by_name["tallanto_money_api_incremental"],
+        positions_by_name["tallanto_attendance_api_incremental"],
+        positions_by_name["wappi_history_incremental"],
+    )
+    if tallanto_chain != tuple(sorted(tallanto_chain)):
+        return "nightly config requires Tallanto cards -> money -> attendance before Wappi"
     calls_config = steps["calls_and_amo_incremental"].get("config")
     if not isinstance(calls_config, Mapping):
         return "calls_and_amo_incremental has no config"

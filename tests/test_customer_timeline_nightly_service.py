@@ -855,6 +855,138 @@ def test_tallanto_money_failure_diagnostic_contains_no_raw_output(tmp_path: Path
     assert diagnostics_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# not called\n", encoding="utf-8")
+    money_called = False
+
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_cards_sync",
+        lambda config: {"validation_ok": False, "apply_blocked": True, "blocked_reason": "synthetic"},
+    )
+
+    def fail_if_money_runs(*args, **kwargs):
+        nonlocal money_called
+        money_called = True
+        raise AssertionError("money must not run after failed cards")
+
+    monkeypatch.setattr(nightly_service_module, "run_tallanto_money_api_step", fail_if_money_runs)
+    config_path = tmp_path / "nightly.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "tallanto_cards_sync",
+                        "kind": "tallanto_cards",
+                        "required": True,
+                        "config": {
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "out_root": str(tmp_path / "cards"),
+                            "tallanto_env_file": str(env_file),
+                        },
+                    },
+                    {
+                        "name": "tallanto_money_api_incremental",
+                        "kind": "tallanto_money_api",
+                        "required": True,
+                        "config": {
+                            "importer_script": str(importer),
+                            "tallanto_env_file": str(env_file),
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "apply": True,
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert money_called is False
+    assert report["steps"][1]["status"] == "failed"
+    assert report["steps"][1]["reason"] == "upstream_not_ok:tallanto_cards_sync"
+
+
+def test_nightly_service_refreshes_existing_purchase_view_after_tallanto_money(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    env_file = tmp_path / "tallanto.env"
+    env_file.write_text("CRM_TALLANTO_API_TOKEN=secret\n", encoding="utf-8")
+    importer = tmp_path / "repo/scripts/import_tallanto_payments_to_timeline.py"
+    importer.parent.mkdir(parents=True)
+    importer.write_text("# mocked\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_tallanto_money_api_step",
+        lambda *args, **kwargs: {
+            "validation_ok": True,
+            "summary": {"status": "completed", "records_loaded": 1},
+            "safety": {"write_tallanto": False, "write_product_timeline_db": True},
+        },
+    )
+
+    def fake_refresh(path, **kwargs):
+        captured["path"] = path
+        captured["kwargs"] = kwargs
+        return {"rows_upserted": 1, "money_kind": {"fact": 1}}
+
+    monkeypatch.setattr(nightly_service_module, "refresh_customer_purchases_v1", fake_refresh)
+    config_path = tmp_path / "nightly.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [
+                    {
+                        "name": "tallanto_money_api_incremental",
+                        "kind": "tallanto_money_api",
+                        "required": True,
+                        "config": {
+                            "importer_script": str(importer),
+                            "tallanto_env_file": str(env_file),
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "apply": True,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert captured["path"] == db_path
+    assert report["steps"][0]["status"] == "ok"
+    assert report["steps"][0]["summary"]["customer_purchases_v1"]["rows_upserted"] == 1
+
+
 @pytest.mark.parametrize(
     ("stdout", "failure_kind"),
     (

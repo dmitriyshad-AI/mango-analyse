@@ -150,10 +150,15 @@ def refresh_customer_purchases_v1(
         ensure_customer_purchases_v1_table(con)
         aggregates = _purchase_aggregates(con, tenant_id=tenant_id)
         rows = [_purchase_row(row) for row in aggregates.values()]
+        stale_fact_rows_deleted = con.execute(
+            "DELETE FROM customer_purchases_v1 WHERE tenant_id=? AND money_kind=?",
+            (tenant_id, PURCHASE_MONEY_KIND_FACT),
+        ).rowcount
         upsert_customer_purchase_rows(con, rows)
         con.commit()
         return {
             "rows_upserted": len(rows),
+            "stale_fact_rows_deleted": stale_fact_rows_deleted,
             "customers_with_money": sum(1 for row in rows if (row["total_in"] or 0) or (row["total_out"] or 0)),
             "total_in": round(sum(float(row["total_in"] or 0) for row in rows), 2),
             "total_out": round(sum(float(row["total_out"] or 0) for row in rows), 2),
@@ -296,7 +301,7 @@ def _purchase_aggregates(con: sqlite3.Connection, *, tenant_id: str) -> dict[tup
           AND superseded_by IS NULL
           AND (
             source_system = ?
-            OR (source_system = 'tallanto_crm_call' AND event_type = 'tallanto_payment')
+            OR (source_system = 'tallanto_crm_call' AND event_type = 'tallanto_payment' AND match_status = 'strong_unique')
           )
         """,
         (tenant_id, STAGE5_AMO_PRICE_SOURCE_SYSTEM),

@@ -152,6 +152,48 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             for customer_id, row in customers.items()
         }
         evidence_by_customer: dict[str, list[ChildEvidence]] = defaultdict(list)
+        has_new_child_evidence = False
+        persisted_groups = _load_persisted_family_groups(con, tenant_id=tenant_id) if preserve_child_graph else {}
+        tallanto_snapshot_customers: set[str] = set()
+        for row in con.execute(
+            "SELECT customer_id,source_ref,event_at,record_json FROM timeline_events "
+            "WHERE tenant_id=? AND source_system='tallanto_snapshot' "
+            "AND event_type='tallanto_student_snapshot' AND match_status='strong_unique' "
+            "AND superseded_by IS NULL AND customer_id IS NOT NULL",
+            (tenant_id,),
+        ):
+            payload = (_json_loads(row["record_json"]).get("record") or {}).get("payload") or {}
+            name = str(payload.get("display_name") or "").strip()
+            if not name or str(row["customer_id"]) not in contexts:
+                continue
+            customer_id = str(row["customer_id"])
+            tallanto_snapshot_customers.add(customer_id)
+            evidence_by_customer[customer_id].append(
+                ChildEvidence(
+                    source_system="tallanto_snapshot",
+                    source_ref=str(row["source_ref"] or ""),
+                    event_at=str(row["event_at"] or ""),
+                    name=name,
+                    grade=str(payload.get("student_type") or ""),
+                    subject=str(payload.get("subjects") or ""),
+                )
+            )
+            has_new_child_evidence = True
+        for customer_id, groups in persisted_groups.items():
+            if customer_id in tallanto_snapshot_customers:
+                continue
+            for group in groups:
+                evidence_by_customer[customer_id].append(
+                    ChildEvidence(
+                        source_system="persisted_family_graph",
+                        source_ref=f"family_graph:{group['child_key']}",
+                        event_at=generated_at,
+                        name=str(group["canonical_name"]),
+                        grade="; ".join(group["grades"]),
+                        subject="; ".join(group["subjects"]),
+                        brand=str(group["brand"]),
+                    )
+                )
         profile_report: Mapping[str, Any] = {"profiles_db": None, "fields_seen": 0, "mapped_fields": 0}
         if config.profiles_db:
             profile_report, profile_evidence, parent_keys = _load_profile_evidence(
@@ -162,6 +204,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             )
             for customer_id, items in profile_evidence.items():
                 evidence_by_customer[customer_id].extend(items)
+                has_new_child_evidence = has_new_child_evidence or bool(items)
             for customer_id, keys in parent_keys.items():
                 if customer_id in contexts:
                     ctx = contexts[customer_id]
@@ -179,6 +222,10 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
         mail_report, mail_evidence = _load_mail_fact_evidence(con, tenant_id=tenant_id, customer_ids=set(customers))
         for customer_id, items in mail_evidence.items():
             evidence_by_customer[customer_id].extend(items)
+            has_new_child_evidence = has_new_child_evidence or bool(items)
+
+        if preserve_child_graph and has_new_child_evidence:
+            preserve_child_graph = False
 
         member_rows = _build_family_member_rows(tenant_id, assignments, generated_at=generated_at)
         if preserve_child_graph:
@@ -826,7 +873,11 @@ def _build_family_rows(
         valid_groups = [group for group in groups.values() if not group.suspicious_reasons and group.canonical_name]
         identity_risks = _identity_risks(context)
         for group in sorted(groups.values(), key=lambda item: (item.canonical_name.casefold(), item.name_key)):
-            child_key = _child_key(customer_id, group.name_key)
+            tallanto_refs = sorted(
+                {item.source_ref for item in group.evidence if item.source_system == "tallanto_snapshot" and item.source_ref}
+            )
+            child_identity = f"tallanto:{tallanto_refs[0]}" if len(tallanto_refs) == 1 else group.name_key
+            child_key = _child_key(customer_id, child_identity)
             status, confidence, reason = _family_confidence(group, valid_groups=valid_groups, identity_risks=identity_risks)
             payload = {
                 "schema_version": FAMILY_GRAPH_SCHEMA_VERSION,
@@ -913,6 +964,8 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
         name_key = _name_key(item.name)
         if not name_key:
             continue
+        if item.source_system == "tallanto_snapshot" and item.source_ref:
+            name_key = f"{name_key}|{item.source_ref}"
         group = groups.setdefault(name_key, ChildGroup(name_key=name_key))
         group.names.add(item.name.strip())
         if item.grade.strip():
@@ -1044,7 +1097,15 @@ def _absorb_child_group(target: ChildGroup, source: ChildGroup) -> None:
 def _child_groups_have_matching_full_names(left: ChildGroup, right: ChildGroup) -> bool:
     if left.suspicious_reasons or right.suspicious_reasons:
         return False
+    if _distinct_tallanto_children(left, right):
+        return False
     return any(_full_child_names_match(left_name, right_name) for left_name in left.names for right_name in right.names)
+
+
+def _distinct_tallanto_children(left: ChildGroup, right: ChildGroup) -> bool:
+    left_refs = {item.source_ref for item in left.evidence if item.source_system == "tallanto_snapshot"}
+    right_refs = {item.source_ref for item in right.evidence if item.source_system == "tallanto_snapshot"}
+    return bool(left_refs and right_refs and left_refs.isdisjoint(right_refs))
 
 
 def _full_child_names_match(left: str, right: str) -> bool:
@@ -1124,6 +1185,8 @@ def _group_has_only_single_token_names(group: ChildGroup) -> bool:
 
 def _single_token_group_matches_multi_name(single: ChildGroup, multi: ChildGroup) -> bool:
     if single.suspicious_reasons or multi.suspicious_reasons:
+        return False
+    if _distinct_tallanto_children(single, multi):
         return False
     single_options = [_name_token_options(name)[0] for name in single.names if len(_name_token_options(name)) == 1]
     multi_options = [options for name in multi.names for options in _name_token_options(name)]
@@ -1252,7 +1315,8 @@ def _build_event_attributions(
         placeholders = ",".join("?" for _ in chunk)
         events = con.execute(
             f"""
-            SELECT event_id, tenant_id, customer_id, opportunity_id, event_type, subject, text_preview, summary, record_json
+            SELECT event_id, tenant_id, customer_id, opportunity_id, event_type, source_ref,
+                   match_status, subject, text_preview, summary, record_json
             FROM timeline_events
             WHERE tenant_id = ?
               AND customer_id IN ({placeholders})
@@ -1263,12 +1327,25 @@ def _build_event_attributions(
         ).fetchall()
         for event in events:
             customer_id = str(event["customer_id"])
-            attribution = _attribute_text(
-                groups_by_customer.get(customer_id, ()),
-                _event_text(event),
-                context=contexts[customer_id],
-                object_kind="event",
-                event_type=str(event["event_type"] or ""),
+            groups = groups_by_customer.get(customer_id, ())
+            exact_group = _exact_tallanto_child_group(event, groups)
+            attribution = (
+                {
+                    "child_customer_id": str(exact_group.get("customer_id") or customer_id),
+                    "child_key": str(exact_group.get("child_key") or ""),
+                    "status": "matched",
+                    "confidence": "high",
+                    "reason": "exact_tallanto_identity",
+                    "matched_names": [str(exact_group.get("canonical_name") or "")],
+                }
+                if exact_group
+                else _attribute_text(
+                    groups,
+                    _event_text(event),
+                    context=contexts[customer_id],
+                    object_kind="event",
+                    event_type=str(event["event_type"] or ""),
+                )
             )
             if not attribution:
                 continue
@@ -1283,6 +1360,23 @@ def _build_event_attributions(
             }
             rows.append(_attribution_row("event_child_attribution_v1", payload))
     return rows
+
+
+def _exact_tallanto_child_group(
+    event: sqlite3.Row,
+    groups: Sequence[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    usable = [group for group in groups if group.get("status") in {"confident", "needs_review"}]
+    event_type = str(event["event_type"] or "")
+    if event_type == "tallanto_student_snapshot":
+        matches = [group for group in usable if str(event["source_ref"] or "") in group.get("source_refs", ())]
+    elif event_type in {"tallanto_payment", "tallanto_abonement", "tallanto_attendance"} and str(
+        event["match_status"] or ""
+    ) == "strong_unique":
+        matches = [group for group in usable if str(group.get("customer_id") or "") == str(event["customer_id"])]
+    else:
+        matches = []
+    return matches[0] if len(matches) == 1 else None
 
 
 def _build_opportunity_attributions(

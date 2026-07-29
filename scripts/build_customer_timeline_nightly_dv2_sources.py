@@ -621,7 +621,8 @@ def build_service_config(
             },
         }
     )
-    steps.append(
+    steps.insert(
+        next(index for index, step in enumerate(steps) if step.get("name") == "wappi_history_incremental"),
         {
             "name": "tallanto_money_api_incremental",
             "kind": "tallanto_money_api",
@@ -637,7 +638,8 @@ def build_service_config(
             },
         }
     )
-    steps.append(
+    steps.insert(
+        next(index for index, step in enumerate(steps) if step.get("name") == "wappi_history_incremental"),
         {
             "name": "tallanto_attendance_api_incremental",
             "kind": "tallanto_attendance_api",
@@ -654,7 +656,7 @@ def build_service_config(
         }
     )
     steps.insert(
-        next(index for index, step in enumerate(steps) if step.get("name") == "tallanto_attendance_api_incremental"),
+        next(index for index, step in enumerate(steps) if step.get("name") == "tallanto_money_api_incremental"),
         {
             "name": "tallanto_cards_sync",
             "kind": "tallanto_cards",

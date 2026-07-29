@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     summarize_report,
 )
 from mango_mvp.customer_timeline.mail_link_enrich import MailLinkEnrichConfig, run_mail_link_enrich
+from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
 from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
 from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
 from mango_mvp.customer_timeline.tallanto_attendance_import import (
@@ -243,6 +244,29 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     }
                 )
                 continue
+            if step.kind in {"tallanto_money_api", "tallanto_attendance_api"} and any(
+                configured.kind == "tallanto_cards" and configured.enabled for configured in config.steps
+            ):
+                cards_status = next(
+                    (
+                        item.get("status")
+                        for item in reversed(report["steps"])
+                        if item.get("kind") == "tallanto_cards"
+                    ),
+                    None,
+                )
+                if cards_status != "ok":
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(
+                        failed_step_report(
+                            index=index,
+                            step=step,
+                            reason="upstream_not_ok:tallanto_cards_sync",
+                            duration_seconds=round(time.monotonic() - step_started, 3),
+                        )
+                    )
+                    continue
             if step.kind == "local_freshness_monitor":
                 try:
                     step_report = run_local_freshness_monitor(
@@ -485,6 +509,15 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         tenant_id=config.tenant_id,
                         step_timeout_seconds=config.step_timeout_seconds,
                     )
+                    if step_report.get("validation_ok"):
+                        step_report = {
+                            **step_report,
+                            "customer_purchases_v1": refresh_customer_purchases_v1(
+                                timeline_db,
+                                allowed_root=allowed_root,
+                                tenant_id=config.tenant_id,
+                            ),
+                        }
                 except Exception as exc:
                     if step.required:
                         failed_required_steps.append(step.name)
@@ -515,6 +548,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                             "status": step_report.get("summary", {}).get("status"),
                             "records_loaded": step_report.get("summary", {}).get("records_loaded"),
                             "api": step_report.get("api"),
+                            "customer_purchases_v1": step_report.get("customer_purchases_v1"),
                             "safety": step_report.get("safety"),
                         },
                         "duration_seconds": round(time.monotonic() - step_started, 3),

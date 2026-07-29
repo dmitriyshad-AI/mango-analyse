@@ -104,7 +104,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
     mail_identity_db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(mail_identity_db):
         pass
-    return {
+    payload = {
         "config_schema_version": module.EXPECTED_NIGHTLY_CONFIG_SCHEMA_VERSION,
         "required_manifest_sources": sorted(module.REQUIRED_MANIFEST_SOURCES),
         "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
@@ -224,6 +224,25 @@ def valid_nightly_payload(staging_root: Path) -> dict:
             },
         ],
     }
+    steps = payload["steps"]
+    tallanto_names = {
+        "tallanto_cards_sync",
+        "tallanto_money_api_incremental",
+        "tallanto_attendance_api_incremental",
+    }
+    tallanto = {step["name"]: step for step in steps if step["name"] in tallanto_names}
+    steps[:] = [step for step in steps if step["name"] not in tallanto_names]
+    wappi_index = next(index for index, step in enumerate(steps) if step["name"] == "wappi_history_incremental")
+    steps[wappi_index:wappi_index] = [
+        tallanto["tallanto_cards_sync"],
+        tallanto["tallanto_money_api_incremental"],
+        tallanto["tallanto_attendance_api_incremental"],
+    ]
+    return payload
+
+
+def config_step(payload: dict, name: str) -> dict:
+    return next(step for step in payload["steps"] if step["name"] == name)
 
 
 def test_mail_existing_state_is_tenant_scoped(tmp_path: Path) -> None:
@@ -423,6 +442,21 @@ def test_nightly_config_rejects_duplicate_or_reordered_mutating_chain(
     config.write_text(json.dumps(payload), encoding="utf-8")
 
     assert expected in module.validate_nightly_config(config)
+
+
+def test_nightly_config_rejects_tallanto_money_before_cards(tmp_path, monkeypatch) -> None:
+    staging_root = tmp_path / ".codex_local/staging"
+    monkeypatch.setattr(module, "STAGING_ROOT", staging_root)
+    monkeypatch.setattr(module, "STAGING_TIMELINE_DB", staging_root / "customer_timeline_staging.sqlite")
+    payload = valid_nightly_payload(staging_root)
+    steps = payload["steps"]
+    cards_index = next(index for index, step in enumerate(steps) if step["name"] == "tallanto_cards_sync")
+    money_index = next(index for index, step in enumerate(steps) if step["name"] == "tallanto_money_api_incremental")
+    steps[cards_index], steps[money_index] = steps[money_index], steps[cards_index]
+    config = tmp_path / "nightly.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert "cards -> money -> attendance" in module.validate_nightly_config(config)
 
 
 def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeypatch) -> None:
@@ -709,10 +743,10 @@ def test_nightly_config_v4_rejects_missing_runtime_contract_fields(tmp_path, mon
     config = tmp_path / "nightly.json"
 
     cases = (
-        ("AMO page budget", lambda payload: payload["steps"][2]["config"].update(max_pages=20), "100 pages"),
-        ("Wappi checkpoint", lambda payload: payload["steps"][3]["config"].pop("checkpoint_dir"), "checkpoint"),
-        ("Wappi strict nightly", lambda payload: payload["steps"][3]["config"].update(require_widget_linkage=True), "quarantine"),
-        ("mail identity", lambda payload: payload["steps"][5]["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
+        ("AMO page budget", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(max_pages=20), "100 pages"),
+        ("Wappi checkpoint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("checkpoint_dir"), "checkpoint"),
+        ("Wappi strict nightly", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(require_widget_linkage=True), "quarantine"),
+        ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
     )
     for _name, mutate, expected in cases:
         payload = json.loads(json.dumps(base))
@@ -825,9 +859,9 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     cards = steps["tallanto_cards_sync"]
     assert cards["kind"] == "tallanto_cards"
     assert cards["required"] is True
-    assert list(steps).index("tallanto_cards_sync") < list(steps).index(
-        "tallanto_attendance_api_incremental"
-    )
+    assert list(steps).index("tallanto_cards_sync") < list(steps).index("tallanto_money_api_incremental")
+    assert list(steps).index("tallanto_money_api_incremental") < list(steps).index("tallanto_attendance_api_incremental")
+    assert list(steps).index("tallanto_attendance_api_incremental") < list(steps).index("wappi_history_incremental")
     attendance_api = steps["tallanto_attendance_api_incremental"]
     assert attendance_api["kind"] == "tallanto_attendance_api"
     assert attendance_api["required"] is True

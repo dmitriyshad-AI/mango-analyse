@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -76,7 +77,10 @@ def build_universe(
     total_chats: int, *, messages_per_chat: int = 1, profile_id: str = "p-tg",
     channel: str = "telegram", body: str = "Здравствуйте",
 ) -> tuple[list[Mapping[str, Any]], dict[tuple[str, str, str], list[Mapping[str, Any]]]]:
-    chats = [{"id": f"c{index:04d}", "type": "user"} for index in range(total_chats)]
+    chats = [
+        {"id": f"c{index:04d}", "type": "user", "last_timestamp": 1_753_000_000 + messages_per_chat - 1}
+        for index in range(total_chats)
+    ]
     messages: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for chat in chats:
         chat_id = str(chat["id"])
@@ -207,7 +211,7 @@ def test_catalog_failure_on_page_13_resumes_from_that_page(tmp_path: Path) -> No
     assert wappi_row_count(db_path) == 130
     assert report_two["checkpoint"]["complete"] is True
     assert report_two["validation_ok"] is True
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
 
 
 def test_message_page_failure_resumes_inside_long_chat(tmp_path: Path) -> None:
@@ -238,7 +242,7 @@ def test_message_page_failure_resumes_inside_long_chat(tmp_path: Path) -> None:
     assert second.message_calls[0][2] == 0
     assert 10 in [offset for _profile, _chat, offset in second.message_calls]
     assert wappi_row_count(db_path) == 30
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
 
 
 def test_request_limit_pause_writes_and_next_run_continues(tmp_path: Path) -> None:
@@ -267,7 +271,7 @@ def test_request_limit_pause_writes_and_next_run_continues(tmp_path: Path) -> No
     assert report_two["checkpoint"]["complete"] is True
     assert report_two["validation_ok"] is True
     assert wappi_row_count(db_path) == 20
-    assert report_two["summary"]["duplicate_source_ids_before_import"] > 0
+    assert report_two["summary"]["duplicate_source_ids_before_import"] == 0
 
 
 def test_new_chat_between_runs_is_picked_up_without_refetching_confirmed(tmp_path: Path) -> None:
@@ -298,7 +302,7 @@ def test_new_chat_between_runs_is_picked_up_without_refetching_confirmed(tmp_pat
     already_done = {
         chat["id"] for chat in chats if wappi_checkpoint_token(str(chat["id"])) in set(confirmed_before)
     }
-    assert already_done and refetched & already_done  # final tail check prevents missing new messages
+    assert already_done and not refetched & already_done
     assert "c9999" in refetched
     assert wappi_row_count(db_path) == 21
 
@@ -316,6 +320,7 @@ def test_new_message_in_confirmed_chat_is_loaded_before_terminal_complete(tmp_pa
     messages[("telegram", "p-tg", chat_id)].append(
         {"id": f"{chat_id}-new", "chat_id": chat_id, "type": "text", "body": "Новое", "time": 1_753_000_999}
     )
+    confirmed_chat["last_timestamp"] = 1_753_000_999
 
     report = run_wappi_history_import(
         make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir),
@@ -411,20 +416,295 @@ def test_repeat_run_creates_no_duplicates(tmp_path: Path) -> None:
 
     run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
     first_rows = wappi_row_count(db_path)
-    report_two = run_wappi_history_import(
-        config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
-    )
+    second = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    report_two = run_wappi_history_import(config, client=second)
 
     assert first_rows == 12
     assert wappi_row_count(db_path) == 12
-    assert report_two["summary"]["duplicate_source_ids_before_import"] == 12
+    assert second.message_calls == []
+    assert report_two["validation_ok"] is True
+    assert "p-tg" not in report_two["summary"]["empty_profiles"]
+    assert report_two["profiles"]["p-tg"]["incremental_chats_skipped"] == 6
+
+
+def test_incremental_run_fetches_only_changed_chat(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(4)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+
+    changed = [dict(chat) for chat in chats]
+    changed[2]["last_timestamp"] = int(changed[2]["last_timestamp"]) + 1
+    messages[("telegram", "p-tg", "c0002")].append(
+        {"id": "c0002-m001", "chat_id": "c0002", "type": "text", "body": "Новое", "time": 1_753_000_001}
+    )
+    second = CheckpointFakeClient({"p-tg": changed, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=second)
+
+    assert {chat_id for _profile, chat_id, _offset in second.message_calls} == {"c0002"}
+    assert wappi_row_count(db_path) == 5
+    assert report["profiles"]["p-tg"]["incremental_chats_changed"] == 1
+    assert report["profiles"]["p-tg"]["incremental_chats_skipped"] == 3
+
+
+def test_failed_changed_chat_does_not_force_full_refetch(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(3, messages_per_chat=30)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+
+    changed = [dict(chat) for chat in chats]
+    changed[1]["last_timestamp"] = 1_753_000_030
+    messages[("telegram", "p-tg", "c0001")].append(
+        {"id": "c0001-m030", "chat_id": "c0001", "type": "text", "body": "Позднее", "time": 1_753_000_030}
+    )
+    failing = CheckpointFakeClient({"p-tg": changed, "p-max": []}, messages)
+    failing.fail_message_at = ("c0001", 10)
+    failed = run_wappi_history_import(config, client=failing)
+
+    state = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert failed["checkpoint"]["complete"] is False
+    assert state["incremental_cycle"] is True
+
+    finisher = CheckpointFakeClient({"p-tg": changed, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=finisher)
+
+    assert {chat_id for _profile, chat_id, _offset in finisher.message_calls} == {"c0001"}
+    assert report["checkpoint"]["complete"] is True
+    assert report["profiles"]["p-tg"]["incremental_chats_skipped"] == 2
+    assert wappi_row_count(db_path) == 91
+
+
+def test_long_changed_chat_eventually_completes_after_budget_stops(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1, messages_per_chat=50)
+    config = make_config(
+        tmp_path,
+        db_path=db_path,
+        phase1=phase1,
+        checkpoint_dir=checkpoint_dir,
+        request_limit_total=8,
+    )
+
+    reports = []
+    for _ in range(8):
+        reports.append(
+            run_wappi_history_import(
+                config,
+                client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages),
+            )
+        )
+        if reports[-1]["checkpoint"]["complete"]:
+            break
+
+    assert reports[-1]["checkpoint"]["complete"] is True
+    assert wappi_row_count(db_path) == 50
+    assert len(reports) < 8
+
+
+def test_periodic_full_audit_recovers_message_hidden_by_unchanged_marker(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+
+    messages[("telegram", "p-tg", "c0000")].append(
+        {"id": "c0000-late", "chat_id": "c0000", "type": "text", "body": "Позднее", "time": 1_753_000_000}
+    )
+    daily = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    daily_report = run_wappi_history_import(config, client=daily)
+    assert daily.message_calls == []
+    assert wappi_row_count(db_path) == 1
+    assert daily_report["history_validation"] == {
+        "mode": "incremental_catalog",
+        "catalog_incremental_passed": True,
+        "full_audit_completed_this_run": False,
+        "full_audit_fresh_for_all_profiles": True,
+        "full_audit_passed": True,
+        "full_audit_interval_days": 7,
+    }
+
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    old_audit_at = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    for profile_state in profiles.values():
+        profile_state["full_audit_at"] = old_audit_at
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": profiles}),
+        encoding="utf-8",
+    )
+    audit = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    audit_report = run_wappi_history_import(config, client=audit)
+
+    assert {chat_id for _profile, chat_id, _offset in audit.message_calls} == {"c0000"}
+    assert wappi_row_count(db_path) == 2
+    assert audit_report["history_validation"]["full_audit_passed"] is True
+
+
+def test_periodic_full_audit_resumes_and_reaches_last_chat_with_small_budget(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(20)
+    for index, chat in enumerate(chats):
+        if index % 2:
+            chat.pop("last_timestamp", None)
+        else:
+            chat["last_timestamp"] = 0
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+    messages[("telegram", "p-tg", "c0019")].append(
+        {"id": "c0019-late", "chat_id": "c0019", "type": "text", "body": "Позднее", "time": 1_753_000_000}
+    )
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    for state in profiles.values():
+        state["full_audit_at"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": profiles}),
+        encoding="utf-8",
+    )
+
+    seen_calls: list[str] = []
+    for _ in range(12):
+        client = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+        report = run_wappi_history_import(
+            make_config(
+                tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir,
+                request_limit_total=12,
+            ),
+            client=client,
+        )
+        seen_calls.extend(chat_id for _profile, chat_id, _offset in client.message_calls)
+        if report["checkpoint"]["complete"]:
+            break
+
+    assert report["checkpoint"]["complete"] is True
+    assert report["history_validation"]["full_audit_fresh_for_all_profiles"] is True
+    assert report["history_validation"]["full_audit_passed"] is True
+    assert wappi_row_count(db_path) == 21
+    assert "c0019" in seen_calls
+    assert {seen_calls.count(str(chat["id"])) for chat in chats} == {2}
+    state = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert state["full_audit_markers"] == {}
+    assert state["full_audit_started_at"] == ""
+
+    unchanged = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    daily = run_wappi_history_import(config, client=unchanged)
+    assert daily["history_validation"]["mode"] == "incremental_catalog"
+    assert {chat_id for _profile, chat_id, _offset in unchanged.message_calls} == {
+        str(chat["id"]) for chat in chats
+    }
+    assert daily["summary"]["incremental_chats_without_marker"] == 20
+
+
+def test_full_audit_network_failure_keeps_checked_chat_progress(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(10)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    for state in profiles.values():
+        state["full_audit_at"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": profiles}),
+        encoding="utf-8",
+    )
+    failed = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    failed.fail_message_at = ("c0005", 0)
+    run_wappi_history_import(config, client=failed)
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert len(saved["full_audit_markers"]) == 5
+
+    resumed = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=resumed)
+    resumed_chats = {chat_id for _profile, chat_id, _offset in resumed.message_calls}
+    assert not resumed_chats & {f"c{index:04d}" for index in range(5)}
+    assert report["checkpoint"]["complete"] is True
+
+
+def test_future_full_audit_timestamp_is_treated_as_clock_anomaly(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(1)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+    messages[("telegram", "p-tg", "c0000")].append(
+        {"id": "c0000-late", "chat_id": "c0000", "type": "text", "body": "Позднее", "time": 1_753_000_000}
+    )
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    profiles["wappi_telegram:p-tg"]["full_audit_at"] = "2099-01-01T00:00:00+00:00"
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": profiles}),
+        encoding="utf-8",
+    )
+
+    report = run_wappi_history_import(
+        config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    )
+
+    assert report["profiles"]["p-tg"]["full_audit_clock_anomaly"] is True
+    assert wappi_row_count(db_path) == 2
+
+
+def test_incremental_run_fetches_only_new_chat(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(3)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+
+    new_chat = {"id": "c9999", "type": "user", "last_timestamp": 1_753_000_900}
+    messages[("telegram", "p-tg", "c9999")] = [
+        {"id": "c9999-m000", "chat_id": "c9999", "type": "text", "body": "Новый чат", "time": 1_753_000_900}
+    ]
+    second = CheckpointFakeClient({"p-tg": [*chats, new_chat], "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=second)
+
+    assert {chat_id for _profile, chat_id, _offset in second.message_calls} == {"c9999"}
+    assert wappi_row_count(db_path) == 4
+    assert report["profiles"]["p-tg"]["incremental_chats_new"] == 1
+    assert report["profiles"]["p-tg"]["incremental_chats_skipped"] == 3
+
+
+def test_regressed_catalog_marker_is_refetched_and_reported(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(2)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+    regressed = [dict(chat) for chat in chats]
+    regressed[0]["last_timestamp"] = int(regressed[0]["last_timestamp"]) - 1
+    second = CheckpointFakeClient({"p-tg": regressed, "p-max": []}, messages)
+
+    report = run_wappi_history_import(config, client=second)
+
+    assert {chat_id for _profile, chat_id, _offset in second.message_calls} == {"c0000"}
+    assert report["profiles"]["p-tg"]["incremental_chats_marker_regressed"] == 1
+
+
+def test_complete_legacy_checkpoint_without_markers_refetches_once(tmp_path: Path) -> None:
+    db_path, phase1, checkpoint_dir = prepare(tmp_path)
+    chats, messages = build_universe(3)
+    config = make_config(tmp_path, db_path=db_path, phase1=phase1, checkpoint_dir=checkpoint_dir)
+    run_wappi_history_import(config, client=CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages))
+    checkpoint = dict(read_checkpoint(checkpoint_dir))
+    profiles = {key: dict(value) for key, value in checkpoint["profiles"].items()}
+    profiles["wappi_telegram:p-tg"].pop("chat_markers", None)
+    save_payload = {"schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION, "profiles": profiles}
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(json.dumps(save_payload), encoding="utf-8")
+
+    second = CheckpointFakeClient({"p-tg": chats, "p-max": []}, messages)
+    report = run_wappi_history_import(config, client=second)
+
+    assert {chat_id for _profile, chat_id, _offset in second.message_calls} == {"c0000", "c0001", "c0002"}
+    assert report["profiles"]["p-tg"]["incremental_chats_without_marker"] == 3
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert len(saved["chat_markers"]) == 3
 
 
 def test_telegram_and_max_profiles_do_not_share_checkpoint(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     tg_chats, tg_messages = build_universe(20, profile_id="p-tg", channel="telegram")
     max_chats, max_messages = build_universe(4, profile_id="p-max", channel="max")
-    max_chats = [{"id": str(chat["id"]), "type": "DIALOG"} for chat in max_chats]
+    max_chats = [{**dict(chat), "id": str(chat["id"]), "type": "DIALOG"} for chat in max_chats]
     client = CheckpointFakeClient({"p-tg": tg_chats, "p-max": max_chats}, {**tg_messages, **max_messages})
 
     run_wappi_history_import(
@@ -492,6 +772,18 @@ def test_corrupted_entry_types_are_ignored_not_crashed(tmp_path: Path) -> None:
                         "active_chat": {"chat": "digest", "message_offset": "не число", "page_anchor": "x"},
                     },
                     "wappi_max:p-max": {"fingerprint": "y", "chats_done": ["ok"], "catalog_next_offset": "мусор"},
+                    "broken-list": {"chats_done": [], "full_audit_markers": ["broken"]},
+                    "broken-string": {"chats_done": [], "full_audit_markers": "broken"},
+                    "broken-null": {"chats_done": [], "full_audit_markers": None},
+                    "broken-values": {"chats_done": [], "full_audit_markers": {"x": "broken"}},
+                    "broken-complete": {"chats_done": [], "complete": 1},
+                    "broken-cycle": {"chats_done": [], "incremental_cycle": "true"},
+                    "broken-infinity": {"chats_done": [], "chat_markers": {"x": float("inf")}},
+                    "broken-negative-infinity": {"chats_done": [], "chat_markers": {"x": float("-inf")}},
+                    "broken-nan": {"chats_done": [], "chat_markers": {"x": float("nan")}},
+                    "broken-bool-true": {"chats_done": [], "chat_markers": {"x": True}},
+                    "broken-bool-false": {"chats_done": [], "chat_markers": {"x": False}},
+                    "broken-float": {"chats_done": [], "chat_markers": {"x": 1.5}},
                 },
             },
             ensure_ascii=False,
@@ -508,6 +800,27 @@ def test_corrupted_entry_types_are_ignored_not_crashed(tmp_path: Path) -> None:
 
     assert report["checkpoint"]["complete"] is True
     assert wappi_row_count(db_path) == 4
+
+
+def test_checkpoint_integer_string_marker_remains_compatible(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    wappi_history_checkpoint_path(checkpoint_dir).write_text(
+        json.dumps({
+            "schema_version": WAPPI_HISTORY_CHECKPOINT_SCHEMA_VERSION,
+            "profiles": {
+                "wappi_telegram:p-tg": {
+                    "chats_done": [], "chat_markers": {"digest": "1753000000"},
+                    "full_audit_markers": {"digest": "0"}, "active_chat": None,
+                    "timeline_rows": 0, "catalog_next_offset": 0,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    state = load_wappi_history_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert state["chat_markers"]["digest"] == "1753000000"
 
 
 def test_checkpoint_with_truncated_utf8_is_ignored(tmp_path: Path) -> None:
@@ -601,7 +914,7 @@ def test_checkpoint_file_contains_no_personal_data(tmp_path: Path) -> None:
     assert wappi_history_checkpoint_path(checkpoint_dir).stat().st_mode & 0o077 == 0
 
 
-def test_terminal_complete_clears_partial_state(tmp_path: Path) -> None:
+def test_terminal_complete_keeps_incremental_state(tmp_path: Path) -> None:
     db_path, phase1, checkpoint_dir = prepare(tmp_path)
     chats, messages = build_universe(20)
     run_wappi_history_import(
@@ -618,7 +931,10 @@ def test_terminal_complete_clears_partial_state(tmp_path: Path) -> None:
     assert report["checkpoint"]["complete"] is True
     assert report["checkpoint"]["profiles"]["wappi_telegram:p-tg"]["stop_reason"] == "source_exhausted"
     assert report["validation_ok"] is True
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
+    saved = read_checkpoint(checkpoint_dir)["profiles"]["wappi_telegram:p-tg"]
+    assert saved["complete"] is True
+    assert len(saved["chat_markers"]) == 20
 
 
 def test_checkpoint_disabled_keeps_current_fail_closed_behaviour(tmp_path: Path) -> None:
@@ -725,7 +1041,7 @@ def test_anchor_probe_that_eats_the_last_request_never_confirms_the_chat(tmp_pat
         client=finisher,
     )
     assert wappi_row_count(db_path) == 30
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
 
 
 def test_sibling_profile_growth_cannot_mask_another_profiles_lost_rows(tmp_path: Path) -> None:
@@ -922,7 +1238,7 @@ def test_starved_budget_accumulates_history_then_larger_final_pass_confirms_it(t
 
     assert report["checkpoint"]["complete"] is True
     assert report["validation_ok"] is True
-    assert not wappi_history_checkpoint_path(checkpoint_dir).exists()
+    assert wappi_history_checkpoint_path(checkpoint_dir).exists()
 
 
 def test_confirmed_catalog_page_drift_is_reported_honestly(tmp_path: Path) -> None:

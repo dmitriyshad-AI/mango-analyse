@@ -735,43 +735,100 @@ def test_mail_link_enrich_reads_stage2_archive_db_without_legacy_payload(tmp_pat
     assert payload["record"]["payload"]["contact_email_hash"]
 
 
-def test_mail_link_enrich_reconsiders_old_pending_after_identity_refresh(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("link_type", "link_value", "email", "text"),
+    (
+        ("email", "new-parent@example.com", "new-parent@example.com", "Здравствуйте, интересует обучение."),
+        ("phone", "+79161234567", "unlinked@example.com", "Здравствуйте.\n\nС уважением,\n+7 916 123-45-67"),
+    ),
+)
+def test_mail_link_enrich_reconsiders_old_pending_after_tallanto_identity_refresh(
+    tmp_path: Path,
+    link_type: str,
+    link_value: str,
+    email: str,
+    text: str,
+) -> None:
     db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
     db_path.parent.mkdir(parents=True)
-    _seed_customer_with_links(db_path, tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:tallanto",
+                identity_status=IdentityStatus.STRONG,
+                display_name="Tallanto Parent",
+            )
+        )
     sha = "f" * 64
     source_file, _ = _write_archive(
         tmp_path,
         sha=sha,
-        email="unlinked@example.com",
-        text="Здравствуйте.\n\nС уважением,\n+7 916 123-45-67",
+        email=email,
+        text=text,
     )
     _seed_pending_event(db_path, tmp_path, sha=sha, source_file=source_file, subject="Фотон")
-    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
-    with sqlite3.connect(db_path) as con:
-        row = con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()
-        payload = json.loads(row[0])
-        payload["metadata"]["pending_reason"] = "no_strong_identity_match"
-        con.execute(
-            "UPDATE timeline_events SET record_json=? WHERE source_id=?",
-            (json.dumps(payload, ensure_ascii=False, sort_keys=True), sha),
+    initial = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "initial",
+            apply=True,
+        )
+    )
+    assert initial["counts"]["planned.unmatched"] == 1
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:tallanto",
+                link_type=link_type,
+                link_value=link_value,
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:student:new",
+                match_class="strong_unique",
+                confidence=1.0,
+            )
         )
 
-    default_report = run_mail_link_enrich(
-        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "default")
+    not_reconsidered = run_mail_link_enrich(
+        MailLinkEnrichConfig(timeline_db=db_path, allowed_root=tmp_path, out_dir=tmp_path / "not_reconsidered")
     )
     reconsidered = run_mail_link_enrich(
         MailLinkEnrichConfig(
             timeline_db=db_path,
             allowed_root=tmp_path,
             out_dir=tmp_path / "reconsidered",
+            apply=True,
+            reconsider_pending=True,
+        )
+    )
+    rerun = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "rerun",
+            apply=True,
             reconsider_pending=True,
         )
     )
 
-    assert default_report["target_events"] == 0
+    assert not_reconsidered["target_events"] == 0
     assert reconsidered["target_events"] == 1
     assert reconsidered["counts"]["planned.strong"] == 1
+    assert rerun["target_events"] == 0
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
+        event = con.execute(
+            "SELECT customer_id, match_status FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()
+        event_count = con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE source_id=?",
+            (sha,),
+        ).fetchone()[0]
+    assert event == ("customer:tallanto", "strong_unique")
+    assert event_count == 1
 
 
 def test_mail_link_enrich_reconsider_pending_does_not_select_existing_strong(tmp_path: Path) -> None:

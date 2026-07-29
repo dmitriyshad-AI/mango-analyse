@@ -194,10 +194,10 @@ def validate_nightly_config(path: Path | None = None) -> str:
     if not path_is_within(checkpoint_dir, STAGING_ROOT):
         return "wappi_history_incremental checkpoint is outside persistent staging root"
     mail_config = steps["mail_link_enrich"].get("config")
-    identity_dbs = (
-        tuple(Path(str(item)).expanduser().resolve(strict=False) for item in mail_config.get("tallanto_identity_dbs", ()))
-        if isinstance(mail_config, Mapping)
-        else ()
+    if not isinstance(mail_config, Mapping) or mail_config.get("reconsider_pending") is not True:
+        return "mail_link_enrich must reconsider pending after Tallanto refresh"
+    identity_dbs = tuple(
+        Path(str(item)).expanduser().resolve(strict=False) for item in mail_config.get("tallanto_identity_dbs", ())
     )
     if not identity_dbs or any(not item.is_file() for item in identity_dbs):
         return "mail_link_enrich requires existing Tallanto identity DBs"
@@ -244,6 +244,8 @@ def validate_nightly_config(path: Path | None = None) -> str:
     )
     if tallanto_chain != tuple(sorted(tallanto_chain)):
         return "nightly config requires Tallanto cards -> money -> attendance before Wappi"
+    if positions_by_name["mail_link_enrich"] < positions_by_name["tallanto_cards_sync"]:
+        return "nightly config requires Tallanto cards before mail pending reconsider"
     calls_config = steps["calls_and_amo_incremental"].get("config")
     if not isinstance(calls_config, Mapping):
         return "calls_and_amo_incremental has no config"

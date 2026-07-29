@@ -165,7 +165,10 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 "name": "mail_link_enrich",
                 "enabled": True,
                 "required": True,
-                "config": {"tallanto_identity_dbs": [str(mail_identity_db)]},
+                "config": {
+                    "reconsider_pending": True,
+                    "tallanto_identity_dbs": [str(mail_identity_db)],
+                },
             },
             {
                 "name": "tallanto_money_api_incremental",
@@ -244,6 +247,13 @@ def valid_nightly_payload(staging_root: Path) -> dict:
 
 def config_step(payload: dict, name: str) -> dict:
     return next(step for step in payload["steps"] if step["name"] == name)
+
+
+def move_config_step_before(payload: dict, name: str, before: str) -> None:
+    steps = payload["steps"]
+    moved = next(step for step in steps if step["name"] == name)
+    steps.remove(moved)
+    steps.insert(next(index for index, step in enumerate(steps) if step["name"] == before), moved)
 
 
 def test_mail_existing_state_is_tenant_scoped(tmp_path: Path) -> None:
@@ -733,7 +743,7 @@ def _write_ready_package_db(path: Path) -> None:
         con.commit()
 
 
-def test_nightly_config_v5_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
+def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, monkeypatch) -> None:
     staging_root = tmp_path / ".codex_local/staging"
     ready_package_db = tmp_path / "drop/mango_calls_ready.sqlite"
     _write_ready_package_db(ready_package_db)
@@ -747,6 +757,8 @@ def test_nightly_config_v5_rejects_missing_runtime_contract_fields(tmp_path, mon
         ("AMO page budget", lambda payload: config_step(payload, "amo_incremental_shadow")["config"].update(max_pages=20), "100 pages"),
         ("Wappi checkpoint", lambda payload: config_step(payload, "wappi_history_incremental")["config"].pop("checkpoint_dir"), "checkpoint"),
         ("Wappi strict nightly", lambda payload: config_step(payload, "wappi_history_incremental")["config"].update(require_widget_linkage=True), "quarantine"),
+        ("mail pending reconsider", lambda payload: config_step(payload, "mail_link_enrich")["config"].pop("reconsider_pending"), "reconsider pending"),
+        ("mail before Tallanto", lambda payload: move_config_step_before(payload, "mail_link_enrich", "tallanto_cards_sync"), "cards before mail"),
         ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
         ("Tallanto cards page budget", lambda payload: config_step(payload, "tallanto_cards_sync")["config"].update(max_pages=20), "500 pages"),
     )
@@ -879,6 +891,8 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert "tallanto_money_incremental" not in steps
     mail_link_enrich = steps["mail_link_enrich"]
     assert mail_link_enrich["required"] is True
+    assert list(steps).index("tallanto_cards_sync") < list(steps).index("mail_link_enrich")
+    assert mail_link_enrich["config"]["reconsider_pending"] is True
     assert mail_link_enrich["config"]["tallanto_identity_dbs"] == [
         str(mail_data_root / CANONICAL_MAIL_IDENTITY_DB)
     ]

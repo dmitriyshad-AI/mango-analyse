@@ -77,7 +77,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v5"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v6"
 DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
@@ -246,7 +246,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     }
                 )
                 continue
-            if step.kind in {"tallanto_money_api", "tallanto_attendance_api"} and any(
+            if step.kind in {"tallanto_money_api", "tallanto_attendance_api", "mail_link_enrich"} and any(
                 configured.kind == "tallanto_cards" and configured.enabled for configured in config.steps
             ):
                 cards_status = next(
@@ -1015,6 +1015,7 @@ def service_step_from_json(
             tenant_id=str(raw_config.get("tenant_id") or tenant_id),
             apply=bool(raw_config.get("apply", True)),
             max_events=int(raw_config["max_events"]) if raw_config.get("max_events") is not None else None,
+            reconsider_pending=bool(raw_config.get("reconsider_pending", False)),
             tallanto_identity_dbs=tuple(Path(str(path)) for path in raw_config.get("tallanto_identity_dbs", ())),
         )
     elif kind == "mango_processed_sweep":

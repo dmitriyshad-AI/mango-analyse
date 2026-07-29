@@ -248,7 +248,7 @@ def test_full_nightly_config_rejects_stale_schema_before_opening_db(tmp_path: Pa
     config_path.write_text(
         json.dumps(
             {
-                "config_schema_version": "customer_timeline_nightly_service_config_v4",
+                "config_schema_version": "customer_timeline_nightly_service_config_v5",
                 "timeline_db": str(tmp_path / "missing.sqlite"),
                 "out_root": str(tmp_path / "runs"),
                 "publish_dir": str(tmp_path / "published"),
@@ -474,6 +474,7 @@ def test_nightly_service_runs_optional_mail_link_enrich_and_publishes_metrics(tm
                     "allowed_root": str(tmp_path),
                     "out_dir": str(tmp_path / "mail_link_enrich"),
                     "apply": True,
+                    "reconsider_pending": True,
                 },
             }
         ],
@@ -481,7 +482,10 @@ def test_nightly_service_runs_optional_mail_link_enrich_and_publishes_metrics(tm
     config_path = tmp_path / "mail_link_service_config.json"
     config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    report = run_nightly_service(service_config_from_json(config_path))
+    config = service_config_from_json(config_path)
+    assert config.steps[0].mail_link_config.reconsider_pending is True
+
+    report = run_nightly_service(config)
 
     assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
@@ -944,7 +948,7 @@ def test_tallanto_money_failure_diagnostic_contains_no_raw_output(tmp_path: Path
     assert diagnostics_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
+def test_nightly_service_blocks_tallanto_dependents_when_cards_step_is_not_ok(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
@@ -956,6 +960,7 @@ def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
     importer.parent.mkdir(parents=True)
     importer.write_text("# not called\n", encoding="utf-8")
     money_called = False
+    mail_called = False
 
     monkeypatch.setattr(
         nightly_service_module,
@@ -969,6 +974,13 @@ def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
         raise AssertionError("money must not run after failed cards")
 
     monkeypatch.setattr(nightly_service_module, "run_tallanto_money_api_step", fail_if_money_runs)
+
+    def fail_if_mail_runs(*args, **kwargs):
+        nonlocal mail_called
+        mail_called = True
+        raise AssertionError("mail relink must not run after failed cards")
+
+    monkeypatch.setattr(nightly_service_module, "run_mail_link_enrich", fail_if_mail_runs)
     config_path = tmp_path / "nightly.json"
     config_path.write_text(
         json.dumps(
@@ -1001,6 +1013,18 @@ def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
                             "apply": True,
                         },
                     },
+                    {
+                        "name": "mail_link_enrich",
+                        "kind": "mail_link_enrich",
+                        "required": True,
+                        "config": {
+                            "timeline_db": str(db_path),
+                            "allowed_root": str(tmp_path),
+                            "out_dir": str(tmp_path / "mail"),
+                            "apply": True,
+                            "reconsider_pending": True,
+                        },
+                    },
                 ],
             }
         ),
@@ -1010,8 +1034,11 @@ def test_nightly_service_blocks_tallanto_money_when_cards_step_is_not_ok(
     report = run_nightly_service(service_config_from_json(config_path))
 
     assert money_called is False
+    assert mail_called is False
     assert report["steps"][1]["status"] == "failed"
     assert report["steps"][1]["reason"] == "upstream_not_ok:tallanto_cards_sync"
+    assert report["steps"][2]["status"] == "failed"
+    assert report["steps"][2]["reason"] == "upstream_not_ok:tallanto_cards_sync"
 
 
 def test_nightly_service_refreshes_existing_purchase_view_after_tallanto_money(

@@ -618,6 +618,7 @@ def build_service_config(
                 "out_dir": str(out_root / "mail_link_enrich"),
                 "tenant_id": "foton",
                 "apply": True,
+                "reconsider_pending": True,
                 "tallanto_identity_dbs": [str(path) for path in tallanto_identity_dbs],
             },
         }

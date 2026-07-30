@@ -31,7 +31,10 @@ from mango_mvp.customer_timeline.safety import (
 from mango_mvp.productization.capture_staging import (
     CaptureManifestStore,
     ManifestEntry,
-    manifest_audio_exists,
+    entry_recording_ids,
+    event_recording_ids,
+    manifest_assets_exist,
+    merge_recording_ids,
     stage_capture_events,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
@@ -727,13 +730,15 @@ def capture_mango_window(
     tenant = TenantRef(config.tenant_id)
     rows: list[Mapping[str, Any]] = []
     manifest_store = CaptureManifestStore(config.capture_manifest)
-    pending_entries = [entry for entry in manifest_store.latest_by_event_key().values() if entry.status == "skipped_no_recording"]
+    latest_manifest = manifest_store.latest_by_event_key()
+    pending_entries = [entry for entry in latest_manifest.values() if entry.status == "skipped_no_recording"]
     pending_keys = {entry.event_key for entry in pending_entries}
     threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    recent_entries = [entry for entry in latest_manifest.values() if parse_datetime(entry.started_at) >= threshold]
     expired_keys = {entry.event_key for entry in pending_entries if parse_datetime(entry.created_at) < threshold}
     overlap = timedelta(minutes=config.poll_overlap_minutes)
     poll_windows = [(since, until)]
-    for entry in pending_entries:
+    for entry in {entry.event_key: entry for entry in (*pending_entries, *recent_entries)}.values():
         started = parse_datetime(entry.started_at)
         ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
         poll_windows.append((started - overlap, ended + overlap))
@@ -754,9 +759,13 @@ def capture_mango_window(
     unique_events: dict[str, Any] = {}
     for row in rows:
         event = mapper.from_payload(tenant=tenant, payload=row)
+        prior = unique_events.get(event.event_key)
+        if prior is not None:
+            refs = merge_recording_ids(event_recording_ids(prior), event_recording_ids(event))
+            event = replace(event, recording_ref=refs[0] if refs else None, recording_refs=refs)
         unique_events[event.event_key] = event
     recovery_events = missing_capture_recovery_events(config)
-    recovery_keys = {event.event_key for event in recovery_events} | pending_keys
+    recovery_keys = set(latest_manifest) | {event.event_key for event in recovery_events} | pending_keys
     for event in recovery_events:
         unique_events.setdefault(event.event_key, event)
     mapped_events = sorted(unique_events.values(), key=lambda event: (event.started_at, event.provider_call_id))
@@ -764,7 +773,7 @@ def capture_mango_window(
     external_known_keys = {
         event.event_key
         for event in mapped_events
-        if event.event_key not in recovery_keys
+        if event.event_key not in recovery_keys and len(event_recording_ids(event)) < 2
         and (
             (event.recording_ref and event.recording_ref in known_recordings)
             or event.provider_call_id in known_calls
@@ -791,7 +800,8 @@ def capture_mango_window(
             manifest_store.append(replace(entry, created_at=until.isoformat(), status="recording_retry_expired", error="recording_missing_after_retry_ttl"))
             pending_expired += 1
     remaining_pending = {key for key, entry in manifest_store.latest_by_event_key().items() if entry.status == "skipped_no_recording"}
-    complete = summary.failed == 0 and summary.skipped_no_recording == 0 and not remaining_pending and pending_expired == 0
+    open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in manifest_store.latest_by_event_key().values())
+    complete = summary.failed == 0 and summary.skipped_no_recording == 0 and not remaining_pending and pending_expired == 0 and open_multi_review == 0
     status = "ok" if complete else "partial"
     return {
         "status": status,
@@ -801,6 +811,7 @@ def capture_mango_window(
         "api_events_already_known_external": len(external_known_keys),
         "pending_recording_retries": len(remaining_pending),
         "pending_recording_expired": pending_expired,
+        "open_multiple_recordings_needs_review": open_multi_review,
         "api_events_without_recording": sum(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
@@ -812,9 +823,9 @@ def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[Te
     store = CaptureManifestStore(config.capture_manifest)
     recovered: list[TelephonyCallEvent] = []
     for entry in store.latest_by_event_key().values() if config.capture_manifest.exists() else ():
-        if entry.status not in {"downloaded", "failed"} or not entry.recording_id or not entry.local_audio_path:
+        if entry.status not in {"downloaded", "failed", "multiple_recordings_needs_review"} or not entry_recording_ids(entry):
             continue
-        if entry.status == "downloaded" and manifest_audio_exists(entry):
+        if entry.status != "failed" and manifest_assets_exist(entry):
             continue
         recovered.append(capture_event_from_manifest(entry))
     return tuple(recovered)
@@ -835,6 +846,7 @@ def capture_event_from_manifest(entry: ManifestEntry) -> TelephonyCallEvent:
         client_phone=entry.client_phone,
         manager_ref=entry.manager_ref,
         recording_ref=entry.recording_id,
+        recording_refs=entry.recording_ids,
         raw_payload={},
     )
 
@@ -844,9 +856,13 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
+    stable_before = datetime.now(timezone.utc) - timedelta(hours=max(1, config.pending_recording_retry_hours))
     latest = CaptureManifestStore(config.capture_manifest).latest_by_event_key() if config.capture_manifest.exists() else {}
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
+            continue
+        if parse_datetime(entry.started_at) > stable_before:
+            skipped["recording_set_stabilizing"] = skipped.get("recording_set_stabilizing", 0) + 1
             continue
         source = Path(entry.local_audio_path)
         # A manifest row promised audio that is gone or empty: count it, so a

@@ -7,7 +7,7 @@ import subprocess
 import sqlite3
 import sys
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -457,6 +457,7 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
                 "event_key": "event:1",
                 "provider_call_id": "call-1",
                 "recording_id": "recording-1",
+                "recording_ids": ["recording-1"],
                 "started_at": "2026-07-09T00:00:00+00:00",
                 "direction": "inbound",
                 "status": "downloaded",
@@ -474,6 +475,115 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
 
     assert first["audio_files"] == second["audio_files"] == 1
     assert second["link_actions"] == {"exists_same_hash": 1}
+
+
+def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    source = config.recordings_dir / "recent.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at=started.isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:recent",
+            provider_call_id="recent",
+            recording_id="rec-1",
+            recording_ids=("rec-1",),
+            started_at=started.isoformat(),
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 0
+    assert result["skipped"] == {"recording_set_stabilizing": 1}
+
+
+def test_existing_manifest_event_is_not_hidden_by_external_known_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=1)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    audio = config.recordings_dir / "existing.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"existing")
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:call-multi",
+            provider_call_id="call-multi",
+            recording_id="rec-1",
+            recording_ids=("rec-1",),
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at="2026-07-09T10:10:00+00:00",
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(audio),
+        )
+    )
+    captured: list[TelephonyCallEvent] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            base = {"id": "call-multi", "started_at": "2026-07-09T10:00:00+00:00", "ended_at": "2026-07-09T10:10:00+00:00"}
+            return [{**base, "records": ["rec-1", "rec-2"]}, {**base, "records": ["rec-1"]}]
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+        needs_review_multiple_recordings = 1
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0, "needs_review_multiple_recordings": 1}
+
+    def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
+        captured.extend(events)
+        store = CaptureManifestStore(config.capture_manifest)
+        current = store.latest_by_event_key()["foton:mango:call-multi"]
+        store.append(replace(current, status="multiple_recordings_needs_review", recording_ids=("rec-1", "rec-2"), recording_paths=(str(audio), str(audio))))
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.read_known_processed_ids",
+        lambda *_args: (set(), {"call-multi"}),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 11, tzinfo=timezone.utc),
+    )
+
+    assert [event.recording_refs for event in captured] == [("rec-1", "rec-2")]
+    assert report["api_events_already_known_external"] == 0
+    assert report["status"] == "partial"
+    assert report["open_multiple_recordings_needs_review"] == 1
 
 
 def test_known_processed_ids_only_accept_successful_downloads(tmp_path: Path) -> None:

@@ -40,6 +40,7 @@ class MangoOfficePayloadMapper:
         if direction == Direction.UNKNOWN:
             direction = _infer_direction(payload)
 
+        recording_refs = _extract_recording_refs(payload, self.aliases)
         return TelephonyCallEvent(
             tenant=tenant,
             provider=self.provider,
@@ -49,7 +50,7 @@ class MangoOfficePayloadMapper:
             direction=direction,
             client_phone=_extract_client_phone(payload, direction, self.aliases),
             manager_ref=_extract_manager_ref(payload, direction, self.aliases),
-            recording_ref=_extract_recording_ref(payload, self.aliases),
+            recording_refs=recording_refs,
             recording_url=_optional_str(_first_present(payload, self.aliases.recording_url)),
             raw_payload=payload,
         )
@@ -106,31 +107,32 @@ def _extract_manager_ref(
     return _optional_str(payload.get("from_extension") or payload.get("to_extension"))
 
 
-def _extract_recording_ref(
+def _extract_recording_refs(
     payload: Mapping[str, Any],
     aliases: MangoOfficeFieldAliases,
-) -> Optional[str]:
+) -> tuple[str, ...]:
     value = _first_present(payload, aliases.recording_ref)
-    if isinstance(value, list):
-        if not value:
-            return None
-        return _optional_str(value[0])
+    return _parse_recording_refs(value)
+
+
+def _parse_recording_refs(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
     if isinstance(value, Mapping):
         for key in ("url", "link", "id", "recording_id", "record_id"):
             if key in value:
-                return _optional_str(value[key])
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-        if text in {"", "[]"}:
-            return None
-        if text.startswith("[") and text.endswith("]"):
-            text = text[1:-1].strip()
-            if not text:
-                return None
-            return text.split(",", 1)[0].strip() or None
-        return text
-    return _optional_str(value)
+                return _parse_recording_refs(value[key])
+        raise ValueError("invalid Mango recording reference object")
+    if isinstance(value, list):
+        return tuple(dict.fromkeys(item for raw in value for item in _parse_recording_refs(raw)))
+    text = str(value).strip()
+    if text in {"", "[]"}:
+        return ()
+    items = text[1:-1].split(",") if text.startswith("[") and text.endswith("]") else text.split(",")
+    refs = tuple(item.strip().strip('"\'') for item in items if item.strip().strip('"\''))
+    if not refs:
+        raise ValueError("invalid Mango recording reference value")
+    return tuple(dict.fromkeys(refs))
 
 
 def _parse_datetime(value: Any) -> datetime:

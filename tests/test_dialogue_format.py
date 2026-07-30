@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -180,6 +181,13 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertFalse(low_info["manager_quality_allowed"])
 
     def test_transcribe_swaps_strong_reversed_stereo_mapping(self) -> None:
+        service = TranscribeService(
+            replace(
+                make_settings(),
+                dual_transcribe_enabled=True,
+                secondary_transcribe_provider="gigaam",
+            )
+        )
         with tempfile.TemporaryDirectory(prefix="mango_dialogue_roles_") as td:
             root = Path(td)
             source, left, right = root / "call.mp3", root / "left.wav", root / "right.wav"
@@ -202,14 +210,56 @@ class DialogueFormatTest(unittest.TestCase):
                 return {"text": "Иван Петров, учебный центр, вы оставляли заявку", "segments": [{"start": 1.0, "text": "Иван Петров, учебный центр, вы оставляли заявку"}]}
 
             with patch("mango_mvp.services.transcribe.split_stereo_to_mono", return_value=(left, right, split_dir)):
-                with patch.object(self.service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
-                    result = self.service._transcribe_call(call)
+                with patch.object(service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
+                    result = service._transcribe_call(call)
 
         payload = json.loads(result["transcript_variants_json"])
         self.assertTrue(payload["role_mapping"]["confirmed"])
         self.assertEqual(payload["manager"]["physical_channel"], "right")
         self.assertEqual(payload["client"]["physical_channel"], "left")
+        self.assertIn("dual_asr_consensus", payload["role_mapping"]["evidence"])
         self.assertIn("Менеджер", result["dialogue_lines"][0])
+
+    def test_dual_asr_role_disagreement_blocks_and_uses_neutral_labels(self) -> None:
+        service = TranscribeService(
+            replace(
+                make_settings(),
+                dual_transcribe_enabled=True,
+                secondary_transcribe_provider="gigaam",
+            )
+        )
+        with tempfile.TemporaryDirectory(prefix="mango_dialogue_dual_conflict_") as td:
+            root = Path(td)
+            source, left, right = root / "call.mp3", root / "left.wav", root / "right.wav"
+            for path in (source, left, right):
+                path.write_bytes(b"audio")
+            split_dir = root / "split"
+            split_dir.mkdir()
+            call = CallRecord(
+                source_file=str(source), source_filename=source.name, manager_name="Иван Петров",
+                channels=2, duration_sec=20,
+            )
+
+            def fake_asr(path: Path, provider: str) -> dict[str, object]:
+                manager = "Иван Петров, учебный центр, вы оставляли заявку."
+                client = "Меня интересует, сколько стоит курс?"
+                text = (client if path == left else manager) if provider == "mock" else (
+                    manager if path == left else client
+                )
+                return {"text": text, "segments": [{"start": 1.0, "text": text}]}
+
+            with patch(
+                "mango_mvp.services.transcribe.split_stereo_to_mono",
+                return_value=(left, right, split_dir),
+            ):
+                with patch.object(service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
+                    result = service._transcribe_call(call)
+
+        payload = json.loads(result["transcript_variants_json"])
+        self.assertEqual(payload["role_mapping"]["status"], "blocked_asr_role_disagreement")
+        self.assertFalse(payload["role_mapping"]["manager_quality_allowed"])
+        self.assertIsNone(result["transcript_manager"])
+        self.assertTrue(all("Менеджер" not in line and "Клиент:" not in line for line in result["dialogue_lines"]))
 
     def test_stereo_segments_include_exact_timecodes(self) -> None:
         manager_segments = [
@@ -255,8 +305,10 @@ class DialogueFormatTest(unittest.TestCase):
         stored = json.loads(str(result["transcript_variants_json"]))["dialogue_lines"]
         payload = json.loads(str(result["transcript_variants_json"]))
         self.assertEqual(stored, result["dialogue_lines"])
-        self.assertIn("Менеджер", stored[0])
-        self.assertIn("Клиент", stored[1])
+        self.assertIn("Дорожка левая", stored[0])
+        self.assertIn("Дорожка правая", stored[1])
+        self.assertIsNone(result["transcript_manager"])
+        self.assertIsNone(result["transcript_client"])
         self.assertEqual(payload["manager"]["variant_a_segments"][0]["start"], 1.0)
         self.assertEqual(payload["client"]["variant_a_segments"][0]["start"], 2.0)
         self.assertEqual(payload["manager"]["physical_channel"], "left")
@@ -326,6 +378,19 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(left["text"], "Текст клиента")
         self.assertEqual(right["text"], "Текст менеджера")
 
+        malformed = json.loads(call.transcript_variants_json)
+        malformed["client"]["physical_channel"] = "right"
+        call.transcript_variants_json = json.dumps(malformed, ensure_ascii=False)
+        self.assertIsNone(
+            self.service._cached_variant_candidate(
+                call,
+                slot="manager",
+                provider="mlx",
+                primary_provider="mlx",
+                physical_channel="left",
+            )
+        )
+
     def test_compact_segments_preserve_approximate_timing(self) -> None:
         compact = self.service._compact_asr_segments(
             [{"start": 0.0, "end": 1.0, "text": "Текст", "approximate": True}]
@@ -353,7 +418,8 @@ class DialogueFormatTest(unittest.TestCase):
             transcript_text="MANAGER:\nДобрый день.\n\nCLIENT:\nЗдравствуйте.",
             transcript_variants_json=json.dumps({
                 "mode": "stereo", "dialogue_lines": lines,
-                "manager": {"variant_a": "Добрый день."}, "client": {"variant_a": "Здравствуйте."},
+                "manager": {"physical_channel": "left", "variant_a": "Добрый день."},
+                "client": {"physical_channel": "right", "variant_a": "Здравствуйте."},
             }, ensure_ascii=False),
         )
         service = TranscribeService(make_settings())
@@ -361,7 +427,12 @@ class DialogueFormatTest(unittest.TestCase):
             with patch("mango_mvp.services.transcribe.shutil.rmtree"):
                 with patch.object(service, "_try_transcribe_file_with_meta", return_value={"text": "вариант", "segments": []}):
                     result = service._backfill_secondary_only(call, secondary_provider="gigaam")
-        self.assertEqual(result["dialogue_lines"], lines)
+        self.assertEqual(len(result["dialogue_lines"]), len(lines))
+        self.assertTrue(all("Дорожка" in line for line in result["dialogue_lines"]))
+        self.assertIsNone(result["transcript_manager"])
+        self.assertIsNone(result["transcript_client"])
+        self.assertIn("Добрый день.", result["transcript_text"])
+        self.assertIn("Здравствуйте.", result["transcript_text"])
         payload = json.loads(str(result["transcript_variants_json"]))
         self.assertEqual(payload["manager"]["variant_b_segments"], [])
 
@@ -401,6 +472,19 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(seen, [Path("right"), Path("left")])
         self.assertEqual(payload["manager"]["variant_b"], "right")
         self.assertEqual(payload["client"]["variant_b"], "left")
+        self.assertFalse(payload["role_mapping"]["manager_quality_allowed"])
+        self.assertEqual(payload["role_mapping"]["status"], "unverified_after_secondary_backfill")
+
+        malformed = json.loads(call.transcript_variants_json)
+        malformed["client"]["physical_channel"] = "right"
+        malformed["manager"]["physical_channel"] = "right"
+        call.transcript_variants_json = json.dumps(malformed, ensure_ascii=False)
+        with patch(
+            "mango_mvp.services.transcribe.split_stereo_to_mono",
+            return_value=(Path("left"), Path("right"), Path("split")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "one unique left and right"):
+                self.service._backfill_secondary_only(call, secondary_provider="gigaam")
 
     def test_echo_fallback_keeps_complex_topology_and_blocks_roles(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_dialogue_echo_") as td:

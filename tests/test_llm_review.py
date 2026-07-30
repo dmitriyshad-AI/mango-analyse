@@ -41,6 +41,7 @@ def _item(idx: int, use_case: str = "reactivation_revenue", signal: str = "next_
             "manager_name": "Менеджер",
             "call_type": "sales_call",
             "history_summary": "Клиент спрашивал про следующий год.",
+            "manager_quality_allowed": True,
         },
         "deterministic_seed": {
             "customer_question_or_need": "Интересует обучение на следующий год.",
@@ -214,6 +215,42 @@ def test_deterministic_review_payload_is_valid_structural_placeholder() -> None:
     assert payload["hidden_sales_stage"] == "reactivation"
     assert payload["risk_flags"] == ["dry_run_not_llm_review"]
     assert 0 <= payload["overall_quality_score"] <= 100
+
+
+def test_llm_review_cannot_restore_blocked_manager_score() -> None:
+    item = _item(1)
+    item["call_context"]["manager_quality_allowed"] = False
+    with pytest.raises(ValueError, match="explicit confirmed"):
+        deterministic_review_payload(item)
+    with pytest.raises(ValueError, match="explicit confirmed"):
+        normalize_review_payload({}, item, _config())
+
+
+def test_runner_rejects_blocked_item_before_provider(tmp_path, monkeypatch) -> None:
+    import mango_mvp.insights.llm_review as llm_review
+
+    item = _item(1)
+    item["call_context"]["manager_quality_allowed"] = False
+    input_jsonl = tmp_path / "input.jsonl"
+    _write_jsonl(input_jsonl, [item])
+    monkeypatch.setattr(
+        llm_review,
+        "call_review_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not be called"),
+    )
+    summary = run_pilot_sales_moment_llm_review(
+        LLMReviewConfig(
+            project_root=tmp_path,
+            input_jsonl=input_jsonl,
+            out_root=tmp_path / "out",
+            provider="openai",
+            dry_run=False,
+            cache_enabled=False,
+            force=True,
+        )
+    )
+    assert summary["totals"]["reviews_written"] == 0
+    assert summary["totals"]["errors"] == 1
 
 
 def test_normalize_review_payload_clamps_scores_and_falls_back_to_seed() -> None:

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from mango_mvp.insights.pilot_extraction import (
+    build_llm_input,
     choose_customer_question_or_need,
     choose_manager_answer,
+    extract_sales_moment,
     ideal_reaction_for_signal,
     infer_customer_signal,
     infer_hidden_sales_stage,
@@ -12,6 +18,21 @@ from mango_mvp.insights.pilot_extraction import (
     select_calls_for_client,
     split_sentences,
 )
+
+
+def _confirmed_variants() -> str:
+    return json.dumps(
+        {
+            "call_topology": "simple_two_party",
+            "role_mapping": {
+                "manager_quality_allowed": True,
+                "confirmed": True,
+                "topology": "simple_two_party",
+            },
+            "manager": {"physical_channel": "left"},
+            "client": {"physical_channel": "right"},
+        }
+    )
 
 
 def test_parse_role_blocks_extracts_manager_and_client() -> None:
@@ -133,6 +154,7 @@ def test_sales_moment_exclusion_filters_no_live_technical_call() -> None:
             "Попробуйте перезвонить позднее."
         ),
         "analysis_json": "{}",
+        "transcript_variants_json": _confirmed_variants(),
     }
 
     exclusion = sales_moment_exclusion_reason({"final_outcome_label": "open_sales_potential"}, call, db_record)
@@ -160,6 +182,62 @@ def test_sales_moment_exclusion_keeps_bridge_artifact_with_live_dialogue() -> No
             "MANAGER: Расскажу варианты, расписание и стоимость, затем отправлю материалы."
         ),
         "analysis_json": "{}",
+        "transcript_variants_json": _confirmed_variants(),
     }
 
     assert sales_moment_exclusion_reason({"final_outcome_label": "open_sales_potential"}, call, db_record) is None
+
+
+def test_manager_quality_requires_explicit_confirmed_role_gate() -> None:
+    call = {"source_filename": "call.mp3", "call_type": "sales_call"}
+    db_record = {
+        "transcript_text": "MANAGER: Ответ. CLIENT: Вопрос.",
+        "analysis_json": "{}",
+        "transcript_variants_json": json.dumps(
+            {"role_mapping": {"manager_quality_allowed": False}}
+        ),
+    }
+    exclusion = sales_moment_exclusion_reason({}, call, db_record)
+    assert exclusion is not None
+    assert exclusion["exclusion_reason"] == "unconfirmed_roles_not_safe_for_manager_quality"
+    with pytest.raises(ValueError, match="explicit confirmed"):
+        extract_sales_moment(1, {}, call, db_record)
+    with pytest.raises(ValueError, match="explicit confirmed"):
+        build_llm_input({}, {}, call, db_record, 1000)
+
+
+def test_contradictory_true_role_flag_is_still_blocked() -> None:
+    call = {"source_filename": "call.mp3", "call_type": "sales_call"}
+    db_record = {
+        "transcript_text": "MANAGER: Ответ. CLIENT: Вопрос.",
+        "analysis_json": "{}",
+        "transcript_variants_json": json.dumps(
+            {
+                "call_topology": "echo_or_duplicate_channels",
+                "role_mapping": {
+                    "manager_quality_allowed": True,
+                    "confirmed": False,
+                    "topology": "echo_or_duplicate_channels",
+                },
+            }
+        ),
+    }
+    exclusion = sales_moment_exclusion_reason({}, call, db_record)
+    assert exclusion is not None
+    assert exclusion["exclusion_reason"] == "unconfirmed_roles_not_safe_for_manager_quality"
+
+
+@pytest.mark.parametrize("channel_blocks", [{}, {"manager": {"physical_channel": "right"}, "client": {"physical_channel": "right"}}])
+def test_missing_or_duplicate_physical_channels_are_blocked(channel_blocks) -> None:
+    payload = json.loads(_confirmed_variants())
+    payload.pop("manager")
+    payload.pop("client")
+    payload.update(channel_blocks)
+    db_record = {
+        "analysis_json": "{}",
+        "transcript_text": "MANAGER: Ответ. CLIENT: Вопрос.",
+        "transcript_variants_json": json.dumps(payload),
+    }
+    exclusion = sales_moment_exclusion_reason({}, {"source_filename": "call.mp3"}, db_record)
+    assert exclusion is not None
+    assert exclusion["exclusion_reason"] == "unconfirmed_roles_not_safe_for_manager_quality"

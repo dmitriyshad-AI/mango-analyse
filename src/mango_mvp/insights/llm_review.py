@@ -179,6 +179,9 @@ def run_pilot_sales_moment_llm_review(config: LLMReviewConfig) -> dict[str, Any]
 
     for item in selected:
         moment_id = _clean(item.get("id"))
+        if _dict(item.get("call_context")).get("manager_quality_allowed") is not True:
+            errors.append({"id": moment_id, "error": "unconfirmed_roles_not_safe_for_manager_quality"})
+            continue
         if moment_id in existing:
             reviews.append(existing[moment_id])
             skipped_existing += 1
@@ -584,6 +587,8 @@ def review_payload_json_schema(*, include_moment_id: bool) -> dict[str, Any]:
 
 
 def deterministic_review_payload(item: dict[str, Any]) -> dict[str, Any]:
+    if _dict(item.get("call_context")).get("manager_quality_allowed") is not True:
+        raise ValueError("manager quality requires explicit confirmed speaker roles")
     seed = _dict(item.get("deterministic_seed"))
     chain = _dict(item.get("chain_context"))
     call = _dict(item.get("call_context"))
@@ -623,6 +628,8 @@ def deterministic_review_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_review_payload(payload: dict[str, Any], item: dict[str, Any], config: LLMReviewConfig) -> dict[str, Any]:
+    if _dict(item.get("call_context")).get("manager_quality_allowed") is not True:
+        raise ValueError("manager quality requires explicit confirmed speaker roles")
     seed = _dict(item.get("deterministic_seed"))
     normalized: dict[str, Any] = {}
     normalized["review_schema_version"] = _clean(payload.get("review_schema_version")) or REVIEW_SCHEMA_VERSION

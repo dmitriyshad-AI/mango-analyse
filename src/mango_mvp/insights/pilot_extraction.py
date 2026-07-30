@@ -159,12 +159,39 @@ def load_call_record(project_root: Path, call: dict[str, Any], db_cache: dict[st
     return {name: row[name] for name in row.keys()}
 
 
+def _manager_quality_allowed(db_record: dict[str, Any]) -> bool:
+    variants = _safe_json(db_record.get("transcript_variants_json"))
+    role_mapping = _dict(variants.get("role_mapping"))
+    channels = {
+        _dict(variants.get(role)).get("physical_channel") for role in ("manager", "client")
+    }
+    return bool(
+        role_mapping.get("manager_quality_allowed") is True
+        and role_mapping.get("confirmed") is True
+        and role_mapping.get("topology") == "simple_two_party"
+        and variants.get("call_topology") == "simple_two_party"
+        and channels == {"left", "right"}
+    )
+
+
 def sales_moment_exclusion_reason(
     chain: dict[str, Any],
     call: dict[str, Any],
     db_record: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Exclude narrow no-live artifacts from sales KB extraction while preserving protected live calls."""
+
+    if not _manager_quality_allowed(db_record):
+        return {
+            "source_filename": call.get("source_filename", ""),
+            "phone": call.get("phone", ""),
+            "started_at": call.get("started_at", ""),
+            "manager_name": call.get("manager_name", ""),
+            "call_type": call.get("call_type", ""),
+            "final_outcome_label": chain.get("final_outcome_label", ""),
+            "extraction_use_case": chain.get("extraction_use_case", ""),
+            "exclusion_reason": "unconfirmed_roles_not_safe_for_manager_quality",
+        }
 
     analysis = _safe_json(db_record.get("analysis_json"))
     structured = _dict(analysis.get("structured_fields")) or _dict(analysis.get("crm_blocks"))
@@ -206,6 +233,8 @@ def sales_moment_exclusion_reason(
 
 
 def extract_sales_moment(moment_index: int, chain: dict[str, Any], call: dict[str, Any], db_record: dict[str, Any]) -> dict[str, Any]:
+    if not _manager_quality_allowed(db_record):
+        raise ValueError("manager quality requires explicit confirmed speaker roles")
     analysis = _safe_json(db_record.get("analysis_json"))
     structured = _dict(analysis.get("structured_fields")) or _dict(analysis.get("crm_blocks"))
     transcript = str(db_record.get("transcript_text") or "")
@@ -267,6 +296,8 @@ def build_llm_input(
     db_record: dict[str, Any],
     transcript_chars: int,
 ) -> dict[str, Any]:
+    if not _manager_quality_allowed(db_record):
+        raise ValueError("LLM input requires explicit confirmed speaker roles")
     analysis = _safe_json(db_record.get("analysis_json"))
     transcript = str(db_record.get("transcript_text") or "")
     return {
@@ -300,6 +331,7 @@ def build_llm_input(
             "call_type": call.get("call_type", ""),
             "history_summary": call.get("history_summary", ""),
             "structured_fields": analysis.get("structured_fields") or analysis.get("crm_blocks") or {},
+            "manager_quality_allowed": True,
         },
         "deterministic_seed": {
             key: moment.get(key, "")

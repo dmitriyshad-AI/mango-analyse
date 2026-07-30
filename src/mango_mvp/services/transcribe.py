@@ -524,14 +524,15 @@ class TranscribeService:
 
         block = payload.get(slot)
         if mode == "stereo" and physical_channel:
-            for candidate_slot in ("manager", "client"):
-                candidate_block = payload.get(candidate_slot)
-                if (
-                    isinstance(candidate_block, dict)
-                    and candidate_block.get("physical_channel") == physical_channel
-                ):
-                    block = candidate_block
-                    break
+            matches = [
+                payload.get(candidate_slot)
+                for candidate_slot in ("manager", "client")
+                if isinstance(payload.get(candidate_slot), dict)
+                and payload[candidate_slot].get("physical_channel") == physical_channel
+            ]
+            if len(matches) != 1:
+                return None
+            block = matches[0]
         cached_primary_provider = str(payload.get("primary_provider") or "").strip()
         cached_secondary_provider = str(payload.get("secondary_provider") or "").strip()
         cached_text = self._variant_text_for_provider(
@@ -1625,6 +1626,19 @@ class TranscribeService:
             "evidence": evidence,
             "scores": {"normal": round(normal_score, 3), "swapped": round(swapped_score, 3)},
         }
+
+    @staticmethod
+    def _neutralize_role_lines(lines: list[str], manager_channel: str) -> list[str]:
+        manager_side = "правая" if manager_channel == "right" else "левая"
+        client_side = "левая" if manager_channel == "right" else "правая"
+        return [
+            re.sub(
+                r"(\]\s*)Менеджер(?:\s*\([^)]*\))?:",
+                rf"\1Дорожка {manager_side}:",
+                line,
+            ).replace("] Клиент:", f"] Дорожка {client_side}:")
+            for line in lines
+        ]
 
     def _build_role_texts_and_lines(
         self,
@@ -2926,6 +2940,34 @@ class TranscribeService:
                             if dual_enabled
                             else ""
                         )
+                        if dual_enabled:
+                            secondary_mapping = (
+                                self._classify_stereo_call(
+                                    call,
+                                    manager_secondary_text,
+                                    client_secondary_text,
+                                    stereo_similarity=self._similarity_ratio(
+                                        manager_secondary_text, client_secondary_text
+                                    ),
+                                )
+                                if manager_secondary_text and client_secondary_text
+                                else None
+                            )
+                            role_mapping["secondary_mapping"] = secondary_mapping
+                            if not (
+                                secondary_mapping
+                                and role_mapping["confirmed"]
+                                and secondary_mapping["confirmed"]
+                                and role_mapping["left"] == secondary_mapping["left"]
+                                and secondary_mapping["topology"] == "simple_two_party"
+                            ):
+                                role_mapping.update(
+                                    status="blocked_asr_role_disagreement",
+                                    confirmed=False,
+                                    manager_quality_allowed=False,
+                                )
+                            else:
+                                role_mapping["evidence"].append("dual_asr_consensus")
 
                         manager_channel = "left"
                         client_channel = "right"
@@ -3025,7 +3067,15 @@ class TranscribeService:
                         if rebuilt_manager and rebuilt_client:
                             manager_text = rebuilt_manager
                             client_text = rebuilt_client
-                        combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
+                        if role_mapping["manager_quality_allowed"]:
+                            combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
+                            output_manager, output_client = manager_text, client_text
+                        else:
+                            dialogue_lines = self._neutralize_role_lines(
+                                dialogue_lines, manager_channel
+                            )
+                            combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
+                            output_manager = output_client = None
                         variants_payload = {
                             "mode": "stereo",
                             "dialogue_lines": dialogue_lines,
@@ -3086,8 +3136,8 @@ class TranscribeService:
                             "warnings": warnings,
                         }
                         return {
-                            "transcript_manager": manager_text,
-                            "transcript_client": client_text,
+                            "transcript_manager": output_manager,
+                            "transcript_client": output_client,
                             "transcript_text": combined,
                             "dialogue_lines": dialogue_lines,
                             "transcript_variants_json": json.dumps(
@@ -3183,12 +3233,21 @@ class TranscribeService:
                 transcript_text = (
                     f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
                 )
+        mono_role_mapping = stereo_fallback_mapping or {
+            "status": "unverified_mono_or_legacy",
+            "confirmed": False,
+            "topology": "mono_or_unknown",
+            "manager_quality_allowed": False,
+            "evidence": ["mono_has_no_physical_role_separation"],
+        }
         variants_payload = {
             "mode": "mono_or_fallback",
             "dialogue_lines": dialogue_lines,
             "primary_provider": primary_provider,
             "secondary_provider": secondary_provider if dual_enabled else None,
             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
+            "call_topology": mono_role_mapping["topology"],
+            "role_mapping": mono_role_mapping,
             "full": {
                 "physical_channel": "mono",
                 "variant_a": full_primary_text,
@@ -3213,9 +3272,6 @@ class TranscribeService:
             },
             "warnings": warnings,
         }
-        if stereo_fallback_mapping is not None:
-            variants_payload["call_topology"] = stereo_fallback_mapping["topology"]
-            variants_payload["role_mapping"] = stereo_fallback_mapping
         return {
             "transcript_manager": transcript_manager,
             "transcript_client": transcript_client,
@@ -3239,6 +3295,11 @@ class TranscribeService:
             client = payload.get("client")
             if not isinstance(manager, dict) or not isinstance(client, dict):
                 raise RuntimeError("secondary backfill requires stereo role payload")
+            if {manager.get("physical_channel"), client.get("physical_channel")} != {
+                "left",
+                "right",
+            }:
+                raise RuntimeError("secondary backfill requires one unique left and right channel")
             if path.suffix.lower() not in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
                 raise RuntimeError("secondary backfill stereo split requires supported audio extension")
             split = split_stereo_to_mono(path)
@@ -3281,6 +3342,13 @@ class TranscribeService:
                 )
             updated_payload["manager"] = manager_block
             updated_payload["client"] = client_block
+            role_mapping = dict(updated_payload.get("role_mapping") or {})
+            role_mapping.update(
+                status="unverified_after_secondary_backfill",
+                confirmed=False,
+                manager_quality_allowed=False,
+            )
+            updated_payload["role_mapping"] = role_mapping
         elif mode == "mono_or_fallback":
             full = payload.get("full")
             if not isinstance(full, dict):
@@ -3302,15 +3370,33 @@ class TranscribeService:
         else:
             raise RuntimeError(f"secondary backfill does not support payload mode={mode or 'empty'}")
 
+        if mode == "stereo":
+            manager_channel = str(manager.get("physical_channel") or "left")
+            updated_payload["dialogue_lines"] = self._neutralize_role_lines(
+                list(updated_payload.get("dialogue_lines") or []), manager_channel
+            )
+            left_text, right_text = (
+                (client.get("final") or client.get("variant_a"), manager.get("final") or manager.get("variant_a"))
+                if manager_channel == "right"
+                else (manager.get("final") or manager.get("variant_a"), client.get("final") or client.get("variant_a"))
+            )
+            output_manager = output_client = None
+            output_text = f"CHANNEL_LEFT:\n{left_text or ''}\n\nCHANNEL_RIGHT:\n{right_text or ''}"
+        else:
+            output_manager, output_client, output_text = (
+                call.transcript_manager,
+                call.transcript_client,
+                call.transcript_text,
+            )
         updated_payload["secondary_provider"] = secondary_provider
         updated_payload["warnings"] = self._merge_warning_lists(
             payload.get("warnings"),
             warnings,
         )
         return {
-            "transcript_manager": call.transcript_manager,
-            "transcript_client": call.transcript_client,
-            "transcript_text": call.transcript_text,
+            "transcript_manager": output_manager,
+            "transcript_client": output_client,
+            "transcript_text": output_text,
             "dialogue_lines": updated_payload.get("dialogue_lines"),
             "transcript_variants_json": json.dumps(updated_payload, ensure_ascii=False),
         }

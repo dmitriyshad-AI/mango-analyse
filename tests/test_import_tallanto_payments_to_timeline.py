@@ -9,10 +9,16 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.customer_timeline.contracts import (
+    BotContextChunk,
     CustomerIdentity,
+    DerivedSignal,
     IdentityLink,
     IdentityStatus,
+    TimelineDirection,
+    TimelineEvent,
+    TimelineEventType,
 )
+from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiError
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_contract
 from mango_mvp.customer_timeline.ingestion import TALLANTO_TIMEZONE, timeline_ingestion_safety_contract
@@ -20,7 +26,10 @@ from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_pur
 from scripts.import_tallanto_payments_to_timeline import (
     TallantoPaymentsImportConfig,
     build_tallanto_records,
+    fetch_tallanto_module_ids_strict,
     fetch_tallanto_module_strict,
+    _latest_money_sync,
+    load_existing_money_class_context,
     load_tallanto_customer_lookup,
     main,
     run_tallanto_money_api_increment,
@@ -52,7 +61,8 @@ def test_dry_run_stdin_mcp_snapshot_imports_payments_and_abonements_without_crea
     assert report["summary"]["payment_events"] == 1
     assert report["summary"]["abonement_events"] == 1
     assert report["import_report"]["normalized_counts"]["events"] == 2
-    assert report["import_report"]["normalized_counts"]["opportunities"] == 2
+    assert report["import_report"]["normalized_counts"]["opportunities"] == 0
+    assert report["import_report"]["normalized_counts"]["customers"] == 0
     assert report["import_report"]["normalized_counts"]["bot_context_chunks"] == 0
     assert report["source"]["path"] == "stdin"
     assert report["safety"]["write_crm"] is False
@@ -98,8 +108,10 @@ def test_apply_links_existing_tallanto_customer_is_idempotent_and_keeps_amounts_
     assert payment["customer_id"] == existing_customer_id
     assert abonement["customer_id"] == existing_customer_id
     assert payment["record"]["amount"] == 12163
+    assert payment["subject"] == "Физика ЕГЭ"
     assert payment_opp["product_context"]["amount"] == 12163
     assert abonement["record"]["visits_left"] == 3
+    assert abonement["subject"] == "Физика ЕГЭ"
     assert abonement_opp["product_context"]["visits_left"] == 3
     assert chunks == []
     assert bot_safe_amount_leaks(timeline_db) == 0
@@ -152,6 +164,63 @@ def test_first_payment_pass_sees_manual_identity_still_in_wal(tmp_path: Path) ->
 
     assert lookup.unique_customer_ids == {"contact-1": "manual-owner"}
     assert lookup.unique_match_classes["contact-1"].value == "manual"
+
+
+def test_open_exact_identity_conflict_blocks_strong_payment_owner(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="conflicted-owner", tallanto_id="contact-conflict"
+    )
+    writer = CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path)
+    try:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_conflict",
+            entity_refs=(f"customer:{customer_id}",),
+            actor="test",
+        )
+    finally:
+        writer.close()
+
+    lookup = load_tallanto_customer_lookup(
+        timeline_db, tenant_id="foton", contact_ids={"contact-conflict"}
+    )
+
+    assert lookup.unique_customer_ids == {}
+    assert lookup.ambiguous_customer_ids == {"contact-conflict": (customer_id,)}
+
+
+def test_open_family_conflict_blocks_strong_payment_owner(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="family-conflicted-owner", tallanto_id="contact-family-conflict"
+    )
+    writer = CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path)
+    try:
+        writer._con.execute(
+            "INSERT INTO family_members_v1 "
+            "(tenant_id,family_id,customer_id,membership_status,confidence,reason,created_at,updated_at,record_hash,record_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:conflicted", customer_id, "confident", "high", "test", NOW.isoformat(),
+                NOW.isoformat(), "test-hash", '{}',
+            ),
+        )
+        writer.record_conflict(
+            "foton",
+            conflict_type="family_identity_conflict",
+            entity_refs=("family:conflicted",),
+            actor="test",
+        )
+    finally:
+        writer.close()
+
+    lookup = load_tallanto_customer_lookup(
+        timeline_db, tenant_id="foton", contact_ids={"contact-family-conflict"}
+    )
+
+    assert lookup.unique_customer_ids == {}
+    assert lookup.ambiguous_customer_ids == {"contact-family-conflict": (customer_id,)}
 
 
 def test_payment_without_contact_uses_unambiguous_abonement_contact(tmp_path: Path) -> None:
@@ -216,7 +285,9 @@ def test_conflicting_direct_and_abonement_contacts_do_not_pick_first_customer(tm
     )
     assert report["validation_ok"] is True
     assert payment_event["match_status"] == "ambiguous"
-    assert payment_event["customer_id"] not in {direct_customer, abonement_customer}
+    assert payment_event["customer_id"] is None
+    assert count_rows(timeline_db, "customer_identities") == 2
+    assert count_rows(timeline_db, "customer_opportunities") == 1
     assert payment_event["record"]["contact_id_conflict"] is True
     conflict = fetch_one_json(timeline_db, "timeline_conflicts")
     assert conflict["metadata"]["alternate_contact_id"] == "contact-abonement"
@@ -261,10 +332,13 @@ def test_payment_with_missing_abonement_owner_is_reported_as_unresolved(tmp_path
     refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
     assert report["stats"]["unresolved_payment_owners"] == 1
     assert event["match_status"] == "ambiguous"
+    assert event["customer_id"] is None
     assert event["record"]["contact_id_source"] == "unresolved_abonement"
     assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
     assert "tallanto_abonement_id:missing-abonement" in conflict["entity_refs"]
     assert count_rows(timeline_db, "customer_purchases_v1") == 0
+    assert count_rows(timeline_db, "customer_identities") == 0
+    assert count_rows(timeline_db, "customer_opportunities") == 0
 
 
 def test_payment_without_any_identity_relation_is_reported_as_unresolved(tmp_path: Path) -> None:
@@ -282,8 +356,11 @@ def test_payment_without_any_identity_relation_is_reported_as_unresolved(tmp_pat
     conflict = fetch_one_json(timeline_db, "timeline_conflicts")
     assert report["stats"]["unresolved_payment_owners"] == 1
     assert event["match_status"] == "ambiguous"
+    assert event["customer_id"] is None
     assert event["record"]["contact_id_source"] == "unresolved_owner"
     assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
+    assert count_rows(timeline_db, "customer_identities") == 0
+    assert count_rows(timeline_db, "customer_opportunities") == 0
 
 
 @pytest.mark.parametrize("match_class", ["strong_unique", "manual"])
@@ -303,14 +380,15 @@ def test_payment_arriving_before_card_relinks_after_identity_appears(
     )
     run_tallanto_payments_import(config, stdin_text=json.dumps({"most_finances": [payment]}))
     resolved_payload = {
-        "most_finances": [payment],
         "most_abonements": [{**abonement_row(), "id": "late-abonement", "contact_id": "contact-late"}],
     }
 
     incomplete = run_tallanto_payments_import(config, stdin_text=json.dumps(resolved_payload))
     refresh_customer_purchases_v1(timeline_db, allowed_root=tmp_path, tenant_id="foton")
     assert incomplete["links"]["resolved_payment_owner_conflicts"] == 0
+    assert incomplete["stats"]["local_unowned_payment_retries"] == 0
     assert count_rows(timeline_db, "customer_purchases_v1") == 0
+    assert count_rows(timeline_db, "customer_identities") == 0
 
     actual_customer = seed_customer_with_tallanto_link(
         timeline_db,
@@ -334,6 +412,7 @@ def test_payment_arriving_before_card_relinks_after_identity_appears(
         if item["conflict_type"] == "tallanto_payment_owner_unresolved" and item["status"] == "open"
     ]
     assert report["stats"]["unresolved_payment_owners"] == 0
+    assert report["stats"]["local_unowned_payment_retries"] == 1
     assert report["links"]["resolved_payment_owner_conflicts"] == 1
     assert repeat["links"]["resolved_payment_owner_conflicts"] == 0
     assert payment_event["customer_id"] == actual_customer
@@ -341,6 +420,220 @@ def test_payment_arriving_before_card_relinks_after_identity_appears(
     assert open_unresolved == []
     assert count_rows(timeline_db, "customer_purchases_v1") == 1
     assert count_rows(timeline_db, "timeline_events") == 2
+
+
+def test_unknown_direct_tallanto_contact_stays_unowned_with_explicit_conflict(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text=json.dumps({"most_finances": [payment_row()]}),
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert report["stats"]["unmatched_contact_ids"] == 1
+    assert event["customer_id"] is None
+    assert conflict["conflict_type"] == "tallanto_payment_owner_unresolved"
+    assert count_rows(timeline_db, "customer_identities") == 0
+    assert count_rows(timeline_db, "customer_opportunities") == 0
+
+
+def test_new_identity_conflict_detaches_event_and_deletes_stale_opportunity(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    config = TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True)
+    seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="owner-a", tallanto_id="contact-1", source_ref="owner-a"
+    )
+    run_tallanto_payments_import(
+        config,
+        stdin_text=json.dumps({"most_finances": [payment_row()], "most_class": [class_row()]}),
+    )
+    assert count_rows(timeline_db, "customer_opportunities") == 1
+    with sqlite3.connect(timeline_db) as con:
+        opportunity_id = str(con.execute("SELECT opportunity_id FROM customer_opportunities").fetchone()[0])
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        store.upsert_signal(DerivedSignal(
+            tenant_id="foton", customer_id="owner-a", opportunity_id=opportunity_id,
+            signal_type="sales", severity="medium", evidence_text="Тестовый сигнал",
+        ))
+        store.upsert_bot_context_chunk(BotContextChunk(
+            tenant_id="foton", customer_id="owner-a", opportunity_id=opportunity_id,
+            chunk_type="manager_only", text="Тестовый контекст", source_system="tallanto_crm_call",
+            source_ref="test:stale-opportunity", allowed_for_bot=False, requires_manager_review=True,
+        ))
+    seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="owner-b", tallanto_id="contact-1", source_ref="owner-b"
+    )
+
+    report = run_tallanto_payments_import(
+        config,
+        stdin_text=json.dumps({"most_finances": [payment_row()], "most_class": [class_row()]}),
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    assert report["import_report"]["write_status_counts"]["deleted"] == 1
+    assert event["customer_id"] is None and event["opportunity_id"] is None
+    assert count_rows(timeline_db, "customer_opportunities") == 0
+    with sqlite3.connect(timeline_db) as con:
+        signal = con.execute("SELECT status,opportunity_id FROM derived_signals").fetchone()
+        chunk = con.execute("SELECT superseded_by,opportunity_id FROM bot_context_chunks").fetchone()
+    assert tuple(signal) == ("stale", None)
+    assert chunk[0] and chunk[1] is None
+
+
+def test_local_unowned_direct_payment_relinks_after_card_without_network_replay(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    config = TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True)
+    run_tallanto_payments_import(
+        config,
+        stdin_text=json.dumps({
+            "most_finances": [{**payment_row(), "contact_id": "late-direct"}],
+            "most_class": [class_row()],
+        }),
+    )
+    actual_customer = seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="late-direct-card",
+        tallanto_id="late-direct",
+        source_ref="late-direct-card",
+    )
+
+    report = run_tallanto_payments_import(config, stdin_text="{}")
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    assert report["stats"]["local_unowned_payment_retries"] == 1
+    assert report["links"]["resolved_payment_owner_conflicts"] == 1
+    assert event["customer_id"] == actual_customer
+    assert event["subject"] == class_row()["name"]
+    assert event["record"]["class_name"] == class_row()["name"]
+    assert count_rows(timeline_db, "customer_opportunities") == 1
+
+
+def test_local_assigned_weak_payment_is_rechecked_after_identity_improves(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="real-card",
+        tallanto_id="contact-weak",
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_type=TimelineEventType.TALLANTO_PAYMENT,
+                event_at=NOW,
+                source_system="tallanto_crm_call",
+                source_id="most_finances:weak-payment",
+                source_ref="tallanto:most_finances:weak-payment",
+                direction=TimelineDirection.SYSTEM,
+                subject="Физика ЕГЭ",
+                match_status="unmatched",
+                record={
+                    "payment_id": "weak-payment",
+                    "contact_id": "contact-weak",
+                    "class_id": "class-1",
+                    "class_name": "Физика ЕГЭ",
+                },
+            )
+        )
+    with sqlite3.connect(timeline_db) as con:
+        con.execute(
+            "UPDATE timeline_events SET superseded_by='' WHERE source_id='most_finances:weak-payment'"
+        )
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text="{}",
+    )
+
+    with sqlite3.connect(timeline_db) as con:
+        owner, match_status = con.execute(
+            "SELECT customer_id,match_status FROM timeline_events WHERE source_id='most_finances:weak-payment'"
+        ).fetchone()
+    assert report["stats"]["local_weak_payment_retries"] == 1
+    assert (owner, match_status) == (customer_id, "strong_unique")
+
+
+def test_local_legacy_shell_money_rows_relink_without_network_replay(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    phantom = CustomerIdentity(
+        tenant_id="foton",
+        customer_id="legacy-shell",
+        identity_status=IdentityStatus.PARTIAL,
+        source_ref="tallanto:contact:contact-1",
+        summary={"source_system": "tallanto_crm_call"},
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+        touch_count=2,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    unmatched_link = IdentityLink(
+        tenant_id="foton",
+        customer_id=phantom.customer_id,
+        link_type="tallanto_student_id",
+        link_value="contact-1",
+        source_system="tallanto_crm_call",
+        source_ref="legacy-import",
+        match_class="unmatched",
+        confidence=0.0,
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    legacy_events = (
+        TimelineEvent(
+            tenant_id="foton",
+            customer_id=phantom.customer_id,
+            event_type=TimelineEventType.TALLANTO_PAYMENT,
+            event_at=NOW,
+            source_system="tallanto_crm_call",
+            source_id="most_finances:legacy-payment",
+            source_ref="tallanto:most_finances:legacy-payment",
+            direction=TimelineDirection.SYSTEM,
+            subject="Физика",
+            record={"payment_id": "legacy-payment", "contact_id": "contact-1", "amount": 1000},
+        ),
+        TimelineEvent(
+            tenant_id="foton",
+            customer_id=phantom.customer_id,
+            event_type=TimelineEventType.TALLANTO_ABONEMENT,
+            event_at=NOW,
+            source_system="tallanto_crm_call",
+            source_id="most_abonements:legacy-abonement",
+            source_ref="tallanto:most_abonements:legacy-abonement",
+            direction=TimelineDirection.SYSTEM,
+            subject="Физика",
+            record={"abonement_id": "legacy-abonement", "contact_id": "contact-1", "amount": 1000},
+        ),
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        store.upsert_customer(phantom)
+        store.upsert_identity_link(unmatched_link)
+        for event in legacy_events:
+            store.upsert_event(event)
+    actual_customer = seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="actual-card",
+        tallanto_id="contact-1",
+        source_ref="actual-card",
+    )
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text="{}",
+    )
+
+    events = fetch_all_json(timeline_db, "timeline_events")
+    assert report["stats"]["local_unowned_payment_retries"] == 1
+    assert report["stats"]["local_unowned_abonement_retries"] == 1
+    assert {item["customer_id"] for item in events} == {actual_customer}
+    assert {item["subject"] for item in events} == {"Физика"}
+    assert count_rows(timeline_db, "customer_opportunities") == 2
 
 
 @pytest.mark.parametrize("match_class", ["strong_unique", "manual"])
@@ -387,11 +680,14 @@ def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merg
     assert repeat["links"]["ambiguous_tallanto_matches"] == 1
     assert repeat["import_report"]["write_status_counts"].get("created", 0) == 0
     assert event["match_status"] == "ambiguous"
-    assert event["customer_id"] not in {first_id, second_id}
+    assert event["customer_id"] is None
     assert ambiguous_link["match_class"] == "ambiguous"
+    assert ambiguous_link["customer_id"] is None
     assert conflicts
     assert any(item["conflict_type"] == "tallanto_identity_ambiguous" for item in conflicts)
     assert len(conflicts) == 1
+    assert count_rows(timeline_db, "customer_identities") == 2
+    assert count_rows(timeline_db, "customer_opportunities") == 0
 
 
 def test_apply_refuses_non_staging_and_prod_paths(tmp_path: Path) -> None:
@@ -464,15 +760,22 @@ def test_tallanto_money_api_full_rescan_imports_sanitized_rows_idempotently(tmp_
     second = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=client)
 
     assert first["validation_ok"] is True
-    assert first["api"]["modules"]["most_finances"] == {"pages": 1, "records": 1}
-    assert first["api"]["modules"]["most_abonements"] == {"pages": 1, "records": 1}
+    assert first["api"]["modules"]["most_finances"] == {"pages": 1, "records": 1, "mode": "full"}
+    assert first["api"]["modules"]["most_abonements"] == {"pages": 1, "records": 1, "mode": "full"}
+    assert first["api"]["modules"]["most_class"] == {
+        "pages": 1, "records": 1, "batches": 1, "mode": "id_batches",
+    }
     assert first["api"]["raw_payload_persisted"] is False
     assert first["safety"]["network_calls"] is True
     assert first["safety"]["write_tallanto"] is False
     assert second["import_report"]["write_status_counts"]["duplicate"] >= 4
-    assert client.queries[:2] == [("most_finances", None), ("most_abonements", None)]
-    assert all(query and query.startswith(f"{module}.date_modified >=") for module, query in client.queries[2:])
-    incremental_cutoff = datetime.fromisoformat(client.queries[2][1].split("'", 2)[1]).replace(
+    money_queries = [item for item in client.queries if item[0] in {"most_finances", "most_abonements"}]
+    assert all(query and query.startswith(f"{module}.date_modified <=") for module, query in money_queries[:2])
+    assert all(
+        query and query.startswith(f"{module}.date_modified >=") and "date_modified <=" in query
+        for module, query in money_queries[2:]
+    )
+    incremental_cutoff = datetime.fromisoformat(money_queries[2][1].split("'", 2)[1]).replace(
         tzinfo=TALLANTO_TIMEZONE
     )
     assert datetime.now(TALLANTO_TIMEZONE) - incremental_cutoff < timedelta(minutes=10)
@@ -481,6 +784,9 @@ def test_tallanto_money_api_full_rescan_imports_sanitized_rows_idempotently(tmp_
         assert con.execute(
             "SELECT event_at FROM timeline_events WHERE source_id='most_finances:payment-1'"
         ).fetchone()[0].endswith("+03:00")
+        assert con.execute(
+            "SELECT subject FROM timeline_events WHERE source_id='most_abonements:abonement-1'"
+        ).fetchone()[0] == "Физика ЕГЭ"
 
 
 def test_incremental_payment_reuses_existing_abonement_owner() -> None:
@@ -496,6 +802,173 @@ def test_incremental_payment_reuses_existing_abonement_owner() -> None:
     assert records[0].payload["_contact_id_source"] == "abonement"
 
 
+def test_existing_attendance_supplies_exact_abonement_class_relation(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=None,
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=NOW,
+                source_system="tallanto_attendance_api",
+                source_id="relation-1",
+                source_ref="tallanto:class-contact:relation-1",
+                direction=TimelineDirection.SYSTEM,
+                subject="Физика ЕГЭ",
+                record={"abonement_id": "abonement-1", "most_class_id": "class-1"},
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id=None,
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=NOW,
+                source_system="tallanto_attendance_api",
+                source_id="relation-without-subject",
+                source_ref="tallanto:class-contact:relation-without-subject",
+                direction=TimelineDirection.SYSTEM,
+                record={"abonement_id": "abonement-2", "most_class_id": "class-2"},
+            )
+        )
+
+    classes, abonement_classes = load_existing_money_class_context(timeline_db, "foton")
+    records, stats, _ = build_tallanto_records(
+        {
+            "most_finances": [{"id": "payment-1", "most_abonements_id": "abonement-1"}],
+            "most_abonements": [{"id": "abonement-1", "name": "Абонемент по физике"}],
+        },
+        source_path=None,
+        existing_class_lookup=classes,
+        existing_abonement_classes=abonement_classes,
+    )
+
+    assert classes == {"class-1": {"id": "class-1", "name": "Физика ЕГЭ"}}
+    assert abonement_classes == {"abonement-1": "class-1", "abonement-2": "class-2"}
+    assert records[0].payload["most_class_id"] == "class-1"
+    assert records[1].payload["most_class_id"] == "class-1"
+    assert stats.payment_class_relations_resolved == 1
+    assert stats.abonement_class_relations_resolved == 1
+
+
+def test_strict_fetch_retries_only_current_page_after_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Client:
+        calls = 0
+
+        def get_entry_list(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise TallantoApiError("rate limited", status_code=429, category="rate_limited")
+            return {"entry_list": [{"id": "row-1"}], "total_count": 1, "next_offset": None}
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("scripts.import_tallanto_payments_to_timeline.time.sleep", sleeps.append)
+    client = Client()
+
+    rows, stats = fetch_tallanto_module_strict(
+        client, module="most_abonements", rate_limit_wait_seconds=30.0
+    )
+
+    assert [row["id"] for row in rows] == ["row-1"]
+    assert stats == {"pages": 1, "records": 1}
+    assert client.calls == 2
+    assert sleeps == [30.0]
+
+
+def test_money_api_repairs_legacy_payment_product_relations_once(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    seed_customer_with_tallanto_link(
+        timeline_db,
+        tmp_path,
+        customer_id="existing-1",
+        tallanto_id="contact-1",
+    )
+    config = TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True)
+    run_tallanto_payments_import(
+        config,
+        stdin_text=json.dumps({
+            "most_finances": [{
+                "id": "payment-1", "contact_id": "contact-1", "most_abonements_id": "abonement-1",
+            }],
+            "most_abonements": [{"id": "abonement-1", "contact_id": "contact-1"}],
+        }),
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        store.upsert_ingestion_cursor(
+            "foton",
+            "tallanto_money_api",
+            last_cursor_ts=NOW - timedelta(days=1),
+            actor="test",
+        )
+    client = _TallantoMoneyClient()
+
+    report = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=client)
+
+    money_queries = [item for item in client.queries if item[0] in {"most_finances", "most_abonements"}]
+    assert report["api"]["performance"]["product_backfill"] is True
+    assert report["api"]["performance"]["mode"] == "product_backfill"
+    assert report["api"]["performance"]["module_modes"] == {
+        "most_finances": "full", "most_abonements": "full",
+    }
+    assert money_queries[0][1].startswith("most_finances.date_modified <=")
+    assert money_queries[1][1].startswith("most_abonements.date_modified <=")
+    with sqlite3.connect(timeline_db) as con:
+        subjects = dict(con.execute("SELECT event_type,subject FROM timeline_events"))
+    assert subjects == {"tallanto_payment": "Физика ЕГЭ", "tallanto_abonement": "Физика ЕГЭ"}
+
+    repeat_client = _TallantoMoneyClient()
+    repeat = run_tallanto_money_api_increment(config, env_file=tmp_path / "unused.env", client=repeat_client)
+    assert repeat["api"]["performance"]["product_backfill"] is False
+    assert repeat["api"]["performance"]["module_modes"] == {
+        "most_finances": "incremental", "most_abonements": "incremental",
+    }
+
+
+def test_money_api_never_uses_legacy_import_run_as_its_cursor(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:
+        run = store.start_ingestion_run(
+            tenant_id="foton", source_system="tallanto_crm_call", source_ref="legacy",
+            run_kind="timeline_import", idempotency_key="legacy", actor="test",
+        )
+        store.finish_ingestion_run(run.run_id, status="completed", accepted_count=1, actor="test")
+
+    assert _latest_money_sync(timeline_db, "foton") is None
+
+
+def test_tallanto_class_lookup_batches_ids_and_rejects_foreign_rows() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def get_entry_list(self, *, query: str, **_kwargs):  # type: ignore[no-untyped-def]
+            self.queries.append(query)
+            requested = query.split("(", 1)[1].rsplit(")", 1)[0].replace("'", "").split(",")
+            return {"entry_list": [{"id": value} for value in requested], "total_count": len(requested)}
+
+    client = Client()
+    rows, stats = fetch_tallanto_module_ids_strict(
+        client,
+        module="most_class",
+        ids={f"class-{index}" for index in range(205)},
+        select_fields=("id", "name"),
+    )
+
+    assert len(rows) == 205
+    assert stats == {"pages": 3, "records": 205, "batches": 3}
+    assert len(client.queries) == 3
+
+    class ForeignClient:
+        def get_entry_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return {"entry_list": [{"id": "foreign"}], "total_count": 1}
+
+    with pytest.raises(ValueError, match="unrequested id"):
+        fetch_tallanto_module_ids_strict(
+            ForeignClient(), module="most_class", ids={"wanted"}, select_fields=("id", "name")
+        )
+
+
 def test_tallanto_money_api_rejects_duplicate_ids_across_pages() -> None:
     class DuplicateClient:
         def get_entry_list(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -505,6 +978,28 @@ def test_tallanto_money_api_rejects_duplicate_ids_across_pages() -> None:
 
     with pytest.raises(ValueError, match="duplicate id"):
         fetch_tallanto_module_strict(DuplicateClient(), module="most_finances")
+
+
+def test_tallanto_full_pagination_reads_every_page_in_order() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def get_entry_list(self, *, offset: int, **_kwargs):  # type: ignore[no-untyped-def]
+            self.offsets.append(offset)
+            rows = [{"id": str(index)} for index in range(offset, min(offset + 50, 200))]
+            return {
+                "entry_list": rows,
+                "next_offset": offset + 50 if offset + 50 < 200 else None,
+                "total_count": 200,
+            }
+
+    client = Client()
+    rows, stats = fetch_tallanto_module_strict(client, module="most_finances")
+
+    assert len(rows) == 200
+    assert stats == {"pages": 4, "records": 200}
+    assert client.offsets == [0, 50, 100, 150]
 
 
 def test_tallanto_money_api_requires_total_count() -> None:
@@ -568,6 +1063,8 @@ class _TallantoMoneyClient:
             row = {**payment_row(), "private_note": "must_not_be_stored"}
         elif module == "most_abonements":
             row = {**abonement_row(), "private_note": "must_not_be_stored"}
+        elif module == "most_class":
+            row = class_row()
         else:
             raise AssertionError(module)
         return {"entry_list": [row], "next_offset": 1, "total_count": 1}

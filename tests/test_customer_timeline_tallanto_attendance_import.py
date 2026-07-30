@@ -426,6 +426,29 @@ def test_attendance_api_preserves_visit_no_show_and_unfinished_semantics(
     assert ("не завершён" in summary) is (not active)
 
 
+def test_attendance_api_honours_manual_exact_identity_link(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET match_class='manual' "
+            "WHERE tenant_id='foton' AND link_type='tallanto_student_id' AND link_value='101'"
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["created"] == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT customer_id FROM timeline_events WHERE source_system='tallanto_attendance_api'"
+        ).fetchone() == ("customer:student",)
+
+
 def test_attendance_api_unfinished_update_removes_previous_active_fact(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)

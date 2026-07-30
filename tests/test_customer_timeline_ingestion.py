@@ -16,11 +16,14 @@ from mango_mvp.customer_timeline import (
     BotContextChunk,
     ChannelMessageNormalizer,
     CustomerIdentity,
+    CustomerOpportunity,
+    DerivedSignal,
     IdentityLink,
     IdentityMatchClass,
     IdentityStatus,
     MailMessageNormalizer,
     MangoCallSummaryNormalizer,
+    OpportunityType,
     TallantoSnapshotNormalizer,
     TimelineDirection,
     TimelineEvent,
@@ -676,6 +679,400 @@ def test_fresh_tallanto_card_repairs_historical_duplicate_exact_links(tmp_path: 
     store.close()
 
 
+def test_unrelated_import_does_not_change_stale_unique_exact_owners(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    for customer_id in ("customer:first", "customer:second"):
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id=customer_id, identity_status="strong")
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="telegram_user_id",
+                link_value="777", source_system="legacy", source_ref=f"legacy:{customer_id}",
+            )
+        )
+    assert len(store.list_conflicting_unique_identity_links("foton")) == 2
+
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="test", source_ref="other", payload={}),
+        customers=(CustomerIdentity(tenant_id="foton", customer_id="customer:other", identity_status="partial"),),
+    )
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0]
+    for link in resolved.identity_links:
+        store.upsert_identity_link(link)
+
+    links = store.list_identity_links("foton", link_type="telegram_user_id", link_value="777")
+    assert {link["match_class"] for link in links} == {"strong_unique"}
+    assert len(store.list_conflicting_unique_identity_links("foton")) == 2
+    store.close()
+
+
+def test_fresh_unique_owner_conflicts_with_different_historical_owner(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    for customer_id in ("customer:current", "customer:stale"):
+        store.upsert_customer(
+            CustomerIdentity(tenant_id="foton", customer_id=customer_id, identity_status="strong")
+        )
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="max_user_id",
+                link_value="888", source_system="legacy", source_ref=f"legacy:{customer_id}",
+            )
+        )
+    current_link = IdentityLink(
+        tenant_id="foton", customer_id="customer:current", link_type="max_user_id",
+        link_value="888", source_system="wappi_max", source_ref="chat:888",
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="wappi_max", source_ref="chat:888", payload={}),
+        customers=(CustomerIdentity(tenant_id="foton", customer_id="customer:current", identity_status="strong"),),
+        identity_links=(current_link,),
+    )
+
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0]
+    for link in resolved.identity_links:
+        store.upsert_identity_link(link)
+
+    links = store.list_identity_links("foton", link_type="max_user_id", link_value="888")
+    assert {link["match_class"] for link in links} == {"ambiguous"}
+    assert {link["customer_id"] for link in links} == {None}
+    assert store.list_conflicting_unique_identity_links("foton") == ()
+    assert resolved.conflicts[0]["conflict_type"] == "ambiguous_identity"
+    store.close()
+
+
+def test_two_current_unique_owners_are_both_downgraded() -> None:
+    batches = tuple(
+        TimelineNormalizedBatch(
+            source_record=TimelineSourceRecord(source_system="wappi_telegram", source_ref=customer_id, payload={}),
+            customers=(CustomerIdentity(tenant_id="foton", customer_id=customer_id, identity_status="partial"),),
+            identity_links=(
+                IdentityLink(
+                    tenant_id="foton", customer_id=customer_id, link_type="telegram_user_id",
+                    link_value="999", source_system="wappi_telegram", source_ref=customer_id,
+                ),
+            ),
+        )
+        for customer_id in ("customer:first", "customer:second")
+    )
+
+    resolved = resolve_customer_identity_batches(batches)
+
+    links = [link for batch in resolved.batches for link in batch.identity_links]
+    assert {link.match_class for link in links} == {IdentityMatchClass.AMBIGUOUS}
+    assert {link.customer_id for link in links} == {None}
+    assert [conflict["conflict_type"] for conflict in resolved.batches[0].conflicts] == ["ambiguous_identity"]
+
+
+def test_two_current_unique_owners_quarantine_events_and_drop_duplicate_opportunities(tmp_path: Path) -> None:
+    batches = tuple(
+        TimelineNormalizedBatch(
+            source_record=TimelineSourceRecord(source_system="tallanto_snapshot", source_ref=customer_id, payload={}),
+            customers=(CustomerIdentity(tenant_id="foton", customer_id=customer_id, identity_status="strong"),),
+            identity_links=(
+                IdentityLink(
+                    tenant_id="foton", customer_id=customer_id, link_type="tallanto_student_id",
+                    link_value="dup-student", source_system="tallanto_snapshot", source_ref=customer_id,
+                ),
+                IdentityLink(
+                    tenant_id="foton", customer_id=customer_id, link_type="phone",
+                    link_value=f"+7999000000{1 if customer_id.endswith('first') else 2}",
+                    source_system="tallanto_snapshot", source_ref=customer_id,
+                ),
+            ),
+            opportunities=(CustomerOpportunity(
+                tenant_id="foton", customer_id=customer_id, opportunity_type=OpportunityType.TALLANTO_COURSE,
+                source_system="tallanto_snapshot", source_id="student:dup-student", title="Курс",
+            ),),
+            events=(TimelineEvent(
+                tenant_id="foton", customer_id=customer_id, event_type=TimelineEventType.TALLANTO_STUDENT_SNAPSHOT,
+                event_at=NOW, source_system="tallanto_snapshot", source_id=customer_id,
+                direction=TimelineDirection.SYSTEM, match_status=IdentityMatchClass.STRONG_UNIQUE,
+            ),),
+        )
+        for customer_id in ("customer:first", "customer:second")
+    )
+
+    resolved = resolve_customer_identity_batches(batches)
+
+    assert all(batch.opportunities == () for batch in resolved.batches)
+    assert all(batch.events[0].customer_id is None for batch in resolved.batches)
+    assert all(batch.events[0].match_status == IdentityMatchClass.AMBIGUOUS for batch in resolved.batches)
+    assert all(batch.retired_opportunity_ids for batch in resolved.batches)
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    service = TimelineImportService(store)
+    for batch in resolved.batches:
+        service._apply_batch(batch, actor="test", ingestion_run_id=None)  # noqa: SLF001
+    assert store.summary()["counts"]["customer_opportunities"] == 0
+    assert {row["customer_id"] for row in store.list_identity_links("foton", link_type="tallanto_student_id")} == {None}
+    store.close()
+
+
+def test_existing_opportunity_id_is_reused_when_exact_owner_changes(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    store.upsert_customer(CustomerIdentity(tenant_id="foton", customer_id="customer:a", identity_status="strong"))
+    existing = CustomerOpportunity(
+        tenant_id="foton",
+        customer_id="customer:a",
+        opportunity_type=OpportunityType.TALLANTO_COURSE,
+        source_system="tallanto_snapshot",
+        source_id="student:1",
+        title="Курс",
+    )
+    store.upsert_opportunity(existing)
+    store.upsert_signal(DerivedSignal(
+        tenant_id="foton", customer_id="customer:a", opportunity_id=existing.opportunity_id,
+        signal_type="sales", severity="medium", evidence_text="Старая семья",
+    ))
+    store.upsert_bot_context_chunk(BotContextChunk(
+        tenant_id="foton", customer_id="customer:a", opportunity_id=existing.opportunity_id,
+        chunk_type="manager_only", text="Старая память", source_system="test_source",
+        source_ref="test:old-owner", allowed_for_bot=False, requires_manager_review=True,
+    ))
+    incoming = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="tallanto_snapshot", source_ref="student:1", payload={}),
+        customers=(CustomerIdentity(tenant_id="foton", customer_id="customer:b", identity_status="strong"),),
+        opportunities=(replace(existing, customer_id="customer:b", opportunity_id=None),),
+    )
+
+    batch = resolve_customer_identity_batches((incoming,), store=store).batches[0]
+    TimelineImportService(store)._apply_batch(batch, actor="test", ingestion_run_id=None)  # noqa: SLF001
+
+    row = store.get_opportunity_by_source(
+        "foton", source_system="tallanto_snapshot", source_id="student:1",
+        opportunity_type=OpportunityType.TALLANTO_COURSE.value,
+    )
+    assert row is not None
+    assert row["opportunity_id"] == existing.opportunity_id
+    assert row["customer_id"] == "customer:b"
+    signal = store._con.execute("SELECT customer_id,status,opportunity_id FROM derived_signals").fetchone()
+    chunk = store._con.execute(
+        "SELECT customer_id,superseded_by,opportunity_id FROM bot_context_chunks"
+    ).fetchone()
+    assert tuple(signal) == ("customer:a", "stale", None)
+    assert chunk[0] == "customer:a" and chunk[1] and chunk[2] is None
+    repeat = resolve_customer_identity_batches((incoming,), store=store).batches[0]
+    TimelineImportService(store)._apply_batch(repeat, actor="test", ingestion_run_id=None)  # noqa: SLF001
+    assert store._con.execute("SELECT COUNT(*) FROM derived_signals").fetchone()[0] == 1
+    assert store._con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0] == 1
+    store.close()
+
+
+def test_manual_unique_owner_wins_over_automatic_owner() -> None:
+    manual = IdentityLink(
+        tenant_id="foton", customer_id="customer:manual", link_type="telegram_user_id",
+        link_value="1000", source_system="manual_review", source_ref="manual:1000",
+        match_class=IdentityMatchClass.MANUAL,
+    )
+    automatic = IdentityLink(
+        tenant_id="foton", customer_id="customer:auto", link_type="telegram_user_id",
+        link_value="1000", source_system="amocrm_snapshot", source_ref="amo:1000",
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="test", source_ref="manual-priority", payload={}),
+        customers=(
+            CustomerIdentity(tenant_id="foton", customer_id="customer:manual", identity_status="strong"),
+            CustomerIdentity(tenant_id="foton", customer_id="customer:auto", identity_status="strong"),
+        ),
+        identity_links=(manual, automatic),
+    )
+
+    links = resolve_customer_identity_batches((batch,)).batches[0].identity_links
+
+    assert next(link for link in links if link.source_system == "manual_review").match_class == IdentityMatchClass.MANUAL
+    automatic_result = next(link for link in links if link.source_system == "amocrm_snapshot")
+    assert automatic_result.match_class == IdentityMatchClass.STRONG_UNIQUE
+    assert automatic_result.customer_id == "customer:manual"
+
+
+def test_historical_manual_unique_owner_wins_over_fresh_automatic_owner(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    store.upsert_customer(CustomerIdentity(tenant_id="foton", customer_id="customer:manual", identity_status="strong"))
+    store.upsert_identity_link(IdentityLink(
+        tenant_id="foton", customer_id="customer:manual", link_type="telegram_user_id",
+        link_value="1002", source_system="manual_review", source_ref="manual:1002",
+        match_class=IdentityMatchClass.MANUAL,
+    ))
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="amo:1002", payload={}),
+        customers=(CustomerIdentity(tenant_id="foton", customer_id="customer:auto", identity_status="strong"),),
+        identity_links=(IdentityLink(
+            tenant_id="foton", customer_id="customer:auto", link_type="telegram_user_id",
+            link_value="1002", source_system="amocrm_snapshot", source_ref="amo:1002",
+        ),),
+        events=(TimelineEvent(
+            tenant_id="foton", customer_id="customer:auto", event_type=TimelineEventType.AMO_CONTACT_SNAPSHOT,
+            event_at=NOW, source_system="amocrm_snapshot", source_id="1002",
+            direction=TimelineDirection.SYSTEM, match_status=IdentityMatchClass.STRONG_UNIQUE,
+        ),),
+    )
+
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0]
+
+    manual = store.list_identity_links("foton", link_type="telegram_user_id", link_value="1002")[0]
+    automatic = next(link for link in resolved.identity_links if link.source_system == "amocrm_snapshot")
+    assert manual["customer_id"] == "customer:manual" and manual["match_class"] == "manual"
+    assert automatic.customer_id == "customer:manual"
+    assert automatic.match_class == IdentityMatchClass.STRONG_UNIQUE
+    assert resolved.events[0].customer_id == "customer:manual"
+    assert {customer.customer_id for customer in resolved.customers} == {"customer:manual"}
+    store.close()
+
+
+@pytest.mark.parametrize("order", [("customer:first", "customer:second"), ("customer:second", "customer:first")])
+def test_same_unique_source_ref_conflict_is_order_independent(order: tuple[str, str]) -> None:
+    links = tuple(
+        IdentityLink(
+            tenant_id="foton", customer_id=customer_id, link_type="telegram_user_id",
+            link_value="1003", source_system="amocrm_snapshot", source_ref="same:1003",
+        )
+        for customer_id in order
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="same:1003", payload={}),
+        customers=tuple(
+            CustomerIdentity(tenant_id="foton", customer_id=customer_id, identity_status="strong")
+            for customer_id in order
+        ),
+        identity_links=links,
+    )
+
+    resolved = resolve_customer_identity_batches((batch,)).batches[0]
+
+    assert {link.customer_id for link in resolved.identity_links} == {None}
+    assert {link.match_class for link in resolved.identity_links} == {IdentityMatchClass.AMBIGUOUS}
+    assert resolved.conflicts[0]["entity_refs"] == (
+        "telegram_user_id:1003", "customer:first", "customer:second",
+    )
+
+
+@pytest.mark.parametrize("order", [("customer:first", "customer:second"), ("customer:second", "customer:first")])
+def test_same_unique_source_ref_conflict_across_sequential_imports_is_ambiguous(
+    tmp_path: Path,
+    order: tuple[str, str],
+) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    for customer_id, phone in zip(order, ("+79160000001", "+79160000002")):
+        store.upsert_customer(CustomerIdentity(
+            tenant_id="foton", customer_id=customer_id, identity_status="strong", primary_phone=phone,
+        ))
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id=customer_id, link_type="phone", link_value=phone,
+            source_system="verified_contact", source_ref=f"phone:{customer_id}",
+        ))
+    store.upsert_identity_link(IdentityLink(
+        tenant_id="foton", customer_id=order[0], link_type="telegram_user_id", link_value="sequential",
+        source_system="amocrm_snapshot", source_ref="same:sequential",
+    ))
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="same:sequential", payload={}),
+        customers=(CustomerIdentity(tenant_id="foton", customer_id=order[1], identity_status="strong"),),
+        identity_links=(IdentityLink(
+            tenant_id="foton", customer_id=order[1], link_type="telegram_user_id", link_value="sequential",
+            source_system="amocrm_snapshot", source_ref="same:sequential",
+        ),),
+    )
+
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0]
+
+    assert resolved.identity_links[0].customer_id is None
+    assert resolved.identity_links[0].match_class == IdentityMatchClass.AMBIGUOUS
+    assert resolved.conflicts[0]["conflict_type"] == "ambiguous_identity"
+    store.close()
+
+
+def test_confirmed_unique_owner_resolves_only_matching_identity_conflict(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
+    for value in ("resolved", "neighbor"):
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(f"telegram_user_id:{value}", "customer:a", "customer:b"),
+        )
+    record = TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="resolved", payload={})
+    batch = TimelineNormalizedBatch(
+        source_record=record,
+        customers=(CustomerIdentity(tenant_id="foton", customer_id="customer:a", identity_status="strong"),),
+        identity_links=(IdentityLink(
+            tenant_id="foton", customer_id="customer:a", link_type="telegram_user_id", link_value="resolved",
+            source_system="amocrm_snapshot", source_ref="resolved",
+        ),),
+    )
+    normalizer = type(
+        "IdentityNormalizer",
+        (),
+        {"source_system": "amocrm_snapshot", "normalize": lambda self, unused: batch},
+    )()
+
+    TimelineImportService(store).import_records(
+        (record,), normalizer=normalizer, tenant_id="foton", source_ref="resolved", actor="test",
+    )
+
+    resolved = store.list_conflicts("foton", statuses=("resolved",))["items"]
+    open_items = store.list_conflicts("foton", statuses=("open",))["items"]
+    assert [item["entity_refs"][0] for item in resolved] == ["telegram_user_id:resolved"]
+    assert [item["entity_refs"][0] for item in open_items] == ["telegram_user_id:neighbor"]
+    store.close()
+
+
+@pytest.mark.parametrize("order", [("amo", "wappi"), ("wappi", "amo")])
+def test_customer_primary_phone_uses_source_authority_not_batch_order(order: tuple[str, str]) -> None:
+    observations = {
+        "amo": CustomerIdentity(
+            tenant_id="foton", customer_id="customer:one", identity_status="strong",
+            primary_phone="+79160000001", source_ref="amo:1",
+            summary={"source_system": "amocrm_snapshot"}, created_at=NOW, updated_at=NOW,
+        ),
+        "wappi": CustomerIdentity(
+            tenant_id="foton", customer_id="customer:one", identity_status="partial",
+            primary_phone="+79160000002", source_ref="wappi:1",
+            summary={"source_system": "wappi_telegram"}, created_at=NOW, updated_at=NOW,
+        ),
+    }
+    batches = tuple(
+        TimelineNormalizedBatch(
+            source_record=TimelineSourceRecord(source_system=name, source_ref=name, payload={}),
+            customers=(observations[name],),
+        )
+        for name in order
+    )
+
+    customers = [customer for batch in resolve_customer_identity_batches(batches).batches for customer in batch.customers]
+
+    assert {customer.primary_phone for customer in customers} == {"+79160000001"}
+
+
+def test_two_temporary_owners_merged_by_phone_keep_one_exact_unique_owner() -> None:
+    phone = "+79160000001"
+    batches = tuple(
+        TimelineNormalizedBatch(
+            source_record=TimelineSourceRecord(source_system="test", source_ref=customer_id, payload={}),
+            customers=(
+                CustomerIdentity(
+                    tenant_id="foton", customer_id=customer_id, identity_status="strong", primary_phone=phone,
+                ),
+            ),
+            identity_links=(
+                IdentityLink(
+                    tenant_id="foton", customer_id=customer_id, link_type="phone", link_value=phone,
+                    source_system="test", source_ref=f"phone:{customer_id}",
+                ),
+                IdentityLink(
+                    tenant_id="foton", customer_id=customer_id, link_type="telegram_user_id",
+                    link_value="1001", source_system="test", source_ref=f"telegram:{customer_id}",
+                ),
+            ),
+        )
+        for customer_id in ("customer:first", "customer:second")
+    )
+
+    links = [link for batch in resolve_customer_identity_batches(batches).batches for link in batch.identity_links]
+    telegram_links = [link for link in links if link.link_type.value == "telegram_user_id"]
+
+    assert len({link.customer_id for link in telegram_links}) == 1
+    assert {link.match_class for link in telegram_links} == {IdentityMatchClass.STRONG_UNIQUE}
+
+
 def test_fresh_tallanto_card_keeps_exact_student_owner_when_amo_contact_exists(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(
         tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock()
@@ -932,6 +1329,57 @@ def test_tallanto_conflict_preserves_event_and_later_exact_contact_resolves_it(t
     store.close()
 
 
+def test_current_tallanto_owner_resolves_old_conflict_despite_stale_ambiguous_contact(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    for customer_id in ("customer:first", "customer:stale"):
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton", customer_id=customer_id, identity_status="strong",
+                created_at=NOW, updated_at=NOW,
+            )
+        )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton", customer_id="customer:first", link_type="tallanto_student_id",
+            link_value="student-current", source_system="tallanto_snapshot",
+            source_ref="tallanto:student:student-current",
+        )
+    )
+    for customer_id, match_class in (
+        ("customer:first", IdentityMatchClass.STRONG_UNIQUE),
+        ("customer:stale", IdentityMatchClass.AMBIGUOUS),
+    ):
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=customer_id, link_type="phone",
+                link_value="+79161112233", source_system="legacy",
+                source_ref=f"legacy:phone:{customer_id}", match_class=match_class,
+            )
+        )
+    store.record_conflict(
+        "foton", conflict_type="tallanto_identity_conflict",
+        entity_refs=("tallanto_student_id:student-current",), status="open",
+    )
+
+    TimelineImportService(store).import_records(
+        (
+            TimelineSourceRecord(
+                source_system="tallanto_snapshot", source_ref="snapshot#current",
+                payload={
+                    "tallanto_id": "student-current", "display_name": "Ученик",
+                    "primary_phone": "+79161112233", "snapshot_at": NOW.isoformat(),
+                },
+                observed_at=NOW,
+            ),
+        ),
+        normalizer=TallantoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton", source_ref="current", idempotency_key="current", actor="test",
+    )
+
+    assert store.list_open_tallanto_identity_conflict_values("foton") == ()
+    store.close()
+
+
 def test_tallanto_does_not_merge_phone_and_email_owned_by_different_customers(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
@@ -1081,6 +1529,112 @@ def test_parent_and_single_tallanto_child_keep_separate_customer_ids_on_shared_p
     phone_links = [link for batch in result.batches for link in batch.identity_links if link.link_type.value == "phone"]
     assert {link.customer_id for link in phone_links} == {"customer:child", "customer:parent"}
     assert {link.match_class for link in phone_links} == {IdentityMatchClass.AMBIGUOUS}
+
+
+def test_existing_strong_customer_is_not_downgraded_by_same_customer_amo_lead(tmp_path: Path) -> None:
+    customer_id = "customer:known-parent"
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    store.upsert_customer(
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id=customer_id,
+            identity_status=IdentityStatus.STRONG,
+            primary_phone="+79162223344",
+            primary_email="parent@example.com",
+            source_ref="amo:contact:1001",
+        )
+    )
+    weak_lead = CustomerIdentity(
+        tenant_id="foton",
+        customer_id=customer_id,
+        identity_status=IdentityStatus.PARTIAL,
+        source_ref="amo:lead:5001",
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="amocrm_snapshot", source_ref="lead:5001", payload={}),
+        customers=(weak_lead,),
+    )
+
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0].customers[0]
+
+    assert resolved.identity_status == IdentityStatus.STRONG
+    assert resolved.primary_phone == "+79162223344"
+    assert resolved.primary_email == "parent@example.com"
+    store.close()
+
+
+def test_existing_strong_customer_stays_strong_after_repeat_wappi_observation(tmp_path: Path) -> None:
+    customer_id = "customer:known-parent"
+    db_path = tmp_path / "timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=FixedClock())
+    store.upsert_customer(
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id=customer_id,
+            identity_status=IdentityStatus.STRONG,
+            primary_phone="+79162223344",
+            source_ref="amo:contact:1001",
+        )
+    )
+    wappi_customer = CustomerIdentity(
+        tenant_id="foton",
+        customer_id=customer_id,
+        identity_status=IdentityStatus.PARTIAL,
+        source_ref="wappi:telegram:42",
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="wappi_telegram", source_ref="chat:42", payload={}),
+        customers=(wappi_customer,),
+        identity_links=(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type="telegram_user_id",
+                link_value="42",
+                source_system="wappi_telegram",
+                source_ref="chat:42",
+                match_class=IdentityMatchClass.INFERRED,
+            ),
+        ),
+    )
+
+    first = resolve_customer_identity_batches((batch,), store=store).batches[0].customers[0]
+    store.upsert_customer(first)
+    second = resolve_customer_identity_batches((batch,), store=store).batches[0].customers[0]
+
+    assert first.identity_status == second.identity_status == IdentityStatus.STRONG
+    assert first.primary_phone == second.primary_phone == "+79162223344"
+    store.close()
+
+
+def test_same_customer_ambiguous_observation_still_blocks_identity(tmp_path: Path) -> None:
+    customer_id = "customer:conflicted"
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    store.upsert_customer(
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id=customer_id,
+            identity_status=IdentityStatus.STRONG,
+            primary_phone="+79162223344",
+            source_ref="amo:contact:1001",
+        )
+    )
+    conflict = CustomerIdentity(
+        tenant_id="foton",
+        customer_id=customer_id,
+        identity_status=IdentityStatus.AMBIGUOUS,
+        source_ref="identity:conflict",
+    )
+    batch = TimelineNormalizedBatch(
+        source_record=TimelineSourceRecord(source_system="identity_test", source_ref="conflict:1", payload={}),
+        customers=(conflict,),
+    )
+
+    resolved = resolve_customer_identity_batches((batch,), store=store).batches[0].customers[0]
+
+    assert resolved.identity_status == IdentityStatus.AMBIGUOUS
+    assert resolved.primary_phone == "+79162223344"
+    store.close()
 
 
 @pytest.mark.parametrize("order", [("amo", "tallanto"), ("tallanto", "amo")])

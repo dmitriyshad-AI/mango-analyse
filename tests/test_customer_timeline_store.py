@@ -265,6 +265,8 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert {"content_key", "superseded_by"} <= column_names(db_path, "timeline_events")
     assert "superseded_by" in column_names(db_path, "bot_context_chunks")
     assert "ix_signals_customer_status_expiry" in index_names(db_path)
+    assert "ix_signals_multi_source" in index_names(db_path)
+    assert "ix_chunks_event_owner" in index_names(db_path)
     assert "ix_timeline_events_content_key" in index_names(db_path)
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
     assert summary["backend"] == "sqlite"
@@ -835,6 +837,34 @@ def test_conflict_lookup_matches_exact_customer_ref_not_prefix(tmp_path: Path) -
     assert len(second_page["items"]) == 1
     assert first_page["next_cursor"] == "2"
     assert second_page["next_cursor"] is None
+
+
+def test_unresolved_tallanto_payment_is_part_of_family_conflict_gate(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:payment-owner",
+                identity_status=IdentityStatus.STRONG,
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_payment_owner_unresolved",
+            entity_refs=("customer:customer:payment-owner",),
+        )
+
+    with sqlite3.connect(db_path) as con:
+        assert store_module.open_family_identity_conflict_customer_ids(con, "foton") == frozenset(
+            {"customer:payment-owner"}
+        )
+        assert store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=("customer:payment-owner",),
+        )
 
 
 def test_upserts_core_records_idempotently_after_reopen(tmp_path: Path) -> None:
@@ -1675,3 +1705,249 @@ def test_ingestion_runs_conflicts_and_audit_log_are_persistent(tmp_path: Path) -
     assert audit[0]["entity_type"] == "timeline_conflict"
     assert {item["actor"] for item in audit} >= {"mail_importer", "identity_mapper"}
     reopened.close()
+
+
+def test_hidden_bot_chunk_does_not_retain_ambiguous_opportunity(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    customer = identity()
+    opp = opportunity(customer)
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opp)
+    bot_chunk = BotContextChunk(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        opportunity_id=opp.opportunity_id,
+        source_ref="old-summary",
+        source_system="customer_timeline_summary",
+        chunk_type="manager_only",
+        text="Старая память",
+        allowed_for_bot=False,
+        requires_manager_review=True,
+        created_at=NOW,
+    )
+    store.upsert_bot_context_chunk(bot_chunk)
+    store.retire_bot_context_chunk(bot_chunk.chunk_id, reason="older_snapshot")
+
+    result = store.delete_unreferenced_opportunity("amocrm_snapshot", opp.opportunity_id)
+
+    assert result.status == "deleted"
+    row = store._con.execute(
+        "SELECT opportunity_id,superseded_by,record_json FROM bot_context_chunks WHERE chunk_id=?",
+        (bot_chunk.chunk_id,),
+    ).fetchone()
+    assert row["opportunity_id"] is None
+    assert row["superseded_by"] == "retired:older_snapshot"
+    assert json.loads(row["record_json"])["opportunity_id"] is None
+    store.close()
+
+
+def test_event_owner_change_retires_old_customer_dependencies(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000001")
+    second_customer = identity(phone="+79000000002")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    original = event(first_customer, source_id="owner-change")
+    old_signal = signal(original)
+    old_chunk = chunk(original)
+    store.upsert_event(original)
+    store.upsert_signal(old_signal)
+    store.upsert_bot_context_chunk(old_chunk)
+
+    store.upsert_event(replace(original, customer_id=second_customer.customer_id))
+
+    event_row = store._con.execute(
+        "SELECT customer_id FROM timeline_events WHERE event_id=?", (original.event_id,)
+    ).fetchone()
+    signal_row = store._con.execute(
+        "SELECT event_id,status,record_json FROM derived_signals WHERE signal_id=?", (old_signal.signal_id,)
+    ).fetchone()
+    chunk_row = store._con.execute(
+        "SELECT event_id,superseded_by,record_json FROM bot_context_chunks WHERE chunk_id=?", (old_chunk.chunk_id,)
+    ).fetchone()
+    assert event_row["customer_id"] == second_customer.customer_id
+    assert signal_row["event_id"] is None
+    assert signal_row["status"] == "stale"
+    assert json.loads(signal_row["record_json"])["event_id"] is None
+    assert chunk_row["event_id"] is None
+    assert chunk_row["superseded_by"] == f"event_owner_changed:{original.event_id}"
+    assert json.loads(chunk_row["record_json"])["event_id"] is None
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM bot_context_chunk_fts WHERE chunk_id=?", (old_chunk.chunk_id,)
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000021")
+    second_customer = identity(phone="+79000000022")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    first_event = event(first_customer, source_id="hot-streak-first")
+    last_event = event(first_customer, source_id="hot-streak-last")
+    store.upsert_event(first_event)
+    store.upsert_event(last_event)
+    hot_streak = DerivedSignal(
+        tenant_id="foton",
+        customer_id=first_customer.customer_id,
+        event_id=last_event.event_id,
+        source_event_ids=(first_event.event_id, last_event.event_id),
+        signal_type="hot_streak",
+        severity="high",
+        evidence_text="Два сообщения",
+        created_at=NOW,
+    )
+    store.upsert_signal(hot_streak)
+
+    store.upsert_event(replace(first_event, customer_id=second_customer.customer_id))
+
+    row = store._con.execute(
+        "SELECT event_id,status,record_json FROM derived_signals WHERE signal_id=?",
+        (hot_streak.signal_id,),
+    ).fetchone()
+    payload = json.loads(row["record_json"])
+    assert row["event_id"] == last_event.event_id
+    assert row["status"] == "stale"
+    assert payload["source_event_ids"] == [last_event.event_id]
+    plan = " ".join(
+        str(item)
+        for row in store._con.execute(
+            "EXPLAIN QUERY PLAN SELECT signal_id FROM derived_signals WHERE tenant_id=? "
+            "AND json_array_length(record_json,'$.source_event_ids')>1 "
+            "AND EXISTS (SELECT 1 FROM json_each(record_json,'$.source_event_ids') WHERE value=?)",
+            ("foton", first_event.event_id),
+        )
+        for item in row
+    )
+    assert "ix_signals_multi_source" in plan
+    store.close()
+
+
+def test_reconcile_event_dependency_owners_repairs_legacy_mismatch(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000011")
+    second_customer = identity(phone="+79000000012")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    original = event(first_customer, source_id="legacy-owner-change")
+    old_signal = signal(original)
+    old_chunk = chunk(original)
+    store.upsert_event(original)
+    store.upsert_signal(old_signal)
+    store.upsert_bot_context_chunk(old_chunk)
+    store._con.execute(
+        "UPDATE timeline_events SET customer_id=? WHERE event_id=?",
+        (second_customer.customer_id, original.event_id),
+    )
+    store._commit()
+
+    repaired = store.reconcile_event_dependency_owners("foton", actor="test")
+
+    signal_row = store._con.execute(
+        "SELECT event_id,status FROM derived_signals WHERE signal_id=?", (old_signal.signal_id,)
+    ).fetchone()
+    chunk_row = store._con.execute(
+        "SELECT event_id,superseded_by FROM bot_context_chunks WHERE chunk_id=?", (old_chunk.chunk_id,)
+    ).fetchone()
+    assert repaired == 1
+    assert tuple(signal_row) == (None, "stale")
+    assert tuple(chunk_row) == (None, f"event_owner_reconciled:{original.event_id}")
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 0
+    store.close()
+
+
+def test_reconcile_event_dependency_owners_uses_multi_source_index(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000031")
+    second_customer = identity(phone="+79000000032")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    first_event = event(first_customer, source_id="legacy-multi-first")
+    last_event = event(first_customer, source_id="legacy-multi-last")
+    store.upsert_event(first_event)
+    store.upsert_event(last_event)
+    multi_signal = DerivedSignal(
+        tenant_id="foton",
+        customer_id=first_customer.customer_id,
+        event_id=last_event.event_id,
+        source_event_ids=(first_event.event_id, last_event.event_id),
+        signal_type="hot_streak",
+        severity="high",
+        evidence_text="Два события",
+        created_at=NOW,
+    )
+    store.upsert_signal(multi_signal)
+    store._con.execute(
+        "UPDATE timeline_events SET customer_id=? WHERE event_id=?",
+        (second_customer.customer_id, first_event.event_id),
+    )
+    store._commit()
+
+    plan = " ".join(
+        str(item)
+        for row in store._con.execute(
+            "EXPLAIN QUERY PLAN SELECT d.signal_id FROM derived_signals d,"
+            "json_each(d.record_json,'$.source_event_ids') source_event "
+            "WHERE d.tenant_id=? AND json_array_length(d.record_json,'$.source_event_ids')>1",
+            ("foton",),
+        )
+        for item in row
+    )
+    assert "ix_signals_multi_source" in plan
+    chunk_plan = " ".join(
+        str(item)
+        for row in store._con.execute(
+            "EXPLAIN QUERY PLAN SELECT e.event_id FROM bot_context_chunks b "
+            "JOIN timeline_events e ON e.tenant_id=b.tenant_id AND e.event_id=b.event_id "
+            "WHERE b.tenant_id=? AND b.event_id IS NOT NULL",
+            ("foton",),
+        )
+        for item in row
+    )
+    assert "ix_chunks_event_owner" in chunk_plan
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 1
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 0
+    payload = json.loads(
+        store._con.execute(
+            "SELECT record_json FROM derived_signals WHERE signal_id=?", (multi_signal.signal_id,)
+        ).fetchone()[0]
+    )
+    assert payload["source_event_ids"] == [last_event.event_id]
+    store.close()
+
+
+def test_reconcile_event_dependency_owners_rebuilds_missing_fts_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000021")
+    second_customer = identity(phone="+79000000022")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    events = [event(first_customer, source_id=f"legacy-owner-{index}") for index in range(2)]
+    chunks = [chunk(item) for item in events]
+    for item, context in zip(events, chunks):
+        store.upsert_event(item)
+        store.upsert_bot_context_chunk(context)
+        store._con.execute(
+            "UPDATE timeline_events SET customer_id=? WHERE event_id=?",
+            (second_customer.customer_id, item.event_id),
+        )
+        store._con.execute("DELETE FROM bot_context_chunk_fts_keys WHERE chunk_id=?", (context.chunk_id,))
+    store._commit()
+
+    rebuilds = 0
+    original_rebuild = store._rebuild_fts_indexes
+
+    def counted_rebuild() -> None:
+        nonlocal rebuilds
+        rebuilds += 1
+        original_rebuild()
+
+    monkeypatch.setattr(store, "_rebuild_fts_indexes", counted_rebuild)
+
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 2
+    assert rebuilds == 1
+    assert store.search_timeline("foton", "стоимость", mode="fts")["backend"] == "fts5"
+    store.close()

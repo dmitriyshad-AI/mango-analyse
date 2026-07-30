@@ -12,7 +12,10 @@ from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.derived_signals import _is_active_deal
-from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri
+from mango_mvp.customer_timeline.store import (
+    customer_timeline_readonly_uri,
+    has_open_family_identity_conflict,
+)
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
     MAIL_STAGE2_SOURCE_SYSTEM,
@@ -163,6 +166,9 @@ class BotSafeLookup:
     customer_id: str = ""
     amo_lead_id: str = ""
     amo_contact_id: str = ""
+    channel_source_system: str = ""
+    channel_profile_id: str = ""
+    channel_chat_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -266,6 +272,7 @@ def build_bot_safe_crm_context(
         bot_context = api.bot_context(tenant_id, customer_id, allowed_only=True, limit=max(1, min(int(limit or 3) * 4, 50)))
 
     items = _safe_items_for_brand(bot_context.get("items") or (), active_brand=brand, limit=limit)
+    exact_channel_scope = False
     family_projection = dict(_build_bot_safe_family_projection(
         db_path,
         tenant_id=tenant_id,
@@ -290,8 +297,27 @@ def build_bot_safe_crm_context(
             active_brand=brand,
             limit=limit,
         )
-    elif family_dossier.get("needs_clarification") is True or family_dossier.get("context_blocked") is True:
+    elif family_dossier.get("context_blocked") is True:
         items = ()
+    elif family_dossier.get("needs_clarification") is True:
+        exact_channel_scope = bool(
+            _clean_text(lookup.channel_source_system)
+            and _clean_text(lookup.channel_profile_id)
+            and _clean_text(lookup.channel_chat_id)
+        )
+        items = _safe_items_for_brand(
+            _chat_scoped_bot_items(
+                db_path,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                source_system=_clean_text(lookup.channel_source_system),
+                profile_id=_clean_text(lookup.channel_profile_id),
+                chat_id=_clean_text(lookup.channel_chat_id),
+                limit=max(1, int(limit)) * 4,
+            ),
+            active_brand=brand,
+            limit=limit,
+        )
     if family_item:
         items = (family_item, *items[: max(0, int(limit) - 1)])
     if not items:
@@ -318,6 +344,7 @@ def build_bot_safe_crm_context(
             "bot_context": {
                 "allowed_only": True,
                 "brand_scoped": True,
+                "channel_scope": "exact_current_chat" if exact_channel_scope else "",
                 "items": items,
             },
             "warnings": list(warnings),
@@ -395,12 +422,11 @@ def build_customer_memory_for_prompt(
         if isinstance(timeline_context.get("family_dossier"), Mapping)
         else {}
     )
-    if (
-        family_projection.get("context_blocked") is True
-        or family_projection.get("needs_clarification") is True
-        or family_projection.get("child_scope") in {"blocked", "needs_clarification"}
-    ):
+    if family_projection.get("context_blocked") is True or family_projection.get("child_scope") == "blocked":
         items = ()
+    elif family_projection.get("needs_clarification") is True or family_projection.get("child_scope") == "needs_clarification":
+        bot_context = timeline_context.get("bot_context") if isinstance(timeline_context.get("bot_context"), Mapping) else {}
+        items = _channel_history_items(items) if bot_context.get("channel_scope") == "exact_current_chat" else ()
     family_item = _family_dossier_item(family_projection, active_brand=brand)
     if family_item:
         items = (family_item, *items[: max(0, int(item_limit or 10) - 1)])
@@ -458,7 +484,7 @@ def _resolve_customer_id(
         if not value:
             continue
         requested_types.add(link_type)
-        for link in api.store.list_identity_links(tenant_id, link_type=link_type, link_value=value, limit=10):
+        for link in api.store.list_identity_links(tenant_id, link_type=link_type, link_value=value, limit=500):
             customer_id = _clean_text(link.get("customer_id"))
             if not customer_id:
                 continue
@@ -472,12 +498,19 @@ def _resolve_customer_id(
     if len(candidates) > 1:
         return "", ("ambiguous_identity",)
     customer_id = next(iter(candidates))
-    if not requested_types.issubset(candidates[customer_id]):
+    matched_types = candidates[customer_id]
+    missing_types = requested_types - matched_types
+    contact_only_fallback = missing_types == {"amo_lead_id"} and "amo_contact_id" in matched_types
+    if missing_types and not contact_only_fallback:
         return "", ("customer_identity_incomplete",)
     customer = api.store.get_customer(tenant_id, customer_id)
-    if customer is None or _normalize_tag(customer.get("identity_status")) != "strong":
+    identity_status = _normalize_tag(customer.get("identity_status")) if customer else ""
+    if identity_status != "strong" and not (
+        identity_status == "partial"
+        and "amo_contact_id" in matched_types
+    ):
         return "", ("customer_identity_not_strong",)
-    return customer_id, ()
+    return customer_id, ("amo_lead_identity_missing_contact_used",) if contact_only_fallback else ()
 
 
 def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int) -> tuple[Mapping[str, Any], ...]:
@@ -514,6 +547,15 @@ def _customer_memory_items_for_brand(
         safe_item.pop("summary", None)
         result.append(safe_item)
     return tuple(result)
+
+
+def _channel_history_items(items: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        item
+        for item in items
+        if _normalize_tag(item.get("source_system")) in CHANNEL_HISTORY_SOURCE_SYSTEMS
+        and _normalize_tag(item.get("chunk_type")) == CHANNEL_HISTORY_CHUNK_TYPE
+    )
 
 
 def _safe_item_for_brand(
@@ -838,12 +880,26 @@ def _build_bot_safe_family_projection(
         tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         required = {"family_members_v1", "family_links_v1"}
         if not required.issubset(tables):
+            if "timeline_conflicts" in tables and has_open_family_identity_conflict(
+                con,
+                tenant_id=tenant_id,
+                family_id="",
+                customer_ids=(customer_id,),
+            ):
+                return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
             return {}
         root = con.execute(
             "SELECT family_id, membership_status, confidence FROM family_members_v1 WHERE tenant_id=? AND customer_id=?",
             (tenant_id, customer_id),
         ).fetchone()
         if root is None:
+            if "timeline_conflicts" in tables and has_open_family_identity_conflict(
+                con,
+                tenant_id=tenant_id,
+                family_id="",
+                customer_ids=(customer_id,),
+            ):
+                return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
             return {}
         if (
             _normalize_tag(root["membership_status"]) not in {"confident", "singleton"}
@@ -864,11 +920,11 @@ def _build_bot_safe_family_projection(
         members = [str(row["customer_id"]) for row in member_rows]
         if not 1 <= len(members) <= 8:
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
-        if "timeline_conflicts" in tables and _has_open_family_identity_conflict(
+        if "timeline_conflicts" in tables and has_open_family_identity_conflict(
             con,
             tenant_id=tenant_id,
             family_id=str(root["family_id"]),
-            members=members,
+            customer_ids=members,
         ):
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
         placeholders = ",".join("?" for _ in members)
@@ -976,42 +1032,6 @@ def _build_bot_safe_family_projection(
         }
 
 
-def _has_open_family_identity_conflict(
-    con: sqlite3.Connection,
-    *,
-    tenant_id: str,
-    family_id: str,
-    members: Sequence[str],
-) -> bool:
-    placeholders = ",".join("?" for _ in members)
-    identity_refs = {
-        f"{row['link_type']}:{row['link_value']}"
-        for row in con.execute(
-            f"SELECT link_type, link_value FROM identity_links "
-            f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
-            (tenant_id, *members),
-        )
-    }
-    for row in con.execute(
-        "SELECT conflict_type, record_json FROM timeline_conflicts WHERE tenant_id=? AND status='open'",
-        (tenant_id,),
-    ):
-        conflict_type = _normalize_tag(row["conflict_type"])
-        if not any(marker in conflict_type for marker in ("identity", "family", "brand", "shared_")):
-            continue
-        try:
-            payload = json.loads(str(row["record_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        refs = payload.get("entity_refs", []) if isinstance(payload, Mapping) else []
-        for raw_ref in refs if isinstance(refs, list) else ():
-            ref = str(raw_ref or "")
-            customer_ref = ref.removeprefix("customer:") if ref.startswith("customer:customer:") else ref
-            if customer_ref in members or ref == family_id or ref in identity_refs:
-                return True
-    return False
-
-
 def _child_attributed_bot_items(
     db_path: Path,
     *,
@@ -1049,6 +1069,41 @@ def _child_attributed_bot_items(
         rows = api.store._con.execute(  # noqa: SLF001 - child attribution is not exposed by the public read API.
             "SELECT c.record_json FROM bot_context_chunks c "
             "JOIN event_child_attribution_v1 a ON a.tenant_id=c.tenant_id AND a.event_id=c.event_id "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id LIMIT ?",
+            (*params, max(1, min(int(limit), 200))),
+        ).fetchall()
+    return tuple(json.loads(str(row["record_json"])) for row in rows)
+
+
+def _chat_scoped_bot_items(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    customer_id: str,
+    source_system: str,
+    profile_id: str,
+    chat_id: str,
+    limit: int,
+) -> tuple[Mapping[str, Any], ...]:
+    if source_system not in CHANNEL_HISTORY_SOURCE_SYSTEMS or not profile_id or not chat_id:
+        return ()
+    config = CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=db_path.parent)
+    with CustomerTimelineReadApi.open(config) as api:
+        clauses = [
+            "c.tenant_id=?", "c.customer_id=?", "c.source_system=?",
+            "c.chunk_type='channel_message'", "e.source_system=c.source_system",
+            "json_extract(e.record_json, '$.metadata.profile_id')=?",
+            "json_extract(e.record_json, '$.metadata.chat_id')=?",
+        ]
+        params: list[Any] = [tenant_id, customer_id, source_system, profile_id, chat_id]
+        api.store._append_chunk_filters(  # noqa: SLF001 - same canonical bot-safe boundary as read API.
+            clauses, params, customer_id=None, opportunity_id=None, since=None, until=None,
+            allowed_for_bot=True, table_alias="c",
+        )
+        rows = api.store._con.execute(  # noqa: SLF001 - exact chat scope is not exposed by the public read API.
+            "SELECT c.record_json FROM bot_context_chunks c "
+            "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id LIMIT ?",
             (*params, max(1, min(int(limit), 200))),
@@ -1152,7 +1207,10 @@ def _family_dossier_item(projection: Mapping[str, Any], *, active_brand: str) ->
     if not projection:
         return {}
     if projection.get("needs_clarification") is True:
-        text = "В семье несколько учеников. Сначала коротко уточни, о каком ребёнке идёт речь."
+        text = (
+            "Ребёнок не определён. Не приписывай историю конкретному ребёнку. "
+            "Если ответ зависит от ребёнка, коротко уточни, о каком ребёнке идёт речь."
+        )
     else:
         child = projection.get("child") if isinstance(projection.get("child"), Mapping) else {}
         commerce = projection.get("commerce") if isinstance(projection.get("commerce"), Mapping) else {}

@@ -23,7 +23,11 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
-from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, customer_timeline_readonly_uri
+from mango_mvp.customer_timeline.store import (
+    CustomerTimelineSQLiteStore,
+    authoritative_exact_identity_rows,
+    customer_timeline_readonly_uri,
+)
 from mango_mvp.deal_aware.stage1_snapshot import read_writeoff_xlsx
 
 
@@ -1079,14 +1083,11 @@ def _build_tallanto_client(env_file: Path):
 
 def _load_unique_identity_customers(db: Path, *, tenant_id: str, link_type: str) -> dict[str, str]:
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
+        con.row_factory = sqlite3.Row
         return {
-            str(value): str(customer_id)
-            for value, customer_id in con.execute(
-                "SELECT link_value, MIN(customer_id) FROM identity_links "
-                "WHERE tenant_id=? AND link_type=? AND match_class='strong_unique' "
-                "GROUP BY link_value HAVING COUNT(DISTINCT customer_id)=1",
-                (tenant_id, link_type),
-            )
+            str(row["link_value"]): str(row["customer_id"])
+            for row in authoritative_exact_identity_rows(con, tenant_id, link_types=(link_type,))
+            if int(row["owner_count"]) == 1 and not int(row["has_open_conflict"])
         }
 
 

@@ -231,6 +231,7 @@ def _build_bot_safe_crm_context_for_draft(
     pair = draft_config.pair_for(key) if draft_config is not None else None
     if pair is None:
         return {}
+    profile = draft_config.profiles.get(key.profile_id) if draft_config is not None else None
     db_path = customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     allowed_root = customer_timeline_allowed_root or db_path.parent
     context = build_bot_safe_crm_context(
@@ -241,6 +242,9 @@ def _build_bot_safe_crm_context_for_draft(
             tenant_id=customer_timeline_tenant or DEFAULT_BOT_SAFE_TENANT_ID,
             amo_lead_id=pair.lead_id,
             amo_contact_id=pair.contact_id,
+            channel_source_system="wappi_max" if profile and profile.channel == "max" else "wappi_telegram",
+            channel_profile_id=key.profile_id,
+            channel_chat_id=key.chat_id,
         ),
     )
     return context if context.get("found") else {}

@@ -626,23 +626,6 @@ def build_service_config(
     steps.insert(
         next(index for index, step in enumerate(steps) if step.get("name") == "wappi_history_incremental"),
         {
-            "name": "tallanto_money_api_incremental",
-            "kind": "tallanto_money_api",
-            "enabled": True,
-            "required": True,
-            "config": {
-                "importer_script": str(ROOT / "scripts" / "import_tallanto_payments_to_timeline.py"),
-                "timeline_db": str(timeline_db),
-                "allowed_root": str(allowed_root),
-                "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
-                "tenant_id": "foton",
-                "apply": True,
-            },
-        }
-    )
-    steps.insert(
-        next(index for index, step in enumerate(steps) if step.get("name") == "wappi_history_incremental"),
-        {
             "name": "tallanto_attendance_api_incremental",
             "kind": "tallanto_attendance_api",
             "enabled": True,
@@ -658,7 +641,25 @@ def build_service_config(
         }
     )
     steps.insert(
-        next(index for index, step in enumerate(steps) if step.get("name") == "tallanto_money_api_incremental"),
+        next(index for index, step in enumerate(steps) if step.get("name") == "wappi_history_incremental"),
+        {
+            "name": "tallanto_money_api_incremental",
+            "kind": "tallanto_money_api",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "importer_script": str(ROOT / "scripts" / "import_tallanto_payments_to_timeline.py"),
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "tallanto_env_file": str(DEFAULT_TALLANTO_READONLY_ENV),
+                "tenant_id": "foton",
+                "apply": True,
+                "timeout_seconds": 5400,
+            },
+        }
+    )
+    steps.insert(
+        next(index for index, step in enumerate(steps) if step.get("name") == "tallanto_attendance_api_incremental"),
         {
             "name": "tallanto_cards_sync",
             "kind": "tallanto_cards",
@@ -684,6 +685,20 @@ def build_service_config(
                 "timeline_db": str(timeline_db),
                 "allowed_root": str(allowed_root),
                 "out_path": str(out_root / "family_graph_refresh.json"),
+                "tenant_id": "foton",
+                "apply": True,
+            },
+        }
+    )
+    steps.append(
+        {
+            "name": "derived_signals_refresh",
+            "kind": "derived_signals",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
                 "tenant_id": "foton",
                 "apply": True,
             },

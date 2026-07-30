@@ -77,13 +77,22 @@ def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((customer, f"customer:{customer}")))
 
 
+_BLOCKING_FAMILY_CONFLICT_TYPE_SQL = """(
+  instr(lower(conflict_type),'identity')>0
+  OR instr(lower(conflict_type),'family')>0
+  OR instr(lower(conflict_type),'brand')>0
+  OR instr(lower(conflict_type),'shared_')>0
+  OR lower(conflict_type)='tallanto_payment_owner_unresolved'
+)"""
+
+
 def authoritative_exact_identity_rows(
     con: sqlite3.Connection,
     tenant_id: str,
     *,
     link_types: Sequence[str] | None = None,
 ) -> tuple[sqlite3.Row, ...]:
-    """One read-only source for exact-ID ownership and unresolved conflicts."""
+    """Exact-ID owners; shared family contacts do not override a unique student ID."""
     tenant = normalize_key(tenant_id, "tenant_id")
     normalized_types = tuple(sorted(link_types or UNIQUE_IDENTITY_LINK_TYPES))
     placeholders = ",".join("?" for _ in normalized_types)
@@ -91,7 +100,7 @@ def authoritative_exact_identity_rows(
         con.execute(
             f"""
             WITH authoritative AS (
-              SELECT record_json, link_id, link_type, link_value, customer_id
+              SELECT record_json, link_id, link_type, link_value, customer_id, match_class
               FROM identity_links
               WHERE tenant_id=? AND link_type IN ({placeholders})
                 AND match_class IN ('strong_unique','manual')
@@ -100,22 +109,185 @@ def authoritative_exact_identity_rows(
               SELECT link_type, link_value, COUNT(DISTINCT customer_id) AS owner_count
               FROM authoritative GROUP BY link_type, link_value
             ), open_refs AS (
-              SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref
+              SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref,
+                              lower(conflict.conflict_type) AS conflict_type
               FROM timeline_conflicts AS conflict,
                    json_each(conflict.record_json, '$.entity_refs') AS ref
               WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
+            ), identity_conflict_refs AS MATERIALIZED (
+              SELECT entity_ref FROM open_refs
+              WHERE instr(conflict_type,'identity_conflict')>0
+            ), blocked_customer_ids AS MATERIALIZED (
+              SELECT entity_ref AS customer_id FROM identity_conflict_refs
+              UNION
+              SELECT substr(entity_ref, 10) FROM identity_conflict_refs
+              WHERE entity_ref LIKE 'customer:%'
+              UNION
+              SELECT member.customer_id
+              FROM family_members_v1 AS member
+              JOIN (
+                SELECT entity_ref AS family_id FROM identity_conflict_refs
+                UNION
+                SELECT substr(entity_ref, 8) FROM identity_conflict_refs
+                WHERE entity_ref LIKE 'family:%'
+              ) AS blocked_family ON blocked_family.family_id=member.family_id
+              WHERE member.tenant_id=?
             )
             SELECT authoritative.*, ownership.owner_count,
-                   CASE WHEN open_refs.entity_ref IS NULL THEN 0 ELSE 1 END AS has_open_conflict
+                   CASE WHEN EXISTS (
+                          SELECT 1 FROM open_refs
+                          WHERE entity_ref=authoritative.link_type || ':' || authoritative.link_value
+                        )
+                          OR blocked_customer.customer_id IS NOT NULL
+                        THEN 1 ELSE 0 END AS has_open_conflict
             FROM authoritative
             JOIN ownership USING (link_type, link_value)
-            LEFT JOIN open_refs
-              ON open_refs.entity_ref=authoritative.link_type || ':' || authoritative.link_value
+            LEFT JOIN blocked_customer_ids AS blocked_customer
+              ON blocked_customer.customer_id=authoritative.customer_id
             ORDER BY authoritative.link_type, authoritative.link_value, authoritative.link_id
             """,
-            (tenant, *normalized_types, tenant),
+            (tenant, *normalized_types, tenant, tenant),
         ).fetchall()
     )
+
+
+def open_family_identity_conflict_customer_ids(
+    con: sqlite3.Connection,
+    tenant_id: str,
+) -> frozenset[str]:
+    """Return customers blocked by an open identity/family/brand conflict."""
+    tenant = normalize_key(tenant_id, "tenant_id")
+    tables = {
+        str(row[0])
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if not {"timeline_conflicts", "customer_identities"}.issubset(tables):
+        return frozenset()
+    identity_union = ""
+    if "identity_links" in tables:
+        identity_union = """
+          UNION
+          SELECT link.customer_id
+          FROM identity_links AS link
+          JOIN open_refs AS ref
+            ON ref.entity_ref=link.link_type || ':' || link.link_value
+          WHERE link.tenant_id=? AND link.customer_id IS NOT NULL AND link.customer_id!=''
+          UNION
+          SELECT link.customer_id
+          FROM identity_links AS link
+          JOIN open_refs AS ref ON ref.entity_ref=link.source_ref
+          WHERE link.tenant_id=? AND link.customer_id IS NOT NULL AND link.customer_id!=''
+        """
+    family_union = ""
+    if "family_members_v1" in tables:
+        family_union = """
+          UNION
+          SELECT member.customer_id
+          FROM family_members_v1 AS member
+          JOIN open_refs AS ref ON ref.entity_ref=member.family_id
+          WHERE member.tenant_id=?
+          UNION
+          SELECT sibling.customer_id
+          FROM family_members_v1 AS member
+          JOIN family_members_v1 AS sibling
+            ON sibling.tenant_id=member.tenant_id AND sibling.family_id=member.family_id
+          JOIN directly_blocked AS blocked ON blocked.customer_id=member.customer_id
+          WHERE member.tenant_id=?
+        """
+    params: list[str] = [tenant, tenant, tenant]
+    if identity_union:
+        params.extend((tenant, tenant))
+    if family_union:
+        params.extend((tenant, tenant))
+    rows = con.execute(
+        f"""
+        WITH open_refs AS MATERIALIZED (
+          SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref
+          FROM timeline_conflicts AS conflict,
+               json_each(conflict.record_json, '$.entity_refs') AS ref
+          WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
+            AND {_BLOCKING_FAMILY_CONFLICT_TYPE_SQL.replace('conflict_type', 'conflict.conflict_type')}
+        ), directly_blocked AS (
+          SELECT identity.customer_id
+          FROM customer_identities AS identity
+          JOIN open_refs AS ref ON ref.entity_ref=identity.customer_id
+          WHERE identity.tenant_id=?
+          UNION
+          SELECT identity.customer_id
+          FROM customer_identities AS identity
+          JOIN open_refs AS ref ON ref.entity_ref='customer:' || identity.customer_id
+          WHERE identity.tenant_id=?
+          {identity_union}
+        )
+        SELECT customer_id FROM directly_blocked
+        {family_union}
+        """,
+        params,
+    ).fetchall()
+    blocked = frozenset(str(row[0]) for row in rows if row[0])
+    if "family_members_v1" not in tables:
+        unresolved_family_conflict = con.execute(
+            "SELECT 1 FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
+            "AND instr(lower(conflict_type),'family')>0 LIMIT 1",
+            (tenant,),
+        ).fetchone()
+        if unresolved_family_conflict is not None:
+            return frozenset(
+                str(row[0])
+                for row in con.execute(
+                    "SELECT customer_id FROM customer_identities WHERE tenant_id=?",
+                    (tenant,),
+                )
+                if row[0]
+            )
+    return blocked
+
+
+def has_open_family_identity_conflict(
+    con: sqlite3.Connection,
+    tenant_id: str,
+    *,
+    family_id: str,
+    customer_ids: Sequence[str],
+) -> bool:
+    """Fast per-family form of the same conflict gate used by the batch opener."""
+    tenant = normalize_key(tenant_id, "tenant_id")
+    members = tuple(dict.fromkeys(str(value) for value in customer_ids if str(value)))
+    tables = {
+        str(row[0])
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if not members or "timeline_conflicts" not in tables:
+        return False
+    if not family_id and "family_members_v1" not in tables and con.execute(
+        "SELECT 1 FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
+        "AND instr(lower(conflict_type),'family')>0 LIMIT 1",
+        (tenant,),
+    ).fetchone() is not None:
+        return True
+    refs = {str(family_id)} if family_id else set()
+    for customer_id in members:
+        refs.update(customer_entity_ref_values(customer_id))
+    if "identity_links" in tables:
+        placeholders = ",".join("?" for _ in members)
+        for row in con.execute(
+            f"SELECT link_type,link_value,source_ref FROM identity_links "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            (tenant, *members),
+        ):
+            refs.add(f"{row[0]}:{row[1]}")
+            if row[2]:
+                refs.add(str(row[2]))
+    for row in con.execute(
+        "SELECT record_json FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
+        f"AND {_BLOCKING_FAMILY_CONFLICT_TYPE_SQL}",
+        (tenant,),
+    ):
+        payload = json_loads(row[0])
+        entity_refs = payload.get("entity_refs") if isinstance(payload, Mapping) else ()
+        if isinstance(entity_refs, list) and not refs.isdisjoint(str(value) for value in entity_refs):
+            return True
+    return False
 
 
 FORBIDDEN_PERSISTED_PAYLOAD_KEYS = {
@@ -856,10 +1028,16 @@ class CustomerTimelineSQLiteStore:
               ON derived_signals(tenant_id, customer_id, signal_type);
             CREATE INDEX IF NOT EXISTS ix_signals_event
               ON derived_signals(tenant_id, event_id, severity);
+            CREATE INDEX IF NOT EXISTS ix_signals_multi_source
+              ON derived_signals(tenant_id)
+              WHERE json_array_length(record_json, '$.source_event_ids') > 1;
             CREATE INDEX IF NOT EXISTS ix_chunks_customer_event_time
               ON bot_context_chunks(tenant_id, customer_id, event_at);
             CREATE INDEX IF NOT EXISTS ix_chunks_allowed
               ON bot_context_chunks(tenant_id, allowed_for_bot, requires_manager_review);
+            CREATE INDEX IF NOT EXISTS ix_chunks_event_owner
+              ON bot_context_chunks(tenant_id, event_id, customer_id)
+              WHERE event_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS ix_ingestion_runs_source
               ON ingestion_runs(tenant_id, source_system, status, started_at);
             CREATE INDEX IF NOT EXISTS ix_ingestion_cursors_updated
@@ -1116,6 +1294,21 @@ class CustomerTimelineSQLiteStore:
         if not isinstance(opportunity, CustomerOpportunity):
             raise TypeError("opportunity must be CustomerOpportunity")
         self._assert_customer_exists(opportunity.tenant_id, opportunity.customer_id)
+        existing = self._fetch_one(
+            "SELECT customer_id,record_hash FROM customer_opportunities WHERE opportunity_id=?",
+            (opportunity.opportunity_id,),
+        )
+        if existing is not None and str(existing["customer_id"]) != opportunity.customer_id:
+            self._retire_dependencies(
+                opportunity.tenant_id,
+                opportunity.opportunity_id,
+                reference_column="opportunity_id",
+                keep_customer_id=opportunity.customer_id,
+                reason="opportunity_owner_changed",
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                source_record_hash=str(existing["record_hash"]),
+            )
         return self._upsert_record(
             table="customer_opportunities",
             key_column="opportunity_id",
@@ -1139,6 +1332,215 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
         )
 
+    def _retire_dependencies(
+        self,
+        tenant_id: str,
+        reference_id: str,
+        *,
+        reference_column: str,
+        keep_customer_id: Optional[str],
+        reason: str,
+        actor: str,
+        ingestion_run_id: Optional[str],
+        source_record_hash: str,
+    ) -> None:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        if reference_column not in {"opportunity_id", "event_id"}:
+            raise ValueError(f"unsupported dependency reference: {reference_column}")
+        reference = require_text(reference_id, reference_column)
+        keep = optional_text(keep_customer_id)
+        owner_clause = "" if keep is None else " AND (customer_id IS NULL OR customer_id!=?)"
+        owner_params: tuple[str, ...] = () if keep is None else (keep,)
+        if reference_column == "event_id":
+            direct_rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                f"WHERE tenant_id=? AND event_id=?{owner_clause}",
+                (tenant, reference, *owner_params),
+            ).fetchall()
+            secondary_rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                "WHERE tenant_id=? AND (event_id IS NULL OR event_id!=?) "
+                "AND json_array_length(record_json,'$.source_event_ids')>1 "
+                "AND EXISTS (SELECT 1 FROM json_each(derived_signals.record_json,'$.source_event_ids') "
+                f"AS source_event WHERE CAST(source_event.value AS TEXT)=?){owner_clause}",
+                (tenant, reference, reference, *owner_params),
+            ).fetchall()
+            signal_rows = [*direct_rows, *secondary_rows]
+        else:
+            signal_rows = self._con.execute(
+                "SELECT signal_id,status,record_json FROM derived_signals "
+                f"WHERE tenant_id=? AND {reference_column}=?{owner_clause}",
+                (tenant, reference, *owner_params),
+            ).fetchall()
+        for row in signal_rows:
+            payload = json.loads(str(row["record_json"]))
+            if payload.get(reference_column) == reference:
+                payload[reference_column] = None
+            if reference_column == "event_id":
+                payload["source_event_ids"] = [
+                    value for value in payload.get("source_event_ids", ()) if str(value) != reference
+                ]
+            if str(row["status"]) == "active":
+                payload["status"] = "stale"
+            safe_payload = scrub_timeline_persisted_json(payload)
+            self._con.execute(
+                f"UPDATE derived_signals SET {reference_column}=?,status=?,record_json=?,record_hash=? "
+                "WHERE signal_id=?",
+                (
+                    payload.get(reference_column),
+                    payload.get("status") or row["status"],
+                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    stable_digest(safe_payload),
+                    row["signal_id"],
+                ),
+            )
+        chunk_rows = self._con.execute(
+            "SELECT chunk_id,record_json,superseded_by FROM bot_context_chunks "
+            f"WHERE tenant_id=? AND {reference_column}=?{owner_clause}",
+            (tenant, reference, *owner_params),
+        ).fetchall()
+        retired_by = f"{normalize_key(reason, 'reason')}:{reference}"
+        for row in chunk_rows:
+            payload = json.loads(str(row["record_json"]))
+            payload[reference_column] = None
+            safe_payload = scrub_timeline_persisted_json(payload)
+            self._con.execute(
+                f"UPDATE bot_context_chunks SET {reference_column}=NULL,superseded_by=?,record_json=?,record_hash=? "
+                "WHERE chunk_id=?",
+                (
+                    row["superseded_by"] or retired_by,
+                    json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    stable_digest(safe_payload),
+                    row["chunk_id"],
+                ),
+            )
+        if chunk_rows:
+            self._delete_bot_context_fts_for_chunk_ids(tuple(str(row["chunk_id"]) for row in chunk_rows))
+        if signal_rows or chunk_rows:
+            entity_type = "customer_opportunity" if reference_column == "opportunity_id" else "timeline_event"
+            entity_name = "opportunity" if reference_column == "opportunity_id" else "event"
+            self._append_audit_log(
+                tenant_id=tenant,
+                action=f"{entity_name}_dependencies_retired",
+                entity_type=entity_type,
+                entity_id=reference,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=source_record_hash,
+                after_hash=source_record_hash,
+                metadata={
+                    "reason": reason,
+                    "kept_customer_id": keep,
+                    "signals": len(signal_rows),
+                    "bot_context_chunks": len(chunk_rows),
+                },
+                now=self._now(),
+            )
+
+    def reconcile_event_dependency_owners(
+        self,
+        tenant_id: str,
+        *,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> int:
+        """Retire legacy derived rows whose event now belongs to another customer."""
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        rows = self._con.execute(
+            "WITH signal_refs AS MATERIALIZED ("
+            "SELECT tenant_id,customer_id,event_id FROM derived_signals WHERE tenant_id=? AND event_id IS NOT NULL "
+            "UNION ALL SELECT d.tenant_id,d.customer_id,CAST(source_event.value AS TEXT) "
+            "FROM derived_signals d,json_each(d.record_json,'$.source_event_ids') source_event "
+            "WHERE d.tenant_id=? AND json_array_length(d.record_json,'$.source_event_ids')>1), mismatched AS ("
+            "SELECT e.event_id,e.customer_id,e.record_hash FROM signal_refs r JOIN timeline_events e "
+            "ON e.tenant_id=r.tenant_id AND e.event_id=r.event_id "
+            "WHERE e.customer_id IS NULL OR r.customer_id IS NULL OR r.customer_id!=e.customer_id "
+            "UNION SELECT e.event_id,e.customer_id,e.record_hash FROM bot_context_chunks b "
+            "JOIN timeline_events e ON e.tenant_id=b.tenant_id AND e.event_id=b.event_id "
+            "WHERE b.tenant_id=? AND (e.customer_id IS NULL OR b.customer_id IS NULL OR b.customer_id!=e.customer_id)) "
+            "SELECT DISTINCT event_id,customer_id,record_hash FROM mismatched",
+            (tenant, tenant, tenant),
+        ).fetchall()
+        # A legacy mismatch may point at a chunk already absent from FTS. Keep
+        # the whole repair in one batch so that many such rows trigger at most
+        # one deferred index rebuild instead of one full rebuild per event.
+        with self.bulk_write():
+            for row in rows:
+                self._retire_dependencies(
+                    tenant,
+                    str(row["event_id"]),
+                    reference_column="event_id",
+                    keep_customer_id=optional_text(row["customer_id"]),
+                    reason="event_owner_reconciled",
+                    actor=actor,
+                    ingestion_run_id=ingestion_run_id,
+                    source_record_hash=str(row["record_hash"]),
+                )
+            self._commit()
+        return len(rows)
+
+    def delete_unreferenced_opportunity(
+        self,
+        source_system: str,
+        opportunity_id: str,
+        *,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineStoreWriteResult:
+        """Retire derived rows, then delete an opportunity whose identity became ambiguous."""
+        self._ensure_writable()
+        opportunity = require_text(opportunity_id, "opportunity_id")
+        existing = self._fetch_one(
+            "SELECT tenant_id,source_system,record_hash FROM customer_opportunities WHERE opportunity_id=?",
+            (opportunity,),
+        )
+        if existing is None:
+            return CustomerTimelineStoreWriteResult(
+                "customer_opportunity", opportunity, False, "duplicate", stable_digest({"missing": opportunity})
+            )
+        if str(existing["source_system"]) != normalize_key(source_system, "source_system"):
+            raise ValueError(f"opportunity source mismatch: {opportunity}")
+        self._retire_dependencies(
+            str(existing["tenant_id"]),
+            opportunity,
+            reference_column="opportunity_id",
+            keep_customer_id=None,
+            reason="identity_ambiguous",
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+            source_record_hash=str(existing["record_hash"]),
+        )
+        referenced = any(
+            self._fetch_one(
+                f"SELECT 1 FROM {table} WHERE tenant_id=? AND opportunity_id=? LIMIT 1",
+                (existing["tenant_id"], opportunity),
+            )
+            is not None
+            for table in ("timeline_events", "derived_signals", "bot_context_chunks")
+        )
+        if referenced:
+            return CustomerTimelineStoreWriteResult(
+                "customer_opportunity", opportunity, False, "retained", str(existing["record_hash"])
+            )
+        self._con.execute("DELETE FROM customer_opportunities WHERE opportunity_id=?", (opportunity,))
+        audit = self._append_audit_log(
+            tenant_id=str(existing["tenant_id"]),
+            action="customer_opportunity_deleted_identity_ambiguous",
+            entity_type="customer_opportunity",
+            entity_id=opportunity,
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+            before_hash=str(existing["record_hash"]),
+            after_hash=None,
+            metadata={"reason": "identity_ambiguous"},
+            now=self._now(),
+        )
+        self._commit()
+        return CustomerTimelineStoreWriteResult(
+            "customer_opportunity", opportunity, False, "deleted", str(existing["record_hash"]), audit.audit_id
+        )
+
     def upsert_event(
         self,
         event: TimelineEvent,
@@ -1153,6 +1555,21 @@ class CustomerTimelineSQLiteStore:
             self._assert_customer_exists(event.tenant_id, event.customer_id)
         if event.opportunity_id:
             self._assert_opportunity_exists(event.tenant_id, event.opportunity_id)
+        existing_by_id = self._fetch_one(
+            "SELECT customer_id,record_hash FROM timeline_events WHERE event_id=?",
+            (event.event_id,),
+        )
+        if existing_by_id is not None and optional_text(existing_by_id["customer_id"]) != event.customer_id:
+            self._retire_dependencies(
+                event.tenant_id,
+                event.event_id,
+                reference_column="event_id",
+                keep_customer_id=event.customer_id,
+                reason="event_owner_changed",
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                source_record_hash=str(existing_by_id["record_hash"]),
+            )
         existing_by_dedupe = self._fetch_one(
             "SELECT event_id, record_hash FROM timeline_events WHERE dedupe_key = ?",
             (event.dedupe_key,),
@@ -1387,6 +1804,49 @@ class CustomerTimelineSQLiteStore:
                 self._sync_chunk_fts(chunk, record_hash, created=result.created)
         self._commit()
         return result
+
+    def retire_bot_context_chunk(
+        self,
+        chunk_id: str,
+        *,
+        reason: str,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineStoreWriteResult:
+        """Hide one obsolete derived chunk while keeping its audit trail."""
+        self._ensure_writable()
+        chunk = require_text(chunk_id, "chunk_id")
+        existing = self._fetch_one(
+            "SELECT tenant_id,record_hash,superseded_by FROM bot_context_chunks WHERE chunk_id=?",
+            (chunk,),
+        )
+        if existing is None or existing["superseded_by"]:
+            return CustomerTimelineStoreWriteResult(
+                "bot_context_chunk", chunk, False, "duplicate",
+                str(existing["record_hash"]) if existing is not None else stable_digest({"missing": chunk}),
+            )
+        marker = f"retired:{normalize_key(reason, 'retirement reason')}"
+        self._con.execute(
+            "UPDATE bot_context_chunks SET superseded_by=? WHERE chunk_id=?",
+            (marker, chunk),
+        )
+        self._delete_bot_context_fts_for_chunk_ids((chunk,))
+        audit = self._append_audit_log(
+            tenant_id=str(existing["tenant_id"]),
+            action="bot_context_chunk_retired",
+            entity_type="bot_context_chunk",
+            entity_id=chunk,
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+            before_hash=str(existing["record_hash"]),
+            after_hash=str(existing["record_hash"]),
+            metadata={"reason": reason, "superseded_by": marker},
+            now=self._now(),
+        )
+        self._commit()
+        return CustomerTimelineStoreWriteResult(
+            "bot_context_chunk", chunk, False, "updated", str(existing["record_hash"]), audit.audit_id
+        )
 
     def mark_timeline_events_superseded(
         self,
@@ -1728,6 +2188,48 @@ class CustomerTimelineSQLiteStore:
             actor=actor,
             ingestion_run_id=ingestion_run_id,
         )
+
+    def resolve_conflicts_by_refs(
+        self,
+        tenant_id: str,
+        *,
+        conflict_types: Sequence[str],
+        entity_refs: Sequence[str],
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> int:
+        """Resolve only open conflicts of selected types that cite a confirmed entity ref."""
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        types = tuple(dict.fromkeys(normalize_key(item, "conflict_type") for item in conflict_types))
+        refs = frozenset(require_text(item, "entity_ref") for item in entity_refs)
+        if not types or not refs:
+            return 0
+        placeholders = ",".join("?" for _ in types)
+        rows = self._con.execute(
+            f"SELECT record_json FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
+            f"AND conflict_type IN ({placeholders})",
+            (tenant, *types),
+        ).fetchall()
+        resolved = 0
+        for row in rows:
+            payload = json_loads(row["record_json"])
+            conflict_refs = tuple(str(item) for item in payload.get("entity_refs") or ())
+            if refs.isdisjoint(conflict_refs):
+                continue
+            result = self.record_conflict(
+                tenant,
+                conflict_type=str(payload["conflict_type"]),
+                entity_refs=conflict_refs,
+                severity=str(payload.get("severity") or "medium"),
+                status="resolved",
+                summary=payload.get("summary"),
+                metadata=payload.get("metadata") or {},
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+            )
+            resolved += result.status != "duplicate"
+        return resolved
 
     def record_customer_id_mapping(
         self,

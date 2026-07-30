@@ -20,7 +20,13 @@ from mango_mvp.customer_timeline.source_policy import (
     WAPPI_TELEGRAM_SOURCE_SYSTEM,
     is_non_contentful_call_record,
 )
-from mango_mvp.customer_timeline.store import json_dumps, json_loads, scrub_timeline_persisted_json
+from mango_mvp.customer_timeline.store import (
+    authoritative_exact_identity_rows,
+    json_dumps,
+    json_loads,
+    open_family_identity_conflict_customer_ids,
+    scrub_timeline_persisted_json,
+)
 
 
 STAGE4B_BOT_OPENING_SCHEMA_VERSION = "stage4b_rich_bot_opening_v3"
@@ -97,6 +103,7 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
         client_safe_mail_chunks = _prepare_client_safe_mail_chunk_ids(con, tenant_id=config.tenant_id)
         client_unsafe_mail_chunks = _prepare_client_unsafe_mail_chunk_ids(con, tenant_id=config.tenant_id)
         plan = _load_opening_plan(con, tenant_id=config.tenant_id)
+        openable_chunk_ids = frozenset(str(row["chunk_id"]) for row in plan["rows"])
         report: dict[str, Any] = {
             "schema_version": STAGE4B_BOT_OPENING_SCHEMA_VERSION,
             "mode": "apply" if config.apply else "dry_run",
@@ -116,17 +123,23 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
             "client_unsafe_mail_chunks_indexed": client_unsafe_mail_chunks,
         }
         if config.apply:
-            report["apply"] = _apply_opening_plan(con, plan["rows"], tenant_id=config.tenant_id)
+            report["apply"] = _apply_opening_plan(
+                con,
+                plan["rows"],
+                openable_chunk_ids=openable_chunk_ids,
+                tenant_id=config.tenant_id,
+            )
             con.commit()
         else:
             report["apply"] = {"chunks_updated": 0, "dry_run": True}
         after = _metrics(con, tenant_id=config.tenant_id)
         report["after"] = after
+        opened_chunk_ids = _opened_chunk_ids(con, tenant_id=config.tenant_id)
         report["final_checks"] = {
             "quick_check": con.execute("PRAGMA quick_check").fetchone()[0],
             "foreign_key_check_rows": len(con.execute("PRAGMA foreign_key_check").fetchall()),
-            "candidate_review_violations_after": _candidate_review_violations_count(con, tenant_id=config.tenant_id),
-            "opened_disallowed_identity_after": _opened_disallowed_identity_count(con, tenant_id=config.tenant_id),
+            "candidate_review_violations_after": len(openable_chunk_ids - opened_chunk_ids),
+            "opened_disallowed_identity_after": len(opened_chunk_ids - openable_chunk_ids),
             "opened_mango_processed_non_strong_after": _opened_mango_non_strong_count(con, tenant_id=config.tenant_id),
             "opened_unknown_brand_non_call_after": _opened_unknown_brand_count(
                 con,
@@ -165,7 +178,8 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
           e.match_status,
           ci.identity_status
         FROM bot_context_chunks c
-        JOIN timeline_events e ON e.event_id = c.event_id
+        JOIN timeline_events e
+          ON e.tenant_id = c.tenant_id AND e.event_id = c.event_id AND e.source_system = c.source_system
         JOIN customer_identities ci ON ci.tenant_id = c.tenant_id AND ci.customer_id = c.customer_id
         WHERE c.tenant_id = ?
           AND c.source_system IN ({source_placeholders})
@@ -184,6 +198,11 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
               c.source_system = ?
               AND ci.identity_status = 'partial'
               AND e.match_status = 'strong_unique'
+            )
+            OR (
+              c.source_system IN (?, ?)
+              AND ci.identity_status = 'partial'
+              AND e.match_status IN ('manual', 'strong_unique')
             )
           )
           AND c.customer_id IS NOT NULL
@@ -214,6 +233,13 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             OR (c.source_system = ? AND c.chunk_type = ? AND e.match_status = 'strong_unique')
             OR (c.source_system IN (?, ?) AND e.match_status IN ('manual', 'strong_unique'))
           )
+          AND (
+            c.source_system NOT IN (?, ?)
+            OR (
+              trim(coalesce(json_extract(e.record_json, '$.metadata.contact_id'), '')) != ''
+              AND c.chunk_type='channel_message'
+            )
+          )
         ORDER BY c.event_at, c.chunk_id
         """,
         (
@@ -221,6 +247,8 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             *OPENABLE_SOURCE_SYSTEMS,
             MANGO_PROCESSED_SOURCE_SYSTEM,
             MANGO_PROCESSED_SOURCE_SYSTEM,
+            WAPPI_TELEGRAM_SOURCE_SYSTEM,
+            WAPPI_MAX_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
             TELEGRAM_HISTORY_SOURCE_SYSTEM,
@@ -228,9 +256,12 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             MANGO_CALL_CHUNK_TYPE,
             WAPPI_TELEGRAM_SOURCE_SYSTEM,
             WAPPI_MAX_SOURCE_SYSTEM,
+            WAPPI_TELEGRAM_SOURCE_SYSTEM,
+            WAPPI_MAX_SOURCE_SYSTEM,
         ),
     ).fetchall()
     rows: list[sqlite3.Row] = []
+    amo_contact_owners = _authoritative_amo_contact_owners(con, tenant_id=tenant_id)
     sensitivity_counts: Counter[str] = Counter()
     brand_counts: Counter[str] = Counter()
     unknown_brand_chunks = 0
@@ -241,6 +272,11 @@ def _load_opening_plan(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         source_system = str(row["source_system"])
         payload = json_loads(row["record_json"])
         event_payload = json_loads(row["event_record_json"]) if row["event_record_json"] else {}
+        if source_system in {WAPPI_TELEGRAM_SOURCE_SYSTEM, WAPPI_MAX_SOURCE_SYSTEM}:
+            metadata = event_payload.get("metadata") if isinstance(event_payload.get("metadata"), Mapping) else {}
+            contact_id = str(metadata.get("contact_id") or "").strip()
+            if amo_contact_owners.get(contact_id) != str(row["customer_id"]):
+                continue
         if source_system == MANGO_PROCESSED_SOURCE_SYSTEM and is_non_contentful_call_record(event_payload):
             non_contentful_mango_call_chunks += 1
             continue
@@ -282,12 +318,12 @@ def _apply_opening_plan(
     con: sqlite3.Connection,
     rows: Sequence[sqlite3.Row],
     *,
+    openable_chunk_ids: frozenset[str],
     tenant_id: str,
 ) -> Mapping[str, Any]:
     counters: Counter[str] = Counter({"chunks_updated": 0, "chunks_already_open": 0})
     sensitivity_counts: Counter[str] = Counter()
     brand_counts: Counter[str] = Counter()
-    candidate_chunk_ids = {str(row["chunk_id"]) for row in rows}
     for row in rows:
         source_system = str(row["source_system"])
         payload = json_loads(row["record_json"])
@@ -342,7 +378,11 @@ def _apply_opening_plan(
             (json_dumps(payload), record_hash, tenant_id, row["chunk_id"]),
         )
         counters["chunks_updated"] += 1
-    retracted = _retract_non_openable_chunks(con, candidate_chunk_ids=candidate_chunk_ids, tenant_id=tenant_id)
+    retracted = _retract_non_openable_chunks(
+        con,
+        candidate_chunk_ids=openable_chunk_ids,
+        tenant_id=tenant_id,
+    )
     return {
         **dict(counters),
         **retracted,
@@ -572,76 +612,22 @@ def _opening_tags(
     )
 
 
-def _opened_disallowed_identity_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+def _opened_chunk_ids(con: sqlite3.Connection, *, tenant_id: str) -> frozenset[str]:
     source_placeholders = ",".join("?" for _ in OPENABLE_SOURCE_SYSTEMS)
-    return _scalar(
-        con,
+    return frozenset(
+        str(row[0])
+        for row in con.execute(
         f"""
-        SELECT count(*)
+        SELECT c.chunk_id
         FROM bot_context_chunks c
-        JOIN timeline_events e ON e.event_id = c.event_id
-        LEFT JOIN customer_identities ci ON ci.tenant_id = c.tenant_id AND ci.customer_id = c.customer_id
         WHERE c.tenant_id = ?
           AND c.source_system IN ({source_placeholders})
           AND c.superseded_by IS NULL
-          AND e.superseded_by IS NULL
           AND c.allowed_for_bot = 1
           AND c.requires_manager_review = 0
-          AND (
-            c.customer_id IS NULL
-            OR c.customer_id = ''
-            OR e.customer_id IS NULL
-            OR e.customer_id = ''
-            OR c.customer_id != e.customer_id
-            OR ci.identity_status IS NULL
-            OR (
-              c.source_system != ?
-              AND ci.identity_status != 'strong'
-            )
-            OR (
-              c.source_system = ?
-              AND ci.identity_status NOT IN ('strong', 'partial')
-            )
-            OR (
-              c.source_system = ?
-              AND c.chunk_type != ?
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM temp_stage4b_open_conflict_customers occ
-              WHERE occ.customer_id = c.customer_id
-            )
-            OR (
-              c.source_system = ?
-              AND e.match_status != 'strong_unique'
-            )
-            OR (
-              c.source_system = ?
-              AND e.match_status != 'strong_unique'
-            )
-            OR (
-              c.source_system = ?
-              AND e.match_status != 'strong_unique'
-            )
-            OR (
-              c.source_system IN (?, ?)
-              AND e.match_status NOT IN ('manual', 'strong_unique')
-            )
-          )
         """,
-        (
-            tenant_id,
-            *OPENABLE_SOURCE_SYSTEMS,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-            MANGO_CALL_CHUNK_TYPE,
-            MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
-            TELEGRAM_HISTORY_SOURCE_SYSTEM,
-            MANGO_PROCESSED_SOURCE_SYSTEM,
-            WAPPI_TELEGRAM_SOURCE_SYSTEM,
-            WAPPI_MAX_SOURCE_SYSTEM,
-        ),
+        (tenant_id, *OPENABLE_SOURCE_SYSTEMS),
+        )
     )
 
 
@@ -661,15 +647,6 @@ def _opened_mango_non_strong_count(con: sqlite3.Connection, *, tenant_id: str) -
           AND e.match_status != 'strong_unique'
         """,
         (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
-    )
-
-
-def _candidate_review_violations_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
-    plan = _load_opening_plan(con, tenant_id=tenant_id)
-    return sum(
-        1
-        for row in plan["rows"]
-        if int(row["allowed_for_bot"]) != 1 or int(row["requires_manager_review"]) != 0
     )
 
 
@@ -718,7 +695,7 @@ def _opened_unknown_brand_count(
 def _retract_non_openable_chunks(
     con: sqlite3.Connection,
     *,
-    candidate_chunk_ids: set[str],
+    candidate_chunk_ids: frozenset[str],
     tenant_id: str,
 ) -> Mapping[str, int]:
     rows = con.execute(
@@ -806,30 +783,25 @@ def _prepare_open_conflict_customer_ids(con: sqlite3.Connection, *, tenant_id: s
         )
         """
     )
-    ids: set[str] = set()
-    rows = con.execute(
-        """
-        SELECT record_json
-        FROM timeline_conflicts
-        WHERE tenant_id = ?
-          AND status = 'open'
-        """,
-        (tenant_id,),
-    ).fetchall()
-    for row in rows:
+    ids = open_family_identity_conflict_customer_ids(con, tenant_id)
+    con.executemany(
+        f"INSERT OR IGNORE INTO {_OPEN_CONFLICT_CUSTOMERS_TEMP_TABLE}(customer_id) VALUES (?)",
+        ((customer_id,) for customer_id in sorted(ids)),
+    )
+    return _scalar(con, f"SELECT count(*) FROM {_OPEN_CONFLICT_CUSTOMERS_TEMP_TABLE}")
+
+
+def _authoritative_amo_contact_owners(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[str, str]:
+    owners: dict[str, str] = {}
+    for row in authoritative_exact_identity_rows(con, tenant_id, link_types=("amo_contact_id",)):
         payload = json_loads(row["record_json"])
-        refs = payload.get("entity_refs")
-        if isinstance(refs, list):
-            for ref in refs:
-                normalized = _normalize_conflict_entity_ref(ref)
-                if normalized:
-                    ids.add(normalized)
-    if ids:
-        con.executemany(
-            f"INSERT OR IGNORE INTO {_OPEN_CONFLICT_CUSTOMERS_TEMP_TABLE}(customer_id) VALUES (?)",
-            [(customer_id,) for customer_id in sorted(ids)],
-        )
-    return len(ids)
+        if (
+            payload.get("source_system") == "amocrm_snapshot"
+            and int(row["owner_count"]) == 1
+            and int(row["has_open_conflict"]) == 0
+        ):
+            owners[str(row["link_value"])] = str(row["customer_id"])
+    return owners
 
 
 def _prepare_client_unsafe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: str) -> int:
@@ -953,17 +925,6 @@ def _client_unsafe_mail_chunk_count(con: sqlite3.Connection) -> int:
     if exists is None:
         return 0
     return int(con.execute(f"SELECT count(*) FROM {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}").fetchone()[0])
-
-
-def _normalize_conflict_entity_ref(value: object) -> str:
-    text = str(value or "").strip()
-    if text.startswith("customer:customer:"):
-        return "customer:" + text.removeprefix("customer:customer:")
-    if text.startswith("customer:tallanto:"):
-        return "tallanto:" + text.removeprefix("customer:tallanto:")
-    if text.startswith("customer:") or text.startswith("tallanto:"):
-        return text
-    return ""
 
 
 def _content_brand(payload: Mapping[str, Any], *extra_payloads: Mapping[str, Any]) -> str:

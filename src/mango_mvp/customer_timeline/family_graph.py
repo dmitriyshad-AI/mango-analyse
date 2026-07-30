@@ -278,14 +278,22 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             apply=config.apply,
         )
         if config.apply:
-            _upsert_family_member_rows(con, member_rows)
+            _replace_rows(
+                con,
+                "family_members_v1",
+                tenant_id,
+                [{key: value for key, value in row.items() if key != "schema_version"} for row in member_rows],
+            )
             if not preserve_child_graph:
                 _replace_rows(con, "family_links_v1", tenant_id, family_rows)
             _replace_rows(con, "event_child_attribution_v1", tenant_id, event_rows)
             _replace_rows(con, "opportunity_child_attribution_v1", tenant_id, opportunity_rows)
             _record_run(con, tenant_id=tenant_id, generated_at=generated_at, summary=summary)
             con.commit()
-            summary = {**summary, "write_applied": True, "quick_check": con.execute("PRAGMA quick_check").fetchone()[0]}
+            # The nightly service runs one full quick_check immediately before
+            # publish. Repeating it here scans the 11 GB DB and both FTS indexes
+            # after every derived rebuild without adding another safety boundary.
+            summary = {**summary, "write_applied": True, "quick_check": "deferred_to_nightly_service"}
     if config.out_path:
         out_path = _guard_out(config.out_path, config.allowed_root)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,14 +340,29 @@ def _load_customers(
     filter_sql = ""
     if customer_ids:
         placeholders = ",".join("?" for _ in customer_ids)
-        filter_sql = f" AND customer_id IN ({placeholders})"
+        filter_sql = f" AND customer.customer_id IN ({placeholders})"
         params.extend(customer_ids)
     rows = con.execute(
         f"""
         SELECT customer_id, tenant_id, identity_status, display_name, primary_phone, primary_email
-        FROM customer_identities
+        FROM customer_identities AS customer
         WHERE tenant_id = ?{filter_sql}
-        ORDER BY customer_id
+          AND (
+            EXISTS (
+              SELECT 1 FROM timeline_events AS event
+              WHERE event.tenant_id=customer.tenant_id AND event.customer_id=customer.customer_id
+                AND event.superseded_by IS NULL
+            )
+            OR EXISTS (
+              SELECT 1 FROM identity_links AS link
+              WHERE link.tenant_id=customer.tenant_id AND link.customer_id=customer.customer_id
+            )
+            OR EXISTS (
+              SELECT 1 FROM customer_opportunities AS opportunity
+              WHERE opportunity.tenant_id=customer.tenant_id AND opportunity.customer_id=customer.customer_id
+            )
+          )
+        ORDER BY customer.customer_id
         """,
         tuple(params),
     ).fetchall()
@@ -697,37 +720,6 @@ def _build_family_member_rows(
     return rows
 
 
-def _upsert_family_member_rows(con: sqlite3.Connection, rows: Sequence[Mapping[str, Any]]) -> None:
-    con.executemany(
-        """
-        INSERT INTO family_members_v1 (
-          tenant_id, family_id, customer_id, membership_status, confidence, reason,
-          created_at, updated_at, record_hash, record_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(tenant_id, customer_id) DO UPDATE SET
-          family_id=excluded.family_id, membership_status=excluded.membership_status,
-          confidence=excluded.confidence, reason=excluded.reason,
-          updated_at=excluded.updated_at, record_hash=excluded.record_hash,
-          record_json=excluded.record_json
-        """,
-        [
-            (
-                row["tenant_id"],
-                row["family_id"],
-                row["customer_id"],
-                row["membership_status"],
-                row["confidence"],
-                row["reason"],
-                row["created_at"],
-                row["updated_at"],
-                row["record_hash"],
-                row["record_json"],
-            )
-            for row in rows
-        ],
-    )
-
-
 def _shared_family_phone_customers(con: sqlite3.Connection, *, tenant_id: str) -> set[str]:
     result: set[str] = set()
     rows = con.execute(
@@ -937,7 +929,7 @@ def _build_family_rows(
             child_key = (
                 stable_child_keys.get(tallanto_student_ids[0], _tallanto_child_key(context.tenant_id, tallanto_student_ids[0]))
                 if len(tallanto_student_ids) == 1
-                else _child_key(customer_id, group.name_key)
+                else _child_key(context.family_id, group.name_key)
             )
             status, confidence, reason = _family_confidence(group, valid_groups=valid_groups, identity_risks=identity_risks)
             payload = {

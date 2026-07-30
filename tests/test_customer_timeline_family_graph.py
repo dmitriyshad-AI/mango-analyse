@@ -42,6 +42,7 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
     )
 
     assert report["llm_calls_total"] == 0
+    assert report["quick_check"] == "deferred_to_nightly_service"
     assert report["family_confidence_counts"]["high"] == 1
     with sqlite3.connect(db_path) as con:
         family = con.execute("SELECT canonical_name, status, confidence FROM family_links_v1").fetchone()
@@ -53,6 +54,64 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
     assert member == ("singleton", "medium")
     assert event[0:3] == ("matched", "high", "single_child_family")
     assert event[3]
+
+
+def test_family_graph_skips_identity_without_any_primary_evidence(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:real", phone="+79000000001")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:empty-shell",
+                identity_status="partial",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+
+    report = build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True)
+    )
+
+    assert report["family_members_total"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT customer_id FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall() == [("customer:real",)]
+
+
+def test_family_graph_removes_stale_member_without_primary_evidence(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_customer(
+            CustomerIdentity(
+                tenant_id="foton",
+                customer_id="customer:empty-shell",
+                identity_status="partial",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO family_members_v1 (tenant_id,family_id,customer_id,membership_status,"
+            "confidence,reason,created_at,updated_at,record_hash,record_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:stale", "customer:empty-shell", "singleton", "medium",
+                "stale", NOW.isoformat(), NOW.isoformat(), "hash", "{}",
+            ),
+        )
+        con.commit()
+
+    report = build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True)
+    )
+
+    assert report["family_members_total"] == 0
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM family_members_v1").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("match_status", ("strong_unique", "manual"))
@@ -97,6 +156,47 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path, m
     assert len({row[1] for row in members}) == 1
     assert {row[2] for row in members} == {"confident"}
     assert report["multi_customer_families"] == 1
+
+
+def test_family_graph_uses_one_fallback_child_key_for_same_child_in_one_family(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    profiles_db = _profiles_db(tmp_path)
+    for index, customer_id in enumerate(("customer:parent", "customer:student"), start=1):
+        phone = f"+7900000003{index}"
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _insert_profile(profiles_db, profile_id=customer_id, phone=phone)
+        _insert_field(
+            profiles_db,
+            profile_id=customer_id,
+            field="child_name",
+            value="Мария Иванова",
+            child_key=f"profile_{index}",
+        )
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            f"student-{index}",
+            "one-family@example.com",
+        )
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT family_id,customer_id,child_key FROM family_links_v1 "
+            "WHERE canonical_name='Мария Иванова' ORDER BY customer_id"
+        ).fetchall()
+    assert len(rows) == 2
+    assert len({row[0] for row in rows}) == 1
+    assert len({row[2] for row in rows}) == 1
 
 
 def test_family_graph_uses_tallanto_amo_contact_as_family_relation(tmp_path: Path) -> None:

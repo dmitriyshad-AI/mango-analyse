@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import hard_codes_from_text
-from mango_mvp.customer_timeline.derived_signals import _is_access_event, _is_active_deal
+from mango_mvp.customer_timeline.derived_signals import (
+    _is_access_event,
+    _is_active_deal,
+    dedupe_customer_payment_rows as dedupe_family_payment_rows,
+)
 from mango_mvp.customer_timeline.freshness import (
     MANAGER_REQUIRED_SOURCE_SYSTEMS,
     manager_freshness_gate,
@@ -30,6 +34,7 @@ from mango_mvp.customer_timeline.store import (
     authoritative_exact_identity_rows,
     customer_entity_ref_values,
     customer_timeline_readonly_uri,
+    open_family_identity_conflict_customer_ids,
 )
 from mango_mvp.knowledge_base.price_axes_catalog import extract_price_query_axes, select_price
 
@@ -102,19 +107,10 @@ OWNER50_SIGNAL_PRIORITY = {
     # канонических сигналов, ранжируется последним.
     "hot_streak": 3,
 }
-# требование архитектора #10 (по итогам ревью 25.07): 1000 -- реалистичный потолок для
-# продакшена, который резал классификацию ДО неё же (SQL LIMIT отсекал сигналы раньше,
-# чем classify_family успевал их увидеть). Теперь это чистый safety-budget того же порядка,
-# что и остальные (см. OWNER50_EVENT_SCAN_LIMIT/OWNER50_RELATED_SCAN_LIMIT ниже) -- "сначала
-# классифицировать ВСЕХ, потом limit=50" на выходе build_owner50_family_workbook.
-# требование аудиторов BLOCKED #4 (25.07): поднятие потолка само по себе НЕ чинило "молчаливое
-# исключение до классификации" -- этот лимит ограничивает только СКАНИРОВАНИЕ сигналов, а
-# универсум семей (candidate_families в _owner50_snapshot) раньше всё равно строился ИЗ
-# отфильтрованных сигналов. Теперь candidate_families -- независимое множество (все семьи
-# тенанта), см. _owner50_snapshot ниже -- OWNER50_SIGNAL_SCAN_LIMIT остался тем, чем и был:
-# бюджетом на сканирование самих сигналов, не на состав семей.
+# Эти лимиты только ловят неконтролируемый рост чтения. Универсум семей всегда
+# берётся целиком из family_members_v1, до итогового limit=50.
 OWNER50_SIGNAL_SCAN_LIMIT = 100_000
-OWNER50_EVENT_SCAN_LIMIT = 100_000
+OWNER50_EVENT_SCAN_LIMIT = 250_000
 OWNER50_RELATED_SCAN_LIMIT = 100_000
 OWNER50_STAFF_TEST_RE = re.compile(
     r"\b(?:staff|employee|test|system|сотрудник\w*|тестов\w*|служебн\w*|системн\w*)\b",
@@ -398,8 +394,9 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
     payment = _mapping(family.get("payment"))
 
     exclusions: list[str] = []
+    precondition_missing: list[str] = []
     if str(identity.get("identity_status") or "").strip().casefold() != "strong":
-        exclusions.append("identity_not_strong")
+        precondition_missing.append("identity_not_strong")
     unrecognized_brand_present = bool(raw_brands - OWNER50_BRAND_ALIASES.keys()) or bool(
         family.get("unrecognized_brand_present")
     )
@@ -438,7 +435,10 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
             "action_text": "",
         }
 
-    missing: list[str] = []
+    missing: list[str] = [
+        *precondition_missing,
+        *(str(code) for code in family.get("missing") or () if str(code)),
+    ]
 
     if len(brands) == 0 or unrecognized_brand_present:
         missing.append("brand_unproven")
@@ -563,35 +563,6 @@ def _owner50_classify_family_unsafe(family: Mapping[str, Any], *, as_of: datetim
         "assumptions": _owner50_family_assumptions(family, children),
         "action_text": owner50_action_text(family),
     }
-
-
-def dedupe_family_payment_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Схлопывает сырые строки customer_purchases_v1 в один аггрегат на customer_id, НЕ
-    складывая period='all_time' поверх более узких периодов того же клиента (owner50_pravki
-    bug #3, "оплаты не удваивать (fact+all_time)"). На вход -- любое подмножество строк
-    customer_purchases_v1 (уже отфильтрованное по money_kind='fact'). На выход -- dict
-    customer_id -> {total_in, total_out, deals_cnt, last_purchase_at, period_used, rows_used}.
-    Суммировать РЕЗУЛЬТАТ по нескольким customer_id (по членам семьи) -- корректно."""
-    by_customer: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        customer_id = str(row.get("customer_id") or "")
-        if customer_id:
-            by_customer[customer_id].append(row)
-
-    result: dict[str, dict[str, Any]] = {}
-    for customer_id, customer_rows in by_customer.items():
-        all_time_row = next((row for row in customer_rows if str(row.get("period") or "") == "all_time"), None)
-        chosen = [all_time_row] if all_time_row is not None else customer_rows
-        last_purchase_values = [value for value in (_parse_iso_datetime(row.get("last_purchase_at")) for row in chosen) if value is not None]
-        result[customer_id] = {
-            "total_in": sum(float(row.get("total_in") or 0) for row in chosen),
-            "total_out": sum(float(row.get("total_out") or 0) for row in chosen),
-            "deals_cnt": sum(int(row.get("deals_cnt") or 0) for row in chosen),
-            "last_purchase_at": max(last_purchase_values, default=None),
-            "period_used": "all_time" if all_time_row is not None else "sum_of_periods",
-            "rows_used": len(chosen),
-        }
-    return result
 
 
 def build_evidence_record(
@@ -1661,6 +1632,7 @@ def _owner50_family_rows(
     tenant_id: str,
     as_of: datetime,
     price_axes_catalog: Mapping[str, Any] | Sequence[Any] | Path | str | None = None,
+    family_ids: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], list[tuple[str, ...]]]:
     required = ("family_members_v1", "family_links_v1", "customer_identities", "identity_links",
                 "customer_opportunities", "derived_signals", "timeline_events", "timeline_conflicts")
@@ -1686,15 +1658,15 @@ def _owner50_family_rows(
         include_purchases="customer_purchases_v1" in available,
         include_objections="customer_objections_v1" in available,
     )
+    selected_families = frozenset(str(value) for value in family_ids if str(value))
     grouped: dict[str, dict[str, list[sqlite3.Row]]] = defaultdict(lambda: defaultdict(list))
     for kind in ("signals", "members", "children", "opportunities", "events", "risk_signals", "purchases", "objections"):
         for row in snapshot[kind]:
-            grouped[str(row["family_id"])][kind].append(row)
-    conflict_refs = {
-        str(ref)
-        for row in snapshot["conflicts"]
-        for ref in (_safe_json(row["record_json"]).get("entity_refs") or ())
-    }
+            family_id = str(row["family_id"])
+            if selected_families and family_id not in selected_families:
+                continue
+            grouped[family_id][kind].append(row)
+    blocked_customer_ids = open_family_identity_conflict_customer_ids(con, tenant_id)
     exact_origins = authoritative_exact_identity_rows(
         con, tenant_id, link_types=OWNER50_PERSON_CONTACT_LINK_TYPES,
     )
@@ -1759,14 +1731,15 @@ def _owner50_family_rows(
             f"{_clean_text(row['display_name']) or 'Имя не подтверждено'} [{row['customer_id']}]"
             for row in members
         )
-        reasons: list[str] = []
+        hard_reasons: list[str] = []
+        missing_reasons: list[str] = []
         identity_brands: set[str] = set()
         unrecognized_brand_present = False
         for member in members:
             if str(member["membership_status"]) not in {"confident", "singleton"} or str(member["confidence"]) not in {"high", "medium"}:
-                reasons.append("family_ambiguous")
+                hard_reasons.append("family_ambiguous")
             if str(member["identity_status"] or "") != "strong":
-                reasons.append("identity_not_strong")
+                missing_reasons.append("identity_not_strong")
             record = _safe_json(member["identity_record_json"])
             metadata = _mapping(record.get("metadata"))
             raw_brands = {
@@ -1788,14 +1761,14 @@ def _owner50_family_rows(
             if any(str(value).strip().casefold() in {"1", "true", "yes", "да"} for value in no_contact) or str(
                 metadata.get("contact_allowed", "true")
             ).casefold() in {"0", "false", "no", "нет"}:
-                reasons.append("structured_no_contact")
+                hard_reasons.append("structured_no_contact")
             roles = [member["customer_id"], member["display_name"], *(metadata.get(key) for key in ("role", "kind", "type", "tags"))]
             if OWNER50_STAFF_TEST_RE.search(" ".join(_plain_values(roles))):
-                reasons.append("staff_test_system")
-            if set(customer_entity_ref_values(str(member["customer_id"]))) & conflict_refs:
-                reasons.append("open_identity_conflict")
+                hard_reasons.append("staff_test_system")
+            if str(member["customer_id"]) in blocked_customer_ids:
+                hard_reasons.append("open_identity_conflict")
             if str(member["customer_id"]) in conflicted_person_origins:
-                reasons.append("open_identity_conflict")
+                hard_reasons.append("open_identity_conflict")
             # требование E5 (26.07): identity_status=="strong" одного недостаточно -- READY
             # требует ещё и структурного person-contact origin (стабильный AMO-контакт или
             # Tallanto person ID). Его доказывает source_ref либо общий strong/manual индекс
@@ -1803,21 +1776,21 @@ def _owner50_family_rows(
             if not _owner50_has_person_contact_origin(
                 str(member["customer_id"]), linked_person_origins,
             ):
-                reasons.append("person_origin_unproven")
+                missing_reasons.append("person_origin_unproven")
             if str(member["customer_id"]) not in verified_person_names:
-                reasons.append("human_name_unproven")
+                missing_reasons.append("human_name_unproven")
 
         opportunities = [
             row for row in family["opportunities"]
             if not row["closed_at"] and _is_active_deal(dict(row))
         ]
         if any(_owner50_structured_staff_test(row) for row in opportunities):
-            reasons.append("staff_test_system")
+            hard_reasons.append("staff_test_system")
         product_offers = _product_interest_values(None, opportunities)
         offers = _dedupe_texts([*product_offers, *(_clean_text(row["title"]) for row in opportunities)])
         children = family["children"]
         if any(str(row["status"]) != "confident" or str(row["confidence"]) not in {"high", "medium"} for row in children):
-            reasons.append("child_ambiguous")
+            hard_reasons.append("child_ambiguous")
         verified_children = [
             row for row in children
             if str(row["status"]) == "confident" and str(row["confidence"]) in {"high", "medium"}
@@ -1848,13 +1821,13 @@ def _owner50_family_rows(
         grade_values.update(int(match.group(1)) for offer in offers for match in OWNER50_OFFER_GRADE_RE.finditer(offer))
         if verified_children:
             if all(child_is_graduate):
-                reasons.append("grade_11_or_graduate")
+                hard_reasons.append("grade_11_or_graduate")
             elif not any(1 <= grade <= 10 for grade in grade_values):
-                reasons.append("child_grade_unproven")
+                missing_reasons.append("child_grade_unproven")
         elif 11 in grade_values or any(OWNER50_GRADUATE_RE.search(offer) for offer in offers):
-            reasons.append("grade_11_or_graduate")
+            hard_reasons.append("grade_11_or_graduate")
         elif not any(1 <= grade <= 10 for grade in grade_values):
-            reasons.append("child_grade_unproven")
+            missing_reasons.append("child_grade_unproven")
         grade_offer = next(
             (
                 offer
@@ -1885,7 +1858,7 @@ def _owner50_family_rows(
         # жёстким EXCLUDED ("brand_ambiguous") -- это настоящий конфликт, не "непроверено".
         brands = identity_brands | child_brands
         if len(brands) > 1:
-            reasons.append("brand_ambiguous")
+            hard_reasons.append("brand_ambiguous")
         offer_brands = {
             brand
             for offer in offers
@@ -1897,7 +1870,7 @@ def _owner50_family_rows(
         # конфликт (нечего конфликтовать), а тот же brand_unproven; "if brands and ...", как и
         # у _owner50_product_confirmed (та же логика для этого же случая чуть выше по файлу).
         if brands and offer_brands - brands:
-            reasons.append("brand_ambiguous")
+            hard_reasons.append("brand_ambiguous")
 
         all_events = [_owner50_event(row) for row in family["events"]]
         events = [row for row in all_events if not _clean_text(row["superseded_by"])]
@@ -1936,15 +1909,15 @@ def _owner50_family_rows(
                     )
                 )
             ):
-                reasons.append("staff_test_system")
+                hard_reasons.append("staff_test_system")
             event_is_inbound = bool(event) and _clean_text(event.get("direction")).casefold() == "inbound"
             customer_risk_text = " ".join(
                 filter(None, (_clean_text(signal_record.get("evidence_text")), event_text))
             ).casefold()
             if event_is_inbound and hard_codes_from_text(customer_risk_text):
-                reasons.append("durable_p0_history")
+                hard_reasons.append("durable_p0_history")
             if event_is_inbound and any(phrase in customer_risk_text for phrase in MANAGER_OPTOUT_PHRASES):
-                reasons.append("durable_opt_out")
+                hard_reasons.append("durable_opt_out")
             signal_brands = {
                 brand
                 for text in (signal_text, event_text)
@@ -1954,7 +1927,7 @@ def _owner50_family_rows(
             # требование E1 (продолжение): тот же guard -- пустой brands не "конфликтует" с
             # брендом, упомянутым в тексте сигнала/события, это по-прежнему brand_unproven.
             if brands and signal_brands - brands:
-                reasons.append("brand_ambiguous")
+                hard_reasons.append("brand_ambiguous")
             if event_id and event is None:
                 quality_reasons.append("signal_evidence_not_owned")
             elif event and str(event["customer_id"]) != str(signal["customer_id"]):
@@ -1973,7 +1946,7 @@ def _owner50_family_rows(
                     quality_reasons.append("active_deal_missing")
         for event in events:
             if _owner50_event_is_explicit_refund(event):
-                reasons.append("durable_p0_history")
+                hard_reasons.append("durable_p0_history")
             if _clean_text(event.get("direction")).casefold() != "inbound":
                 continue
             text = _event_text(event)
@@ -1984,10 +1957,10 @@ def _owner50_family_rows(
             if event_p0_codes and not _owner50_event_p0_is_stale_and_resolved(
                 event, codes=event_p0_codes, all_events=all_events, as_of=as_of,
             ):
-                reasons.append("durable_p0_history")
+                hard_reasons.append("durable_p0_history")
             if any(phrase in text for phrase in MANAGER_OPTOUT_PHRASES):
-                reasons.append("durable_opt_out")
-        reasons.extend(f"active_risk_signal:{row['signal_type']}" for row in family["risk_signals"])
+                hard_reasons.append("durable_opt_out")
+        hard_reasons.extend(f"active_risk_signal:{row['signal_type']}" for row in family["risk_signals"])
         # bug-fix owner50_pravki #3 (continued): dedupe_family_payment_rows схлопывает
         # сырые per-period строки в один аггрегат на customer_id (all_time побеждает
         # более узкие периоды того же клиента, никогда не складываются). Суммирование
@@ -2012,10 +1985,10 @@ def _owner50_family_rows(
             f"{customer_id} [{', '.join(sorted(periods))}]"
             for customer_id, periods in periods_by_customer.items()
         )
-        if reasons:
+        if hard_reasons:
             control.extend(
                 _owner50_control_rows(
-                    family_id, reasons,
+                    family_id, hard_reasons,
                     brand="; ".join(sorted(brands)) if brands else "",
                     family_members="; ".join(member_texts),
                 )
@@ -2294,6 +2267,7 @@ def _owner50_family_rows(
                     "identity_status": "strong",
                     "display_name": _clean_text(contact["display_name"]),
                 },
+                "missing": tuple(dict.fromkeys(missing_reasons)),
                 "brands": brands,
                 "unrecognized_brand_present": unrecognized_brand_present,
                 "family_conflict": False,
@@ -2536,7 +2510,8 @@ def _owner50_family_rows(
             }
             control.extend(
                 _owner50_control_rows(
-                    family_id, rejected or ["no_active_outreach_signal"],
+                    family_id,
+                    [*dict.fromkeys(missing_reasons), *(rejected or ["no_active_outreach_signal"])],
                     status=(
                         "candidate"
                         if not rejected or set(rejected).issubset(candidate_signal_reasons)
@@ -2561,29 +2536,14 @@ def _owner50_snapshot(
     include_objections: bool = False,
 ) -> Mapping[str, list[sqlite3.Row]]:
     types = tuple(OWNER50_SIGNAL_PRIORITY)
-    # требование аудиторов BLOCKED #4 (полная классификация семей, 25.07): candidate_families
-    # теперь -- ВСЕ семьи тенанта (из family_members_v1), а не только те, у кого нашёлся
-    # активный канонический сигнал. РАНЬШЕ было наоборот: candidate_signals ОПРЕДЕЛЯЛ
-    # candidate_families -- семья без такого сигнала не попадала НИКУДА (даже в control),
-    # молча исчезая ДО _owner50_family_rows/classify_family. Поднятие OWNER50_SIGNAL_SCAN_LIMIT
-    # до 100k (см. комментарий у константы) НЕ чинило эту дыру -- это был просто больший потолок
-    # для того же самого фильтра. Теперь candidate_signals -- сигналы ВНУТРИ уже полного
-    # множества семей, а не источник этого множества; safety-бюджет на итоговое число семей
-    # обеспечивает уже существующая проверка OWNER50_RELATED_SCAN_LIMIT на "members" ниже (у
-    # каждой семьи >=1 строка в family_members_v1, поэтому переполнение семей обязательно
-    # переполнит и её).
+    # Полный универсум идёт напрямую из family_members_v1. Активные сигналы только
+    # обогащают семьи и не определяют, попадёт ли семья в классификацию.
     candidate_cte = f"""
-        WITH candidate_families AS (
-          SELECT DISTINCT member.family_id
-          FROM family_members_v1 AS member
-          WHERE member.tenant_id=?
-        ),
-        candidate_signals AS (
+        WITH candidate_signals AS (
           SELECT signal.*
           FROM derived_signals AS signal
           JOIN family_members_v1 AS member
             ON member.tenant_id=signal.tenant_id AND member.customer_id=signal.customer_id
-          JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
           WHERE signal.tenant_id=? AND signal.status='active'
             AND signal.signal_type IN ({','.join('?' for _ in types)})
             AND (signal.expires_at IS NULL OR signal.expires_at='' OR julianday(signal.expires_at)>=julianday(?))
@@ -2595,7 +2555,6 @@ def _owner50_snapshot(
         )
     """
     base_params: tuple[Any, ...] = (
-        tenant_id,
         tenant_id,
         *types,
         as_of.isoformat(),
@@ -2624,7 +2583,6 @@ def _owner50_snapshot(
                    identity.primary_phone, identity.primary_email,
                    identity.record_json AS identity_record_json
             FROM family_members_v1 AS member
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             LEFT JOIN customer_identities AS identity
               ON identity.tenant_id=member.tenant_id AND identity.customer_id=member.customer_id
             WHERE member.tenant_id=?
@@ -2636,7 +2594,6 @@ def _owner50_snapshot(
             """
             SELECT child.*
             FROM family_links_v1 AS child
-            JOIN candidate_families AS candidate ON candidate.family_id=child.family_id
             WHERE child.tenant_id=?
             LIMIT ?
             """,
@@ -2648,9 +2605,10 @@ def _owner50_snapshot(
             FROM customer_opportunities AS opportunity
             JOIN family_members_v1 AS member
               ON member.tenant_id=opportunity.tenant_id AND member.customer_id=opportunity.customer_id
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE opportunity.tenant_id=?
-            ORDER BY opportunity.closed_at IS NULL DESC, opportunity.opened_at DESC
+              AND opportunity.opportunity_type='amo_deal'
+              AND opportunity.closed_at IS NULL
+            ORDER BY opportunity.opened_at DESC
             LIMIT ?
             """,
             (tenant_id, OWNER50_RELATED_SCAN_LIMIT + 1),
@@ -2661,9 +2619,26 @@ def _owner50_snapshot(
             FROM timeline_events AS event
             JOIN family_members_v1 AS member
               ON member.tenant_id=event.tenant_id AND member.customer_id=event.customer_id
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE event.tenant_id=?
               AND COALESCE(json_extract(event.record_json,'$.metadata.pending_attribution'),0) NOT IN (1,'true')
+              AND (
+                event.direction IN ('inbound','outbound')
+                OR event.event_type IN (
+                  'amo_contact_snapshot','tallanto_student_snapshot','tallanto_group','tallanto_abonement'
+                )
+                OR json_extract(event.record_json,'$.record.module')='most_class'
+                OR (
+                  event.event_type='tallanto_payment'
+                  AND lower(COALESCE(
+                    json_extract(event.record_json,'$.record.payment_direction'),
+                    json_extract(event.record_json,'$.record.direction'), ''
+                  )) IN ('refund','return','возврат')
+                )
+                OR event.event_id IN (
+                  SELECT signal.event_id FROM candidate_signals AS signal
+                  WHERE signal.event_id IS NOT NULL AND signal.event_id!=''
+                )
+              )
             LIMIT ?
             """,
             (tenant_id, OWNER50_EVENT_SCAN_LIMIT + 1),
@@ -2674,7 +2649,6 @@ def _owner50_snapshot(
             FROM derived_signals AS risk
             JOIN family_members_v1 AS member
               ON member.tenant_id=risk.tenant_id AND member.customer_id=risk.customer_id
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE risk.tenant_id=? AND risk.status='active'
               AND risk.signal_type IN ({','.join('?' for _ in MANAGER_OUTREACH_RISK_SIGNAL_TYPES)})
               AND (risk.expires_at IS NULL OR risk.expires_at='' OR julianday(risk.expires_at)>=julianday(?))
@@ -2705,7 +2679,6 @@ def _owner50_snapshot(
             FROM customer_objections_v1 AS objection
             JOIN family_members_v1 AS member
               ON member.tenant_id=objection.tenant_id AND member.customer_id=objection.customer_id
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE objection.tenant_id=? AND objection.speaker='client'
             ORDER BY objection.extracted_at DESC
             LIMIT ?
@@ -2727,7 +2700,6 @@ def _owner50_snapshot(
             FROM customer_purchases_v1 AS purchase
             JOIN family_members_v1 AS member
               ON member.tenant_id=purchase.tenant_id AND member.customer_id=purchase.customer_id
-            JOIN candidate_families AS candidate ON candidate.family_id=member.family_id
             WHERE purchase.tenant_id=? AND purchase.money_kind='fact'
               AND purchase.computability='computed'
             ORDER BY purchase.customer_id, purchase.period
@@ -3346,7 +3318,7 @@ def _event_summary_for_manager(row: sqlite3.Row) -> str:
         elif subject:
             summary = f"Письмо «{subject}»: полный текст в базе."
     elif event_type == "tallanto_attendance" and subject:
-        summary = f"Списание за занятие: {subject}."
+        summary = f"Запись Tallanto о занятии: {subject}."
     return summary
 
 

@@ -27,6 +27,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
     TimelineEventType,
     TimelineParticipant,
+    UNIQUE_IDENTITY_LINK_TYPES,
 )
 from mango_mvp.customer_timeline.ids import (
     normalize_email,
@@ -56,6 +57,22 @@ CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION = "customer_timeline_ingestion_v1"
 TALLANTO_TIMEZONE = ZoneInfo("Europe/Moscow")
 PHONE_IDENTITY_LINK_TYPES = frozenset({"phone", "mango_client_phone", "whatsapp_phone"})
 CONTACT_IDENTITY_LINK_TYPES = PHONE_IDENTITY_LINK_TYPES | {"email"}
+UNIQUE_IDENTITY_AUTHORITY_SOURCES = {
+    "amo_contact_id": frozenset({"amocrm_snapshot"}),
+    "max_user_id": frozenset({"amocrm_snapshot"}),
+    "telegram_user_id": frozenset({"amocrm_snapshot"}),
+    "tallanto_student_id": frozenset({"tallanto_snapshot"}),
+    "channel_session_id": frozenset({"telegram_history"}),
+}
+EXACT_AMO_IDENTITY_AUTHORITIES = frozenset({"wappi_amo_widget", "amo_talk_authoritative"})
+CUSTOMER_OBSERVATION_SOURCE_PRIORITY = {
+    "tallanto_snapshot": 40,
+    "amocrm_snapshot": 30,
+    "mail_archive": 20,
+    "telegram_history": 10,
+    "wappi_telegram": 10,
+    "wappi_max": 10,
+}
 FORBIDDEN_IMPORT_HINTS = (
     "requests",
     "urllib",
@@ -111,6 +128,7 @@ class TimelineNormalizedBatch:
     signals: Sequence[DerivedSignal] = field(default_factory=tuple)
     bot_context_chunks: Sequence[BotContextChunk] = field(default_factory=tuple)
     conflicts: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    retired_opportunity_ids: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_record, TimelineSourceRecord):
@@ -130,6 +148,11 @@ class TimelineNormalizedBatch:
         object.__setattr__(self, "signals", tuple(self.signals))
         object.__setattr__(self, "bot_context_chunks", tuple(self.bot_context_chunks))
         object.__setattr__(self, "conflicts", tuple(dict(item) for item in self.conflicts))
+        object.__setattr__(
+            self,
+            "retired_opportunity_ids",
+            tuple(dict.fromkeys(require_text(item, "retired_opportunity_id") for item in self.retired_opportunity_ids)),
+        )
         assert_bot_context_not_allowed_for_restricted_source(self)
 
     def counts(self) -> Mapping[str, int]:
@@ -348,6 +371,23 @@ class TimelineImportService:
                     if result.status != "duplicate":
                         changed_customer_ids.add(mapping.old_customer_id)
                         changed_customer_ids.add(mapping.new_customer_id)
+                resolved_identity_refs = {
+                    f"{link.link_type.value}:{link.link_value}"
+                    for batch in batches
+                    for link in batch.identity_links
+                    if link.customer_id
+                    and link.link_type.value in UNIQUE_IDENTITY_LINK_TYPES
+                    and link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
+                }
+                resolved_conflicts = self.store.resolve_conflicts_by_refs(
+                    tenant,
+                    conflict_types=("ambiguous_identity",),
+                    entity_refs=tuple(sorted(resolved_identity_refs)),
+                    actor=actor,
+                    ingestion_run_id=run_id,
+                )
+                if resolved_conflicts:
+                    write_status_counts["resolved"] = write_status_counts.get("resolved", 0) + resolved_conflicts
                 if run_id:
                     self.store.finish_ingestion_run(
                         run_id,
@@ -411,6 +451,15 @@ class TimelineImportService:
                     status=conflict.get("status") or "open",
                     summary=conflict.get("summary"),
                     metadata=conflict.get("metadata") or {},
+                    actor=actor,
+                    ingestion_run_id=ingestion_run_id,
+                )
+            )
+        for opportunity_id in batch.retired_opportunity_ids:
+            results.append(
+                self.store.delete_unreferenced_opportunity(
+                    batch.source_record.source_system,
+                    opportunity_id,
                     actor=actor,
                     ingestion_run_id=ingestion_run_id,
                 )
@@ -1424,6 +1473,27 @@ def resolve_customer_identity_batches(
     store: Optional[CustomerTimelineSQLiteStore] = None,
 ) -> CustomerIdResolutionResult:
     normalized_batches = tuple(batches)
+    incoming_unique_owners: dict[tuple[str, str, str], set[str]] = {}
+    incoming_manual_owners: dict[tuple[str, str, str], set[str]] = {}
+    incoming_canonical_owners: dict[tuple[str, str, str], set[str]] = {}
+    incoming_refresh_owners: dict[tuple[str, str, str], set[str]] = {}
+    incoming_unique_links: list[IdentityLink] = []
+    for batch in normalized_batches:
+        for link in batch.identity_links:
+            if (
+                link.customer_id
+                and link.link_type.value in UNIQUE_IDENTITY_LINK_TYPES
+                and link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
+            ):
+                key = (link.tenant_id, link.link_type.value, link.link_value)
+                incoming_unique_links.append(link)
+                incoming_unique_owners.setdefault(key, set()).add(link.customer_id)
+                if link.match_class == IdentityMatchClass.MANUAL:
+                    incoming_manual_owners.setdefault(key, set()).add(link.customer_id)
+                if link.source_system in UNIQUE_IDENTITY_AUTHORITY_SOURCES.get(link.link_type.value, ()):
+                    incoming_canonical_owners.setdefault(key, set()).add(link.customer_id)
+                if str(link.evidence.get("identity_authority") or "") in EXACT_AMO_IDENTITY_AUTHORITIES:
+                    incoming_refresh_owners.setdefault(key, set()).add(link.customer_id)
     customers_by_id: dict[str, CustomerIdentity] = {}
     links_by_customer: dict[str, list[IdentityLink]] = {}
     source_refs_by_customer: dict[str, set[str]] = {}
@@ -1436,7 +1506,12 @@ def resolve_customer_identity_batches(
 
     for batch in normalized_batches:
         for customer in batch.customers:
-            customers_by_id[customer.customer_id] = customer
+            previous = customers_by_id.get(customer.customer_id)
+            customers_by_id[customer.customer_id] = (
+                _merge_customer_observation(previous, customer)
+                if previous is not None
+                else customer
+            )
             refs = source_refs_by_customer.setdefault(customer.customer_id, set())
             if customer.source_ref:
                 refs.add(customer.source_ref)
@@ -1465,14 +1540,51 @@ def resolve_customer_identity_batches(
             source_refs_by_customer=source_refs_by_customer,
             phone_to_customers=phone_to_customers,
         )
-    incoming_link_ids = {
-        link.link_id for batch in normalized_batches for link in batch.identity_links
+    stored_unique_links = _stored_unique_identity_links(store, incoming_unique_owners)
+    stored_unique_owners: dict[tuple[str, str, str], set[str]] = {}
+    stored_manual_owners: dict[tuple[str, str, str], set[str]] = {}
+    stored_canonical_owners: dict[tuple[str, str, str], set[str]] = {}
+    continuity_owners: dict[tuple[str, str, str], set[str]] = {}
+    incoming_link_ids = {link.link_id for link in incoming_unique_links}
+    for link in stored_unique_links:
+        if not link.customer_id:
+            continue
+        key = (link.tenant_id, link.link_type.value, link.link_value)
+        stored_unique_owners.setdefault(key, set()).add(link.customer_id)
+        if link.match_class == IdentityMatchClass.MANUAL:
+            stored_manual_owners.setdefault(key, set()).add(link.customer_id)
+        if link.source_system in UNIQUE_IDENTITY_AUTHORITY_SOURCES.get(link.link_type.value, ()):
+            stored_canonical_owners.setdefault(key, set()).add(link.customer_id)
+        incoming_owners = incoming_unique_owners.get(key, set())
+        if link.link_id in incoming_link_ids and (
+            link.customer_id in incoming_owners
+            or not incoming_owners.intersection(existing_customer_ids)
+        ):
+            continuity_owners.setdefault(key, set()).add(link.customer_id)
+    combined_unique_owners = {
+        key: incoming_unique_owners[key] | stored_unique_owners.get(key, set())
+        for key in incoming_unique_owners
     }
+    combined_manual_owners = {
+        key: incoming_manual_owners.get(key, set()) | stored_manual_owners.get(key, set())
+        for key in incoming_unique_owners
+    }
+    combined_canonical_owners = {
+        key: incoming_canonical_owners.get(key, set()) | stored_canonical_owners.get(key, set())
+        for key in incoming_unique_owners
+    }
+    preferred_incoming_owner = _preferred_unique_owners(
+        combined_unique_owners,
+        manual_owners=combined_manual_owners,
+        refresh_owners=incoming_refresh_owners,
+        continuity_owners=continuity_owners,
+        canonical_owners=combined_canonical_owners,
+    )
+    premerge_blocked_unique_keys = set(combined_unique_owners) - set(preferred_incoming_owner)
     exact_identity_updates = _existing_unique_identity_link_updates(
         store,
-        tenant_ids={customer.tenant_id for customer in customers_by_id.values()},
-        refreshed_link_ids=incoming_link_ids,
-        refreshed_tallanto_keys=repairable_tallanto_keys,
+        stored_links=stored_unique_links,
+        preferred_incoming_owner=preferred_incoming_owner,
     )
     downgraded_exact_link_ids = {link.link_id for link in exact_identity_updates}
     historical_tallanto_conflict_keys = {
@@ -1512,6 +1624,7 @@ def resolve_customer_identity_batches(
         return (
             link.match_class in {IdentityMatchClass.STRONG_UNIQUE, IdentityMatchClass.MANUAL}
             and link.link_id not in downgraded_exact_link_ids
+            and (link.tenant_id, link.link_type.value, link.link_value) not in premerge_blocked_unique_keys
         )
 
     tallanto_by_customer: dict[str, set[str]] = {}
@@ -1520,12 +1633,16 @@ def resolve_customer_identity_batches(
             if link.link_type.value == "tallanto_student_id" and is_authoritative_exact(link):
                 tallanto_by_customer.setdefault(customer_id, set()).add(link.link_value)
     contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
+    authoritative_contact_identity_to_customers: dict[tuple[str, str, str], set[str]] = {}
     for customer_id, links in links_by_customer.items():
         for link in links:
             if link.link_type.value not in CONTACT_IDENTITY_LINK_TYPES:
                 continue
             kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
-            contact_identity_to_customers.setdefault((link.tenant_id, kind, link.link_value), set()).add(customer_id)
+            identity_key = (link.tenant_id, kind, link.link_value)
+            contact_identity_to_customers.setdefault(identity_key, set()).add(customer_id)
+            if is_authoritative_exact(link):
+                authoritative_contact_identity_to_customers.setdefault(identity_key, set()).add(customer_id)
     for customer_id, links in links_by_customer.items():
         student_ids = tallanto_by_customer.get(customer_id, set())
         if not student_ids:
@@ -1652,7 +1769,7 @@ def resolve_customer_identity_batches(
                 if (contact_link.tenant_id, kind, contact_link.link_value) in family_contact_keys:
                     continue
                 existing_contact_holders.update(
-                    contact_identity_to_customers.get(
+                    authoritative_contact_identity_to_customers.get(
                         (contact_link.tenant_id, kind, contact_link.link_value),
                         set(),
                     )
@@ -1661,6 +1778,7 @@ def resolve_customer_identity_batches(
             if (
                 tallanto_key in historical_tallanto_conflict_keys
                 and len(existing_contact_holders) != 1
+                and len(existing_tallanto_holders) != 1
             ) or len(existing_contact_holders) > 1 or (
                 existing_tallanto_holders
                 and existing_contact_holders - existing_tallanto_holders
@@ -1777,6 +1895,65 @@ def resolve_customer_identity_batches(
         tenant_ids={customer.tenant_id for customer in customers_by_id.values()},
         family_contact_keys=family_contact_keys,
     )
+    final_unique_owners = {
+        key: {new_id_by_old.get(customer_id, customer_id) for customer_id in customer_ids}
+        for key, customer_ids in combined_unique_owners.items()
+    }
+    final_manual_owners = {
+        key: {new_id_by_old.get(customer_id, customer_id) for customer_id in customer_ids}
+        for key, customer_ids in combined_manual_owners.items()
+    }
+    final_continuity_owners = {
+        key: {new_id_by_old.get(customer_id, customer_id) for customer_id in customer_ids}
+        for key, customer_ids in continuity_owners.items()
+    }
+    final_canonical_owners = {
+        key: {new_id_by_old.get(customer_id, customer_id) for customer_id in customer_ids}
+        for key, customer_ids in combined_canonical_owners.items()
+    }
+    final_refresh_owners = {
+        key: {new_id_by_old.get(customer_id, customer_id) for customer_id in customer_ids}
+        for key, customer_ids in incoming_refresh_owners.items()
+    }
+    final_preferred_owner = _preferred_unique_owners(
+        final_unique_owners,
+        manual_owners=final_manual_owners,
+        refresh_owners=final_refresh_owners,
+        continuity_owners=final_continuity_owners,
+        canonical_owners=final_canonical_owners,
+    )
+    unique_identity_conflicts = tuple(
+        {
+            "tenant_id": tenant_id,
+            "conflict_type": "ambiguous_identity",
+            "entity_refs": (f"{link_type}:{link_value}", *sorted(final_unique_owners[key])),
+            "severity": "high",
+            "status": "open",
+            "summary": "Current source assigns one unique external ID to several customers.",
+            "metadata": {"identity_repair": "current_source_conflict"},
+        }
+        for key in sorted(set(final_unique_owners) - set(final_preferred_owner))
+        for tenant_id, link_type, link_value in (key,)
+    )
+
+    def rewrite_link(link: IdentityLink) -> IdentityLink:
+        customer_id = new_id_by_old.get(link.customer_id, link.customer_id)
+        contact_kind = "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value
+        family_ambiguous = (
+            link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
+            and (link.tenant_id, contact_kind, link.link_value) in family_contact_keys
+        )
+        unique_key = (link.tenant_id, link.link_type.value, link.link_value)
+        preferred_owner = final_preferred_owner.get(unique_key)
+        if preferred_owner:
+            customer_id = preferred_owner
+        unique_ambiguous = unique_key in final_unique_owners and preferred_owner is None
+        return replace(
+            link,
+            customer_id=None if unique_ambiguous else customer_id,
+            match_class=IdentityMatchClass.AMBIGUOUS if family_ambiguous or unique_ambiguous else link.match_class,
+            confidence=min(link.confidence or 1.0, 0.5) if family_ambiguous or unique_ambiguous else link.confidence,
+        )
 
     resolved_batches: list[TimelineNormalizedBatch] = []
     mappings: list[CustomerIdResolutionMapping] = []
@@ -1827,6 +2004,7 @@ def resolve_customer_identity_batches(
                         for event in batch.events
                     ),
                     artifacts=batch.artifacts,
+                    retired_opportunity_ids=batch.retired_opportunity_ids,
                     conflicts=(
                         *batch.conflicts,
                         {
@@ -1842,20 +2020,52 @@ def resolve_customer_identity_batches(
                 )
             )
             continue
+        preferred_by_customer: dict[str, set[str]] = {}
+        blocked_customers: set[str] = set()
+        for link in batch.identity_links:
+            if not link.customer_id or link.link_type.value not in UNIQUE_IDENTITY_LINK_TYPES:
+                continue
+            key = (link.tenant_id, link.link_type.value, link.link_value)
+            if key not in final_unique_owners:
+                continue
+            preferred = final_preferred_owner.get(key)
+            if preferred is None:
+                blocked_customers.add(link.customer_id)
+            else:
+                preferred_by_customer.setdefault(link.customer_id, set()).add(preferred)
+
+        def entity_owner(customer_id: str | None) -> str | None:
+            if not customer_id:
+                return None
+            if customer_id in blocked_customers:
+                return None
+            preferred = preferred_by_customer.get(customer_id, set())
+            if len(preferred) > 1:
+                return None
+            if preferred:
+                return next(iter(preferred))
+            return new_id_by_old.get(customer_id, customer_id)
+
         opportunity_id_by_old: dict[str, str] = {}
+        retired_opportunity_ids: set[str] = set(batch.retired_opportunity_ids)
         rewritten_customers: list[CustomerIdentity] = []
         seen_customer_ids: set[str] = set()
         for customer in batch.customers:
-            new_customer_id = new_id_by_old[customer.customer_id]
+            merged_customer_id = new_id_by_old[customer.customer_id]
+            new_customer_id = entity_owner(customer.customer_id)
+            if new_customer_id is None:
+                continue
+            if new_customer_id not in merged_customers:
+                continue
             if new_customer_id not in seen_customer_ids:
                 rewritten_customers.append(merged_customers[new_customer_id])
                 seen_customer_ids.add(new_customer_id)
-            if customer.customer_id != new_customer_id:
+            if customer.customer_id != merged_customer_id:
                 mappings.append(
                     CustomerIdResolutionMapping(
                         tenant_id=customer.tenant_id,
                         old_customer_id=customer.customer_id,
-                        new_customer_id=new_customer_id,
+                        new_customer_id=merged_customer_id,
                         reason=reason_by_old[customer.customer_id],
                         source_refs=tuple(sorted(source_refs_by_customer.get(customer.customer_id, ()))),
                         metadata={
@@ -1865,42 +2075,39 @@ def resolve_customer_identity_batches(
                     )
                 )
 
-        rewritten_links = tuple(
-            replace(
-                link,
-                customer_id=new_id_by_old.get(link.customer_id, link.customer_id),
-                match_class=(
-                    IdentityMatchClass.AMBIGUOUS
-                    if (
-                        link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
-                        and (
-                            link.tenant_id,
-                            "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value,
-                            link.link_value,
-                        )
-                        in family_contact_keys
-                    )
-                    else link.match_class
-                ),
-                confidence=(
-                    min(float(link.confidence or 1.0), 0.5)
-                    if (
-                        link.link_type.value in CONTACT_IDENTITY_LINK_TYPES
-                        and (
-                            link.tenant_id,
-                            "phone" if link.link_type.value in PHONE_IDENTITY_LINK_TYPES else link.link_type.value,
-                            link.link_value,
-                        )
-                        in family_contact_keys
-                    )
-                    else link.confidence
-                ),
+        def rewrite_batch_link(link: IdentityLink) -> IdentityLink:
+            rewritten = rewrite_link(link)
+            owner = entity_owner(link.customer_id)
+            blocked = bool(link.customer_id and owner is None)
+            return replace(
+                rewritten,
+                customer_id=owner,
+                match_class=IdentityMatchClass.AMBIGUOUS if blocked else rewritten.match_class,
+                confidence=min(float(rewritten.confidence or 1.0), 0.5) if blocked else rewritten.confidence,
             )
-            for link in batch.identity_links
-        )
+
+        rewritten_links = tuple(rewrite_batch_link(link) for link in batch.identity_links)
         rewritten_opportunities: list[CustomerOpportunity] = []
         for opportunity in batch.opportunities:
-            new_customer_id = new_id_by_old.get(opportunity.customer_id, opportunity.customer_id)
+            new_customer_id = entity_owner(opportunity.customer_id)
+            if new_customer_id is None:
+                existing_opportunity = (
+                    store.get_opportunity_by_source(
+                        opportunity.tenant_id,
+                        source_system=opportunity.source_system,
+                        source_id=opportunity.source_id,
+                        opportunity_type=opportunity.opportunity_type.value,
+                    )
+                    if store is not None
+                    else None
+                )
+                retired_opportunity_ids.add(
+                    str(existing_opportunity["opportunity_id"])
+                    if existing_opportunity is not None
+                    else opportunity.opportunity_id
+                )
+                opportunity_id_by_old[opportunity.opportunity_id] = ""
+                continue
             changed = new_customer_id != opportunity.customer_id
             existing_opportunity = (
                 store.get_opportunity_by_source(
@@ -1909,7 +2116,7 @@ def resolve_customer_identity_batches(
                     source_id=opportunity.source_id,
                     opportunity_type=opportunity.opportunity_type.value,
                 )
-                if store is not None and changed
+                if store is not None
                 else None
             )
             rewritten = replace(
@@ -1926,18 +2133,27 @@ def resolve_customer_identity_batches(
         rewritten_events = tuple(
             replace(
                 event,
-                customer_id=new_id_by_old.get(event.customer_id, event.customer_id) if event.customer_id else None,
-                opportunity_id=opportunity_id_by_old.get(event.opportunity_id, event.opportunity_id)
-                if event.opportunity_id
-                else None,
+                customer_id=entity_owner(event.customer_id),
+                opportunity_id=(opportunity_id_by_old.get(event.opportunity_id, event.opportunity_id) or None)
+                if event.opportunity_id else None,
+                match_status=(
+                    IdentityMatchClass.AMBIGUOUS
+                    if event.customer_id and entity_owner(event.customer_id) is None
+                    else event.match_status
+                ),
+                confidence=(
+                    min(float(event.confidence or 1.0), 0.5)
+                    if event.customer_id and entity_owner(event.customer_id) is None
+                    else event.confidence
+                ),
             )
             for event in batch.events
         )
         rewritten_signals = tuple(
             replace(
                 signal,
-                customer_id=new_id_by_old.get(signal.customer_id, signal.customer_id) if signal.customer_id else None,
-                opportunity_id=opportunity_id_by_old.get(signal.opportunity_id, signal.opportunity_id)
+                customer_id=entity_owner(signal.customer_id),
+                opportunity_id=(opportunity_id_by_old.get(signal.opportunity_id, signal.opportunity_id) or None)
                 if signal.opportunity_id
                 else None,
                 signal_id=None
@@ -1952,8 +2168,8 @@ def resolve_customer_identity_batches(
         rewritten_chunks = tuple(
             replace(
                 chunk,
-                customer_id=new_id_by_old.get(chunk.customer_id, chunk.customer_id),
-                opportunity_id=opportunity_id_by_old.get(chunk.opportunity_id, chunk.opportunity_id)
+                customer_id=entity_owner(chunk.customer_id),
+                opportunity_id=(opportunity_id_by_old.get(chunk.opportunity_id, chunk.opportunity_id) or None)
                 if chunk.opportunity_id
                 else None,
                 chunk_id=None
@@ -1964,6 +2180,7 @@ def resolve_customer_identity_batches(
                 else chunk.chunk_id,
             )
             for chunk in batch.bot_context_chunks
+            if entity_owner(chunk.customer_id) is not None
         )
         resolved_batches.append(
             TimelineNormalizedBatch(
@@ -1976,12 +2193,14 @@ def resolve_customer_identity_batches(
                 signals=rewritten_signals,
                 bot_context_chunks=rewritten_chunks,
                 conflicts=batch.conflicts,
+                retired_opportunity_ids=tuple(sorted(retired_opportunity_ids)),
             )
         )
     if (
         exact_identity_updates
         or existing_family_link_updates
         or repair_conflicts
+        or unique_identity_conflicts
     ) and resolved_batches:
         first = resolved_batches[0]
         resolved_batches[0] = replace(
@@ -1993,7 +2212,7 @@ def resolve_customer_identity_batches(
                 *first.identity_links,
                 *existing_family_link_updates,
             ),
-            conflicts=(*first.conflicts, *repair_conflicts),
+            conflicts=(*first.conflicts, *repair_conflicts, *unique_identity_conflicts),
         )
     return CustomerIdResolutionResult(batches=tuple(resolved_batches), mappings=tuple(mappings))
 
@@ -2048,30 +2267,80 @@ def _existing_family_link_updates(
     return tuple(updates[key] for key in sorted(updates))
 
 
+def _preferred_unique_owners(
+    owners: Mapping[tuple[str, str, str], set[str]],
+    *,
+    manual_owners: Mapping[tuple[str, str, str], set[str]],
+    refresh_owners: Mapping[tuple[str, str, str], set[str]],
+    continuity_owners: Mapping[tuple[str, str, str], set[str]],
+    canonical_owners: Mapping[tuple[str, str, str], set[str]],
+) -> dict[tuple[str, str, str], str]:
+    preferred: dict[tuple[str, str, str], str] = {}
+    for key, all_owners in owners.items():
+        for candidates in (
+            manual_owners.get(key, set()),
+            refresh_owners.get(key, set()),
+            continuity_owners.get(key, set()),
+            canonical_owners.get(key, set()),
+            all_owners,
+        ):
+            if len(candidates) == 1:
+                preferred[key] = next(iter(candidates))
+                break
+            if candidates:
+                break
+    return preferred
+
+
+def _stored_unique_identity_links(
+    store: CustomerTimelineSQLiteStore | None,
+    incoming_unique_owners: Mapping[tuple[str, str, str], set[str]],
+) -> tuple[IdentityLink, ...]:
+    if store is None:
+        return ()
+    payloads: dict[str, Mapping[str, Any]] = {}
+    keys_by_tenant: dict[str, set[tuple[str, str]]] = {}
+    for tenant_id, link_type, value in incoming_unique_owners:
+        keys_by_tenant.setdefault(tenant_id, set()).add((link_type, value))
+    for tenant_id, keys in sorted(keys_by_tenant.items()):
+        for link_type in sorted({link_type for link_type, _ in keys}):
+            values = tuple(sorted(value for owner_type, value in keys if owner_type == link_type))
+            payloads.update(
+                (str(payload["link_id"]), payload)
+                for payload in store.list_identity_links_for_values(
+                    tenant_id, link_type=link_type, link_values=values
+                )
+            )
+    return tuple(
+        identity_link_from_json(payloads[link_id])
+        for link_id in sorted(payloads)
+        if payloads[link_id].get("match_class") in {
+            IdentityMatchClass.STRONG_UNIQUE.value,
+            IdentityMatchClass.MANUAL.value,
+        }
+    )
+
+
 def _existing_unique_identity_link_updates(
     store: CustomerTimelineSQLiteStore | None,
     *,
-    tenant_ids: set[str],
-    refreshed_link_ids: set[str],
-    refreshed_tallanto_keys: set[tuple[str, str]],
+    stored_links: Sequence[IdentityLink],
+    preferred_incoming_owner: Mapping[tuple[str, str, str], str],
 ) -> tuple[IdentityLink, ...]:
     if store is None:
         return ()
     updates: dict[str, IdentityLink] = {}
-    for tenant_id in sorted(tenant_ids):
-        for payload in store.list_conflicting_unique_identity_links(tenant_id):
-            link = identity_link_from_json(payload)
-            if (
-                link.link_id in refreshed_link_ids
-                or link.link_type.value != "tallanto_student_id"
-                or (link.tenant_id, link.link_value) not in refreshed_tallanto_keys
-            ):
-                continue
-            updates[link.link_id] = replace(
-                link,
-                match_class=IdentityMatchClass.AMBIGUOUS,
-                confidence=min(float(link.confidence or 1.0), 0.5),
-            )
+    for link in stored_links:
+        key = (link.tenant_id, link.link_type.value, link.link_value)
+        preferred = preferred_incoming_owner.get(key)
+        if preferred and link.customer_id == preferred:
+            continue
+        updates[link.link_id] = replace(
+            link,
+            customer_id=None,
+            match_class=IdentityMatchClass.AMBIGUOUS,
+            confidence=min(float(link.confidence or 1.0), 0.5),
+        )
     return tuple(updates[key] for key in sorted(updates))
 
 
@@ -2084,13 +2353,24 @@ def _load_existing_identity_context(
     phone_to_customers: dict[tuple[str, str], set[str]],
 ) -> set[str]:
     existing_customer_ids: set[str] = set()
+    customers_by_tenant: dict[str, set[str]] = {}
+    for customer_id, incoming in tuple(customers_by_id.items()):
+        customer_payload = store.get_customer(incoming.tenant_id, customer_id)
+        if not customer_payload:
+            continue
+        existing_customer_ids.add(customer_id)
+        customers_by_tenant.setdefault(incoming.tenant_id, set()).add(customer_id)
+        customers_by_id[customer_id] = _merge_customer_observation(
+            customer_identity_from_json(customer_payload),
+            incoming,
+        )
     identity_queries: set[tuple[str, str, str]] = set()
     for links in links_by_customer.values():
         for link in links:
             if link.link_type.value in PHONE_IDENTITY_LINK_TYPES:
                 for link_type in PHONE_IDENTITY_LINK_TYPES:
                     identity_queries.add((link.tenant_id, link_type, link.link_value))
-            elif link.link_type.value in {"phone", "email", "tallanto_student_id", "amo_contact_id"}:
+            elif link.link_type.value in {"phone", "email"} | UNIQUE_IDENTITY_LINK_TYPES:
                 identity_queries.add((link.tenant_id, link.link_type.value, link.link_value))
     loaded_link_keys = {
         (link.tenant_id, link.customer_id, link.link_type.value, link.link_value, link.source_system, link.source_ref)
@@ -2114,7 +2394,6 @@ def _load_existing_identity_context(
         if customer_id:
             existing_customer_ids.add(customer_id)
 
-    customers_by_tenant: dict[str, set[str]] = {}
     for payload in matching_payloads:
         tenant_id = optional_text(payload.get("tenant_id"))
         customer_id = optional_text(payload.get("customer_id"))
@@ -2145,11 +2424,7 @@ def _load_existing_identity_context(
         if not customer_id:
             continue
         related_link = identity_link_from_json(related_payload)
-        if related_link.link_type.value not in PHONE_IDENTITY_LINK_TYPES | {
-            "email",
-            "tallanto_student_id",
-            "amo_contact_id",
-        }:
+        if related_link.link_type.value not in PHONE_IDENTITY_LINK_TYPES | {"email"} | UNIQUE_IDENTITY_LINK_TYPES:
             continue
         key = (
             related_link.tenant_id,
@@ -2170,6 +2445,55 @@ def _load_existing_identity_context(
                 set(),
             ).add(customer_id)
     return existing_customer_ids
+
+
+def _merge_customer_observation(previous: CustomerIdentity, current: CustomerIdentity) -> CustomerIdentity:
+    """Preserve confirmed identity when the same customer gets a weaker observation."""
+
+    statuses = {previous.identity_status, current.identity_status}
+    if IdentityStatus.AMBIGUOUS in statuses:
+        status = IdentityStatus.AMBIGUOUS
+    elif IdentityStatus.STRONG in statuses:
+        status = IdentityStatus.STRONG
+    elif statuses == {IdentityStatus.UNMATCHED}:
+        status = IdentityStatus.UNMATCHED
+    else:
+        status = IdentityStatus.PARTIAL
+    first_seen = min(
+        (value for value in (previous.first_seen_at, current.first_seen_at) if value is not None),
+        default=None,
+    )
+    last_seen = max(
+        (value for value in (previous.last_seen_at, current.last_seen_at) if value is not None),
+        default=None,
+    )
+    def rank(customer: CustomerIdentity) -> tuple[int, datetime, str, str, str, str]:
+        source_system = str(customer.summary.get("source_system") or "")
+        return (
+            CUSTOMER_OBSERVATION_SOURCE_PRIORITY.get(source_system, 0),
+            customer.updated_at,
+            customer.source_ref or "",
+            customer.primary_phone or "",
+            customer.primary_email or "",
+            customer.display_name or "",
+        )
+
+    winner, fallback = max((previous, current), key=rank), min((previous, current), key=rank)
+    return replace(
+        winner,
+        identity_status=status,
+        display_name=winner.display_name or fallback.display_name,
+        primary_phone=winner.primary_phone or fallback.primary_phone,
+        primary_email=winner.primary_email or fallback.primary_email,
+        source_ref=winner.source_ref or fallback.source_ref,
+        first_seen_at=first_seen,
+        last_seen_at=last_seen,
+        touch_count=_merged_touch_count((previous, current)),
+        summary={**fallback.summary, **winner.summary},
+        metadata={**fallback.metadata, **winner.metadata},
+        created_at=min(previous.created_at, current.created_at),
+        updated_at=max(previous.updated_at, current.updated_at),
+    )
 
 
 def customer_identity_from_json(payload: Mapping[str, Any]) -> CustomerIdentity:
@@ -2242,8 +2566,14 @@ def _merge_customers(
 ) -> CustomerIdentity:
     ordered = tuple(sorted(customers, key=lambda item: (item.first_seen_at or item.created_at, item.customer_id)))
     first = ordered[0]
-    phones = sorted({link.link_value for link in links if link.link_type.value in PHONE_IDENTITY_LINK_TYPES})
-    emails = sorted({link.link_value for link in links if link.link_type.value == "email"})
+    phones = sorted(
+        {link.link_value for link in links if link.link_type.value in PHONE_IDENTITY_LINK_TYPES}
+        | {item.primary_phone for item in ordered if item.primary_phone}
+    )
+    emails = sorted(
+        {link.link_value for link in links if link.link_type.value == "email"}
+        | {item.primary_email for item in ordered if item.primary_email}
+    )
     first_seen = min((item.first_seen_at for item in ordered if item.first_seen_at), default=None)
     last_seen = max((item.last_seen_at for item in ordered if item.last_seen_at), default=None)
     brands = sorted({brand for item in ordered for brand in _customer_brand_values(item)})

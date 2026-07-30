@@ -59,6 +59,7 @@ TASK_SUCCESS_STALE_HOURS = 30
 REQUIRED_MUTATING_NIGHTLY_CHAIN = (
     ("wappi_history_incremental", "wappi_history"),
     ("family_graph_refresh", "family_graph"),
+    ("derived_signals_refresh", "derived_signals"),
     ("bot_safe_rebuild", "bot_safe_rebuild"),
 )
 REQUIRED_NIGHTLY_STEPS = {
@@ -71,6 +72,7 @@ REQUIRED_NIGHTLY_STEPS = {
     "tallanto_cards_sync",
     "tallanto_attendance_api_incremental",
     "family_graph_refresh",
+    "derived_signals_refresh",
     "bot_safe_rebuild",
 }
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
@@ -216,6 +218,12 @@ def validate_nightly_config(path: Path | None = None) -> str:
     money_db = Path(str(money_config.get("timeline_db") or "")).expanduser().resolve(strict=False)
     if money_config.get("apply") is not True or money_db != STAGING_TIMELINE_DB.resolve(strict=False):
         return "tallanto_money_api_incremental must apply to persistent staging DB"
+    try:
+        money_timeout = float(money_config.get("timeout_seconds") or 0)
+    except (TypeError, ValueError):
+        money_timeout = 0
+    if money_timeout < 5400:
+        return "tallanto_money_api_incremental timeout must allow the 90-minute first full backfill"
     attendance_step = steps["tallanto_attendance_api_incremental"]
     attendance_config = attendance_step.get("config")
     if attendance_step.get("kind") != "tallanto_attendance_api" or not isinstance(attendance_config, Mapping):
@@ -240,12 +248,12 @@ def validate_nightly_config(path: Path | None = None) -> str:
     }
     tallanto_chain = (
         positions_by_name["tallanto_cards_sync"],
-        positions_by_name["tallanto_money_api_incremental"],
         positions_by_name["tallanto_attendance_api_incremental"],
+        positions_by_name["tallanto_money_api_incremental"],
         positions_by_name["wappi_history_incremental"],
     )
     if tallanto_chain != tuple(sorted(tallanto_chain)):
-        return "nightly config requires Tallanto cards -> money -> attendance before Wappi"
+        return "nightly config requires Tallanto cards -> attendance -> money before Wappi"
     if positions_by_name["mail_link_enrich"] < positions_by_name["tallanto_cards_sync"]:
         return "nightly config requires Tallanto cards before mail pending reconsider"
     calls_config = steps["calls_and_amo_incremental"].get("config")

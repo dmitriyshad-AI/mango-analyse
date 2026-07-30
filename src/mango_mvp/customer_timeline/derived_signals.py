@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -41,6 +41,39 @@ SIGNAL_TTL_DAYS: Mapping[str, int] = {
     HOT_STREAK_SIGNAL: 14,
     SEASON_RETURN_SIGNAL: 30,
 }
+
+
+def dedupe_customer_payment_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Возвращает один платёжный итог на клиента, не складывая all_time с периодами."""
+    by_customer: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        customer_id = str(row.get("customer_id") or "")
+        if customer_id:
+            by_customer[customer_id].append(row)
+
+    result: dict[str, dict[str, Any]] = {}
+    for customer_id, customer_rows in by_customer.items():
+        all_time = next((row for row in customer_rows if str(row.get("period") or "") == "all_time"), None)
+        chosen = [all_time] if all_time is not None else customer_rows
+        dates: list[datetime] = []
+        for row in chosen:
+            if not (value := row.get("last_purchase_at")):
+                continue
+            try:
+                parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                dates.append(parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                continue
+        result[customer_id] = {
+            "total_in": sum(float(row.get("total_in") or 0) for row in chosen),
+            "total_out": sum(float(row.get("total_out") or 0) for row in chosen),
+            "deals_cnt": sum(int(row.get("deals_cnt") or 0) for row in chosen),
+            "last_purchase_at": max(dates, default=None),
+            "computability": "computed" if all(str(row.get("computability") or "") == "computed" for row in chosen) else "partial",
+            "period_used": "all_time" if all_time is not None else "sum_of_periods",
+            "rows_used": len(chosen),
+        }
+    return result
 MANAGED_SIGNAL_TYPES = (PAID_NO_ACCESS_SIGNAL, HOT_LEAD_SILENT_SIGNAL, DUPLICATE_CONTACT_SIGNAL)
 SG_V1_SIGNAL_TYPES = (
     CLIENT_RETURNED_SIGNAL,
@@ -483,6 +516,7 @@ def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
         )
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_purchases_v1'").fetchone():
         money_kind_filter = "AND money_kind = 'fact'" if _has_column(con, "customer_purchases_v1", "money_kind") else ""
+        purchase_rows: list[dict[str, Any]] = []
         for row in con.execute(
             f"""
             SELECT tenant_id, customer_id, period, total_in, total_out,
@@ -493,14 +527,9 @@ def _load_sg_v1_inputs(con: sqlite3.Connection, *, tenant_id: str) -> Mapping[st
             """,
             (tenant_id,),
         ):
-            grouped[str(row["customer_id"])]["purchases"] = {
-                "period": row["period"],
-                "total_in": float(row["total_in"] or 0),
-                "total_out": float(row["total_out"] or 0),
-                "deals_cnt": int(row["deals_cnt"] or 0),
-                "last_purchase_at": row["last_purchase_at"],
-                "computability": row["computability"],
-            }
+            purchase_rows.append(dict(row))
+        for customer_id, purchase in dedupe_customer_payment_rows(purchase_rows).items():
+            grouped[customer_id]["purchases"] = purchase
     return grouped
 
 

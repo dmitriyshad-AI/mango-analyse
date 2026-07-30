@@ -1685,7 +1685,9 @@ def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path
 
     assert second["counts"]["planned.weak_email"] == 1
     assert second["counts"]["reason.email_ambiguous_identity_link"] == 1
-    assert second["apply"]["counts"]["revoked_chunks"] == 1
+    # The shared store now retires event-derived memory at the exact owner change;
+    # mail revalidation therefore has nothing stale left to revoke itself.
+    assert second["apply"]["counts"]["revoked_chunks"] == 0
     assert second["apply"]["counts"].get("not_revalidated_events", 0) == 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
         event = con.execute(

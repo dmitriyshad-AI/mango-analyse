@@ -26,6 +26,9 @@ def _review_db(path: Path) -> sqlite3.Connection:
           tenant_id TEXT, family_id TEXT, customer_id TEXT, child_key TEXT,
           canonical_name TEXT, grades_json TEXT, subjects_json TEXT, status TEXT, brand TEXT
         );
+        CREATE TABLE family_members_v1 (
+          tenant_id TEXT, family_id TEXT, customer_id TEXT, membership_status TEXT
+        );
         CREATE TABLE customer_opportunities (
           tenant_id TEXT, customer_id TEXT, opportunity_id TEXT, title TEXT,
           status TEXT, opened_at TEXT
@@ -38,7 +41,8 @@ def _review_db(path: Path) -> sqlite3.Connection:
         CREATE TABLE timeline_events (
           tenant_id TEXT, customer_id TEXT, event_id TEXT, event_at TEXT,
           event_type TEXT, source_system TEXT, direction TEXT, subject TEXT,
-          summary TEXT, text_preview TEXT, source_ref TEXT, superseded_by TEXT
+          summary TEXT, text_preview TEXT, source_ref TEXT, superseded_by TEXT,
+          record_json TEXT
         );
         CREATE TABLE timeline_conflicts (
           tenant_id TEXT, conflict_id TEXT, conflict_type TEXT, severity TEXT,
@@ -59,11 +63,13 @@ def _review_db(path: Path) -> sqlite3.Connection:
         ("foton", "customer:1", "all_time", "fact", 50000, "2026-07-02", 1),
     )
     con.executemany(
-        "INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
-            ("foton", "customer:1", "event:mail", "2026-07-03", "email_message", "mail", "inbound", "Вопрос", "Коротко", "Полный исходный текст письма", "mail:1", None),
-            ("foton", "customer:1", "event:visit", "2026-07-04", "tallanto_attendance", "tallanto", "system", "математика", "Посещение", "", "tallanto:1", None),
-            ("foton", "customer:other", "event:other", "2026-07-05", "email_message", "mail", "inbound", "Чужое", "Не должно попасть", "Чужой полный текст", "mail:other", None),
+            ("foton", "customer:1", "event:mail", "2026-07-03", "email_message", "mail", "inbound", "Вопрос", "Коротко", "Полный исходный текст письма", "mail:1", None, '{}'),
+            ("foton", "customer:1", "event:visit", "2026-07-04", "tallanto_attendance", "tallanto", "system", "математика", "Посещение", "", "tallanto:1", None, '{}'),
+            ("foton", "customer:1", "event:future-visit", "2030-01-01", "tallanto_attendance", "tallanto_attendance_api", "system", "физика", "Будущее расписание", "", "tallanto:future", None, '{"record":{"attendance_confirmed":false}}'),
+            ("foton", "customer:1", "event:student", "2026-07-04", "tallanto_student_snapshot", "tallanto_snapshot", "system", "Ученик", "", "", "tallanto:student:1", None, '{"record":{"payload":{"student_type":"8_klass"}}}'),
+            ("foton", "customer:other", "event:other", "2026-07-05", "email_message", "mail", "inbound", "Чужое", "Не должно попасть", "Чужой полный текст", "mail:other", None, '{}'),
         ],
     )
     con.execute(
@@ -88,6 +94,8 @@ def test_acceptance_workbook_has_five_raw_review_sheets(tmp_path: Path, monkeypa
     families, chronology, evidence, conflicts = MODULE._acceptance_family_data(
         con, tenant_id="foton", sample=[{"id": "customer:1", "family_id": "family:1"}],
     )
+    assert families[0][15:17] == ["2026-07-03", "mail"]
+    assert families[0][13:15] == ["2026-07-04", "математика"]
     out = tmp_path / "review.xlsx"
     MODULE._write_acceptance_workbook(
         out,
@@ -105,9 +113,33 @@ def test_acceptance_workbook_has_five_raw_review_sheets(tmp_path: Path, monkeypa
     assert "event:mail" in chronology_values
     assert "Полный исходный текст письма" in chronology_values
     assert "event:other" not in chronology_values
+    assert "tallanto_scheduled_lesson" in [row[4] for row in chronology]
+    assert "Запланированное занятие" in [row[1] for row in evidence]
     assert "customer_identities" in [value for row in wb["Доказательства"].iter_rows(values_only=True) for value in row]
     assert "conflict:1" in [value for row in wb["Конфликты"].iter_rows(values_only=True) for value in row]
     assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_acceptance_owner50_keeps_candidate_and_excluded_families() -> None:
+    control = [
+        ("family:1", "candidate", "brand_unproven", "Бренд не подтвержден", *("",) * 14),
+        ("family:1", "candidate", "product_missing", "Нет продукта", *("",) * 14),
+        ("family:2", "excluded", "opt_out", "Просили не писать", *("",) * 14),
+    ]
+
+    rows = MODULE._acceptance_owner50_rows([], control, {"family:1", "family:2"})
+
+    assert len(rows) == 2
+    assert rows[0][:4] == [
+        "family:1", "CANDIDATE", "brand_unproven; product_missing",
+        "Бренд не подтвержден; Нет продукта",
+    ]
+    assert rows[1][:4] == ["family:2", "EXCLUDED", "opt_out", "Просили не писать"]
+
+
+def test_acceptance_owner50_blocks_when_sample_family_is_not_classified() -> None:
+    with pytest.raises(RuntimeError, match="family:missing"):
+        MODULE._acceptance_owner50_rows([], [], {"family:missing"})
 
 
 def test_acceptance_blocks_when_owner50_classification_fails(tmp_path: Path, monkeypatch) -> None:
@@ -179,7 +211,32 @@ def test_population_is_unique_by_family_and_conflicts_match_exact_refs(tmp_path:
         "INSERT INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?)",
         ("foton", "family:1", "customer:1b", "child:2", "Второй ребёнок", '["6"]', '["физика"]', "confident", "foton"),
     )
+    con.executemany(
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
+        [
+            ("foton", "family:1", "customer:1", "confident"),
+            ("foton", "family:1", "customer:1b", "confident"),
+        ],
+    )
     con.execute("DELETE FROM timeline_conflicts")
+    con.execute("DELETE FROM customer_purchases_v1")
+    con.execute("DELETE FROM timeline_events")
+    con.execute(
+        "INSERT INTO customer_purchases_v1 VALUES (?,?,?,?,?,?,?)",
+        ("foton", "customer:1b", "all_time", "fact", 1000, "2026-07-06", 1),
+    )
+    con.execute(
+        "INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("foton", "customer:1b", "event:call", "2026-07-06", "mango_call", "mango", "inbound", "Звонок", "", "", "call:1", None, '{}'),
+    )
+    con.execute(
+        "INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "foton", "customer:1", "event:student", "2026-07-06", "tallanto_student_snapshot",
+            "tallanto_snapshot", "system", "Ученик", "", "", "tallanto:student:1", None,
+            '{"record":{"payload":{"student_type":"8_klass"}}}',
+        ),
+    )
     con.execute(
         "INSERT INTO timeline_conflicts VALUES (?,?,?,?,?,?,?)",
         ("foton", "conflict:10", "shared_family_phone", "high", "open", "2026-07-05", '{"entity_refs":["customer:10"]}'),
@@ -188,4 +245,97 @@ def test_population_is_unique_by_family_and_conflicts_match_exact_refs(tmp_path:
     population = MODULE._dossier_population(con, tenant_id="foton")
     assert len(population) == 1
     assert population[0]["family_id"] == "family:1"
+    assert population[0]["has_payment"] is True
+    assert population[0]["has_call"] is True
     assert population[0]["has_conflict"] is False
+
+    con.execute(
+        "INSERT INTO timeline_conflicts VALUES (?,?,?,?,?,?,?)",
+        ("foton", "conflict:family", "family_identity_conflict", "high", "open", "2026-07-06", '{"entity_refs":["family:1"]}'),
+    )
+    con.commit()
+    assert MODULE._dossier_population(con, tenant_id="foton")[0]["has_conflict"] is True
+
+
+def test_population_includes_canonical_family_without_child_link(tmp_path: Path) -> None:
+    con = _review_db(tmp_path / "population-without-child.sqlite")
+    con.execute("DELETE FROM family_links_v1")
+    con.execute(
+        "INSERT INTO family_members_v1 VALUES (?,?,?,?)",
+        ("foton", "family:without-child", "customer:1", "confident"),
+    )
+    con.commit()
+
+    population = MODULE._dossier_population(con, tenant_id="foton")
+
+    assert len(population) == 1
+    assert population[0]["family_id"] == "family:without-child"
+    assert population[0]["child_bucket"] == "0"
+
+
+def test_population_does_not_count_future_or_unconfirmed_api_attendance(tmp_path: Path) -> None:
+    con = _review_db(tmp_path / "future-attendance.sqlite")
+    con.execute("DELETE FROM timeline_events WHERE event_id='event:visit'")
+    con.execute(
+        "UPDATE timeline_events SET source_system='tallanto_attendance_api', "
+        "record_json=? WHERE event_id='event:future-visit'",
+        ('{"record":{"attendance_confirmed":false}}',),
+    )
+    con.commit()
+
+    assert MODULE._dossier_population(con, tenant_id="foton")[0]["has_attendance"] is False
+
+
+@pytest.mark.parametrize(
+    "record_json",
+    (
+        '{"record":{"attendance_confirmed":false,"physical_absence_confirmed":false}}',
+        '{"record":{"attendance_confirmed":false,"physical_absence_confirmed":true}}',
+    ),
+)
+def test_acceptance_does_not_report_unconfirmed_or_absent_lesson_as_visit(
+    tmp_path: Path, monkeypatch, record_json: str
+) -> None:
+    con = _review_db(tmp_path / "not-a-visit.sqlite")
+    monkeypatch.setattr(MODULE, "_family_scope_customer_ids", lambda *_args, **_kwargs: ("customer:1",))
+    monkeypatch.setattr(
+        MODULE,
+        "build_customer_dossier",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            display_name="Контакт", phone="", email="", brand="foton",
+            next_step="", next_step_source="",
+        ),
+    )
+    con.execute(
+        "UPDATE timeline_events SET source_system='tallanto_attendance_api', record_json=? "
+        "WHERE event_id='event:visit'",
+        (record_json,),
+    )
+    con.commit()
+
+    families, *_ = MODULE._acceptance_family_data(
+        con, tenant_id="foton", sample=[{"id": "customer:1", "family_id": "family:1"}]
+    )
+
+    assert families[0][13:15] == ["", ""]
+
+
+@pytest.mark.parametrize(
+    ("student_type", "expected"),
+    (("Listener", True), ("1_klass", True), ("10_klass", True), ("11_klass", False), ("vypusknik", False)),
+)
+def test_business_population_is_anchored_in_current_tallanto_students(
+    tmp_path: Path,
+    student_type: str,
+    expected: bool,
+) -> None:
+    con = _review_db(tmp_path / "current-cohort.sqlite")
+    con.execute(
+        "UPDATE timeline_events SET record_json=? WHERE event_id='event:student'",
+        (json.dumps({"record": {"payload": {"student_type": student_type}}}),),
+    )
+    con.commit()
+
+    population = MODULE._dossier_population(con, tenant_id="foton")
+
+    assert bool(population) is expected

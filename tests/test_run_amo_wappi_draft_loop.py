@@ -296,6 +296,32 @@ def test_context_builder_accepts_auto_pair_after_strong_amo_identity_check(tmp_p
     assert context["read_only_customer_context"]["found"] is True
 
 
+def test_runtime_bot_safe_lookup_carries_exact_wappi_chat_scope(tmp_path: Path, monkeypatch) -> None:
+    key = DraftLoopKey("profile-max", "chat-42")
+    config = DraftLoopConfig(
+        profiles={"profile-max": DraftLoopProfile("profile-max", "foton", "max")},
+        pairs={key: DraftLoopPair(key=key, lead_id="5001", contact_id="7001", expected_brand="foton")},
+    )
+    captured = {}
+    monkeypatch.setattr(runner, "bot_safe_crm_context_enabled", lambda: True)
+    monkeypatch.setattr(runner, "bot_memory_expanded_shadow_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "build_bot_safe_crm_context",
+        lambda **kwargs: captured.update(kwargs) or {"found": True},
+    )
+
+    runner._build_bot_safe_crm_context_for_draft(
+        key=key, brand="foton", draft_config=config, customer_timeline_db=tmp_path / "timeline.sqlite",
+        customer_timeline_allowed_root=tmp_path, customer_timeline_tenant="foton",
+    )
+
+    lookup = captured["lookup"]
+    assert (lookup.channel_source_system, lookup.channel_profile_id, lookup.channel_chat_id) == (
+        "wappi_max", "profile-max", "chat-42",
+    )
+
+
 def test_context_builder_keeps_bot_safe_crm_context_off_by_default(tmp_path: Path, monkeypatch) -> None:
     snapshot = tmp_path / "snapshot.json"
     snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")

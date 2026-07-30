@@ -236,6 +236,26 @@ def test_bot_safe_summary_includes_last_tallanto_writeoff_date_without_claiming_
     assert payload["metadata"]["safe_slots"]["last_attendance_date"] == "01.07.2026"
 
 
+def test_bot_safe_summary_does_not_call_future_schedule_last_attendance() -> None:
+    events = (
+        {"event_type": "tallanto_attendance", "event_at": "2026-07-01T10:00:00+03:00"},
+        {"event_type": "tallanto_attendance", "event_at": "2030-01-01T10:00:00+03:00"},
+    )
+
+    assert bot_safe_summary_module._last_attendance_date(events) == "01.07.2026"
+
+
+def test_latest_summary_date_ignores_future_source_dates() -> None:
+    latest = bot_safe_summary_module._latest_event_at(
+        ({"opened_at": "2026-06-20T12:00:00+00:00"},),
+        ({"event_at": "2030-01-01T12:00:00+00:00"},),
+        (),
+        latest_allowed=NOW,
+    )
+
+    assert latest == datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc)
+
+
 def test_bot_safe_event_limit_keeps_latest_attendance() -> None:
     attendance = {"event_type": "tallanto_attendance", "event_at": "2026-06-01T10:00:00+03:00"}
     events = [attendance, *({"event_type": "telegram_message", "event_at": str(index)} for index in range(501))]
@@ -615,6 +635,8 @@ def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path
     assert report.next_step_status_counts["needs_manager_review"] == 1
     assert next_step["status"] == "needs_manager_review"
     assert next_step["reason_code"] == "ambiguous_identity_open"
+    assert payload["allowed_for_bot"] is False
+    assert payload["requires_manager_review"] is True
     assert "Уточнить у менеджера" not in dumped
     assert "конфликт идентичности" not in dumped
     assert "отправить договор" not in dumped.casefold()
@@ -704,12 +726,59 @@ def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) ->
     assert second.created == 0
     assert second.updated == 0
     assert second.duplicate == 1
+    assert set(second.phase_seconds) == {
+        "dependency_reconcile",
+        "customer_scope",
+        "history_load",
+        "draft_build",
+        "write",
+        "final_counts",
+    }
     with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
         rows = con.execute(
             "SELECT chunk_id, source_ref, source_system, allowed_for_bot, requires_manager_review FROM bot_context_chunks WHERE chunk_type = ?",
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchall()
     assert rows == [(expected_id, f"botsafe:{customer.customer_id}:foton", BOT_SAFE_SUMMARY_SOURCE_SYSTEM, 1, 0)]
+
+
+def test_events_load_uses_customer_time_index_without_global_sort(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _open_store(tmp_path)
+    first = _customer("customer:events-order-1")
+    second = _customer("customer:events-order-2")
+    store.upsert_customer(first)
+    store.upsert_customer(second)
+    store.upsert_event(replace(_event(first, source_id="late"), event_at=NOW + timedelta(hours=1)))
+    store.upsert_event(replace(_event(first, source_id="early"), event_at=NOW))
+    store.upsert_event(replace(_event(second, source_id="middle"), event_at=NOW + timedelta(minutes=30)))
+    store.close()
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(bot_safe_summary_module.sqlite3, "connect", traced_connect)
+    grouped = bot_safe_summary_module._events_by_customer(
+        tmp_path / "customer_timeline.sqlite", "foton"
+    )
+    event_select = next(
+        statement for statement in statements if "FROM timeline_events" in statement
+        and "ORDER BY customer_id" in statement
+    )
+    with real_connect(tmp_path / "customer_timeline.sqlite") as con:
+        plan = " ".join(
+            str(item) for row in con.execute(f"EXPLAIN QUERY PLAN {event_select}") for item in row
+        )
+
+    assert "TEMP B-TREE" not in plan
+    assert [item["source_id"] for item in grouped[first.customer_id]] == ["early", "late"]
+    assert [item["source_id"] for item in grouped[second.customer_id]] == ["middle"]
 
 
 def test_bot_safe_summary_customer_id_scope_does_not_retire_other_customers(tmp_path: Path) -> None:
@@ -774,14 +843,14 @@ def test_bot_safe_summary_customer_scope_retires_stale_summary_without_history(t
             tenant_id=customer.tenant_id,
             customer_id=customer.customer_id,
             chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
-            text="Устаревшая разрешённая выжимка.",
-            summary="Устаревшая разрешённая выжимка.",
+            text="Устаревшая менеджерская выжимка.",
+            summary="Устаревшая менеджерская выжимка.",
             source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
             source_ref=f"botsafe:{customer.customer_id}:foton",
             event_at=NOW,
             relevance_tags=("bot_safe", "foton"),
-            allowed_for_bot=True,
-            requires_manager_review=False,
+            allowed_for_bot=False,
+            requires_manager_review=True,
             created_at=NOW,
         )
     )
@@ -800,10 +869,12 @@ def test_bot_safe_summary_customer_scope_retires_stale_summary_without_history(t
     assert report.retired_stale == 1
     with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
         row = con.execute(
-            "SELECT allowed_for_bot, requires_manager_review FROM bot_context_chunks WHERE source_ref=?",
+            "SELECT allowed_for_bot, requires_manager_review, superseded_by "
+            "FROM bot_context_chunks WHERE source_ref=?",
             (f"botsafe:{customer.customer_id}:foton",),
         ).fetchone()
-    assert row == (0, 1)
+    assert row[:2] == (0, 1)
+    assert row[2]
 
 
 def test_bot_safe_summary_customer_id_scope_does_not_parse_other_customer_history(
@@ -847,6 +918,39 @@ def test_bot_safe_summary_customer_id_scope_does_not_parse_other_customer_histor
     )
 
     assert report.considered_customers == 1
+
+
+def test_bot_safe_summary_ignores_identity_with_only_derived_chunks(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer("customer:derived-shell")
+    store.upsert_customer(customer)
+    synthetic_event = _event(customer, source_id="not-stored")
+    store.upsert_bot_context_chunk(replace(_raw_chunk(customer, synthetic_event), event_id=None))
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id=customer.tenant_id,
+            customer_id=customer.customer_id,
+            chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+            text="Старая производная карточка без первичного события.",
+            summary="Старая карточка.",
+            source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+            source_ref=f"botsafe:{customer.customer_id}:unknown",
+            event_at=NOW,
+            allowed_for_bot=True,
+            created_at=NOW,
+        )
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(BotSafeSummaryBuildConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        tenant_id="foton",
+        apply=True,
+    ))
+
+    assert report.considered_customers == 0
+    assert report.retired_stale == 1
 
 
 def test_bot_safe_summary_cross_brand_customer_gets_separate_brand_scoped_chunks(tmp_path: Path) -> None:
@@ -1003,7 +1107,7 @@ def test_bot_safe_summary_retires_stale_unknown_chunk_after_brand_resolution(tmp
     with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
         rows = con.execute(
             """
-            SELECT source_ref, allowed_for_bot, requires_manager_review, record_json
+            SELECT source_ref, allowed_for_bot, requires_manager_review, superseded_by
             FROM bot_context_chunks
             WHERE source_system = ?
             ORDER BY source_ref
@@ -1016,10 +1120,10 @@ def test_bot_safe_summary_retires_stale_unknown_chunk_after_brand_resolution(tmp
         f"botsafe:{customer.customer_id}:unknown",
         f"botsafe:{customer.customer_id}:unpk",
     ]
-    assert rows[0][1:3] == (0, 1)
+    assert rows[0][1:3] == (1, 0)
+    assert rows[0][3]
     assert rows[1][1:3] == (1, 0)
-    retired = json.loads(rows[0][3])
-    assert retired["metadata"]["retired_reason"] == "bot_safe_source_ref_not_rebuilt"
+    assert rows[1][3] is None
 
 
 def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_path: Path) -> None:

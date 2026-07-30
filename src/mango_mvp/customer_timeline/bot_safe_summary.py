@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from mango_mvp.customer_timeline.next_step_resolver import (
 from mango_mvp.customer_timeline.store import (
     BRAND_AUTH_EVENT_SOURCES,
     CustomerTimelineSQLiteStore,
+    open_family_identity_conflict_customer_ids,
     scrub_timeline_persisted_json,
 )
 from mango_mvp.customer_timeline.source_policy import is_non_contentful_call_record
@@ -237,12 +239,14 @@ class BotSafeSummaryBuildReport:
     duplicate: int
     skipped: int
     retired_stale: int
+    event_owner_dependencies_reconciled: int
     brand_counts: Mapping[str, int]
     brand_source_counts: Mapping[str, int]
     next_step_status_counts: Mapping[str, int]
     allowed_chunk_counts_before: Mapping[str, int]
     allowed_chunk_counts_after: Mapping[str, int]
     raw_allowed_chunks_after: int
+    phase_seconds: Mapping[str, float]
     examples: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
 
     def to_json_dict(self) -> Mapping[str, Any]:
@@ -252,6 +256,17 @@ class BotSafeSummaryBuildReport:
 def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummaryBuildReport:
     db_path = Path(config.timeline_db).expanduser()
     allowed_root = Path(config.allowed_root).expanduser()
+    phase_seconds: dict[str, float] = {}
+    phase_started = time.monotonic()
+    event_owner_dependencies_reconciled = 0
+    if config.apply:
+        with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
+            event_owner_dependencies_reconciled = store.reconcile_event_dependency_owners(
+                config.tenant_id,
+                actor=BOT_SAFE_SUMMARY_ACTOR,
+            )
+    phase_seconds["dependency_reconcile"] = round(time.monotonic() - phase_started, 3)
+    phase_started = time.monotonic()
     before_counts = _allowed_chunk_counts(db_path)
     customers = _customers_with_history(
         db_path,
@@ -259,6 +274,8 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         limit=config.limit,
         customer_ids=config.customer_ids,
     )
+    phase_seconds["customer_scope"] = round(time.monotonic() - phase_started, 3)
+    phase_started = time.monotonic()
     selected_scope = tuple(config.customer_ids) if config.customer_ids else (
         customers if config.limit is not None else ()
     )
@@ -267,6 +284,10 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     events = _events_by_customer(db_path, config.tenant_id, customer_ids=selected_scope)
     source_chunks = _source_chunks_by_customer(db_path, config.tenant_id, customer_ids=selected_scope)
     conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
+    with sqlite3.connect(db_path) as con:
+        blocked_customers = open_family_identity_conflict_customer_ids(con, config.tenant_id)
+    phase_seconds["history_load"] = round(time.monotonic() - phase_started, 3)
+    phase_started = time.monotonic()
     drafts = [
         draft
         for customer_id in customers
@@ -278,16 +299,19 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
                 all_events=events.get(customer_id, ()),
                 all_source_chunks=source_chunks.get(customer_id, ()),
                 conflicts=conflicts.get(customer_id, ()),
+                blocked_by_conflict=customer_id in blocked_customers,
                 existing_chunks=existing_chunks,
             )
         )
     ]
+    phase_seconds["draft_build"] = round(time.monotonic() - phase_started, 3)
+    phase_started = time.monotonic()
     expected_source_refs = {draft.chunk.source_ref or "" for draft in drafts}
     retire_customer_scope = set(config.customer_ids) if config.customer_ids else None
     stale_chunks = [
         existing
         for source_ref, existing in existing_chunks.items()
-        if source_ref not in expected_source_refs and _chunk_allowed_for_bot(existing.record)
+        if source_ref not in expected_source_refs
         and (retire_customer_scope is None or str(existing.record.get("customer_id") or "") in retire_customer_scope)
     ]
 
@@ -311,8 +335,9 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
                     else:
                         skipped += 1
                 for existing in stale_chunks:
-                    result = store.upsert_bot_context_chunk(
-                        _retired_bot_safe_chunk(existing.record),
+                    result = store.retire_bot_context_chunk(
+                        str(existing.record.get("chunk_id") or ""),
+                        reason="bot_safe_source_ref_not_rebuilt",
                         actor=BOT_SAFE_SUMMARY_ACTOR,
                     )
                     if result.status != "duplicate":
@@ -320,6 +345,8 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     else:
         created, updated, duplicate = _dry_run_status_counts(drafts, existing_chunks)
         retired_stale = len(stale_chunks)
+    phase_seconds["write"] = round(time.monotonic() - phase_started, 3)
+    phase_started = time.monotonic()
 
     after_counts = _allowed_chunk_counts(db_path)
     brand_counts = _count_values(draft.brand for draft in drafts)
@@ -328,6 +355,8 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     history_count = len(customers)
     summary_count = len(drafts)
     coverage = round((summary_count / history_count * 100), 2) if history_count else 0.0
+    raw_allowed_chunks_after = _raw_allowed_chunks(db_path)
+    phase_seconds["final_counts"] = round(time.monotonic() - phase_started, 3)
     return BotSafeSummaryBuildReport(
         schema_version=BOT_SAFE_SUMMARY_SCHEMA_VERSION,
         timeline_db=str(db_path),
@@ -342,12 +371,14 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         duplicate=duplicate,
         skipped=skipped,
         retired_stale=retired_stale,
+        event_owner_dependencies_reconciled=event_owner_dependencies_reconciled,
         brand_counts=brand_counts,
         brand_source_counts=brand_source_counts,
         next_step_status_counts=next_step_counts,
         allowed_chunk_counts_before=before_counts,
         allowed_chunk_counts_after=after_counts,
-        raw_allowed_chunks_after=_raw_allowed_chunks(db_path),
+        raw_allowed_chunks_after=raw_allowed_chunks_after,
+        phase_seconds=phase_seconds,
     )
 
 
@@ -389,6 +420,7 @@ def _build_customer_draft(
     events: Sequence[Mapping[str, Any]],
     source_chunks: Sequence[Mapping[str, Any]],
     conflicts: Sequence[Mapping[str, Any]],
+    blocked_by_conflict: bool,
     existing_chunk: Mapping[str, Any] | None,
 ) -> CustomerBotSafeSummaryDraft | None:
     brand_source = _brand_source(opportunities, events, source_chunks, brand=brand)
@@ -403,11 +435,11 @@ def _build_customer_draft(
     text = _render_safe_text(brand=brand, slots=slots, safe_next_step=safe_next_step)
     if not text:
         return None
-    latest_at = _latest_event_at(opportunities, events, source_chunks)
     build_now = now_utc()
+    latest_at = _latest_event_at(opportunities, events, source_chunks, latest_allowed=build_now)
     created_at = _existing_created_at(existing_chunk) or build_now
     source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
-    brand_authorized = brand in KNOWN_BRANDS
+    brand_authorized = brand in KNOWN_BRANDS and not blocked_by_conflict
     chunk = BotContextChunk(
         tenant_id=tenant_id,
         customer_id=customer_id,
@@ -461,6 +493,7 @@ def _build_customer_brand_drafts(
     all_events: Sequence[Mapping[str, Any]],
     all_source_chunks: Sequence[Mapping[str, Any]],
     conflicts: Sequence[Mapping[str, Any]],
+    blocked_by_conflict: bool,
     existing_chunks: Mapping[str, ExistingBotSafeChunk],
 ) -> tuple[CustomerBotSafeSummaryDraft | None, ...]:
     drafts: list[CustomerBotSafeSummaryDraft | None] = []
@@ -484,6 +517,7 @@ def _build_customer_brand_drafts(
                 events=events,
                 source_chunks=source_chunks,
                 conflicts=conflicts,
+                blocked_by_conflict=blocked_by_conflict,
                 existing_chunk=existing_chunks[source_ref].record if source_ref in existing_chunks else None,
             )
         )
@@ -651,17 +685,17 @@ def _extract_bot_safe_slots(
 
 
 def _last_attendance_date(events: Sequence[Mapping[str, Any]]) -> str:
+    now = now_utc()
     dates = sorted(
-        str(event.get("event_at") or "")
+        parsed
         for event in events
-        if str(event.get("event_type") or "") == "tallanto_attendance" and event.get("event_at")
+        if str(event.get("event_type") or "") == "tallanto_attendance"
+        and (parsed := _parse_iso_datetime(event.get("event_at"))) is not None
+        and parsed <= now
     )
     if not dates:
         return ""
-    try:
-        return datetime.fromisoformat(dates[-1]).strftime("%d.%m.%Y")
-    except ValueError:
-        return ""
+    return dates[-1].strftime("%d.%m.%Y")
 
 
 def _bot_safe_slot_sources(
@@ -935,20 +969,22 @@ def _latest_event_at(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
     source_chunks: Sequence[Mapping[str, Any]],
+    *,
+    latest_allowed: datetime,
 ) -> datetime | None:
     values: list[datetime] = []
     for opportunity in opportunities:
         for key in ("closed_at", "opened_at"):
             parsed = _parse_iso_datetime(opportunity.get(key))
-            if parsed:
+            if parsed and parsed <= latest_allowed:
                 values.append(parsed)
     for event in events:
         parsed = _parse_iso_datetime(event.get("event_at"))
-        if parsed:
+        if parsed and parsed <= latest_allowed:
             values.append(parsed)
     for chunk in source_chunks:
         parsed = _parse_iso_datetime(chunk.get("event_at"))
-        if parsed:
+        if parsed and parsed <= latest_allowed:
             values.append(parsed)
     return max(values) if values else None
 
@@ -985,17 +1021,9 @@ def _customers_with_history(
                   AND e.customer_id = customer_identities.customer_id
                   AND e.superseded_by IS NULL
             )
-            OR EXISTS (
-                SELECT 1 FROM bot_context_chunks c
-                WHERE c.tenant_id = customer_identities.tenant_id
-                  AND c.customer_id = customer_identities.customer_id
-                  AND c.chunk_type != ?
-                  AND c.superseded_by IS NULL
-            )
           )
         ORDER BY customer_id
     """
-    params.append(BOT_SAFE_SUMMARY_CHUNK_TYPE)
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))
@@ -1042,7 +1070,7 @@ def _events_by_customer(
               AND customer_id IS NOT NULL
               AND customer_id != ''
               AND superseded_by IS NULL
-            ORDER BY event_at ASC, event_id ASC
+            ORDER BY customer_id ASC, event_at ASC, event_id ASC
             """,
             (tenant_id, *customer_params),
         )
@@ -1257,37 +1285,6 @@ def _raw_allowed_chunks(db_path: Path) -> int:
                 (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
             ).fetchone()[0]
         )
-
-
-def _retired_bot_safe_chunk(record: Mapping[str, Any]) -> BotContextChunk:
-    metadata = dict(_mapping(record.get("metadata")))
-    metadata["retired_reason"] = "bot_safe_source_ref_not_rebuilt"
-    metadata["retired_by_schema_version"] = BOT_SAFE_SUMMARY_SCHEMA_VERSION
-    tags = tuple(dict.fromkeys((*_text_values(record.get("relevance_tags")), "retired")))
-    return BotContextChunk(
-        tenant_id=str(record.get("tenant_id") or ""),
-        customer_id=str(record.get("customer_id") or ""),
-        chunk_type=str(record.get("chunk_type") or BOT_SAFE_SUMMARY_CHUNK_TYPE),
-        text=_safe_fragment(record.get("text") or record.get("summary") or "Устаревшая выжимка отключена"),
-        chunk_id=str(record.get("chunk_id") or ""),
-        opportunity_id=str(record.get("opportunity_id") or "") or None,
-        event_id=str(record.get("event_id") or "") or None,
-        source_ref=str(record.get("source_ref") or ""),
-        ordinal=int(record.get("ordinal") or 0),
-        source_system=str(record.get("source_system") or BOT_SAFE_SUMMARY_SOURCE_SYSTEM),
-        summary=_safe_fragment(record.get("summary") or record.get("text") or "Устаревшая выжимка отключена"),
-        event_at=_parse_iso_datetime(record.get("event_at")),
-        freshness_score=0.0,
-        relevance_tags=tags,
-        allowed_for_bot=False,
-        requires_manager_review=True,
-        metadata=metadata,
-        created_at=_parse_iso_datetime(record.get("created_at")) or now_utc(),
-    )
-
-
-def _chunk_allowed_for_bot(record: Mapping[str, Any]) -> bool:
-    return record.get("allowed_for_bot") is True or str(record.get("allowed_for_bot") or "").strip() == "1"
 
 
 def _text_values(value: Any) -> tuple[str, ...]:

@@ -28,6 +28,7 @@ from mango_mvp.customer_timeline import (
 from mango_mvp.customer_timeline.nightly_service import (
     NightlyServiceStep,
     _SourceProofContext,
+    _proof_bot_safe_chunks_and_dossier,
     _proof_family_child_graph,
     run_nightly_service,
     run_tallanto_money_api_step,
@@ -50,6 +51,27 @@ def family_graph_proof(summary: dict[str, object]) -> dict[str, object]:
             )
         )
     )
+
+
+def bot_safe_proof(summary: dict[str, object]) -> dict[str, object]:
+    return dict(
+        _proof_bot_safe_chunks_and_dossier(
+            _SourceProofContext(
+                steps_by_name={"bot_safe_rebuild": {"status": "ok", "summary": summary}},
+                source_counts=(),
+                cursors=(),
+                mail_link_enrich={},
+                now=NOW,
+            )
+        )
+    )
+
+
+def test_bot_safe_proof_rejects_zero_summaries() -> None:
+    proof = bot_safe_proof({"considered_customers": 10, "customers_with_summary": 0})
+
+    assert proof["status"] == "empty"
+    assert proof["records_seen_or_written"] == 0
 
 
 def test_family_graph_proof_rejects_zero_child_links() -> None:
@@ -268,6 +290,22 @@ def test_full_nightly_config_rejects_stale_schema_before_opening_db(tmp_path: Pa
     with pytest.raises(ValueError, match="schema is stale"):
         service_config_from_json(config_path)
 
+
+def test_resume_fingerprint_changes_with_config_schema(tmp_path: Path, monkeypatch) -> None:
+    config = service_config_from_json(write_service_config(tmp_path))
+    paths = nightly_service_module.validated_service_paths(config)
+    before = nightly_service_module.service_config_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3],
+    )
+
+    monkeypatch.setattr(
+        nightly_service_module, "NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION", "customer_timeline_nightly_service_config_next",
+    )
+    after = nightly_service_module.service_config_fingerprint(
+        config, timeline_db=paths[0], allowed_root=paths[1], out_root=paths[2], publish_dir=paths[3],
+    )
+
+    assert after != before
 
 def test_nightly_service_publishes_manifest_and_second_run_has_no_changes(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
@@ -946,6 +984,7 @@ def test_nightly_service_runs_tallanto_money_api_importer_without_exposing_env(
             "timeline_db": str(timeline_db),
             "allowed_root": str(tmp_path),
             "apply": True,
+            "timeout_seconds": 3600,
         },
     )
 
@@ -961,6 +1000,7 @@ def test_nightly_service_runs_tallanto_money_api_importer_without_exposing_env(
     assert isinstance(command, list)
     assert command[command.index("--tallanto-api-env") + 1] == str(env_file)
     assert "secret" not in " ".join(command)
+    assert captured["kwargs"]["timeout"] == 3600
 
 
 def test_tallanto_money_failure_diagnostic_contains_no_raw_output(tmp_path: Path, monkeypatch) -> None:
@@ -1240,6 +1280,39 @@ def test_required_tallanto_money_proof_rejects_success_without_events() -> None:
     proof = result["proofs"]["tallanto_payments_subscriptions"]
     assert proof["status"] == "missing"
     assert result["missing"] == ["tallanto_payments_subscriptions"]
+
+
+def test_required_tallanto_money_proof_requires_fresh_current_cursor() -> None:
+    source_counts = [{
+        "source_system": "tallanto_crm_call",
+        "count": 1,
+        "max_event_at": NOW.isoformat(),
+    }]
+    stale = nightly_service_module.check_required_manifest_sources(
+        [{"name": "tallanto_money_api_incremental", "status": "ok"}],
+        ["tallanto_payments_subscriptions"],
+        source_counts=source_counts,
+        ingestion_cursors=[{
+            "source_system": "tallanto_money_api",
+            "last_cursor_ts": NOW.isoformat(),
+            "updated_at": (NOW - timedelta(days=2)).isoformat(),
+        }],
+        now=NOW,
+    )
+    fresh = nightly_service_module.check_required_manifest_sources(
+        [{"name": "tallanto_money_api_incremental", "status": "ok"}],
+        ["tallanto_payments_subscriptions"],
+        source_counts=source_counts,
+        ingestion_cursors=[{
+            "source_system": "tallanto_money_api",
+            "last_cursor_ts": NOW.isoformat(),
+            "updated_at": NOW.isoformat(),
+        }],
+        now=NOW,
+    )
+
+    assert stale["proofs"]["tallanto_payments_subscriptions"]["status"] == "stale"
+    assert fresh["proofs"]["tallanto_payments_subscriptions"]["status"] == "ok"
 
 
 def test_nightly_service_reports_tallanto_money_diagnostics_path(tmp_path: Path, monkeypatch) -> None:
@@ -1822,6 +1895,95 @@ def test_nightly_service_runs_terminal_bot_safe_rebuild(
     assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
     assert report["steps"][0]["summary"]["customers_with_summary"] == 2
+
+
+def test_nightly_service_rejects_empty_required_bot_safe_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
+    db_path.parent.mkdir(parents=True)
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "empty_bot_safe_rebuild_service.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "steps": [{"name": "bot_safe_rebuild", "kind": "bot_safe_rebuild", "required": True,
+                           "config": {"apply": True}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class EmptyReport:
+        def to_json_dict(self):
+            return {"considered_customers": 3, "customers_with_summary": 0, "created": 0,
+                    "updated": 0, "duplicate": 0, "retired_stale": 0}
+
+    monkeypatch.setattr(nightly_service_module, "build_bot_safe_summaries", lambda config: EmptyReport())
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed"
+    assert report["failed_required_steps"] == ["bot_safe_rebuild"]
+
+
+def test_nightly_service_refreshes_signals_before_publish(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "derived_signals_service.json"
+    config_path.write_text(json.dumps({
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [{
+            "name": "derived_signals_refresh", "kind": "derived_signals", "required": True,
+            "config": {"timeline_db": str(db_path), "allowed_root": str(tmp_path), "apply": True},
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        nightly_service_module,
+        "backfill_sg_v1_signals",
+        lambda *args, **kwargs: {"customers_scanned": 1, "signals": 1, "write_status_counts": {"created": 1}},
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "ok"
+    assert report["steps"][0]["status"] == "ok"
+    assert report["snapshot_manifest"]["latest_published"] is True
+
+
+def test_nightly_service_signal_refresh_error_blocks_publish(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    config_path = tmp_path / "derived_signals_failed.json"
+    config_path.write_text(json.dumps({
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [{
+            "name": "derived_signals_refresh", "kind": "derived_signals", "required": True,
+            "config": {"timeline_db": str(db_path), "allowed_root": str(tmp_path), "apply": True},
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        nightly_service_module, "backfill_sg_v1_signals",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic failure")),
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["failed_required_steps"] == ["derived_signals_refresh"]
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 def _service_report_path_on_disk(report: dict) -> Path:

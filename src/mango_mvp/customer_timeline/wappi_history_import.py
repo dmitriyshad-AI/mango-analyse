@@ -40,6 +40,7 @@ from mango_mvp.customer_timeline.ids import (
 )
 from mango_mvp.customer_timeline.import_cli import safety_ok, timeline_import_cli_safety_contract
 from mango_mvp.customer_timeline.ingestion import (
+    EXACT_AMO_IDENTITY_AUTHORITIES as WAPPI_EXACT_AMO_AUTHORITIES,
     PHONE_IDENTITY_LINK_TYPES,
     TimelineImportReport,
     TimelineImportService,
@@ -515,9 +516,6 @@ WAPPI_TECHNICAL_LINK_STATUSES = {
     "lookup_error",
     "request_limit",
 }
-WAPPI_EXACT_AMO_AUTHORITIES = {"wappi_amo_widget", "amo_talk_authoritative"}
-
-
 def _ensure_wappi_widget_link_schema(con: sqlite3.Connection) -> None:
     con.execute(
         """
@@ -1423,7 +1421,7 @@ def hydrate_wappi_widget_contacts(
     workers: int = 4,
     amo_client: Any = None,
 ) -> Mapping[str, Any]:
-    """Fetch only widget-proven AMO contacts that are absent from Timeline."""
+    """Fetch widget-proven AMO contacts without a real contact snapshot."""
     from types import SimpleNamespace
 
     from mango_mvp.customer_timeline.amo_incremental import load_amo_link_index, normalize_cards_source
@@ -1436,17 +1434,20 @@ def hydrate_wappi_widget_contacts(
         for item in widget_links.values()
         if str(item.get("status") or "") == "resolved" and str(item.get("contact_id") or "").strip()
     }
-    existing: set[str] = set()
+    hydrated: set[str] = set()
     with open_readonly_sqlite(db_path) as con:
-        if sqlite_table_exists(con, "identity_links"):
-            existing.update(
+        if sqlite_table_exists(con, "timeline_events"):
+            hydrated.update(
                 str(row[0])
                 for row in con.execute(
-                    "SELECT DISTINCT link_value FROM identity_links WHERE tenant_id = ? AND link_type = 'amo_contact_id'",
+                    "SELECT DISTINCT json_extract(record_json, '$.record.entity_id') FROM timeline_events "
+                    "WHERE tenant_id = ? "
+                    "AND source_system = 'amocrm_snapshot' AND event_type = 'amo_contact_snapshot' "
+                    "AND (superseded_by IS NULL OR superseded_by = '')",
                     (tenant_id,),
                 )
             )
-    missing = tuple(sorted(wanted - existing))
+    missing = tuple(sorted(wanted - hydrated))
     if not missing:
         return {"requested": 0, "fetched": 0, "normalized": 0, "fetch_errors": 0, "write_status_counts": {}}
     if amo_client is None:
@@ -3263,9 +3264,9 @@ class WappiPairCustomerResolver:
                     brand_sets.setdefault(str(row["customer_id"]), set()).add(brand)
             customer_brands.update(
                 {
-                    customer_id: next(iter(brands))
+                    customer_id: next(iter(brands)) if len(brands) == 1 else "conflict"
                     for customer_id, brands in brand_sets.items()
-                    if len(brands) == 1
+                    if brands
                 }
             )
             for row in con.execute(
@@ -3615,7 +3616,8 @@ class WappiPairCustomerResolver:
             )
         customer_id = next(iter(contact_owners))
         customer_brand = self._customer_brands.get(customer_id, "unknown")
-        brand_authorized = customer_brand == profile.brand
+        # The exact widget link authorizes this profile-scoped event, not the whole family.
+        brand_authorized = customer_brand in {"unknown", profile.brand}
         return WappiChatResolution(
             status="resolved",
             customer_id=customer_id,
@@ -5040,6 +5042,11 @@ def load_existing_unmatched_wappi_records(
                 continue
             existing_customer = str(row["customer_id"] or "").strip()
             existing_authority = str(row["identity_authority"] or "").strip()
+            if (
+                existing_authority == "pending_attribution"
+                and resolution.resolution_source not in WAPPI_EXACT_AMO_AUTHORITIES
+            ):
+                continue
             if (
                 existing_customer
                 and existing_customer != resolution.customer_id

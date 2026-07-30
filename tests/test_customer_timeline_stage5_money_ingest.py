@@ -120,8 +120,10 @@ def test_stage5_customer_purchases_splits_plan_and_tallanto_fact(
         )
 
     result = refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
+    repeat = refresh_customer_purchases_v1(db_path, allowed_root=tmp_path, tenant_id="foton")
 
     assert result["money_kind"] == {"plan": 1, "fact": 1}
+    assert repeat["stale_fact_rows_deleted"] == 0
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {

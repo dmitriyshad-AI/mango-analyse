@@ -181,6 +181,7 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                     ),
                     "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
                     "apply": True,
+                    "timeout_seconds": 5400,
                 },
             },
             {
@@ -217,6 +218,16 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 },
             },
             {
+                "name": "derived_signals_refresh",
+                "kind": "derived_signals",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
+            {
                 "name": "bot_safe_rebuild",
                 "kind": "bot_safe_rebuild",
                 "enabled": True,
@@ -239,8 +250,8 @@ def valid_nightly_payload(staging_root: Path) -> dict:
     wappi_index = next(index for index, step in enumerate(steps) if step["name"] == "wappi_history_incremental")
     steps[wappi_index:wappi_index] = [
         tallanto["tallanto_cards_sync"],
-        tallanto["tallanto_money_api_incremental"],
         tallanto["tallanto_attendance_api_incremental"],
+        tallanto["tallanto_money_api_incremental"],
     ]
     return payload
 
@@ -480,7 +491,7 @@ def test_nightly_config_rejects_tallanto_money_before_cards(tmp_path, monkeypatc
     config = tmp_path / "nightly.json"
     config.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert "cards -> money -> attendance" in module.validate_nightly_config(config)
+    assert "cards -> attendance -> money" in module.validate_nightly_config(config)
 
 
 def test_nightly_config_rejects_sweep_without_ready_package_db(tmp_path, monkeypatch) -> None:
@@ -774,7 +785,8 @@ def test_nightly_config_v6_rejects_missing_runtime_contract_fields(tmp_path, mon
         ("mail pending reconsider", lambda payload: config_step(payload, "mail_link_enrich")["config"].pop("reconsider_pending"), "reconsider pending"),
         ("mail before Tallanto", lambda payload: move_config_step_before(payload, "mail_link_enrich", "tallanto_cards_sync"), "cards before mail"),
         ("mail identity", lambda payload: config_step(payload, "mail_link_enrich")["config"].update(tallanto_identity_dbs=[str(tmp_path / "missing.sqlite")]), "identity DBs"),
-        ("Tallanto cards page budget", lambda payload: config_step(payload, "tallanto_cards_sync")["config"].update(max_pages=20), "500 pages"),
+            ("Tallanto cards page budget", lambda payload: config_step(payload, "tallanto_cards_sync")["config"].update(max_pages=20), "500 pages"),
+            ("Tallanto money timeout", lambda payload: config_step(payload, "tallanto_money_api_incremental")["config"].pop("timeout_seconds"), "90-minute"),
     )
     for _name, mutate, expected in cases:
         payload = json.loads(json.dumps(base))
@@ -887,9 +899,9 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     cards = steps["tallanto_cards_sync"]
     assert cards["kind"] == "tallanto_cards"
     assert cards["required"] is True
-    assert list(steps).index("tallanto_cards_sync") < list(steps).index("tallanto_money_api_incremental")
-    assert list(steps).index("tallanto_money_api_incremental") < list(steps).index("tallanto_attendance_api_incremental")
-    assert list(steps).index("tallanto_attendance_api_incremental") < list(steps).index("wappi_history_incremental")
+    assert list(steps).index("tallanto_cards_sync") < list(steps).index("tallanto_attendance_api_incremental")
+    assert list(steps).index("tallanto_attendance_api_incremental") < list(steps).index("tallanto_money_api_incremental")
+    assert list(steps).index("tallanto_money_api_incremental") < list(steps).index("wappi_history_incremental")
     attendance_api = steps["tallanto_attendance_api_incremental"]
     assert attendance_api["kind"] == "tallanto_attendance_api"
     assert attendance_api["required"] is True
@@ -899,6 +911,7 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
     assert money_api["kind"] == "tallanto_money_api"
     assert money_api["required"] is True
     assert money_api["config"]["apply"] is True
+    assert money_api["config"]["timeout_seconds"] == 5400
     assert money_api["config"]["timeline_db"] == str(
         staging_root / "customer_timeline_staging.sqlite"
     )

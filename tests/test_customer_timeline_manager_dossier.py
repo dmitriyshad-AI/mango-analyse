@@ -123,8 +123,9 @@ def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence
         dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
 
     text = "\n".join(row.text for row in dossier.chronology)
-    assert "Списание за занятие: Физика 8 класс" in text
+    assert "Запись Tallanto о занятии: Физика 8 класс" in text
     assert "посетил" not in text.casefold()
+    assert "списание" not in text.casefold()
 
 
 def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
@@ -1731,7 +1732,6 @@ def test_owner50_excludes_family_level_safety_risks(tmp_path: Path) -> None:
         "family_ambiguous",
         "child_ambiguous",
         "brand_ambiguous",
-        "identity_not_strong",
     }.issubset(
         set(control.replace(",", "").split())
     )
@@ -1783,7 +1783,9 @@ def test_owner50_bulk_selection_has_constant_query_count(tmp_path: Path) -> None
         candidates, _ = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert len(candidates) == 20
-    assert len(queries) <= 10
+    # Conflict ownership is resolved once for the whole batch; the bound must
+    # remain constant as families grow, not exclude the two shared safety queries.
+    assert len(queries) <= 12
 
 
 def test_owner50_signal_budget_ignores_unlinked_signal_noise(tmp_path: Path, monkeypatch) -> None:
@@ -2057,6 +2059,31 @@ def test_owner50_deal_signal_requires_its_linked_active_deal(tmp_path: Path) -> 
     assert any(row[:3] == ("family:linked-deal", "candidate", "active_deal_missing") for row in control)
 
 
+def test_owner50_rejects_family_after_manager_already_replied(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_owner50_member(
+        db, tmp_path, family_id="family:answered", customer_id="customer:answered",
+        signal_type="client_returned",
+    )
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton", customer_id="customer:answered",
+                event_type=TimelineEventType.EMAIL_MESSAGE, event_at=NOW - timedelta(days=5),
+                source_system="mail_archive_stage2", source_id="manager-replied",
+                direction=TimelineDirection.OUTBOUND, summary="Менеджер уже ответил клиенту.",
+                match_status="strong_unique", created_at=NOW - timedelta(days=5),
+            )
+        )
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
+
+    assert candidates == []
+    assert any(row[:3] == ("family:answered", "excluded", "meaningful_outbound_after_evidence") for row in control)
+
+
 def test_owner50_fails_closed_when_scan_budget_is_exceeded(tmp_path: Path, monkeypatch) -> None:
     db = _timeline_db(tmp_path)
     _seed_owner50_member(
@@ -2171,6 +2198,28 @@ def test_owner50_family_rows_wires_classify_family_into_ready_candidate_excluded
     assert signal_evidence[6] == "mail_archive_stage2"  # source_system
     assert signal_evidence[7]  # event_id непустой
     assert signal_evidence[5]  # дата непустая
+
+
+def test_owner50_family_rows_can_classify_only_preselected_families(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    for suffix in ("selected", "outside"):
+        _seed_owner50_member(
+            db,
+            tmp_path,
+            family_id=f"family:{suffix}",
+            customer_id=f"customer:{suffix}",
+            signal_type="callback_due",
+        )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        candidates, control = _owner50_family_rows(
+            con,
+            tenant_id="foton",
+            as_of=NOW,
+            family_ids=("family:selected",),
+        )
+
+    assert {row["family_id"] for row in candidates} | {row[0] for row in control} == {"family:selected"}
 
 
 def test_owner50_signal_expiry_is_not_manager_due_date(tmp_path: Path) -> None:
@@ -2573,7 +2622,7 @@ def test_owner50_fake_client_name_ochno_dva_predmeta_never_ready(tmp_path: Path)
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:fake-name-1" not in {row["family_id"] for row in candidates}
-    assert ("family:fake-name-1", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+    assert ("family:fake-name-1", "candidate", "person_origin_unproven") in {row[:3] for row in control}
 
 
 def test_owner50_fake_client_name_lvsh_2_chast_never_ready(tmp_path: Path) -> None:
@@ -2588,7 +2637,7 @@ def test_owner50_fake_client_name_lvsh_2_chast_never_ready(tmp_path: Path) -> No
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:fake-name-2" not in {row["family_id"] for row in candidates}
-    assert ("family:fake-name-2", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+    assert ("family:fake-name-2", "candidate", "person_origin_unproven") in {row[:3] for row in control}
 
 
 def test_owner50_fake_client_name_os_ot_roditelya_never_ready(tmp_path: Path) -> None:
@@ -2604,7 +2653,7 @@ def test_owner50_fake_client_name_os_ot_roditelya_never_ready(tmp_path: Path) ->
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:fake-name-3" not in {row["family_id"] for row in candidates}
-    assert ("family:fake-name-3", "excluded", "person_origin_unproven") in {row[:3] for row in control}
+    assert ("family:fake-name-3", "candidate", "person_origin_unproven") in {row[:3] for row in control}
 
 
 @pytest.mark.parametrize(
@@ -2650,7 +2699,7 @@ def test_owner50_person_origin_uses_strong_manual_identity_link_index(
         (IdentityLinkType.TALLANTO_STUDENT_ID, IdentityMatchClass.INFERRED),
     ),
 )
-def test_owner50_non_person_or_non_strong_identity_link_stays_excluded(
+def test_owner50_non_person_or_non_strong_identity_link_stays_candidate(
     tmp_path: Path,
     link_type: IdentityLinkType,
     match_class: IdentityMatchClass,
@@ -2677,7 +2726,7 @@ def test_owner50_non_person_or_non_strong_identity_link_stays_excluded(
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert family_id not in {row["family_id"] for row in candidates}
-    assert (family_id, "excluded", "person_origin_unproven") in {row[:3] for row in control}
+    assert (family_id, "candidate", "person_origin_unproven") in {row[:3] for row in control}
 
 
 def test_owner50_duplicate_authoritative_exact_id_blocks_every_owner(tmp_path: Path) -> None:
@@ -2739,7 +2788,7 @@ def test_owner50_open_tallanto_identity_conflict_blocks_ready(tmp_path: Path) ->
     }
 
 
-def test_owner50_technical_display_name_stays_excluded_even_with_exact_id(tmp_path: Path) -> None:
+def test_owner50_technical_display_name_stays_candidate_even_with_exact_id(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_owner50_member(
         db, tmp_path, family_id="family:technical-name",
@@ -2756,12 +2805,12 @@ def test_owner50_technical_display_name_stays_excluded_even_with_exact_id(tmp_pa
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:technical-name" not in {row["family_id"] for row in candidates}
-    assert ("family:technical-name", "excluded", "human_name_unproven") in {
+    assert ("family:technical-name", "candidate", "human_name_unproven") in {
         row[:3] for row in control
     }
 
 
-def test_owner50_empty_parent_name_stays_excluded_with_person_snapshot(tmp_path: Path) -> None:
+def test_owner50_empty_parent_name_stays_candidate_with_person_snapshot(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_owner50_member(
         db, tmp_path, family_id="family:empty-parent",
@@ -2778,7 +2827,7 @@ def test_owner50_empty_parent_name_stays_excluded_with_person_snapshot(tmp_path:
         candidates, control = _owner50_family_rows(con, tenant_id="foton", as_of=NOW)
 
     assert "family:empty-parent" not in {row["family_id"] for row in candidates}
-    assert ("family:empty-parent", "excluded", "human_name_unproven") in {
+    assert ("family:empty-parent", "candidate", "human_name_unproven") in {
         row[:3] for row in control
     }
 
@@ -2839,7 +2888,7 @@ def test_owner50_exact_origin_guard_is_on_workbook_live_path(
 
     assert baseline_summary["families"] == 1
     assert broken_summary["families"] == 0
-    assert broken_summary["exclusion_counts"]["person_origin_unproven"] == 1
+    assert broken_summary["candidate_queue_reason_counts"]["person_origin_unproven"] == 1
 
 
 @pytest.mark.parametrize(
@@ -3181,6 +3230,21 @@ def test_golden_family_is_actually_ready() -> None:
     assert result["status"] == "READY"
     assert result["reasons"] == ()
     assert result["missing"] == ()
+
+
+def test_weak_identity_is_candidate_but_open_conflict_is_excluded() -> None:
+    weak = _owner50_golden_family(
+        identity={"customer_id": "customer:golden", "identity_status": "partial"},
+    )
+    weak_result = classify_family(weak, as_of=OWNER50_CLASSIFY_NOW)
+    assert weak_result["status"] == "CANDIDATE"
+    assert "identity_not_strong" in weak_result["missing"]
+
+    conflict_result = classify_family(
+        _owner50_golden_family(identity_conflict=True), as_of=OWNER50_CLASSIFY_NOW,
+    )
+    assert conflict_result["status"] == "EXCLUDED"
+    assert "open_identity_conflict" in conflict_result["reasons"]
 
 
 def test_ready_requires_one_proven_child_key() -> None:

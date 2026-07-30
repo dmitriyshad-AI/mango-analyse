@@ -1746,7 +1746,9 @@ def test_wappi_resolver_uses_all_non_wappi_brand_history(tmp_path: Path) -> None
 
     assert resolution.resolved is True
     assert resolution.customer_id == "customer:mixed-history"
-    assert resolution.reason == "timeline_identity_unique_brand_unverified"
+    assert resolution.reason == "timeline_identity_unique_cross_brand_person_match"
+    assert resolution.evidence["customer_brand"] == "conflict"
+    assert resolution.evidence["brand_context_authorized"] is False
     assert resolution.evidence["brand_context_authorized"] is False
 
 
@@ -2675,6 +2677,41 @@ def test_wappi_widget_resolver_uses_contact_and_keeps_multiple_leads(tmp_path: P
     assert normalized.identity_links[0].evidence["lead_ids"] == ("1001", "1002")
 
 
+def test_wappi_widget_exact_link_authorizes_unknown_customer_for_profile_event(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(
+        db_path,
+        tmp_path,
+        lead_id="1001",
+        contact_id="2002",
+        brand="unknown",
+    )
+    resolver = WappiPairCustomerResolver.from_store(
+        db_path,
+        tenant_id="foton",
+        pairs={},
+        widget_links={
+            ("telegram", "p-tg", "123456"): {
+                "status": "resolved",
+                "contact_id": "2002",
+                "lead_ids": ("1001",),
+                "resolution_source": "wappi_amo_widget",
+            }
+        },
+    )
+
+    resolution = resolver.resolve_chat(
+        profile=profile("p-tg", "foton", "telegram"),
+        dialog={"id": "123456", "type": "user"},
+        messages=(),
+    )
+
+    assert resolution.resolved is True
+    assert resolution.customer_id == customer_id
+    assert resolution.evidence["customer_brand"] == "unknown"
+    assert resolution.evidence["brand_context_authorized"] is True
+
+
 def test_wappi_widget_resolver_keeps_exact_person_without_cross_brand_authority(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer_id = seed_customer_with_amo(
@@ -3525,6 +3562,71 @@ def test_wappi_widget_contact_hydrate_reuses_known_lead_family(tmp_path: Path) -
     assert owner == customer_id
 
 
+def test_wappi_widget_contact_hydrate_refetches_id_only_stub(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status=IdentityStatus.PARTIAL,
+            source_ref="wappi:widget",
+        )
+        store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="amo_contact_id",
+                link_value="30",
+                source_system="amocrm_snapshot",
+                source_ref="amocrm:contact:30",
+                match_class=IdentityMatchClass.STRONG_UNIQUE,
+                confidence=1.0,
+            )
+        )
+
+    class ContactClient:
+        calls = 0
+
+        def amo_api_get(self, *, path: str, params: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
+            self.calls += 1
+            return {
+                "_embedded": {
+                    "contacts": [{
+                        "id": 30,
+                        "name": "Parent",
+                        "created_at": 1_753_000_000,
+                        "updated_at": 1_753_000_001,
+                        "custom_fields_values": [{
+                            "field_code": "PHONE",
+                            "values": [{"value": "+79990000001"}],
+                        }],
+                        "_embedded": {"leads": []},
+                    }]
+                }
+            }
+
+    client = ContactClient()
+    report = hydrate_wappi_widget_contacts(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        widget_links={("telegram", "p-tg", "chat"): {"status": "resolved", "contact_id": "30"}},
+        amo_mcp_env_file=None,
+        amo_client=client,
+    )
+
+    assert report["requested"] == 1
+    assert report["fetched"] == 1
+    assert client.calls == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE event_type='amo_contact_snapshot' "
+            "AND json_extract(record_json, '$.record.entity_id')='30'"
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM identity_links WHERE link_type='phone' AND link_value='+79990000001'"
+        ).fetchone()[0] == 1
+
+
 def test_wappi_widget_contact_hydrate_batches_exact_ids(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer_with_amo(db_path, tmp_path, lead_id="42", contact_id="99")
@@ -4213,6 +4315,44 @@ def test_wappi_widget_map_primes_old_unmatched_history(tmp_path: Path) -> None:
     assert prime["resolved"] == 1
     assert len(records) == 1
     assert records[0].payload["resolved_customer_id"] == customer_id
+
+
+def test_wappi_pending_event_skips_non_exact_local_relink(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                event_type=TimelineEventType.TELEGRAM_MESSAGE,
+                event_at=datetime.fromtimestamp(1_753_000_000, tz=timezone.utc),
+                source_system="wappi_telegram",
+                source_id="pending-message",
+                direction=TimelineDirection.INBOUND,
+                text_preview="Старое сообщение",
+                record={"message": {"channel": "telegram", "message_id": "pending-message", "text": "Старое сообщение"}},
+                metadata={
+                    "profile_id": "p-tg",
+                    "chat_id": "123456",
+                    "message_id": "pending-message",
+                    "identity_authority": "pending_attribution",
+                },
+            ),
+            actor="test",
+        )
+
+    records = load_existing_unmatched_wappi_records(
+        db_path,
+        tenant_id="foton",
+        chat_resolutions={
+            ("wappi_telegram", "p-tg", "123456"): WappiChatResolution(
+                status="resolved",
+                customer_id="customer:provisional",
+                resolution_source="wappi_provisional",
+            )
+        },
+    )
+
+    assert records == ()
 
 
 def test_wappi_inbound_email_is_only_identity_candidate_not_sender_truth(tmp_path: Path) -> None:

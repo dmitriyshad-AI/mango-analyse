@@ -5,7 +5,13 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mango_mvp.customer_timeline import BotContextChunk, CustomerIdentity, CustomerTimelineSQLiteStore, TimelineEvent
+from mango_mvp.customer_timeline import (
+    BotContextChunk,
+    CustomerIdentity,
+    CustomerTimelineSQLiteStore,
+    IdentityLink,
+    TimelineEvent,
+)
 from mango_mvp.customer_timeline.stage4b_bot_opening import (
     STAGE4B_OPENING_POLICY_VERSION,
     Stage4BBotOpeningConfig,
@@ -127,6 +133,10 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             created_at=NOW,
             updated_at=NOW,
         )
+        conflict_sibling = CustomerIdentity(
+            tenant_id="foton", identity_status="strong", customer_id="customer:channel-conflict-sibling",
+            created_at=NOW, updated_at=NOW,
+        )
         wappi_customer = CustomerIdentity(
             tenant_id="foton",
             identity_status="strong",
@@ -134,8 +144,43 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             created_at=NOW,
             updated_at=NOW,
         )
-        for customer in (clean_customer, conflict_customer, wappi_customer):
+        partial_wappi_customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="partial",
+            customer_id="customer:wappi-partial-exact",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        for customer in (clean_customer, conflict_customer, conflict_sibling, wappi_customer, partial_wappi_customer):
             store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=conflict_customer.customer_id, link_type="phone",
+                link_value="+70000000001", source_system="tallanto_crm_call", source_ref="test:shared",
+                match_class="strong_unique", confidence=1.0,
+            )
+        )
+        store._con.executemany(  # noqa: SLF001 - fixture proves family-wide conflict expansion.
+            "INSERT INTO family_members_v1(tenant_id,family_id,customer_id,membership_status,confidence,reason,"
+            "created_at,updated_at,record_hash,record_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("foton", "family:conflict", customer.customer_id, "confident", "high", "test", NOW.isoformat(), NOW.isoformat(), customer.customer_id, "{}")
+                for customer in (conflict_customer, conflict_sibling)
+            ],
+        )
+        for customer, contact_id in ((wappi_customer, "2001"), (partial_wappi_customer, "2002")):
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer.customer_id,
+                    link_type="amo_contact_id",
+                    link_value=contact_id,
+                    source_system="amocrm_snapshot",
+                    source_ref=f"amocrm:contact:{contact_id}",
+                    match_class="strong_unique",
+                    confidence=1.0,
+                )
+            )
 
         telegram_event = _channel_event(
             clean_customer,
@@ -145,7 +190,7 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             text="Фотон. Клиент спрашивает, когда следующее занятие.",
         )
         conflict_event = _channel_event(
-            conflict_customer,
+            conflict_sibling,
             "telegram_history",
             "telegram-conflict",
             match_status="strong_unique",
@@ -157,6 +202,7 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             "wappi-open",
             match_status="manual",
             text="Фотон. Клиент уточнил адрес занятия.",
+            contact_id="2001",
         )
         pending_event = _channel_event(
             clean_customer,
@@ -173,13 +219,39 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
             text="Фотон. Контекст бренда не подтверждён.",
             brand_context_authorized=False,
         )
-        for event in (telegram_event, conflict_event, wappi_event, pending_event, unauthorized_event):
+        partial_exact_event = _channel_event(
+            partial_wappi_customer,
+            "wappi_telegram",
+            "wappi-partial-exact",
+            match_status="strong_unique",
+            text="Фотон. Точно связанный диалог доступен без догадки о ребёнке.",
+            contact_id="2002",
+        )
+        partial_ambiguous_event = _channel_event(
+            partial_wappi_customer,
+            "wappi_telegram",
+            "wappi-partial-ambiguous",
+            match_status="ambiguous",
+            text="Фотон. Неоднозначная связь остаётся закрытой.",
+            contact_id="2002",
+        )
+        for event in (
+            telegram_event,
+            conflict_event,
+            wappi_event,
+            pending_event,
+            unauthorized_event,
+            partial_exact_event,
+            partial_ambiguous_event,
+        ):
             store.upsert_event(event)
             store.upsert_bot_context_chunk(_channel_chunk(event, text=event.summary or ""))
         store.record_conflict(
             "foton",
             conflict_type="tallanto_identity_ambiguous",
-            entity_refs=(conflict_customer.customer_id,),
+            # The shared gate must resolve arbitrary identity_links.source_ref,
+            # not maintain another hand-written list of ref prefixes.
+            entity_refs=("test:shared",),
             status="open",
         )
 
@@ -192,9 +264,13 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
     )
     report = run_stage4b_bot_opening(config)
 
-    assert report["plan"]["source_system_counts"] == {"telegram_history": 1, "wappi_max": 1}
-    assert report["apply"]["chunks_updated"] == 2
-    assert report["plan"]["skipped"]["channel_events_not_openable_identity"] == 2
+    assert report["plan"]["source_system_counts"] == {
+        "telegram_history": 1,
+        "wappi_max": 1,
+        "wappi_telegram": 1,
+    }
+    assert report["apply"]["chunks_updated"] == 3
+    assert report["plan"]["skipped"]["channel_events_not_openable_identity"] == 3
     assert report["final_checks"]["opened_disallowed_identity_after"] == 0
 
     with sqlite3.connect(db_path) as con:
@@ -211,12 +287,32 @@ def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(t
     assert {"channel", "telegram_history", "bot_visible", "foton"}.issubset(set(telegram_payload["relevance_tags"]))
     assert rows[wappi_event.event_id]["allowed_for_bot"] == 1
     assert rows[wappi_event.event_id]["requires_manager_review"] == 0
+    assert rows[partial_exact_event.event_id]["allowed_for_bot"] == 1
+    assert rows[partial_exact_event.event_id]["requires_manager_review"] == 0
+    assert rows[partial_ambiguous_event.event_id]["allowed_for_bot"] == 0
     assert rows[conflict_event.event_id]["allowed_for_bot"] == 0
     assert rows[conflict_event.event_id]["requires_manager_review"] == 1
     assert rows[pending_event.event_id]["allowed_for_bot"] == 0
     assert rows[pending_event.event_id]["requires_manager_review"] == 1
     assert rows[unauthorized_event.event_id]["allowed_for_bot"] == 0
     assert rows[unauthorized_event.event_id]["requires_manager_review"] == 1
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        other = CustomerIdentity(
+            tenant_id="foton", identity_status="strong", customer_id="customer:wappi-new-owner",
+            created_at=NOW, updated_at=NOW,
+        )
+        store.upsert_customer(other)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton", customer_id=other.customer_id, link_type="amo_contact_id",
+                link_value="2001", source_system="amocrm_snapshot", source_ref="amocrm:contact:2001:new",
+                match_class="strong_unique", confidence=1.0,
+            )
+        )
+    stale_owner_report = run_stage4b_bot_opening(config)
+    assert stale_owner_report["apply"]["chunks_retracted_not_openable"] == 1
+    assert stale_owner_report["final_checks"]["opened_disallowed_identity_after"] == 0
 
 
 def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_path: Path) -> None:
@@ -702,6 +798,7 @@ def _channel_event(
     match_status: str,
     text: str,
     brand_context_authorized: bool = True,
+    contact_id: str = "",
 ) -> TimelineEvent:
     event_type = "max_message" if source_system == "wappi_max" else "telegram_message"
     return TimelineEvent(
@@ -717,7 +814,7 @@ def _channel_event(
         match_status=match_status,
         created_at=NOW,
         record={"message_id": suffix},
-        metadata={"brand_context_authorized": brand_context_authorized},
+        metadata={"brand_context_authorized": brand_context_authorized, "contact_id": contact_id},
     )
 
 

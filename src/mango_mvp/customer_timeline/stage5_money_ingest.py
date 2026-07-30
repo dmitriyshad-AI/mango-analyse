@@ -150,15 +150,32 @@ def refresh_customer_purchases_v1(
         ensure_customer_purchases_v1_table(con)
         aggregates = _purchase_aggregates(con, tenant_id=tenant_id)
         rows = [_purchase_row(row) for row in aggregates.values()]
-        stale_fact_rows_deleted = con.execute(
-            "DELETE FROM customer_purchases_v1 WHERE tenant_id=? AND money_kind=?",
-            (tenant_id, PURCHASE_MONEY_KIND_FACT),
-        ).rowcount
+        desired_fact_keys = {
+            (str(row["customer_id"]), str(row["period"]))
+            for row in rows
+            if row["money_kind"] == PURCHASE_MONEY_KIND_FACT
+        }
+        existing_fact_keys = {
+            (str(row[0]), str(row[1]))
+            for row in con.execute(
+                "SELECT customer_id,period FROM customer_purchases_v1 WHERE tenant_id=? AND money_kind=?",
+                (tenant_id, PURCHASE_MONEY_KIND_FACT),
+            )
+        }
+        stale_fact_keys = existing_fact_keys - desired_fact_keys
+        con.executemany(
+            "DELETE FROM customer_purchases_v1 "
+            "WHERE tenant_id=? AND customer_id=? AND period=? AND money_kind=?",
+            (
+                (tenant_id, customer_id, period, PURCHASE_MONEY_KIND_FACT)
+                for customer_id, period in stale_fact_keys
+            ),
+        )
         upsert_customer_purchase_rows(con, rows)
         con.commit()
         return {
             "rows_upserted": len(rows),
-            "stale_fact_rows_deleted": stale_fact_rows_deleted,
+            "stale_fact_rows_deleted": len(stale_fact_keys),
             "customers_with_money": sum(1 for row in rows if (row["total_in"] or 0) or (row["total_out"] or 0)),
             "total_in": round(sum(float(row["total_in"] or 0) for row in rows), 2),
             "total_out": round(sum(float(row["total_out"] or 0) for row in rows), 2),

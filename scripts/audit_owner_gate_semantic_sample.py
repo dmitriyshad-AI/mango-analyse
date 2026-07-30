@@ -88,10 +88,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mango_mvp.customer_timeline.manager_dossier import (  # noqa: E402
-    OWNER50_REQUIRED_COLUMNS,
+    OWNER50_CONTROL_COLUMNS,
     _family_scope_customer_ids,
     _guard_local_dossier_output_path,
     _owner50_family_rows,
+    _owner50_control_row_from_ready,
     _source_freshness,
     build_manager_dossier_workbook,
     build_owner50_family_workbook,
@@ -104,6 +105,16 @@ from mango_mvp.customer_timeline.store import customer_entity_ref_values  # noqa
 
 def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _attendance_is_not_future(value: Any, *, now: datetime | None = None) -> bool:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed <= (now or datetime.now(timezone.utc))
 
 
 def _write_private_text(path: Path, text: str) -> None:
@@ -342,21 +353,76 @@ def cmd_owner50(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+CURRENT_TALLANTO_STUDENT_TYPES = frozenset(
+    {"listener", "слушатель"}
+    | {f"{grade}_klass" for grade in range(1, 11)}
+    | {f"{grade} класс" for grade in range(1, 11)}
+)
+
+
+def _current_tallanto_business_family_ids(con: sqlite3.Connection, *, tenant_id: str) -> set[str]:
+    placeholders = ",".join("?" for _ in CURRENT_TALLANTO_STUDENT_TYPES)
+    params = (tenant_id, *sorted(CURRENT_TALLANTO_STUDENT_TYPES))
+    rows = con.execute(
+        f"""
+        WITH current_students AS (
+          SELECT DISTINCT customer_id
+          FROM timeline_events
+          WHERE tenant_id=? AND source_system='tallanto_snapshot'
+            AND event_type='tallanto_student_snapshot' AND superseded_by IS NULL
+            AND customer_id IS NOT NULL
+            AND lower(trim(json_extract(record_json,'$.record.payload.student_type'))) IN ({placeholders})
+        )
+        SELECT member.family_id
+        FROM family_members_v1 AS member JOIN current_students USING (customer_id)
+        WHERE member.tenant_id=?
+        UNION
+        SELECT child.family_id
+        FROM family_links_v1 AS child JOIN current_students USING (customer_id)
+        WHERE child.tenant_id=?
+        """,
+        (*params, tenant_id, tenant_id),
+    ).fetchall()
+    return {str(row[0]) for row in rows if row[0]}
+
+
 def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict[str, Any]]:
     con.row_factory = sqlite3.Row
-    families = con.execute(
+    current_family_ids = _current_tallanto_business_family_ids(con, tenant_id=tenant_id)
+    if not current_family_ids:
+        return []
+    member_rows = con.execute(
         """
-        SELECT MIN(customer_id) AS customer_id, MIN(brand) AS brand,
-               COUNT(DISTINCT child_key) AS child_count, family_id
+        SELECT family_id, customer_id, brand, child_key
         FROM family_links_v1
         WHERE tenant_id = ? AND status != 'excluded'
-        GROUP BY family_id
         """,
         (tenant_id,),
     ).fetchall()
-    if not families:
+    link_members: dict[str, set[str]] = defaultdict(set)
+    family_brands: dict[str, set[str]] = defaultdict(set)
+    family_children: dict[str, set[str]] = defaultdict(set)
+    for row in member_rows:
+        family_id = str(row["family_id"])
+        link_members[family_id].add(str(row["customer_id"]))
+        if str(row["brand"] or "").strip():
+            family_brands[family_id].add(str(row["brand"]).strip().casefold())
+        family_children[family_id].add(str(row["child_key"]))
+    family_members: dict[str, set[str]] = {}
+    if con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='family_members_v1'"
+    ).fetchone():
+        for row in con.execute(
+            "SELECT family_id,customer_id FROM family_members_v1 WHERE tenant_id=? "
+            "AND membership_status IN ('confident','singleton')",
+            (tenant_id,),
+        ):
+            family_members.setdefault(str(row["family_id"]), set()).add(str(row["customer_id"]))
+    for family_id, members in link_members.items():
+        family_members.setdefault(family_id, set()).update(members)
+    if not family_members:
         return []
-    ids = [row["customer_id"] for row in families]
+    ids = sorted({customer_id for members in family_members.values() for customer_id in members})
     placeholders = ",".join("?" for _ in ids)
 
     paying = {
@@ -393,14 +459,24 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
         channel_by_customer[row["customer_id"]].add(row["source_system"])
 
     event_layers: dict[str, set[str]] = defaultdict(set)
+    as_of = datetime.now(timezone.utc).isoformat()
     for row in con.execute(
         f"SELECT DISTINCT customer_id, event_type FROM timeline_events WHERE tenant_id=? "
-        f"AND customer_id IN ({placeholders}) AND event_type IN ('email_message','mango_call','tallanto_attendance')",
-        (tenant_id, *ids),
+        f"AND customer_id IN ({placeholders}) AND event_type IN ('email_message','mango_call','tallanto_attendance') "
+        "AND (event_type != 'tallanto_attendance' OR (event_at <= ? AND ("
+        "source_system != 'tallanto_attendance_api' "
+        "OR json_extract(record_json, '$.record.attendance_confirmed') = 1)))",
+        (tenant_id, *ids, as_of),
     ).fetchall():
         event_layers[row["customer_id"]].add(row["event_type"])
 
     conflicted: set[str] = set()
+    conflicted_families: set[str] = set()
+    customer_by_ref = {
+        ref: customer_id
+        for customer_id in ids
+        for ref in customer_entity_ref_values(customer_id)
+    }
     for row in con.execute(
         "SELECT record_json FROM timeline_conflicts WHERE tenant_id = ? AND status != 'resolved'",
         (tenant_id,),
@@ -410,29 +486,37 @@ def _dossier_population(con: sqlite3.Connection, *, tenant_id: str) -> list[dict
         # одного клиента может быть текстовым префиксом другого ("customer:1" внутри
         # "customer:10") -- substring даёт ложные совпадения, entity_refs -- нет.
         refs = {str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())}
-        for cid in ids:
-            if set(customer_entity_ref_values(cid)) & refs:
-                conflicted.add(cid)
+        conflicted.update(customer_by_ref[ref] for ref in refs if ref in customer_by_ref)
+        for family_id in family_members:
+            if refs & {family_id, f"family:{family_id}"}:
+                conflicted_families.add(family_id)
 
     population = []
-    for row in families:
-        cid = row["customer_id"]
-        channels = channel_by_customer.get(cid, set())
+    for family_id, members in sorted(family_members.items()):
+        if family_id not in current_family_ids:
+            continue
+        cid = min(members)
+        channels = {channel for member in members for channel in channel_by_customer.get(member, set())}
+        layers = {layer for member in members for layer in event_layers.get(member, set())}
+        brands = family_brands.get(family_id, set())
         population.append(
             {
                 "id": cid,
-                "family_id": row["family_id"],
-                "brand": (row["brand"] or "unknown").strip().casefold() or "unknown",
-                "child_bucket": "1" if (row["child_count"] or 0) <= 1 else "2+",
+                "family_id": family_id,
+                "brand": next(iter(brands)) if len(brands) == 1 else "unknown",
+                "child_bucket": (
+                    "0" if not family_children[family_id]
+                    else ("1" if len(family_children[family_id]) == 1 else "2+")
+                ),
                 "channel": (
                     "both" if len(channels) > 1 else (next(iter(channels)) if channels else "none")
                 ),
-                "has_payment": cid in paying,
-                "has_conflict": cid in conflicted,
-                "has_signal": cid in signalled,
-                "has_mail": "email_message" in event_layers.get(cid, set()),
-                "has_call": "mango_call" in event_layers.get(cid, set()),
-                "has_attendance": "tallanto_attendance" in event_layers.get(cid, set()),
+                "has_payment": bool(members & paying),
+                "has_conflict": bool(members & conflicted) or family_id in conflicted_families,
+                "has_signal": bool(members & signalled),
+                "has_mail": "email_message" in layers,
+                "has_call": "mango_call" in layers,
+                "has_attendance": "tallanto_attendance" in layers,
             }
         )
     return population
@@ -549,12 +633,31 @@ _ACCEPTANCE_EVIDENCE_KIND_BY_EVENT_TYPE = {
     "wappi_telegram": "Telegram",
     "wappi_max": "Max",
     "tallanto_attendance": "Посещение",
+    "tallanto_absence": "Подтверждённый пропуск",
+    "tallanto_scheduled_lesson": "Запланированное занятие",
     "amo_deal_stage": "Сделка",
 }
+
+_ACCEPTANCE_COMMUNICATION_EVENT_TYPES = {
+    "email_message", "mango_call", "call_transcript", "telegram_message", "telegram_dialog", "max_message",
+}
+_ACCEPTANCE_COMMUNICATION_SOURCES = {"mail", "mail_archive_stage2", "wappi_telegram", "wappi_max", "telegram_history"}
 
 
 def _acceptance_evidence_kind(event_type: Any) -> str:
     return _ACCEPTANCE_EVIDENCE_KIND_BY_EVENT_TYPE.get(str(event_type or ""), "Событие")
+
+
+def _acceptance_event_type(row: Mapping[str, Any]) -> str:
+    event_type = str(row["event_type"] or "")
+    if event_type != "tallanto_attendance" or row["source_system"] != "tallanto_attendance_api":
+        return event_type
+    record = json.loads(row["record_json"] or "{}").get("record") or {}
+    if record.get("attendance_confirmed"):
+        return event_type
+    if record.get("physical_absence_confirmed"):
+        return "tallanto_absence"
+    return "tallanto_scheduled_lesson"
 
 
 def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: Sequence[Mapping[str, Any]]) -> tuple[list[list[Any]], list[list[Any]], list[list[Any]], list[list[Any]]]:
@@ -593,17 +696,32 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
             f"WHERE tenant_id=? AND customer_id IN ({placeholders}) AND period='all_time' AND money_kind='fact'", (tenant_id, *members)
         ).fetchone()
         event_rows = con.execute(
-            f"SELECT event_id,customer_id,event_at,event_type,source_system,direction,subject,summary,text_preview,source_ref "
+            f"SELECT event_id,customer_id,event_at,event_type,source_system,direction,subject,summary,text_preview,source_ref,record_json "
             f"FROM timeline_events WHERE tenant_id=? AND customer_id IN ({placeholders}) AND COALESCE(superseded_by,'')=''"
             f"{match_status_clause} "
             "ORDER BY event_at,event_id", (tenant_id, *members)
         ).fetchall()
-        attendance = next((row for row in reversed(event_rows) if row["event_type"] == "tallanto_attendance"), None)
-        latest = event_rows[-1] if event_rows else None
+        attendance = next(
+            (
+                row for row in reversed(event_rows)
+                if _acceptance_event_type(row) == "tallanto_attendance"
+                and _attendance_is_not_future(row["event_at"])
+            ),
+            None,
+        )
+        latest = next(
+            (
+                row for row in reversed(event_rows)
+                if row["event_type"] in _ACCEPTANCE_COMMUNICATION_EVENT_TYPES
+                or row["source_system"] in _ACCEPTANCE_COMMUNICATION_SOURCES
+            ),
+            None,
+        )
         # entity_refs -- тот же точный признак, что уже используется в _next_step_for_dossier
         # (manager_dossier.py:3070-3083); НЕ substring -- один customer_id может быть текстовым
         # префиксом другого ("customer:1" внутри "customer:10"), substring даёт ложные конфликты.
         member_refs = {ref for member in members for ref in customer_entity_ref_values(member)}
+        member_refs.update((family_id, f"family:{family_id}"))
         matched_conflicts = [
             row for row in conflict_rows
             if member_refs & {str(ref) for ref in (json.loads(row["record_json"] or "{}").get("entity_refs") or ())}
@@ -627,9 +745,10 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
         # одновременно становится проверяемой строкой доказательства с настоящим event_id
         # (не заглушкой вроде customer_id).
         for row in event_rows:
+            display_event_type = _acceptance_event_type(row)
             full_text = row["text_preview"] or row["summary"] or ""
             evidence.append([
-                family_id, _acceptance_evidence_kind(row["event_type"]),
+                family_id, _acceptance_evidence_kind(display_event_type),
                 full_text or row["subject"] or "(пусто)",
                 "timeline_events.text_preview" if row["text_preview"] else "timeline_events.summary",
                 row["event_at"], row["source_system"], row["event_id"], "да",
@@ -637,8 +756,9 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
         # гэп №1: "Краткое содержание" (summary) и "Полный текст" (text_preview) -- РЯДОМ, оба
         # исходные значения как есть, БЕЗ заглушки "Полный текст в базе" и без обрезки/лимита.
         for row in event_rows:
+            display_event_type = _acceptance_event_type(row)
             chronology.append([
-                family_id, row["customer_id"], row["event_id"], row["event_at"], row["event_type"],
+                family_id, row["customer_id"], row["event_id"], row["event_at"], display_event_type,
                 row["source_system"], row["direction"], row["subject"],
                 row["summary"], row["text_preview"], row["source_ref"],
             ])
@@ -654,6 +774,40 @@ def _acceptance_family_data(con: sqlite3.Connection, *, tenant_id: str, sample: 
                 "0 или несколько брендов у корневого клиента семьи -- не определён однозначно", "",
             ])
     return families, chronology, evidence, conflicts
+
+
+def _acceptance_owner50_rows(
+    candidates: Sequence[Mapping[str, Any]],
+    control: Sequence[tuple[str, ...]],
+    selected_family_ids: set[str],
+) -> list[list[str]]:
+    """One readable classification row per sampled family, including non-READY families."""
+    grouped: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+    for row in candidates:
+        family_id = str(row.get("family_id") or "")
+        if family_id in selected_family_ids:
+            grouped[family_id].append(
+                _owner50_control_row_from_ready(row, status="READY", code="ready")
+            )
+    for row in control:
+        family_id = str(row[0])
+        if family_id in selected_family_ids:
+            grouped[family_id].append(row)
+
+    missing = sorted(selected_family_ids - set(grouped))
+    if missing:
+        raise RuntimeError(f"owner50 missed sampled families: {', '.join(missing)}")
+
+    result: list[list[str]] = []
+    for family_id in sorted(selected_family_ids):
+        rows = grouped[family_id]
+        first = list(rows[0])
+        statuses = {str(row[1]).lower() for row in rows}
+        first[1] = "EXCLUDED" if "excluded" in statuses else "CANDIDATE" if "candidate" in statuses else "READY"
+        first[2] = "; ".join(dict.fromkeys(str(row[2]) for row in rows if row[2]))
+        first[3] = "; ".join(dict.fromkeys(str(row[3]) for row in rows if row[3]))
+        result.append(first)
+    return result
 
 
 def cmd_acceptance(args: argparse.Namespace) -> int:
@@ -730,10 +884,15 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
         # а не тащить отдельный несвязанный пул 50 (build_owner50_family_workbook режет топ-50
         # ПО ВСЕМУ тенанту -- READY-семья из наших 30 может не попасть в топ-50 чужого
         # ранжирования и молча пропасть). _owner50_family_rows -- та же чистая, уже
-        # протестированная функция, но без этого среза; на лист идут только READY-строки, чей
-        # family_id входит в сэмпл, ранжированные заново уже внутри самого сэмпла.
+        # протестированная функция, но без этого среза; на лист идут все три статуса именно
+        # этих семей, а несколько причин одной семьи объединяются в одну читаемую строку.
         try:
-            candidates, _control = _owner50_family_rows(con, tenant_id=args.tenant_id, as_of=datetime.now(timezone.utc))
+            candidates, control = _owner50_family_rows(
+                con,
+                tenant_id=args.tenant_id,
+                as_of=datetime.now(timezone.utc),
+                family_ids=tuple(str(row["family_id"]) for row in sample),
+            )
         except RuntimeError as exc:
             scrubbed_manifest.update(status="semantic_review_blocked_by_owner50", owner50_classification_error=str(exc))
             (out_root / "acceptance_selection_manifest.json").write_text(
@@ -743,24 +902,18 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
             return 4
 
     selected_family_ids = {str(row[1]) for row in families}
-    owner_candidates = sorted(
-        (row for row in candidates if str(row.get("family_id")) in selected_family_ids),
-        key=lambda row: row["rank_key"],
-    )
-    owner_headers = list(OWNER50_REQUIRED_COLUMNS)
-    owner_rows = [
-        [
-            rank, row["family_id"], row["brand"], row["name"], row["contact_customer_id"],
-            row["phone"], row["email"], row["channel"], row["evidence_at"], row["signal_type"],
-            row["evidence_text"], row["next_action"], row["expires_at"], row["offer"],
-            row["children"], row["payment"], row["rank_reason"], row["action_text"],
-            row["target_child_key"], row["target_child_name"], row["target_child_grade"],
-        ]
-        for rank, row in enumerate(owner_candidates, start=1)
-    ]
+    try:
+        owner_rows = _acceptance_owner50_rows(candidates, control, selected_family_ids)
+    except RuntimeError as exc:
+        scrubbed_manifest.update(status="semantic_review_blocked_by_owner50", owner50_classification_error=str(exc))
+        (out_root / "acceptance_selection_manifest.json").write_text(
+            json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return 4
+    owner_headers = list(OWNER50_CONTROL_COLUMNS)
 
     sheets = {
-        "Семьи 30": (("№", "family_id", "customer_id", "Родитель", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
+        "Семьи 30": (("№", "family_id", "customer_id", "Основной контакт (роль не подтверждена)", "Телефон", "Email", "Бренд", "Дети", "Число детей", "Сделка", "Статус сделки", "Оплаты", "Последняя оплата", "Последнее посещение", "Предмет посещения", "Последнее общение", "Канал", "Следующий шаг", "Источник шага", "Конфликты", "F1. Статус", "F2. Комментарий"), families),
         "Хронология": (("family_id", "customer_id", "event_id", "Дата/время", "Тип события", "Источник", "Направление", "Тема", "Краткое содержание", "Полный текст", "source_ref"), chronology),
         "Доказательства": (("family_id", "Тип", "Доказательство", "Точное поле", "Дата", "source_system", "event_id/record_id", "Проверяемо"), evidence),
         "Конфликты": (("family_id", "conflict_id", "Тип", "Критичность", "Статус", "Дата", "Исходная запись", "F1. Статус", "F2. Комментарий"), conflicts),
@@ -787,7 +940,10 @@ def cmd_acceptance(args: argparse.Namespace) -> int:
     scrubbed_manifest["chronology_rows"] = len(chronology)
     scrubbed_manifest["evidence_rows"] = len(evidence)
     scrubbed_manifest["conflicts_rows"] = len(conflicts)
-    scrubbed_manifest["owner50_ready_rows"] = len(owner_rows)
+    status_counts = Counter(str(row[1]) for row in owner_rows)
+    scrubbed_manifest["owner50_ready_rows"] = status_counts["READY"]
+    scrubbed_manifest["owner50_candidate_rows"] = status_counts["CANDIDATE"]
+    scrubbed_manifest["owner50_excluded_rows"] = status_counts["EXCLUDED"]
     scrubbed_manifest["chronology_row_limit_applied"] = False
     (out_root / "acceptance_selection_manifest.json").write_text(
         json.dumps(scrubbed_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"

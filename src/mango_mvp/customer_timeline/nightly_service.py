@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, NoReturn, Optional, Sequence
 
 from mango_mvp.customer_timeline.amo_incremental import AmoIncrementalConfig, run_amo_incremental
+from mango_mvp.customer_timeline.derived_signals import backfill_sg_v1_signals
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
@@ -77,7 +78,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v7"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v9"
 DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
@@ -116,6 +117,7 @@ class NightlyServiceStep:
     tallanto_attendance_api_config: Optional[TallantoAttendanceApiIncrementConfig] = None
     wappi_history_config: Optional[WappiHistoryImportConfig] = None
     family_graph_config: Optional[FamilyGraphConfig] = None
+    derived_signals_config: Optional[Mapping[str, Any]] = None
     bot_safe_rebuild_config: Optional[BotSafeSummaryBuildConfig] = None
     reason: Optional[str] = None
 
@@ -710,7 +712,14 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
-                status = "ok" if step_report.get("quick_check") == "ok" else "failed"
+                # The service performs the authoritative full quick_check once
+                # after every required step. Family-graph may therefore defer
+                # its duplicate scan, but any other value remains a failure.
+                status = (
+                    "ok"
+                    if step_report.get("quick_check") in {"ok", "deferred_to_nightly_service"}
+                    else "failed"
+                )
                 if status == "failed" and step.required:
                     failed_required_steps.append(step.name)
                 report["steps"].append(
@@ -725,6 +734,38 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
                 )
+                continue
+            if step.kind == "derived_signals":
+                try:
+                    raw = step.derived_signals_config
+                    if raw is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = backfill_sg_v1_signals(
+                        Path(str(raw.get("timeline_db") or timeline_db)),
+                        allowed_root=Path(str(raw.get("allowed_root") or allowed_root)),
+                        tenant_id=str(raw.get("tenant_id") or config.tenant_id),
+                        as_of=datetime.now(timezone.utc),
+                        apply=bool(raw.get("apply", True)),
+                    )
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(failed_step_report(
+                        index=index, step=step, reason=f"step_exception:{type(exc).__name__}",
+                        duration_seconds=round(time.monotonic() - step_started, 3), error=exc,
+                    ))
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if int(step_report.get("customers_scanned") or 0) > 0 else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append({
+                    "index": index, "name": step.name, "kind": step.kind,
+                    "status": status, "required": step.required,
+                    "report_path": str(step_path), "summary": step_report,
+                    "duration_seconds": round(time.monotonic() - step_started, 3),
+                })
                 continue
             if step.kind == "bot_safe_rebuild":
                 try:
@@ -746,17 +787,22 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     continue
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
+                considered = int(step_report.get("considered_customers") or 0)
+                summaries = int(step_report.get("customers_with_summary") or 0)
+                status = "ok" if considered > 0 and summaries > 0 else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
                 report["steps"].append(
                     {
                         "index": index,
                         "name": step.name,
                         "kind": step.kind,
-                        "status": "ok",
+                        "status": status,
                         "required": step.required,
                         "report_path": str(step_path),
                         "summary": {
-                            "considered_customers": step_report.get("considered_customers"),
-                            "customers_with_summary": step_report.get("customers_with_summary"),
+                            "considered_customers": considered,
+                            "customers_with_summary": summaries,
                             "created": step_report.get("created"),
                             "updated": step_report.get("updated"),
                             "duplicate": step_report.get("duplicate"),
@@ -995,6 +1041,7 @@ def service_step_from_json(
     tallanto_attendance_api_config = None
     wappi_history_config = None
     family_graph_config = None
+    derived_signals_config = None
     bot_safe_rebuild_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
@@ -1151,6 +1198,11 @@ def service_step_from_json(
             tenant_id=str(raw_config.get("tenant_id") or tenant_id),
             apply=bool(raw_config.get("apply", True)),
         )
+    elif kind == "derived_signals":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        derived_signals_config = dict(raw_config)
     elif kind == "bot_safe_rebuild":
         raw_config = payload.get("config")
         if not isinstance(raw_config, Mapping):
@@ -1180,6 +1232,7 @@ def service_step_from_json(
         tallanto_attendance_api_config=tallanto_attendance_api_config,
         wappi_history_config=wappi_history_config,
         family_graph_config=family_graph_config,
+        derived_signals_config=derived_signals_config,
         bot_safe_rebuild_config=bot_safe_rebuild_config,
         reason=reason,
     )
@@ -1271,6 +1324,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 guard_customer_timeline_output_path(step.family_graph_config.timeline_db, allowed_root)
                 if step.family_graph_config.out_path is not None:
                     guard_customer_timeline_output_path(step.family_graph_config.out_path, allowed_root)
+            if step.derived_signals_config is not None:
+                guard_customer_timeline_output_path(
+                    Path(str(step.derived_signals_config.get("timeline_db") or timeline_db)), allowed_root,
+                )
             if step.bot_safe_rebuild_config is not None:
                 guard_customer_timeline_output_path(step.bot_safe_rebuild_config.timeline_db, allowed_root)
                 guard_customer_timeline_output_path(step.bot_safe_rebuild_config.allowed_root, allowed_root)
@@ -1410,6 +1467,9 @@ def run_tallanto_money_api_step(
         raise ValueError("Tallanto money API step must use the service staging DB and allowed root")
     if config.get("apply") is not True:
         raise ValueError("Tallanto money API step must explicitly apply to staging")
+    timeout_seconds = float(config.get("timeout_seconds", step_timeout_seconds))
+    if timeout_seconds <= 0:
+        raise ValueError("Tallanto money API step timeout_seconds must be positive")
     if not importer_script.is_file() or not env_file.is_file():
         raise FileNotFoundError("Tallanto money API importer or read-only env is missing")
     command = [
@@ -1436,7 +1496,7 @@ def run_tallanto_money_api_step(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=step_timeout_seconds,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         _raise_tallanto_money_failure(
@@ -2147,6 +2207,7 @@ def service_config_fingerprint(
     files, which is all these dataclasses ever carry.
     """
     payload = dict(_fingerprint_value(config))
+    payload["config_schema_version"] = NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
     payload["timeline_db"] = str(timeline_db)
     payload["allowed_root"] = str(allowed_root)
     payload["out_root"] = str(out_root)
@@ -2379,19 +2440,24 @@ def _proof_tallanto_cards(ctx: "_SourceProofContext") -> Mapping[str, Any]:
 def _proof_tallanto_payments_subscriptions(ctx: "_SourceProofContext") -> Mapping[str, Any]:
     label = "tallanto_payments_subscriptions"
     status = _step_status(ctx, "tallanto_money_api_incremental")
+    cursor = _cursor_row(ctx.cursors, "tallanto_money_api")
     if status is None:
         return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
                       reason="step tallanto_money_api_incremental did not run in this run")
     records, event_ts = _count_row(ctx.source_counts, "tallanto_crm_call")
+    cursor_ts = str(cursor["last_cursor_ts"]) if cursor and cursor.get("last_cursor_ts") else event_ts
     if status != "ok":
-        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=event_ts,
+        return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
                       reason=f"tallanto_money_api_incremental step status={status}")
     if not records:
-        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=event_ts,
-                      reason="tallanto_money_api_incremental produced no Tallanto payment or subscription events")
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=cursor_ts,
+                      reason="tallanto_money_api_incremental produced no Tallanto money events")
+    if not _cursor_is_fresh(cursor, now=ctx.now):
+        return _proof(label, ctx, status="stale", records=records, cursor_or_max_event_at=cursor_ts,
+                      reason="tallanto_money_api cursor is stale")
     return _proof(
-        label, ctx, status="ok", records=records, cursor_or_max_event_at=event_ts,
-        reason="tallanto_money_api_incremental ok; timeline_events count for tallanto_crm_call",
+        label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
+        reason="tallanto_money_api_incremental ok; money events present and cursor fresh",
     )
 
 
@@ -2569,6 +2635,9 @@ def _proof_bot_safe_chunks_and_dossier(ctx: "_SourceProofContext") -> Mapping[st
         return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
                       reason=f"bot_safe_rebuild step status={status}")
     records = int(summary.get("customers_with_summary") or 0)
+    if records <= 0:
+        return _proof(label, ctx, status="empty", records=0, cursor_or_max_event_at=None,
+                      reason="bot_safe_rebuild produced no manager dossier summaries")
     return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=None,
                   reason="bot_safe_rebuild ok; customers_with_summary from step summary")
 

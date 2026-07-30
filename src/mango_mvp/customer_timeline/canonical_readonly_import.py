@@ -1819,13 +1819,11 @@ def infer_brand_cyrillic_v2_record(row: Mapping[str, Any]) -> str:
     if short_mixed:
         return "unknown"
     if foton_score and unpk_score:
-        if explicit_unpk:
-            return "unknown"
-        return "foton"
+        return "unknown"
     if foton_score:
         return "foton"
-    if long_mixed_foton and long_mixed_unpk and not explicit_unpk:
-        return "foton"
+    if long_mixed_foton and long_mixed_unpk:
+        return "unknown"
     if unpk_score:
         return "unpk"
     if long_mixed_unpk:

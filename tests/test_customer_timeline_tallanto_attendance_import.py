@@ -150,6 +150,96 @@ def test_attendance_import_reuses_unique_historical_tallanto_customer_link(tmp_p
     assert report["counts"].get("unmatched", 0) == 0
 
 
+def test_attendance_import_reuses_history_when_current_link_is_only_inferred(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE identity_links SET match_class='inferred' WHERE link_type='tallanto_student_id'")
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:student",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=now,
+                source_system="tallanto_attendance",
+                source_id="trusted-history",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                confidence=1.0,
+                record={"logical_key": {"tallanto_id": "101"}},
+                created_at=now,
+            )
+        )
+
+    report = run_tallanto_attendance_import(
+        TallantoAttendanceImportConfig(
+            db,
+            tmp_path,
+            _contacts(tmp_path, (("101", "barcode-1"),)),
+            _attendance(tmp_path, "barcode-1"),
+            apply=False,
+        )
+    )
+
+    assert report["counts"]["resolved"] == 1
+    assert report["counts"].get("unmatched", 0) == 0
+
+
+def test_attendance_import_does_not_override_open_tallanto_identity_conflict_with_history(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:student",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=now,
+                source_system="tallanto_attendance",
+                source_id="trusted-history",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                confidence=1.0,
+                record={"logical_key": {"tallanto_id": "101"}},
+                created_at=now,
+            )
+        )
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE identity_links SET match_class='inferred' WHERE link_type='tallanto_student_id'")
+        con.execute(
+            "INSERT INTO timeline_conflicts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "conflict:tallanto:101",
+                "foton",
+                "tallanto_identity_ambiguous",
+                "high",
+                "open",
+                now.isoformat(),
+                None,
+                "hash:tallanto:101",
+                json.dumps({"entity_refs": ["tallanto_student_id:101"]}),
+            ),
+        )
+
+    report = run_tallanto_attendance_import(
+        TallantoAttendanceImportConfig(
+            db,
+            tmp_path,
+            _contacts(tmp_path, (("101", "barcode-1"),)),
+            _attendance(tmp_path, "barcode-1"),
+            apply=False,
+        )
+    )
+
+    assert report["counts"].get("resolved", 0) == 0
+    assert report["counts"]["unmatched"] == 1
+
+
 @pytest.mark.parametrize(
     ("match_status", "confidence", "superseded"),
     (

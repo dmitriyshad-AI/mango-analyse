@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import hard_codes_from_text
+from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.derived_signals import (
     _is_access_event,
     _is_active_deal,
@@ -30,6 +31,7 @@ from mango_mvp.customer_timeline.next_step_resolver import (
 )
 from mango_mvp.customer_timeline.purchases import is_explicit_refund_direction
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.bot_safe_summary import customer_summary_brands
 from mango_mvp.customer_timeline.store import (
     authoritative_exact_identity_rows,
     customer_entity_ref_values,
@@ -846,6 +848,8 @@ class CustomerDossier:
     signals: tuple[DossierRow, ...] = field(default_factory=tuple)
     next_step: str = ""
     next_step_source: str = ""
+    action_status: str = NEXT_STEP_STATUS_EMPTY
+    no_action_reason_code: str = ""
     objections: tuple[DossierRow, ...] = field(default_factory=tuple)
     chronology: tuple[DossierRow, ...] = field(default_factory=tuple)
     interests: tuple[DossierMarker, ...] = field(default_factory=tuple)
@@ -872,10 +876,10 @@ def build_customer_dossier(
     if customer is None:
         raise ValueError(f"customer not found: {customer_id}")
     customer_record = _safe_json(customer["record_json"])
-    brands = [
+    identity_brands = [
         str(item).strip().casefold()
         for item in (_mapping(customer_record.get("metadata")).get("brands") or ())
-        if str(item).strip()
+        if str(item).strip().casefold() in MANAGER_KNOWN_BRANDS
     ]
     opportunities = con.execute(
         """
@@ -886,6 +890,26 @@ def build_customer_dossier(
         """,
         (tenant_id, customer_id),
     ).fetchall()
+    opportunity_records = tuple(_safe_json(row["record_json"]) for row in opportunities)
+    event_brand_records = tuple(
+        _safe_json(row["record_json"])
+        for row in con.execute(
+            """
+            SELECT record_json
+            FROM timeline_events
+            WHERE tenant_id = ? AND customer_id = ?
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+    )
+    derived_brands = customer_summary_brands(opportunity_records, event_brand_records, ())
+    known_identity_brands = set(identity_brands)
+    if any(has_explicit_brand_conflict(record) for record in (*opportunity_records, *event_brand_records)):
+        brands = []
+    elif len(known_identity_brands) == 1:
+        brands = [next(iter(known_identity_brands))]
+    else:
+        brands = [brand for brand in derived_brands if brand in MANAGER_KNOWN_BRANDS]
     events = con.execute(
         """
         SELECT event_id, event_at, source_id, source_ref, event_type, record_json
@@ -914,7 +938,7 @@ def build_customer_dossier(
         interests.extend(_markers_from_client_text(client_text, INTEREST_MARKER_RE, kind="interest", label="Интерес из звонка", source=source))
         pains.extend(_markers_from_client_text(client_text, PAIN_MARKER_RE, kind="pain", label="Боль из звонка", source=source))
     signals = _signal_rows(con, tenant_id=tenant_id, customer_id=customer_id)
-    next_step, next_step_source = _next_step_for_dossier(
+    next_step, next_step_source, action_status, no_action_reason_code = _next_step_for_dossier(
         con, tenant_id=tenant_id, customer_id=customer_id, signals=signals
     )
     return CustomerDossier(
@@ -937,6 +961,8 @@ def build_customer_dossier(
         signals=tuple(signals),
         next_step=next_step,
         next_step_source=next_step_source,
+        action_status=action_status,
+        no_action_reason_code=no_action_reason_code,
         objections=tuple(_objection_rows(con, tenant_id=tenant_id, customer_id=customer_id)),
         chronology=tuple(_chronology_rows(con, tenant_id=tenant_id, customer_id=customer_id, limit=12)),
         interests=tuple(_dedupe_markers(interests, limit=8)),
@@ -1023,6 +1049,10 @@ def build_manager_dossier_workbook(
         "chronology_rows_total": sum(len(item.chronology) for item in dossiers),
         "next_step_rows_total": sum(1 for item in dossiers if item.next_step),
         "missing_next_step_rows_total": sum(1 for item in dossiers if not item.next_step),
+        "action_status_counts": dict(sorted(Counter(item.action_status for item in dossiers).items())),
+        "no_action_reason_counts": dict(sorted(Counter(
+            item.no_action_reason_code for item in dossiers if item.no_action_reason_code
+        ).items())),
         "canonical_calls_loaded": len(canonical_calls),
         "canonical_calls_warning": canonical_warning,
         "actuality_header": actuality_header,
@@ -3137,7 +3167,7 @@ def _next_step_for_dossier(
     tenant_id: str,
     customer_id: str,
     signals: Sequence[DossierRow],
-) -> tuple[str, str]:
+) -> tuple[str, str, str, str]:
     rows = con.execute(
         """
         SELECT event_id, customer_id, event_at, event_type, source_system, source_id,
@@ -3175,6 +3205,17 @@ def _next_step_for_dossier(
             record.setdefault("conflict_type", row["conflict_type"])
             record.setdefault("status", row["status"])
             conflicts.append(record)
+    if customer_id in open_family_identity_conflict_customer_ids(con, tenant_id) and not any(
+        "ambiguous_identity" in str(conflict.get("conflict_type") or "").casefold()
+        for conflict in conflicts
+    ):
+        conflicts.append(
+            {
+                "conflict_type": "ambiguous_identity",
+                "status": "open",
+                "summary": "canonical customer or family conflict",
+            }
+        )
     resolved = resolve_customer_next_step(
         events,
         readiness={"open_conflicts": len(conflicts)},
@@ -3182,11 +3223,13 @@ def _next_step_for_dossier(
         customer_id=customer_id,
     )
     if resolved.status == NEXT_STEP_STATUS_ACTIVE and _meaningful_next_step(resolved.action):
-        return resolved.display_text, "timeline_events"
+        return resolved.display_text, "timeline_events", resolved.status, ""
     if resolved.status != NEXT_STEP_STATUS_EMPTY:
-        return "", ""
+        return "", "", resolved.status, resolved.reason_code
     fallback = _next_step_from_signals(signals)
-    return fallback, "derived_signals" if fallback else ""
+    if fallback:
+        return fallback, "derived_signals", NEXT_STEP_STATUS_ACTIVE, ""
+    return "", "", resolved.status, resolved.reason_code
 
 
 def _meaningful_next_step(value: str) -> bool:
@@ -3693,7 +3736,7 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
     wb = Workbook()
     overview = wb.active
     overview.title = "Оглавление"
-    overview.append(("customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг", "Интересов", "Болей", "Возражений", "Хронология"))
+    overview.append(("customer_id", "Имя", "Бренд", "Семья", "Сигналы", "Следующий шаг", "Статус действия", "Код причины бездействия", "Интересов", "Болей", "Возражений", "Хронология"))
     overview.freeze_panes = "A2"
     for cell in overview[1]:
         cell.font = Font(bold=True)
@@ -3707,6 +3750,8 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
                 len(dossier.family),
                 len(dossier.signals),
                 dossier.next_step,
+                dossier.action_status,
+                dossier.no_action_reason_code,
                 len(dossier.interests),
                 len(dossier.pains),
                 len(dossier.objections),
@@ -3736,6 +3781,7 @@ def _write_workbook(path: Path, dossiers: Sequence[CustomerDossier]) -> None:
                 _display_source(dossier.next_step_source) if dossier.next_step else "Требует решения менеджера",
             )
         )
+        ws.append(("Статус действия", dossier.action_status, dossier.no_action_reason_code or "Активный шаг"))
         for row in dossier.objections:
             ws.append((row.section, row.text, _display_source(row.source)))
         for item in dossier.interests:

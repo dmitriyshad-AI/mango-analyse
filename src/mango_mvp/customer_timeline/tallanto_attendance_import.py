@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.contracts import (
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path, is_customer_timeline_prod_path
 from mango_mvp.customer_timeline.store import (
+    BLOCKING_FAMILY_CONFLICT_TYPES,
     CustomerTimelineSQLiteStore,
     authoritative_exact_identity_rows,
     customer_timeline_readonly_uri,
@@ -1096,10 +1097,21 @@ def _load_tallanto_customers(db: Path, *, tenant_id: str) -> dict[str, str]:
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
         con.execute("PRAGMA query_only=ON")
         candidates = {key: {value} for key, value in exact.items()}
-        linked_values = {str(row[0]) for row in con.execute(
-            "SELECT DISTINCT link_value FROM identity_links WHERE tenant_id=? AND link_type='tallanto_student_id'",
-            (tenant_id,),
-        )}
+        protected_values = set(exact)
+        blocking_types = tuple(sorted(BLOCKING_FAMILY_CONFLICT_TYPES))
+        protected_values.update(
+            str(row[0]).split(":")[-1]
+            for row in con.execute(
+                "SELECT DISTINCT CAST(ref.value AS TEXT) "
+                "FROM timeline_conflicts AS conflict, json_each(conflict.record_json, '$.entity_refs') AS ref "
+                "WHERE conflict.tenant_id=? AND conflict.status IN ('open','active') "
+                f"AND lower(conflict.conflict_type) IN ({','.join('?' for _ in blocking_types)}) "
+                "AND (CAST(ref.value AS TEXT) LIKE 'tallanto_student_id:%' "
+                "OR CAST(ref.value AS TEXT) LIKE 'tallanto_student:%' "
+                "OR CAST(ref.value AS TEXT) LIKE 'tallanto:student:%')",
+                (tenant_id, *blocking_types),
+            )
+        )
         for customer_id, raw in con.execute(
             "SELECT customer_id, record_json FROM timeline_events "
             "WHERE tenant_id=? AND source_system=? AND customer_id IS NOT NULL "
@@ -1111,7 +1123,7 @@ def _load_tallanto_customers(db: Path, *, tenant_id: str) -> dict[str, str]:
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 continue
             # Historical events are only a fallback when no current identity decision exists.
-            if tallanto_id and str(tallanto_id) not in linked_values:
+            if tallanto_id and str(tallanto_id) not in protected_values:
                 candidates.setdefault(str(tallanto_id), set()).add(str(customer_id))
         return {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1}
 

@@ -155,7 +155,8 @@ def test_brand_scope_mapping() -> None:
     assert brand_scope_from_filial("ШД") == "skip_shd"
     assert brand_scope_from_filial("Красносельская") == "unknown"
     assert brand_scope_from_filial("Менделеево") == "unknown"
-    assert brand_scope_from_filial("Сретенка") == "unknown"
+    assert brand_scope_from_filial("Сретенка") == "unpk"
+    assert brand_scope_from_filial("Фотон, МФТИ") == "unknown"
     assert brand_scope_from_filial("") == "unknown"
 
 

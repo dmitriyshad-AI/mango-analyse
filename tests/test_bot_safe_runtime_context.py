@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BotSafeLookup,
     BOT_SAFE_CRM_CONTEXT_ENV,
@@ -200,6 +201,54 @@ def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path,
     assert "клиент уже спрашивал про онлайн-курс" not in memory.prompt_text
 
 
+def test_exact_current_chat_is_not_crowded_out_by_calls_at_small_limit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ENV, "1")
+    monkeypatch.setenv(CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV, "1")
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for index in range(4):
+            _upsert_mango_call(store, customer_id=customer_id, source_id=f"crowd-call-{index}")
+    _open_test_mango_calls(db_path, tmp_path, "crowd-calls")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_authorized_external_chunk(
+            store,
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                chunk_type="channel_message",
+                text="Фотон: текущий чат про онлайн-формат.",
+                source_system="wappi_telegram",
+                source_ref="wappi:current-chat",
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                relevance_tags=("channel", "bot_visible", "wappi_telegram", "foton"),
+                created_at=NOW,
+                metadata={"brand_context_authorized": True, "profile_id": "profile-1", "chat_id": "chat-1"},
+            ),
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(
+            tenant_id="foton",
+            amo_lead_id="5001",
+            amo_contact_id="7001",
+            channel_source_system="wappi_telegram",
+            channel_profile_id="profile-1",
+            channel_chat_id="chat-1",
+        ),
+        limit=3,
+    )
+
+    items = context["timeline_context"]["bot_context"]["items"]
+    assert len(items) == 3
+    assert sum("текущий чат" in item["text"] for item in items) == 1
+    assert sum(item["chunk_type"] == "mango_call_summary" for item in items) == 1
+
+
 def test_ambiguous_child_rejects_unverified_channel_history_payload() -> None:
     context = {
         "timeline_context": {
@@ -338,6 +387,54 @@ def test_bot_safe_family_projection_rejects_unknown_brand_and_hides_old_chunks(t
     assert context["timeline_context"]["family_dossier"]["needs_clarification"] is True
     assert "физика" not in context["summary"]
     assert "онлайн-курс" not in context["summary"]
+
+
+def test_single_unknown_brand_child_keeps_only_brand_neutral_call_memory(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE family_links_v1 SET brand='unknown'")
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_mango_call(store, customer_id=customer_id, source_id="single-unknown-child")
+    _open_test_mango_calls(db_path, tmp_path, "single-unknown-child")
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+        limit=5,
+    )
+    prompt_context = {**context, BOT_SAFE_CRM_CONTEXT_ENV: True}
+    prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
+
+    assert context["timeline_context"]["family_dossier"]["needs_clarification"] is True
+    assert context["timeline_context"]["bot_context"]["channel_scope"] == "brand_neutral_call"
+    assert "обсуждал подготовку к экзамену" in prompt
+    assert "физика" not in prompt
+    assert "онлайн-курс" not in prompt
+
+
+def test_multiple_children_keep_brand_neutral_call_memory_blocked(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id, second_child=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_mango_call(store, customer_id=customer_id, source_id="multiple-children")
+    _open_test_mango_calls(db_path, tmp_path, "multiple-children")
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+        limit=5,
+    )
+    prompt_context = {**context, BOT_SAFE_CRM_CONTEXT_ENV: True}
+    prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
+
+    assert context["timeline_context"]["family_dossier"]["needs_clarification"] is True
+    assert context["timeline_context"]["bot_context"]["channel_scope"] == ""
+    assert "обсуждал подготовку к экзамену" not in prompt
 
 
 def test_bot_safe_family_projection_ignores_non_amo_lead_with_same_source_id(tmp_path: Path) -> None:
@@ -1054,49 +1151,47 @@ def test_bot_safe_crm_context_blocks_e4b_channel_foreign_brand(tmp_path: Path, m
     assert "УНПК: клиент в Wappi" not in raw
 
 
-def test_bot_safe_crm_context_blocks_opened_mango_calls_without_brand_scope(tmp_path: Path) -> None:
+def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        event = TimelineEvent(
-            tenant_id="foton",
-            customer_id=customer_id,
-            event_type="mango_call",
-            event_at=NOW,
-            source_system="mango_processed_summary",
-            source_id="mango-call-runtime",
-            direction="inbound",
-            summary="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
-            text_preview="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
-            match_status="strong_unique",
-            created_at=NOW,
-        )
-        store.upsert_event(event)
-        store.upsert_bot_context_chunk(
-            BotContextChunk(
-                tenant_id="foton",
-                customer_id=customer_id,
-                event_id=event.event_id,
-                chunk_id="chunk-mango-call",
-                chunk_type="mango_call_summary",
-                text="Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
-                source_system="mango_processed_summary",
-                source_ref="mango:test-call",
-                event_at=NOW,
-                relevance_tags=("call", "bot_visible", "mango_processed_summary", "brand_unknown"),
-                allowed_for_bot=False,
-                requires_manager_review=True,
-            )
-        )
-    report = run_stage4b_bot_opening(
-        Stage4BBotOpeningConfig(
-            timeline_db_path=db_path,
-            allowed_root=tmp_path,
-            out_dir=tmp_path / "out",
-            apply=True,
-            allow_test_paths=True,
-        )
-    )
+        _upsert_mango_call(store, customer_id=customer_id, source_id="mango-call-runtime")
+    report = _open_test_mango_calls(db_path, tmp_path, "opened-runtime")
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    prompt_context = dict(context)
+    prompt_context[BOT_SAFE_CRM_CONTEXT_ENV] = True
+    prompt = _build_direct_path_prompt("Что дальше?", context=prompt_context)
+    assert "клиент обсуждал подготовку к экзамену" in raw
+    assert "клиент обсуждал подготовку к экзамену" in prompt
+    item = next(
+        item
+        for item in context["timeline_context"]["bot_context"]["items"]
+        if item.get("chunk_type") == "mango_call_summary"
+    )
+    assert item["brand_scope"] == "brand_agnostic_call_input"
+    assert set(item["relevance_tags"]) == {"call", "bot_visible", "mango_processed_summary"}
+
+
+def test_bot_safe_crm_context_rechecks_d084_call_identity_at_read_time(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_mango_call(store, customer_id=customer_id, source_id="mango-call-later-broken")
+    _open_test_mango_calls(db_path, tmp_path, "later-broken")
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE timeline_events SET match_status='inferred' WHERE source_id='mango-call-later-broken'"
+        )
+        con.commit()
 
     context = build_bot_safe_crm_context(
         timeline_db=db_path,
@@ -1110,14 +1205,29 @@ def test_bot_safe_crm_context_blocks_opened_mango_calls_without_brand_scope(tmp_
     assert "клиент обсуждал подготовку к экзамену" not in json.dumps(context, ensure_ascii=False)
 
 
-def test_mango_call_visibility_requires_exact_active_brand() -> None:
+def _open_test_mango_calls(db_path: Path, tmp_path: Path, name: str) -> dict:
+    return run_stage4b_bot_opening(
+        Stage4BBotOpeningConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / f"out-{name}",
+            apply=True,
+            allow_test_paths=True,
+        )
+    )
+
+
+def test_mango_call_visibility_ignores_input_brand_under_d084() -> None:
     required = ("call", "bot_visible", "mango_processed_summary")
+    assert _mango_call_item_visible_for_bot(required, active_brand="foton")
     assert _mango_call_item_visible_for_bot((*required, "foton"), active_brand="foton")
-    assert not _mango_call_item_visible_for_bot((*required, "brand_unknown"), active_brand="foton")
+    assert _mango_call_item_visible_for_bot((*required, "brand_unknown"), active_brand="foton")
+    assert _mango_call_item_visible_for_bot((*required, "unpk"), active_brand="foton")
+    assert not _mango_call_item_visible_for_bot(("call", "bot_visible"), active_brand="foton")
 
 
-def test_bot_safe_crm_context_blocks_mango_call_from_foreign_brand(tmp_path: Path) -> None:
-    assert not _mango_call_item_visible_for_bot(
+def test_bot_safe_crm_context_treats_foreign_call_tag_as_brand_neutral_input(tmp_path: Path) -> None:
+    assert _mango_call_item_visible_for_bot(
         ("call", "bot_visible", "mango_processed_summary", "unpk"),
         active_brand="foton",
     )
@@ -1677,6 +1787,30 @@ def _seed_family_rows(
                     "foton", "confident", "high", "test", "[]", 1, NOW.isoformat(), f"ch{index}", "{}",
                 ),
             )
+
+
+def _upsert_mango_call(
+    store: CustomerTimelineSQLiteStore,
+    *,
+    customer_id: str,
+    source_id: str,
+) -> None:
+    text = "Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий."
+    event = TimelineEvent(
+        tenant_id="foton", customer_id=customer_id, event_type="mango_call", event_at=NOW,
+        source_system="mango_processed_summary", source_id=source_id, direction="inbound",
+        summary=text, text_preview=text, match_status="strong_unique", created_at=NOW,
+    )
+    store.upsert_event(event)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id="foton", customer_id=customer_id, event_id=event.event_id,
+            chunk_id=f"chunk-{source_id}", chunk_type="mango_call_summary", text=text,
+            source_system="mango_processed_summary", source_ref=f"mango:{source_id}", event_at=NOW,
+            relevance_tags=("call", "bot_visible", "mango_processed_summary", "brand_unknown"),
+            allowed_for_bot=False, requires_manager_review=True,
+        )
+    )
 
 
 def _upsert_authorized_external_chunk(

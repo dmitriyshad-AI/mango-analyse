@@ -34,6 +34,38 @@ def normalize_brand(value: str | None) -> str:
     return text if text in {"foton", "unpk", "unknown"} else "unknown"
 
 
+def brand_scope_from_filial(value: Any) -> str:
+    filial = str(value or "").strip().replace("ё", "е").casefold()
+    if not filial:
+        return "unknown"
+    if any(token in filial for token in ("shd", "шд", "жако")):
+        return "skip_shd"
+    brands = {
+        brand
+        for brand, tokens in {
+            "foton": ("foton", "фотон"),
+            "unpk": ("mfti", "мфти", "pacaeva", "пацаева", "sretenka", "сретенка"),
+        }.items()
+        if any(token in filial for token in tokens)
+    }
+    if len(brands) == 1:
+        return next(iter(brands))
+    if len(brands) > 1:
+        return "unknown"
+    if any(token in filial for token in ("onlajn", "online", "онлайн")):
+        return "shared"
+    return "unknown"
+
+
+def has_explicit_brand_conflict(record: Mapping[str, Any]) -> bool:
+    candidates = (record, record.get("product_context"), record.get("record"))
+    return any(
+        isinstance(candidate, Mapping)
+        and str(candidate.get("brand_source") or "").strip() == "amo_organization_conflict"
+        for candidate in candidates
+    )
+
+
 def stable_field_id(
     *,
     profile_id: str,

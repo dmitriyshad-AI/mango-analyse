@@ -42,6 +42,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_MEMORY_EXPANDED_SHADOW_ENV,
     TIMELINE_MEMORY_EXPANDED_SHADOW_ENV,
     build_customer_memory_for_prompt,
+    scan_bot_safe_context_pii,
     scrub_customer_memory_text,
     strip_unconfirmed_next_step_text_for_bot,
 )
@@ -172,12 +173,6 @@ _BOT_SAFE_MEMORY_EXACT_DETAIL_RE = re.compile(
     r"|\b\d+(?:[,.]\d+)?\s*%"
     r"|\b\d+\s*(?:₽|руб\.?|рублей|рубля)\b"
     r")",
-    re.I,
-)
-_BOT_SAFE_PERSON_CONTEXT_RE = re.compile(
-    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
-    r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
     re.I,
 )
 _BOT_SAFE_MEMORY_INJECTION_RE = re.compile(
@@ -875,7 +870,7 @@ def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
         _A2_PHONE_RE.search(text)
         or _CLIENT_EMAIL_RE.search(text)
         or _BOT_SAFE_SERVICE_ID_RE.search(text)
-        or _BOT_SAFE_PERSON_CONTEXT_RE.search(text)
+        or scan_bot_safe_context_pii(text)
     )
 
 

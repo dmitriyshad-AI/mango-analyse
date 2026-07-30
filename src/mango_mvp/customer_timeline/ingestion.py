@@ -50,6 +50,8 @@ from mango_mvp.customer_timeline.store import (
     scrub_timeline_persisted_json,
 )
 from mango_mvp.utils.phone import normalize_phone
+from mango_mvp.customer_profile.contracts import brand_scope_from_filial
+from mango_mvp.integrations.amo_wappi_auto_resolver import lead_org_brand
 from mango_mvp.customer_timeline.source_policy import BOT_FORBIDDEN_SOURCE_SYSTEMS, is_non_contentful_call_record
 
 
@@ -494,6 +496,10 @@ class AmoSnapshotNormalizer:
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         payload = record.payload
+        amo_record = payload.get("record") if isinstance(payload.get("record"), Mapping) else payload
+        organization_brand = lead_org_brand(amo_record)
+        explicit_brand = organization_brand if organization_brand in {"foton", "unpk"} else "unknown"
+        brand_source = "amo_organization_conflict" if organization_brand == "mixed" else "amo_organization"
         entity_id = require_text(first_value(payload, ("entity_id", "id", "contact_id", "lead_id")), "entity_id")
         entity_type = normalize_key(first_value(payload, ("entity_type", "type")) or "contact", "entity_type")
         source_id = require_text(first_value(payload, ("source_id",)) or entity_id, "source_id")
@@ -586,6 +592,9 @@ class AmoSnapshotNormalizer:
         opportunities: list[CustomerOpportunity] = []
         opportunity_id: Optional[str] = None
         if entity_type in {"lead", "deal", "amo_deal"}:
+            product_context = {"pipeline": first_value(payload, ("pipeline", "pipeline_name"))}
+            if organization_brand:
+                product_context.update({"brand": explicit_brand, "brand_source": brand_source})
             opportunity = CustomerOpportunity(
                 tenant_id=self.tenant_id,
                 customer_id=customer.customer_id,
@@ -594,7 +603,7 @@ class AmoSnapshotNormalizer:
                 source_id=entity_id,
                 title=entity_name or f"amoCRM {entity_type} {entity_id}",
                 status=optional_text(first_value(payload, ("status", "stage", "pipeline_status"))),
-                product_context={"pipeline": first_value(payload, ("pipeline", "pipeline_name"))},
+                product_context=product_context,
                 opened_at=event_at,
                 confidence=0.9,
                 evidence={"source_ref": source_ref},
@@ -616,7 +625,12 @@ class AmoSnapshotNormalizer:
             summary=compact_text(first_value(payload, ("summary", "status", "stage"))),
             match_status=IdentityMatchClass.STRONG_UNIQUE if phone or email else IdentityMatchClass.INFERRED,
             confidence=0.9 if phone or email else 0.6,
-            record={"entity_type": entity_type, "entity_id": entity_id, "payload": scrub_timeline_persisted_json(dict(payload))},
+            record={
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                **({"brand": explicit_brand, "brand_source": brand_source} if organization_brand else {}),
+                "payload": scrub_timeline_persisted_json(dict(payload)),
+            },
             created_at=event_at,
         )
         conflicts = conflict_from_payload(self.tenant_id, payload, source_ref)
@@ -638,6 +652,10 @@ class TallantoSnapshotNormalizer:
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         payload = record.payload
+        filial = first_value(payload, ("filial", "branch", "Филиал", "Филиал Tallanto"))
+        filial_scope = brand_scope_from_filial(filial)
+        explicit_brand = filial_scope if filial_scope in {"foton", "unpk"} else "unknown"
+        brand_source = "tallanto_filial"
         entity_id = require_text(
             first_value(payload, ("entity_id", "student_id", "tallanto_id", "id", "Contact_ID")),
             "tallanto entity_id",
@@ -744,6 +762,7 @@ class TallantoSnapshotNormalizer:
             product_context={
                 "course": first_value(payload, ("course", "product")),
                 "group": first_value(payload, ("group", "group_name")),
+                **({"brand": explicit_brand, "brand_source": brand_source} if filial else {}),
             },
             opened_at=event_at,
             confidence=0.8,
@@ -764,7 +783,10 @@ class TallantoSnapshotNormalizer:
             summary=compact_text(first_value(payload, ("status", "course", "group"))),
             match_status=IdentityMatchClass.STRONG_UNIQUE if phone or email else IdentityMatchClass.INFERRED,
             confidence=0.85 if phone or email else 0.6,
-            record={"payload": scrub_timeline_persisted_json(dict(payload))},
+            record={
+                **({"brand": explicit_brand, "brand_source": brand_source} if filial else {}),
+                "payload": scrub_timeline_persisted_json(dict(payload)),
+            },
             created_at=event_at,
         )
         return TimelineNormalizedBatch(

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.channel_preview_from_pack import redact_text
 from mango_mvp.customer_timeline.contracts import BotContextChunk, now_utc
 from mango_mvp.customer_timeline.ids import customer_entity_ref, stable_digest
@@ -497,7 +498,7 @@ def _build_customer_brand_drafts(
     existing_chunks: Mapping[str, ExistingBotSafeChunk],
 ) -> tuple[CustomerBotSafeSummaryDraft | None, ...]:
     drafts: list[CustomerBotSafeSummaryDraft | None] = []
-    brands = _customer_summary_brands(all_opportunities, all_events, all_source_chunks)
+    brands = customer_summary_brands(all_opportunities, all_events, all_source_chunks)
     include_unbranded_events = len([brand for brand in brands if brand in KNOWN_BRANDS]) == 1
     for brand in brands:
         opportunities = _opportunities_for_brand(all_opportunities, brand=brand)
@@ -557,11 +558,13 @@ def _render_safe_text(*, brand: str, slots: BotSafeExtractedSlots, safe_next_ste
     return " ".join(parts)
 
 
-def _customer_summary_brands(
+def customer_summary_brands(
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
     source_chunks: Sequence[Mapping[str, Any]],
 ) -> tuple[str, ...]:
+    if any(has_explicit_brand_conflict(record) for record in (*opportunities, *events)):
+        return ("unknown",)
     brands = {
         brand
         for brand in (
@@ -574,6 +577,10 @@ def _customer_summary_brands(
     if brands:
         return tuple(sorted(brands))
     return ("unknown",)
+
+
+# Backward-compatible alias for the read-only diagnostic script.
+_customer_summary_brands = customer_summary_brands
 
 
 def _opportunities_for_brand(opportunities: Sequence[Mapping[str, Any]], *, brand: str) -> tuple[Mapping[str, Any], ...]:

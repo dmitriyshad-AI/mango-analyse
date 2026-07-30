@@ -39,7 +39,9 @@ def test_infer_brand_cyrillic_v2_foton_root_and_cross_brand_fail_closed() -> Non
     assert infer_brand(["Фотон МФТИ"], mode="cyrillic_v2") == "unknown"
     assert infer_brand(["мотивация через фотончики"], mode="cyrillic_v2") == "unknown"
     assert infer_brand(["олимпиада Фотоний"], mode="cyrillic_v2") == "unknown"
-    assert infer_offline_brand({"История": "клиент занимался у Фотона", "Филиал Tallanto": "МФТИ"}) == "foton"
+    assert infer_offline_brand({"history": "Фотон", "deal": "УНПК"}) == "unknown"
+    assert infer_offline_brand({"history": "Фотон " * 100 + "УНПК"}) == "unknown"
+    assert infer_offline_brand({"История": "клиент занимался у Фотона", "Филиал Tallanto": "МФТИ"}) == "unknown"
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:

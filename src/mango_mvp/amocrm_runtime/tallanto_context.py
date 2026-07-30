@@ -5,6 +5,7 @@ from typing import Any, Mapping, Sequence
 
 from mango_mvp.amocrm_runtime.config import get_settings
 from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiClient, TallantoApiError, build_tallanto_api_config
+from mango_mvp.customer_profile.contracts import brand_scope_from_filial
 
 settings = get_settings()
 
@@ -56,21 +57,6 @@ def _compact_items(records: list[dict[str, Any]], *, allowed_fields: tuple[str, 
         item = {field_name: _safe_text(record.get(field_name)) for field_name in allowed_fields}
         compacted.append({key: value for key, value in item.items() if value})
     return compacted
-
-
-def brand_scope_from_filial(value: Any) -> str:
-    filial = _safe_text(value).replace("ё", "е").casefold()
-    if not filial:
-        return "unknown"
-    if any(token in filial for token in ("shd", "шд", "жако")):
-        return "skip_shd"
-    if any(token in filial for token in ("foton", "фотон")):
-        return "foton"
-    if any(token in filial for token in ("mfti", "мфти", "pacaeva", "пацаева")):
-        return "unpk"
-    if any(token in filial for token in ("onlajn", "online", "онлайн")):
-        return "shared"
-    return "unknown"
 
 
 def _live_card_brand_failclosed_enabled() -> bool:

@@ -141,6 +141,49 @@ def test_bot_safe_context_prompt_drops_pii_items() -> None:
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in prompt
 
 
+def test_bot_safe_person_filter_does_not_treat_manager_action_as_a_name() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[{
+            "chunk_type": "mango_call_summary",
+            "source_system": "mango_processed_summary",
+            "text": "Менеджер пояснил условия обучения.",
+            "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }, {
+            "chunk_type": "mango_call_summary",
+            "source_system": "mango_processed_summary",
+            "text": "Менеджер Анна пояснила условия обучения.",
+            "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }, {
+            "chunk_type": "mango_call_summary",
+            "source_system": "mango_processed_summary",
+            "text": "менеджер архип уточнил детали.",
+            "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }, {
+            "chunk_type": "mango_call_summary",
+            "source_system": "mango_processed_summary",
+            "text": "МЕНЕДЖЕР АРХИП уточнил детали.",
+            "relevance_tags": ["call", "bot_visible", "mango_processed_summary"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        }],
+    )
+
+    prompt = _build_direct_path_prompt("Что обсуждали?", context=context)
+
+    assert "Менеджер пояснил условия обучения" in prompt
+    assert "Менеджер Анна" not in prompt
+    assert "менеджер архип" not in prompt
+    assert "МЕНЕДЖЕР АРХИП" not in prompt
+
+
 def test_bot_safe_context_prompt_reads_opened_telegram_history_chunks() -> None:
     context = _context(
         flag=True,

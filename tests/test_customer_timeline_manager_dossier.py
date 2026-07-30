@@ -128,6 +128,129 @@ def test_manager_dossier_names_tallanto_attendance_without_overclaiming_presence
     assert "списание" not in text.casefold()
 
 
+def test_manager_dossier_reuses_normalized_event_brand_when_identity_has_none(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        identity = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id='customer:1'"
+            ).fetchone()[0]
+        )
+        identity["metadata"].pop("brands", None)
+        con.execute(
+            "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:1'",
+            (json.dumps(identity, ensure_ascii=False),),
+        )
+        event = json.loads(
+            con.execute(
+                "SELECT record_json FROM timeline_events WHERE source_id='mail-1'"
+            ).fetchone()[0]
+        )
+        event["record"] = {"brand": "foton"}
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id='mail-1'",
+            (json.dumps(event, ensure_ascii=False),),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.brand == "foton"
+
+
+def test_manager_dossier_keeps_conflicting_derived_brands_unknown(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        identity = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_identities WHERE customer_id='customer:1'"
+            ).fetchone()[0]
+        )
+        identity["metadata"].pop("brands", None)
+        con.execute(
+            "UPDATE customer_identities SET record_json=? WHERE customer_id='customer:1'",
+            (json.dumps(identity, ensure_ascii=False),),
+        )
+        opportunity = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_opportunities WHERE source_id='lead-1'"
+            ).fetchone()[0]
+        )
+        opportunity["product_context"]["brand"] = "unpk"
+        con.execute(
+            "UPDATE customer_opportunities SET record_json=? WHERE source_id='lead-1'",
+            (json.dumps(opportunity, ensure_ascii=False),),
+        )
+        event = json.loads(
+            con.execute(
+                "SELECT record_json FROM timeline_events WHERE source_id='mail-1'"
+            ).fetchone()[0]
+        )
+        event["record"] = {"brand": "foton"}
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id='mail-1'",
+            (json.dumps(event, ensure_ascii=False),),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.brand == ""
+
+
+def test_manager_dossier_keeps_explicit_amo_brand_conflict_unknown(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        opportunity = json.loads(
+            con.execute(
+                "SELECT record_json FROM customer_opportunities WHERE source_id='lead-1'"
+            ).fetchone()[0]
+        )
+        opportunity["product_context"].update(
+            {"brand": "unknown", "brand_source": "amo_organization_conflict"}
+        )
+        con.execute(
+            "UPDATE customer_opportunities SET record_json=? WHERE source_id='lead-1'",
+            (json.dumps(opportunity, ensure_ascii=False),),
+        )
+        event = json.loads(
+            con.execute(
+                "SELECT record_json FROM timeline_events WHERE source_id='mail-1'"
+            ).fetchone()[0]
+        )
+        event["record"] = {"brand": "unpk"}
+        con.execute(
+            "UPDATE timeline_events SET record_json=? WHERE source_id='mail-1'",
+            (json.dumps(event, ensure_ascii=False),),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.brand == ""
+
+
+def test_manager_dossier_keeps_amo_contact_brand_conflict_unknown(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        event = json.loads(
+            con.execute(
+                "SELECT record_json FROM timeline_events WHERE source_id='mail-1'"
+            ).fetchone()[0]
+        )
+        event["source_system"] = "amocrm_snapshot"
+        event["record"] = {"brand": "unknown", "brand_source": "amo_organization_conflict"}
+        con.execute(
+            "UPDATE timeline_events SET source_system='amocrm_snapshot',record_json=? WHERE source_id='mail-1'",
+            (json.dumps(event, ensure_ascii=False),),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.brand == ""
+
+
 def test_manager_dossier_excludes_ambiguous_calls(tmp_path: Path) -> None:
     db = _timeline_db(tmp_path)
     _seed_customer_with_call_and_opportunity(db, tmp_path)
@@ -753,6 +876,8 @@ def test_manager_dossier_prefers_resolved_active_timeline_step(tmp_path: Path) -
 
     assert dossier.next_step.startswith("Отправить материалы клиенту (")
     assert dossier.next_step_source == "timeline_events"
+    assert dossier.action_status == "active"
+    assert dossier.no_action_reason_code == ""
 
 
 def test_manager_dossier_ignores_pending_wappi_attribution(tmp_path: Path) -> None:
@@ -822,6 +947,8 @@ def test_manager_dossier_does_not_fall_back_to_signal_after_step_closed(tmp_path
 
     assert dossier.next_step == ""
     assert dossier.next_step_source == ""
+    assert dossier.action_status == "closed"
+    assert dossier.no_action_reason_code == "documents_closed_by_later_event"
 
 
 def test_manager_dossier_does_not_show_step_with_open_ambiguous_identity(tmp_path: Path) -> None:
@@ -866,6 +993,35 @@ def test_manager_dossier_does_not_show_step_with_open_ambiguous_identity(tmp_pat
 
     assert dossier.next_step == ""
     assert dossier.next_step_source == ""
+    assert dossier.action_status == "needs_manager_review"
+    assert dossier.no_action_reason_code == "ambiguous_identity_open"
+
+
+def test_manager_dossier_does_not_show_step_with_open_brand_conflict(tmp_path: Path) -> None:
+    db = _timeline_db(tmp_path)
+    _seed_customer_with_call_and_opportunity(db, tmp_path)
+    _seed_full_dossier_tables(db)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO timeline_conflicts VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "conflict:brand",
+                "foton",
+                "brand_conflict",
+                "high",
+                "open",
+                NOW.isoformat(),
+                None,
+                "hash-brand-conflict",
+                json.dumps({"entity_refs": ["customer:1"]}),
+            ),
+        )
+        con.commit()
+        dossier = build_customer_dossier(con, tenant_id="foton", customer_id="customer:1")
+
+    assert dossier.next_step == ""
+    assert dossier.action_status == "needs_manager_review"
+    assert dossier.no_action_reason_code == "ambiguous_identity_open"
 
 
 def test_manager_freshness_gate_blocks_missing_or_stale_sources() -> None:
@@ -1785,7 +1941,7 @@ def test_owner50_bulk_selection_has_constant_query_count(tmp_path: Path) -> None
     assert len(candidates) == 20
     # Conflict ownership is resolved once for the whole batch; the bound must
     # remain constant as families grow, not exclude the two shared safety queries.
-    assert len(queries) <= 12
+    assert len(queries) <= 14
 
 
 def test_owner50_signal_budget_ignores_unlinked_signal_noise(tmp_path: Path, monkeypatch) -> None:

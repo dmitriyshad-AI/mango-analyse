@@ -4139,16 +4139,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "\\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя)\\s*[:—-]?\\s*[А-ЯЁ][а-яё]{2,}(?:\\s+[А-",
-    "pattern_sha256": "c9ae6a1d6d6d1db54ed95a74271715c560f3373a4ac1ddaad0b432ba362962a3",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_BOT_SAFE_PERSON_CONTEXT_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "rf\"(?:\"\n    r\"\\b(?:проверить|посмотреть|смотреть)\\s+подходящ\\w+\\s+\"\n    r\"(?:[a-zа-яё]+[-\\s]+){0,2}(?:групп\\w*|формат\\w*|вариант\\w*)\"\n    rf\"[^.!?\\n]{{0,50}}\\b(",
     "pattern_sha256": "a872fd003d591465ae316ac79718a3ec132e65a447b9512deef26e3a954a621d",
     "qualname": "<module>",

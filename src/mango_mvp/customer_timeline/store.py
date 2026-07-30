@@ -77,13 +77,41 @@ def customer_entity_ref_values(customer_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((customer, f"customer:{customer}")))
 
 
-_BLOCKING_FAMILY_CONFLICT_TYPE_SQL = """(
-  instr(lower(conflict_type),'identity')>0
-  OR instr(lower(conflict_type),'family')>0
-  OR instr(lower(conflict_type),'brand')>0
-  OR instr(lower(conflict_type),'shared_')>0
-  OR lower(conflict_type)='tallanto_payment_owner_unresolved'
-)"""
+BLOCKING_FAMILY_CONFLICT_TYPES = frozenset(
+    {
+        "ambiguous_identity",
+        "brand_conflict",
+        "cross_brand_conflict",
+    "duplicate_candidates",
+    "family_identity_conflict",
+    "identity_conflict",
+        "shared_family_phone",
+        "tallanto_attendance_api_identity_conflict",
+        "tallanto_identity_ambiguous",
+        "tallanto_identity_conflict",
+        "tallanto_payment_owner_unresolved",
+        "telegram_identity_ambiguous",
+        "whatsapp_phone_ambiguous",
+    }
+)
+_BLOCKING_FAMILY_CONFLICT_TYPE_SQL = "lower(conflict_type) IN (" + ",".join(
+    f"'{value}'" for value in sorted(BLOCKING_FAMILY_CONFLICT_TYPES)
+) + ")"
+
+
+def _canonical_identity_conflict_ref(value: object) -> str:
+    """Normalize documented legacy refs without matching unrelated ID suffixes."""
+    text = str(value or "")
+    aliases = {
+        "tallanto_student:": "tallanto_student_id:",
+        "tallanto:student:": "tallanto_student_id:",
+        "amocrm:contact:": "amo_contact_id:",
+        "amocrm:lead:": "amo_lead_id:",
+    }
+    for legacy, canonical in aliases.items():
+        if text.startswith(legacy):
+            return canonical + text[len(legacy) :]
+    return text
 
 
 def authoritative_exact_identity_rows(
@@ -91,63 +119,33 @@ def authoritative_exact_identity_rows(
     tenant_id: str,
     *,
     link_types: Sequence[str] | None = None,
-) -> tuple[sqlite3.Row, ...]:
+) -> tuple[Mapping[str, Any], ...]:
     """Exact-ID owners; shared family contacts do not override a unique student ID."""
     tenant = normalize_key(tenant_id, "tenant_id")
     normalized_types = tuple(sorted(link_types or UNIQUE_IDENTITY_LINK_TYPES))
     placeholders = ",".join("?" for _ in normalized_types)
+    blocked = open_family_identity_conflict_customer_ids(con, tenant)
+    rows = con.execute(
+        f"""
+        WITH authoritative AS MATERIALIZED (
+          SELECT record_json, link_id, link_type, link_value, source_ref, customer_id, match_class
+          FROM identity_links
+          WHERE tenant_id=? AND link_type IN ({placeholders})
+            AND match_class IN ('strong_unique','manual')
+            AND customer_id IS NOT NULL AND customer_id!=''
+        ), ownership AS (
+          SELECT link_type,link_value,COUNT(DISTINCT customer_id) AS owner_count
+          FROM authoritative GROUP BY link_type,link_value
+        )
+        SELECT authoritative.*,ownership.owner_count
+        FROM authoritative JOIN ownership USING (link_type,link_value)
+        ORDER BY link_type,link_value,link_id
+        """,
+        (tenant, *normalized_types),
+    ).fetchall()
     return tuple(
-        con.execute(
-            f"""
-            WITH authoritative AS (
-              SELECT record_json, link_id, link_type, link_value, customer_id, match_class
-              FROM identity_links
-              WHERE tenant_id=? AND link_type IN ({placeholders})
-                AND match_class IN ('strong_unique','manual')
-                AND customer_id IS NOT NULL AND customer_id!=''
-            ), ownership AS (
-              SELECT link_type, link_value, COUNT(DISTINCT customer_id) AS owner_count
-              FROM authoritative GROUP BY link_type, link_value
-            ), open_refs AS (
-              SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref,
-                              lower(conflict.conflict_type) AS conflict_type
-              FROM timeline_conflicts AS conflict,
-                   json_each(conflict.record_json, '$.entity_refs') AS ref
-              WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
-            ), identity_conflict_refs AS MATERIALIZED (
-              SELECT entity_ref FROM open_refs
-              WHERE instr(conflict_type,'identity_conflict')>0
-            ), blocked_customer_ids AS MATERIALIZED (
-              SELECT entity_ref AS customer_id FROM identity_conflict_refs
-              UNION
-              SELECT substr(entity_ref, 10) FROM identity_conflict_refs
-              WHERE entity_ref LIKE 'customer:%'
-              UNION
-              SELECT member.customer_id
-              FROM family_members_v1 AS member
-              JOIN (
-                SELECT entity_ref AS family_id FROM identity_conflict_refs
-                UNION
-                SELECT substr(entity_ref, 8) FROM identity_conflict_refs
-                WHERE entity_ref LIKE 'family:%'
-              ) AS blocked_family ON blocked_family.family_id=member.family_id
-              WHERE member.tenant_id=?
-            )
-            SELECT authoritative.*, ownership.owner_count,
-                   CASE WHEN EXISTS (
-                          SELECT 1 FROM open_refs
-                          WHERE entity_ref=authoritative.link_type || ':' || authoritative.link_value
-                        )
-                          OR blocked_customer.customer_id IS NOT NULL
-                        THEN 1 ELSE 0 END AS has_open_conflict
-            FROM authoritative
-            JOIN ownership USING (link_type, link_value)
-            LEFT JOIN blocked_customer_ids AS blocked_customer
-              ON blocked_customer.customer_id=authoritative.customer_id
-            ORDER BY authoritative.link_type, authoritative.link_value, authoritative.link_id
-            """,
-            (tenant, *normalized_types, tenant, tenant),
-        ).fetchall()
+        {**dict(row), "has_open_conflict": int(str(row["customer_id"]) in blocked)}
+        for row in rows
     )
 
 
@@ -163,6 +161,12 @@ def open_family_identity_conflict_customer_ids(
     }
     if not {"timeline_conflicts", "customer_identities"}.issubset(tables):
         return frozenset()
+    con.create_function(
+        "_mango_canonical_identity_ref",
+        1,
+        _canonical_identity_conflict_ref,
+        deterministic=True,
+    )
     identity_union = ""
     if "identity_links" in tables:
         identity_union = """
@@ -170,7 +174,7 @@ def open_family_identity_conflict_customer_ids(
           SELECT link.customer_id
           FROM identity_links AS link
           JOIN open_refs AS ref
-            ON ref.entity_ref=link.link_type || ':' || link.link_value
+            ON ref.canonical_identity_ref=link.link_type || ':' || link.link_value
           WHERE link.tenant_id=? AND link.customer_id IS NOT NULL AND link.customer_id!=''
           UNION
           SELECT link.customer_id
@@ -202,7 +206,8 @@ def open_family_identity_conflict_customer_ids(
     rows = con.execute(
         f"""
         WITH open_refs AS MATERIALIZED (
-          SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref
+          SELECT DISTINCT CAST(ref.value AS TEXT) AS entity_ref,
+                 _mango_canonical_identity_ref(CAST(ref.value AS TEXT)) AS canonical_identity_ref
           FROM timeline_conflicts AS conflict,
                json_each(conflict.record_json, '$.entity_refs') AS ref
           WHERE conflict.tenant_id=? AND conflict.status IN ('open','active')
@@ -224,23 +229,7 @@ def open_family_identity_conflict_customer_ids(
         """,
         params,
     ).fetchall()
-    blocked = frozenset(str(row[0]) for row in rows if row[0])
-    if "family_members_v1" not in tables:
-        unresolved_family_conflict = con.execute(
-            "SELECT 1 FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
-            "AND instr(lower(conflict_type),'family')>0 LIMIT 1",
-            (tenant,),
-        ).fetchone()
-        if unresolved_family_conflict is not None:
-            return frozenset(
-                str(row[0])
-                for row in con.execute(
-                    "SELECT customer_id FROM customer_identities WHERE tenant_id=?",
-                    (tenant,),
-                )
-                if row[0]
-            )
-    return blocked
+    return frozenset(str(row[0]) for row in rows if row[0])
 
 
 def has_open_family_identity_conflict(
@@ -259,12 +248,6 @@ def has_open_family_identity_conflict(
     }
     if not members or "timeline_conflicts" not in tables:
         return False
-    if not family_id and "family_members_v1" not in tables and con.execute(
-        "SELECT 1 FROM timeline_conflicts WHERE tenant_id=? AND status IN ('open','active') "
-        "AND instr(lower(conflict_type),'family')>0 LIMIT 1",
-        (tenant,),
-    ).fetchone() is not None:
-        return True
     refs = {str(family_id)} if family_id else set()
     for customer_id in members:
         refs.update(customer_entity_ref_values(customer_id))
@@ -275,7 +258,7 @@ def has_open_family_identity_conflict(
             f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
             (tenant, *members),
         ):
-            refs.add(f"{row[0]}:{row[1]}")
+            refs.add(_canonical_identity_conflict_ref(f"{row[0]}:{row[1]}"))
             if row[2]:
                 refs.add(str(row[2]))
     for row in con.execute(
@@ -285,7 +268,8 @@ def has_open_family_identity_conflict(
     ):
         payload = json_loads(row[0])
         entity_refs = payload.get("entity_refs") if isinstance(payload, Mapping) else ()
-        if isinstance(entity_refs, list) and not refs.isdisjoint(str(value) for value in entity_refs):
+        normalized_refs = (_canonical_identity_conflict_ref(value) for value in entity_refs)
+        if isinstance(entity_refs, list) and not refs.isdisjoint(normalized_refs):
             return True
     return False
 
@@ -2148,6 +2132,7 @@ class CustomerTimelineSQLiteStore:
         )
         existing = self._fetch_one("SELECT record_json FROM timeline_conflicts WHERE conflict_id = ?", (conflict_id,))
         existing_payload = json_loads(existing["record_json"]) if existing is not None else {}
+        metadata_payload = dict(metadata or {})
         now = self._now()
         created_at = (
             parse_datetime(existing_payload["created_at"], "created_at")
@@ -2157,6 +2142,8 @@ class CustomerTimelineSQLiteStore:
         resolved_at = existing_payload.get("resolved_at")
         if normalized_status == "resolved" and not resolved_at:
             resolved_at = now.isoformat()
+        elif normalized_status != "resolved":
+            resolved_at = None
         payload = {
             "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
             "tenant_id": tenant,
@@ -2166,7 +2153,7 @@ class CustomerTimelineSQLiteStore:
             "status": normalized_status,
             "entity_refs": list(refs),
             "summary": optional_text(summary),
-            "metadata": dict(metadata or {}),
+            "metadata": metadata_payload,
             "created_at": created_at.isoformat(),
             "resolved_at": resolved_at,
         }

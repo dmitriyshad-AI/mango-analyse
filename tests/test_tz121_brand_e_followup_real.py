@@ -46,7 +46,7 @@ def test_tz121_brand_e_followup_gate_uses_real_row_indexes_without_raw_fragments
     _write_csv(
         master,
         [
-            {"История": "клиент занимался у Фотона", "Филиал Tallanto": "МФТИ"},
+            {"История": "клиент занимался у Фотона", "Филиал Tallanto": ""},
             {"История": "Фотон и УНПК в одном вопросе", "Филиал Tallanto": ""},
             {"История": "мотивация через фотончики", "Филиал Tallanto": ""},
         ],

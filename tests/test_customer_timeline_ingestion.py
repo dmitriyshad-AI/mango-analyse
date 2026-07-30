@@ -465,6 +465,74 @@ def test_amo_normalizer_keeps_exact_messenger_identities() -> None:
     }
 
 
+def test_amo_normalizer_uses_organization_brand_and_fails_closed_on_mixed_value() -> None:
+    def normalize(organization: str):
+        return AmoSnapshotNormalizer(tenant_id="foton").normalize(
+            TimelineSourceRecord(
+                source_system="amocrm_snapshot",
+                source_ref=f"amo:{organization}",
+                observed_at=NOW,
+                payload={
+                    "entity_id": f"lead-{organization}",
+                    "entity_type": "lead",
+                    "record": {
+                        "custom_fields_values": [
+                            {"field_name": "Организация", "values": [{"value": organization}]},
+                        ]
+                    },
+                },
+            )
+        )
+
+    unpk = normalize("УНПК МФТИ")
+    mixed = normalize("Фотон / УНПК")
+
+    assert unpk.opportunities[0].product_context["brand"] == "unpk"
+    assert unpk.events[0].record["brand"] == "unpk"
+    assert mixed.opportunities[0].product_context["brand"] == "unknown"
+    assert mixed.opportunities[0].product_context["brand_source"] == "amo_organization_conflict"
+
+    known_and_unknown = AmoSnapshotNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="amocrm_snapshot",
+            source_ref="amo:known-and-unknown",
+            observed_at=NOW,
+            payload={
+                "entity_id": "lead-known-and-unknown",
+                "entity_type": "lead",
+                "record": {
+                    "custom_fields_values": [{
+                        "field_name": "Организация",
+                        "values": [{"value": "Фотон"}, {"value": "ООО Ромашка"}],
+                    }]
+                },
+            },
+        )
+    )
+    assert known_and_unknown.opportunities[0].product_context["brand"] == "unknown"
+    assert known_and_unknown.opportunities[0].product_context["brand_source"] == "amo_organization_conflict"
+
+
+def test_tallanto_normalizer_lifts_filial_brand_without_guessing_mixed() -> None:
+    def normalize(branch: object):
+        return TallantoSnapshotNormalizer(tenant_id="foton").normalize(
+            TimelineSourceRecord(
+                source_system="tallanto_snapshot",
+                source_ref=f"tallanto:{branch}",
+                observed_at=NOW,
+                payload={"entity_id": f"student-{branch}", "branch": branch, "name": "Test Student"},
+            )
+        )
+
+    unpk = normalize({"sretenka": "Сретенка"})
+    mixed = normalize({"foton": "Фотон", "mfti": "МФТИ"})
+
+    assert unpk.events[0].record["brand"] == "unpk"
+    assert unpk.opportunities[0].product_context["brand"] == "unpk"
+    assert mixed.events[0].record["brand"] == "unknown"
+    assert mixed.opportunities[0].product_context["brand_source"] == "tallanto_filial"
+
+
 def test_local_source_loader_honors_limit(tmp_path: Path) -> None:
     source = tmp_path / "rows.jsonl"
     source.write_text("".join(json.dumps({"id": index}) + "\n" for index in range(5)), encoding="utf-8")

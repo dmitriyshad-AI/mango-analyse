@@ -867,6 +867,190 @@ def test_unresolved_tallanto_payment_is_part_of_family_conflict_gate(tmp_path: P
         )
 
 
+@pytest.mark.parametrize(
+    ("conflict_type", "blocked"),
+    (
+        ("tallanto_identity_ambiguous", True),
+        ("telegram_identity_ambiguous", True),
+        ("tallanto_attendance_api_identity_conflict", True),
+        ("whatsapp_phone_ambiguous", True),
+        ("tallanto_attendance_api_identity_infrastructure_gap", False),
+        ("tallanto_attendance_api_identity_unmatched", False),
+        ("ambiguous", False),
+    ),
+)
+def test_family_conflict_gate_uses_explicit_business_types(
+    tmp_path: Path,
+    conflict_type: str,
+    blocked: bool,
+) -> None:
+    db_path = tmp_path / f"{conflict_type}.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        store.record_conflict(
+            "foton",
+            conflict_type=conflict_type,
+            entity_refs=(f"customer:{customer.customer_id}",),
+        )
+    with sqlite3.connect(db_path) as con:
+        actual = customer.customer_id in store_module.open_family_identity_conflict_customer_ids(con, "foton")
+    assert actual is blocked
+
+
+@pytest.mark.parametrize("family_table_present", [False, True])
+def test_family_conflict_gate_is_addressed_with_or_without_family_table(
+    tmp_path: Path,
+    family_table_present: bool,
+) -> None:
+    db_path = tmp_path / f"customer_timeline_{family_table_present}.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        own = identity(phone="+79160000001")
+        foreign = identity(phone="+79160000002")
+        safe = identity(phone="+79160000003")
+        for customer in (own, foreign, safe):
+            store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=own.customer_id,
+                link_type="tallanto_student_id",
+                link_value="student-00000001",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:student:student-00000001",
+                match_class="strong_unique",
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("tallanto_student:student-00000001",),
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(f"customer:{foreign.customer_id}",),
+        )
+    if not family_table_present:
+        with sqlite3.connect(db_path) as con:
+            con.execute("DROP TABLE family_members_v1")
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        blocked = store_module.open_family_identity_conflict_customer_ids(con, "foton")
+        assert own.customer_id in blocked
+        assert foreign.customer_id in blocked
+        assert safe.customer_id not in blocked
+        exact_rows = store_module.authoritative_exact_identity_rows(
+            con,
+            "foton",
+            link_types=("tallanto_student_id",),
+        )
+        assert exact_rows[0]["has_open_conflict"] == 1
+        assert store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=(own.customer_id,),
+        )
+        assert not store_module.has_open_family_identity_conflict(
+            con,
+            "foton",
+            family_id="",
+            customer_ids=(safe.customer_id,),
+        )
+
+
+def test_family_conflict_gate_does_not_match_unrelated_link_type_by_suffix(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="amo_contact_id",
+                link_value="1234567890",
+                source_system="synthetic",
+                source_ref="synthetic:amo-contact",
+                match_class="strong_unique",
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("tallanto_student:1234567890",),
+        )
+
+    with sqlite3.connect(db_path) as con:
+        assert customer.customer_id not in store_module.open_family_identity_conflict_customer_ids(con, "foton")
+
+
+def test_authoritative_identity_rows_support_schema_without_family_members(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="amo_contact_id",
+                link_value="7001",
+                source_system="amocrm_snapshot",
+                source_ref="amocrm:contact:7001",
+                match_class="strong_unique",
+            )
+        )
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("DROP TABLE family_members_v1")
+        rows = store_module.authoritative_exact_identity_rows(
+            con,
+            "foton",
+            link_types=("amo_contact_id",),
+        )
+
+    assert len(rows) == 1
+    assert rows[0]["customer_id"] == customer.customer_id
+    assert rows[0]["owner_count"] == 1
+
+
+def test_authoritative_identity_rows_block_direct_customer_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = identity()
+        store.upsert_customer(customer)
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                link_type="amo_contact_id",
+                link_value="7003",
+                source_system="amocrm_snapshot",
+                source_ref="amocrm:contact:7003",
+                match_class="strong_unique",
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(f"customer:{customer.customer_id}",),
+        )
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = store_module.authoritative_exact_identity_rows(
+            con,
+            "foton",
+            link_types=("amo_contact_id",),
+        )
+
+    assert len(rows) == 1
+    assert rows[0]["has_open_conflict"] == 1
+
+
 def test_upserts_core_records_idempotently_after_reopen(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer = identity()

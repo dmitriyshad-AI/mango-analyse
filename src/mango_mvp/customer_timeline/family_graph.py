@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from mango_mvp.customer_profile.builder import child_name_keys, normalized_name_tokens
+from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest, stable_prefixed_id
 from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri, guard_customer_timeline_sqlite_path
 from mango_mvp.utils.phone import normalize_phone
@@ -167,7 +168,8 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             "AND superseded_by IS NULL AND customer_id IS NOT NULL",
             (tenant_id,),
         ):
-            payload = (_json_loads(row["record_json"]).get("record") or {}).get("payload") or {}
+            event_record = _json_loads(row["record_json"]).get("record") or {}
+            payload = event_record.get("payload") or {}
             name = str(payload.get("display_name") or "").strip()
             if not name or str(row["customer_id"]) not in contexts:
                 continue
@@ -182,6 +184,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
                     name=name,
                     grade=str(payload.get("student_type") or ""),
                     subject=str(payload.get("subjects") or ""),
+                    brand=str(event_record.get("brand") or "unknown"),
                 )
             )
             has_new_child_evidence = True
@@ -234,6 +237,14 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
         for customer_id, items in mail_evidence.items():
             evidence_by_customer[customer_id].extend(items)
             has_new_child_evidence = has_new_child_evidence or bool(items)
+        for customer_id, brand in _load_customer_amo_brand_overrides(
+            con,
+            tenant_id=tenant_id,
+            customer_ids=set(customers),
+        ).items():
+            for item in evidence_by_customer.get(customer_id, ()):
+                if brand == "unknown" or _normalize_brand(item.brand) == "unknown":
+                    item.brand = brand
 
         if preserve_child_graph and has_new_child_evidence:
             preserve_child_graph = False
@@ -709,7 +720,7 @@ def _reconcile_contact_conflicts(
     """Recheck stale contact conflicts against current exact Tallanto cards."""
     contact_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
     phone_hash_owners: dict[str, set[str]] = defaultdict(set)
-    cards: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    cards: dict[str, set[tuple[str, frozenset[str]]]] = defaultdict(set)
     for row in con.execute(
         "SELECT event.customer_id,event.source_id,event.record_json FROM timeline_events event JOIN identity_links exact "
         "ON exact.tenant_id=event.tenant_id AND exact.customer_id=event.customer_id AND exact.link_type='tallanto_student_id' "
@@ -722,9 +733,10 @@ def _reconcile_contact_conflicts(
     ):
         customer_id, student_id = str(row["customer_id"]), str(row["source_id"] or "")
         payload = (_json_loads(row["record_json"]).get("record") or {}).get("payload") or {}
-        name_key = "|".join(sorted(normalized_name_tokens(str(payload.get("display_name") or ""))))
-        if name_key:
-            cards[customer_id].add((student_id, name_key))
+        display_name = str(payload.get("display_name") or "")
+        name_keys = frozenset(child_name_keys({display_name}) or set(normalized_name_tokens(display_name)))
+        if name_keys:
+            cards[customer_id].add((student_id, name_keys))
         for value in (payload.get("primary_phone"), *str(payload.get("phone_extra") or "").split("|")):
             if phone := normalize_phone(value):
                 contact_owners[("phone", phone)].add(customer_id)
@@ -749,8 +761,13 @@ def _reconcile_contact_conflicts(
         if any(len(items) != 1 for items in member_cards):
             return ""
         student_ids = {next(iter(items))[0] for items in member_cards}
-        names = {next(iter(items))[1] for items in member_cards}
-        if len(student_ids) != len(customer_ids) or len(names) != len(customer_ids) or student_ids & conflicted_students:
+        name_sets = [next(iter(items))[1] for items in member_cards]
+        names_overlap = any(
+            left & right
+            for index, left in enumerate(name_sets)
+            for right in name_sets[index + 1 :]
+        )
+        if len(student_ids) != len(customer_ids) or names_overlap or student_ids & conflicted_students:
             return ""
         family_ids = {
             assignment.family_id for customer_id in customer_ids
@@ -1217,6 +1234,45 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
     result = _merge_safe_child_name_variants(groups)
     _mark_weak_competing_child_candidates(result.values(), identity_risk=bool(_identity_risks(context)))
     return result
+
+
+def _load_customer_amo_brand_overrides(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_ids: set[str],
+) -> Mapping[str, str]:
+    brands: dict[str, set[str]] = defaultdict(set)
+    conflicts: set[str] = set()
+    for chunk in _chunks(sorted(customer_ids), 900):
+        placeholders = ",".join("?" for _ in chunk)
+        for row in con.execute(
+            f"SELECT customer_id,record_json FROM customer_opportunities "
+            f"WHERE tenant_id=? AND customer_id IN ({placeholders})",
+            (tenant_id, *chunk),
+        ):
+            record = _json_loads(row["record_json"])
+            customer_id = str(row["customer_id"])
+            if has_explicit_brand_conflict(record):
+                conflicts.add(customer_id)
+                continue
+            product_context = record.get("product_context") if isinstance(record, Mapping) else None
+            brand = _normalize_brand(product_context.get("brand") if isinstance(product_context, Mapping) else "")
+            if brand in {"foton", "unpk"}:
+                brands[customer_id].add(brand)
+        for row in con.execute(
+            f"SELECT customer_id,record_json FROM timeline_events "
+            f"WHERE tenant_id=? AND source_system='amocrm_snapshot' "
+            f"AND customer_id IN ({placeholders}) AND superseded_by IS NULL",
+            (tenant_id, *chunk),
+        ):
+            if has_explicit_brand_conflict(_json_loads(row["record_json"])):
+                conflicts.add(str(row["customer_id"]))
+    return {
+        customer_id: "unknown" if customer_id in conflicts else next(iter(brands[customer_id]))
+        for customer_id in brands.keys() | conflicts
+        if customer_id in conflicts or len(brands[customer_id]) == 1
+    }
 
 
 def _merge_safe_child_name_variants(groups: Mapping[str, ChildGroup]) -> dict[str, ChildGroup]:

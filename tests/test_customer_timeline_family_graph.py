@@ -57,6 +57,131 @@ def test_family_graph_assigns_single_child_family_with_high_confidence(tmp_path:
     assert event[3]
 
 
+def test_family_graph_reuses_normalized_amo_organization_brand(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:amo-brand", phone="+79000000009")
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:amo-brand", phone="+79000000009")
+    _insert_field(profiles_db, profile_id="customer:amo-brand", field="child_name", value="Анна", child_key="child_1")
+    with sqlite3.connect(profiles_db) as con:
+        con.execute("UPDATE profile_fields SET brand='unknown'")
+        con.commit()
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT opportunity_id,record_json FROM customer_opportunities WHERE customer_id='customer:amo-brand'"
+        ).fetchone()
+        record = json.loads(row[1])
+        record["product_context"]["brand"] = "unpk"
+        con.execute(
+            "UPDATE customer_opportunities SET record_json=? WHERE opportunity_id=?",
+            (json.dumps(record, ensure_ascii=False), row[0]),
+        )
+        con.commit()
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT brand FROM family_links_v1").fetchone()[0] == "unpk"
+
+
+def test_family_graph_keeps_explicit_amo_brand_conflict_unknown(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:amo-conflict", phone="+79000000010")
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:amo-conflict", phone="+79000000010")
+    _insert_field(
+        profiles_db,
+        profile_id="customer:amo-conflict",
+        field="child_name",
+        value="Анна",
+        child_key="child_1",
+    )
+    with sqlite3.connect(profiles_db) as con:
+        con.execute("UPDATE profile_fields SET brand='unpk'")
+        con.commit()
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT opportunity_id,record_json FROM customer_opportunities "
+            "WHERE customer_id='customer:amo-conflict'"
+        ).fetchone()
+        record = json.loads(row[1])
+        record["product_context"].update(
+            {"brand": "unknown", "brand_source": "amo_organization_conflict"}
+        )
+        con.execute(
+            "UPDATE customer_opportunities SET record_json=? WHERE opportunity_id=?",
+            (json.dumps(record, ensure_ascii=False), row[0]),
+        )
+        con.commit()
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT brand FROM family_links_v1").fetchone()[0] == "unknown"
+
+
+def test_family_graph_keeps_amo_contact_brand_conflict_unknown(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:amo-contact", phone="+79000000011")
+    _seed_event(
+        db_path,
+        tmp_path,
+        customer_id="customer:amo-contact",
+        source_id="amo-contact-conflict",
+        summary="Снимок контакта AMO",
+    )
+    profiles_db = _profiles_db(tmp_path)
+    _insert_profile(profiles_db, profile_id="customer:amo-contact", phone="+79000000011")
+    _insert_field(
+        profiles_db,
+        profile_id="customer:amo-contact",
+        field="child_name",
+        value="Анна",
+        child_key="child_1",
+    )
+    with sqlite3.connect(profiles_db) as con:
+        con.execute("UPDATE profile_fields SET brand='unpk'")
+        con.commit()
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT event_id,record_json FROM timeline_events WHERE source_id='amo-contact-conflict'"
+        ).fetchone()
+        record = json.loads(row[1])
+        record["source_system"] = "amocrm_snapshot"
+        record["record"] = {"brand": "unknown", "brand_source": "amo_organization_conflict"}
+        con.execute(
+            "UPDATE timeline_events SET source_system='amocrm_snapshot',record_json=? WHERE event_id=?",
+            (json.dumps(record, ensure_ascii=False), row[0]),
+        )
+        con.commit()
+
+    build_family_graph(
+        FamilyGraphConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            profiles_db=profiles_db,
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT brand FROM family_links_v1").fetchone()[0] == "unknown"
+
+
 def test_family_graph_skips_identity_without_any_primary_evidence(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:real", phone="+79000000001")
@@ -234,27 +359,57 @@ def test_family_graph_reconciles_shared_phone_after_current_tallanto_cards(tmp_p
         members = con.execute(
             "SELECT family_id,membership_status FROM family_members_v1 ORDER BY customer_id"
         ).fetchall()
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        repeated = store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(
+                f"phone_hash:{stable_digest({'phone': phone})[:16]}",
+                *(f"customer:{customer_id}" for customer_id in customer_ids),
+                *(f"tallanto_student:{student_id}" for student_id in student_ids),
+            ),
+            severity="high",
+            metadata={
+                "phone_hash": stable_digest({"phone": phone})[:16],
+                "tallanto_student_ids": list(student_ids),
+            },
+        )
     second = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
     with sqlite3.connect(db_path) as con:
-        second_hash = con.execute(
-            "SELECT record_hash FROM timeline_conflicts WHERE conflict_id=?",
+        second_status, second_hash = con.execute(
+            "SELECT status,record_hash FROM timeline_conflicts WHERE conflict_id=?",
             (conflict.record_id,),
-        ).fetchone()[0]
+        ).fetchone()
 
     assert status == "resolved"
+    assert repeated.status == "updated"
     assert len({row[0] for row in members}) == 1
     assert {row[1] for row in members} == {"confident"}
     assert first["contact_conflict_reconciliation"]["resolved"] == 1
-    assert second["contact_conflict_reconciliation"]["resolved"] == 0
+    assert second["contact_conflict_reconciliation"]["resolved"] == 1
+    assert second["contact_conflict_reconciliation"]["reopened"] == 0
+    assert second_status == "resolved"
     assert second_hash == first_hash
 
 
-def test_family_graph_keeps_same_name_shared_phone_for_manual_review(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "student_names",
+    (
+        ("Анна Иванова", "Анна Иванова"),
+        ("Анна Иванова", "Аня Иванова"),
+        ("Александр Иванов", "Саша Иванов"),
+        ("Евгений Иванов", "Женя Иванов"),
+    ),
+)
+def test_family_graph_keeps_same_or_diminutive_name_shared_phone_for_manual_review(
+    tmp_path: Path,
+    student_names: tuple[str, str],
+) -> None:
     db_path = _timeline_db(tmp_path)
     phone = "+79000000992"
     customer_ids = ("customer:duplicate-a", "customer:duplicate-b")
     student_ids = ("student-a", "student-b")
-    for customer_id, student_id in zip(customer_ids, student_ids):
+    for customer_id, student_id, student_name in zip(customer_ids, student_ids, student_names):
         _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
         _seed_tallanto_identity(
             db_path,
@@ -262,7 +417,7 @@ def test_family_graph_keeps_same_name_shared_phone_for_manual_review(tmp_path: P
             customer_id,
             student_id,
             "parent@example.com",
-            student_name="Анна Иванова",
+            student_name=student_name,
             student_phone=phone,
         )
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:

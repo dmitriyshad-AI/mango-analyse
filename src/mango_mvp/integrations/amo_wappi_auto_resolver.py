@@ -105,27 +105,8 @@ def lead_org_values(lead: Mapping[str, Any]) -> list[str]:
 
 def lead_org_brand(lead: Mapping[str, Any]) -> str:
     values = lead_org_values(lead)
-    text = " ".join(values).casefold()
-    if not text:
-        return ""
-    matched: list[str] = []
-    for brand, markers in ORG_BRAND_KEYWORDS.items():
-        if any(marker in text for marker in markers):
-            matched.append(brand)
-    if len(matched) == 1:
-        return matched[0]
-    if len(matched) > 1:
-        return "mixed"
-    return ""
-
-
-def lead_org_brand_guard(
-    lead: Mapping[str, Any], *, expected_brand: str
-) -> tuple[str, list[str], str]:
-    values = lead_org_values(lead)
     if not values:
-        return "", values, "organization_missing"
-
+        return ""
     value_brands: list[str] = []
     for value in values:
         matched = [
@@ -134,13 +115,23 @@ def lead_org_brand_guard(
             if any(marker in value.casefold() for marker in markers)
         ]
         value_brands.append(matched[0] if len(matched) == 1 else ("mixed" if matched else ""))
-
     known_brands = {brand for brand in value_brands if brand and brand != "mixed"}
     if "mixed" in value_brands or len(known_brands) > 1 or (known_brands and "" in value_brands):
+        return "mixed"
+    return next(iter(known_brands), "")
+
+
+def lead_org_brand_guard(
+    lead: Mapping[str, Any], *, expected_brand: str
+) -> tuple[str, list[str], str]:
+    values = lead_org_values(lead)
+    if not values:
+        return "", values, "organization_missing"
+    brand = lead_org_brand(lead)
+    if brand == "mixed":
         return "mixed", values, "organization_ambiguous"
-    if not known_brands:
+    if not brand:
         return "", values, "organization_unknown"
-    brand = next(iter(known_brands))
     if brand != expected_brand:
         return brand, values, "brand_mismatch"
     return brand, values, ""

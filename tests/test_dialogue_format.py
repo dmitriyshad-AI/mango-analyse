@@ -156,9 +156,60 @@ class DialogueFormatTest(unittest.TestCase):
                 with patch.object(service, "_try_transcribe_file_with_meta", side_effect=fake_asr):
                     result = service._transcribe_call(call)
         stored = json.loads(str(result["transcript_variants_json"]))["dialogue_lines"]
+        payload = json.loads(str(result["transcript_variants_json"]))
         self.assertEqual(stored, result["dialogue_lines"])
         self.assertIn("Менеджер", stored[0])
         self.assertIn("Клиент", stored[1])
+        self.assertEqual(payload["manager"]["variant_a_segments"][0]["start"], 1.0)
+        self.assertEqual(payload["client"]["variant_a_segments"][0]["start"], 2.0)
+        self.assertEqual(payload["manager"]["physical_channel"], "left")
+        self.assertEqual(payload["client"]["physical_channel"], "right")
+        self.assertFalse(payload["role_mapping"]["confirmed"])
+        self.assertEqual(payload["role_mapping"]["status"], "unverified_legacy_channel_order")
+
+    def test_cached_variant_reuses_saved_segments(self) -> None:
+        call = CallRecord(
+            source_file="call.mp3",
+            source_filename="call.mp3",
+            transcript_variants_json=json.dumps(
+                {
+                    "mode": "stereo",
+                    "primary_provider": "mlx",
+                    "manager": {
+                        "variant_a": "Добрый день",
+                        "variant_a_segments": [
+                            {"start": 1.2, "text": "Добрый день", "approximate": True}
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+        candidate = self.service._cached_variant_candidate(
+            call, slot="manager", provider="mlx", primary_provider="mlx"
+        )
+        assert candidate is not None
+        self.assertEqual(candidate["segments"][0]["start"], 1.2)
+        self.assertTrue(candidate["segments"][0]["approximate"])
+
+    def test_compact_segments_preserve_approximate_timing(self) -> None:
+        compact = self.service._compact_asr_segments(
+            [{"start": 0.0, "end": 1.0, "text": "Текст", "approximate": True}]
+        )
+        self.assertTrue(compact[0]["approximate"])
+
+    def test_partial_role_segments_fall_back_without_losing_client(self) -> None:
+        lines = self.service._build_dialogue_lines(
+            "Иван",
+            manager_segments=[{"start": 1.0, "text": "Добрый день."}],
+            client_segments=None,
+            manager_fallback_text="Добрый день.",
+            client_fallback_text="Здравствуйте.",
+            call_duration_sec=20.0,
+        )
+        self.assertTrue(all(line.startswith("[~") for line in lines))
+        self.assertTrue(any("Менеджер (Иван): Добрый день." in line for line in lines))
+        self.assertTrue(any("Клиент: Здравствуйте." in line for line in lines))
 
     def test_secondary_backfill_preserves_existing_dialogue_lines(self) -> None:
         lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
@@ -177,6 +228,8 @@ class DialogueFormatTest(unittest.TestCase):
                 with patch.object(service, "_try_transcribe_file_with_meta", return_value={"text": "вариант", "segments": []}):
                     result = service._backfill_secondary_only(call, secondary_provider="gigaam")
         self.assertEqual(result["dialogue_lines"], lines)
+        payload = json.loads(str(result["transcript_variants_json"]))
+        self.assertEqual(payload["manager"]["variant_b_segments"], [])
 
     def test_stereo_fallback_uses_estimated_timecodes(self) -> None:
         lines = self.service._build_dialogue_lines(
@@ -250,11 +303,11 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(joined.count("Добрый день, это учебный центр."), 1)
         self.assertEqual(joined.count("Меня интересует курс по математике."), 1)
 
-    def test_stereo_sequence_fix_swaps_answer_before_question(self) -> None:
+    def test_stereo_sequence_fix_only_swaps_approximate_answer_before_question(self) -> None:
         lines = [
-            "[00:41.5] Клиент: Десятый класс.",
-            "[00:41.5] Менеджер (Иван): Подскажите, какой класс вас интересует?",
-            "[00:50.0] Менеджер (Иван): Отлично, спасибо.",
+            "[~00:41] Клиент: Десятый класс.",
+            "[~00:41] Менеджер (Иван): Подскажите, какой класс вас интересует?",
+            "[~00:50] Менеджер (Иван): Отлично, спасибо.",
         ]
 
         fixed = self.service._resequence_dialogue_lines(lines)
@@ -317,6 +370,23 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertIn("Здравствуйте", timeline[0][3])
         self.assertAlmostEqual(float(timeline[1][0]), 2.1, places=2)
         self.assertIn("Подскажите", timeline[1][3])
+
+    def test_approximate_provider_segments_keep_approximate_marker(self) -> None:
+        lines = self.service._build_dialogue_lines(
+            "Иван",
+            [{"start": 0.0, "text": "Добрый день", "approximate": True}],
+            [{"start": 2.0, "text": "Здравствуйте", "approximate": True}],
+        )
+        self.assertTrue(all(line.startswith("[~") for line in lines))
+
+    def test_exact_overlapping_turns_keep_same_time(self) -> None:
+        lines = self.service._build_dialogue_lines(
+            "Иван",
+            [{"start": 2.0, "text": "Добрый день"}],
+            [{"start": 2.0, "text": "Здравствуйте"}],
+        )
+        self.assertTrue(all(line.startswith("[00:02.0]") for line in lines))
+        self.assertEqual(self.service._resequence_dialogue_lines(lines)["dialogue_lines"], lines)
 
     def test_rule_based_mono_role_assignment(self) -> None:
         service = TranscribeService(make_settings(mono_mode="rule"))
@@ -384,6 +454,7 @@ class DialogueFormatTest(unittest.TestCase):
 
         self.assertEqual(result["text"], "Привет мир")
         self.assertEqual(result["segments"][0]["start"], 0.0)
+        self.assertTrue(result["segments"][0]["approximate"])
 
 
 if __name__ == "__main__":

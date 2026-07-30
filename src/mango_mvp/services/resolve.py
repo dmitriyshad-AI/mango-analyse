@@ -361,54 +361,8 @@ class ResolveService:
         return f"[{prefix}{minutes:02d}:{secs:02d}.{ms // 100}]"
 
     def _postfilter_same_ts_dialogue_lines(self, dialogue_lines: List[str]) -> Dict[str, Any]:
-        if not dialogue_lines:
-            return {"dialogue_lines": dialogue_lines, "adjusted": 0}
-
-        out: List[str] = []
-        adjusted = 0
-        prev_ts: Optional[float] = None
-        prev_role: Optional[str] = None
-        min_step_sec = 0.1
-
-        for raw in dialogue_lines:
-            line = str(raw).strip()
-            match = TIMED_LINE_RE.match(line)
-            if not match:
-                out.append(line)
-                continue
-
-            mm = int(match.group("mm"))
-            ss = float(match.group("ss"))
-            ts = mm * 60.0 + ss
-            approximate = bool(match.group("approx"))
-            speaker = (match.group("speaker") or "").strip()
-            text = (match.group("text") or "").strip()
-            role = "unknown"
-            if speaker.startswith("Менеджер"):
-                role = "manager"
-            elif speaker.startswith("Клиент"):
-                role = "client"
-
-            safe_ts = ts
-            if prev_ts is not None and safe_ts < prev_ts - 1e-6:
-                safe_ts = prev_ts + min_step_sec
-            if (
-                self._settings.resolve_postfilter_same_ts
-                and prev_ts is not None
-                and prev_role is not None
-                and role != prev_role
-                and abs(safe_ts - prev_ts) <= 1e-6
-            ):
-                safe_ts = prev_ts + min_step_sec
-
-            if abs(safe_ts - ts) > 1e-6:
-                adjusted += 1
-
-            prev_ts = safe_ts
-            prev_role = role
-            out.append(f"{self._format_timecode(safe_ts, approximate=approximate)} {speaker}: {text}")
-
-        return {"dialogue_lines": out, "adjusted": adjusted}
+        # Resolve may improve text, but timing evidence is immutable.
+        return {"dialogue_lines": list(dialogue_lines), "adjusted": 0}
 
     def _maybe_postfilter_candidate_dialogue(
         self,
@@ -434,36 +388,34 @@ class ResolveService:
 
         fixed = self._postfilter_same_ts_dialogue_lines(lines)
         adjusted = int(fixed.get("adjusted") or 0)
-        if adjusted <= 0:
-            candidate["dialogue_lines"] = lines
-            candidate["meta"] = meta
-            return candidate
-
-        candidate["dialogue_lines"] = fixed["dialogue_lines"]
-        meta["same_ts_postfilter_adjusted_lines"] = adjusted
-        rows_after = self._parse_dialogue_lines(
-            call,
-            fixed["dialogue_lines"],
-            allow_export_fallback=False,
-        )
-        if rows_after:
-            after_metrics = self._line_metrics(rows_after)
-            meta["same_ts_events_after_postfilter"] = int(
-                after_metrics.get("same_ts_cross_speaker_events", 0) or 0
+        candidate["dialogue_lines"] = fixed["dialogue_lines"] if adjusted > 0 else lines
+        if adjusted > 0:
+            meta["same_ts_postfilter_adjusted_lines"] = adjusted
+            rows_after = self._parse_dialogue_lines(
+                call,
+                candidate["dialogue_lines"],
+                allow_export_fallback=False,
             )
+            if rows_after:
+                after_metrics = self._line_metrics(rows_after)
+                meta["same_ts_events_after_postfilter"] = int(
+                    after_metrics.get("same_ts_cross_speaker_events", 0) or 0
+                )
         candidate["meta"] = meta
 
         payload = self._safe_json(str(candidate.get("transcript_variants_json") or ""))
         if payload:
-            warnings = self._get_warnings(payload)
-            marker = f"resolve_same_ts_postfilter: adjusted_lines={adjusted}"
-            if marker not in warnings:
-                warnings.append(marker)
-            payload["warnings"] = warnings
-            payload["resolve_same_ts_postfilter"] = {
-                "applied": True,
-                "adjusted_lines": adjusted,
-            }
+            payload["dialogue_lines"] = candidate["dialogue_lines"]
+            if adjusted > 0:
+                warnings = self._get_warnings(payload)
+                marker = f"resolve_same_ts_postfilter: adjusted_lines={adjusted}"
+                if marker not in warnings:
+                    warnings.append(marker)
+                payload["warnings"] = warnings
+                payload["resolve_same_ts_postfilter"] = {
+                    "applied": True,
+                    "adjusted_lines": adjusted,
+                }
             candidate["transcript_variants_json"] = json.dumps(payload, ensure_ascii=False)
         return candidate
 
@@ -1200,7 +1152,7 @@ class ResolveService:
             if requested_role not in {"manager", "client", "unknown"}:
                 requested_role = role
             if requested_role != role:
-                if role == "unknown" or "same_ts_cross" in turn_flags:
+                if role == "unknown":
                     role = requested_role
                     speaker_corrections += 1
                 else:
@@ -1266,6 +1218,14 @@ class ResolveService:
                 continue
             if bool(ordered[idx + 1].get("swap_with_next")):
                 warnings.append(f"swap_chain_ignored:{current['turn_id']}")
+                current["swap_with_next"] = False
+                idx += 1
+                continue
+            if not (
+                bool(current.get("approximate"))
+                and bool(ordered[idx + 1].get("approximate"))
+            ):
+                warnings.append(f"swap_exact_timing_ignored:{current['turn_id']}")
                 current["swap_with_next"] = False
                 idx += 1
                 continue

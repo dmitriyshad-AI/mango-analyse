@@ -45,6 +45,7 @@ from mango_mvp.productization.mango_office_client import (
 )
 from mango_mvp.productization.mango_recordings import MangoRecordingDownloader
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
+from mango_mvp.services.transcribe import TranscribeService
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
@@ -277,31 +278,26 @@ def run_process_a(
                     "capture_failed",
                     {"disk": disk, "environment": environment, "capture": capture, "lock": lock_info},
                 )
-            metadata = prepare_ingest_inputs(config)
+            metadata = dict(prepare_ingest_inputs(config))
+            metadata["db_open_work"] = call_db_has_open_work(config.working_db)
             worker_reports: list[Mapping[str, Any]] = []
-            if not skip_workers and metadata["audio_files"]:
+            if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
                 base_env = worker_environment(config)
-                worker_reports.append(
-                    command_runner(
-                        cli_command(config, "init-db"),
-                        base_env,
-                        config.working_dir,
+                if metadata["audio_files"]:
+                    worker_reports.append(
+                        command_runner(
+                            cli_command(config, "init-db"),
+                            base_env,
+                            config.working_dir,
+                        )
                     )
-                )
-                worker_reports.append(
-                    command_runner(
-                        cli_command(
-                            config,
-                            "ingest",
-                            "--recordings-dir",
-                            str(config.working_audio_dir),
-                            "--metadata-csv",
-                            str(config.metadata_csv),
-                        ),
-                        base_env,
-                        config.working_dir,
+                    worker_reports.append(
+                        command_runner(
+                            cli_command(config, "ingest", "--recordings-dir", str(config.working_audio_dir), "--metadata-csv", str(config.metadata_csv)),
+                            base_env,
+                            config.working_dir,
+                        )
                     )
-                )
                 worker_reports.extend(
                     run_parallel_pipeline_workers(
                         config,
@@ -347,10 +343,10 @@ def run_process_a(
                     },
                 )
             capture_incomplete = capture.get("status") == "partial"
-            audio_incomplete = positive_int(metadata.get("skipped_total")) > 0
+            audio_incomplete = positive_int(metadata.get("incomplete_total", metadata.get("skipped_total"))) > 0
             if capture_incomplete or audio_incomplete:
                 drop = (
-                    publish_ready_db(config, db_counts)
+                    publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers)))
                     if bool(environment.get("codex_network_ok")) and config.working_db.exists()
                     else {"status": "not_created"}
                 )
@@ -396,7 +392,7 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
-            drop = publish_ready_db(config, db_counts) if config.working_db.exists() else {"status": "not_created"}
+            drop = publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers))) if config.working_db.exists() else {"status": "not_created"}
             if not skip_capture:
                 write_cursor(config.cursor_path, window_until, capture)
             counters = {
@@ -857,6 +853,7 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
     stable_before = datetime.now(timezone.utc) - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    ingested_call_ids = read_ingested_call_ids(config.working_db)
     latest = CaptureManifestStore(config.capture_manifest).latest_by_event_key() if config.capture_manifest.exists() else {}
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
@@ -874,6 +871,12 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
             skipped["audio_file_empty"] = skipped.get("audio_file_empty", 0) + 1
             continue
         target = config.working_audio_dir / source.name
+        if entry.provider_call_id in ingested_call_ids:
+            if not target.is_file():
+                action = hardlink_or_copy(source, target)
+                actions[action] = actions.get(action, 0) + 1
+            skipped["already_ingested"] = skipped.get("already_ingested", 0) + 1
+            continue
         action = hardlink_or_copy(source, target)
         actions[action] = actions.get(action, 0) + 1
         rows.append(
@@ -901,7 +904,75 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
         "metadata_rows": len(rows),
         "skipped": skipped,
         "skipped_total": sum(skipped.values()),
+        "incomplete_total": sum(count for reason, count in skipped.items() if reason != "already_ingested"),
     }
+
+
+def read_ingested_call_ids(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+            return {str(row[0]) for row in con.execute("SELECT source_call_id FROM call_records WHERE source_call_id IS NOT NULL")}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return set()
+        raise
+
+
+def call_db_has_open_work(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "call_records" not in tables:
+            return False
+        now = datetime.now(timezone.utc)
+        limits = {
+            "transcribe": max(1, int(os.getenv("TRANSCRIBE_MAX_ATTEMPTS", "3"))),
+            "resolve": max(1, int(os.getenv("RESOLVE_MAX_ATTEMPTS", "2"))),
+            "analyze": max(1, int(os.getenv("ANALYZE_MAX_ATTEMPTS", "3"))),
+        }
+
+        def due(value: Any) -> bool:
+            return not value or parse_datetime(str(value)) <= now
+
+        def stale(value: Any, env_name: str) -> bool:
+            seconds = max(60, int(os.getenv(env_name, "1800")))
+            return not value or parse_datetime(str(value)) <= now - timedelta(seconds=seconds)
+
+        for raw in con.execute("SELECT * FROM call_records WHERE dead_letter_stage IS NULL"):
+            row = dict(raw)
+            stage = row.get("pipeline_stage")
+            if stage:
+                if stale(row.get("pipeline_claimed_at"), "PIPELINE_LEASE_TIMEOUT_SEC"):
+                    return True
+                continue
+            if row.get("analysis_status") == "in_progress":
+                if stale(row.get("analysis_claimed_at"), "ANALYZE_LEASE_TIMEOUT_SEC"):
+                    return True
+                continue
+            retry_due = due(row.get("next_retry_at"))
+            transcription = row.get("transcription_status")
+            if transcription in {"pending", "failed"} and retry_due and int(row.get("transcribe_attempts") or 0) < limits["transcribe"]:
+                return True
+            state = "not_needed"
+            if transcription == "done" and row.get("transcript_variants_json"):
+                try:
+                    payload = json.loads(str(row["transcript_variants_json"]))
+                except json.JSONDecodeError:
+                    payload = {}
+                if isinstance(payload, dict):
+                    state = TranscribeService.secondary_backfill_state_from_payload(payload, secondary_provider="gigaam")
+            if state in {"fresh", "retry"}:
+                return True
+            resolve = row.get("resolve_status")
+            if transcription == "done" and resolve in {"pending", "failed"} and retry_due and int(row.get("resolve_attempts") or 0) < limits["resolve"]:
+                return True
+            if transcription == "done" and resolve in {None, "done", "skipped"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
+                return True
+        return False
 
 
 def read_known_processed_ids(product_data_root: Path) -> tuple[set[str], set[str]]:
@@ -1325,11 +1396,33 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
         "ready_db": str(config.ready_db),
         "sha256": sha,
         "size_bytes": config.ready_db.stat().st_size,
+        "ready_mtime_ns": config.ready_db.stat().st_mtime_ns,
         "quick_check": quick,
         "counts": counts,
+        "source_storage": sqlite_storage_signature(config.working_db),
     }
     write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
     return manifest
+
+
+def sqlite_storage_signature(path: Path) -> Mapping[str, Mapping[str, int]]:
+    result: dict[str, Mapping[str, int]] = {}
+    for label, candidate in (("db", path), ("wal", Path(str(path) + "-wal"))):
+        if candidate.is_file():
+            stat = candidate.stat()
+            result[label] = {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return result
+
+
+def publish_ready_db_if_changed(config: CallsTwoProcessesConfig, counts: Mapping[str, Any], *, changed: bool) -> Mapping[str, Any]:
+    manifest_path = config.ready_db.with_suffix(".manifest.json")
+    if not changed and config.ready_db.is_file() and manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        ready_stat = config.ready_db.stat()
+        ready_unchanged = manifest.get("size_bytes") == ready_stat.st_size and manifest.get("ready_mtime_ns") == ready_stat.st_mtime_ns
+        if manifest.get("status") == "ready" and ready_unchanged and manifest.get("source_storage") == sqlite_storage_signature(config.working_db):
+            return {**manifest, "reused": True}
+    return {**publish_ready_db(config, counts), "reused": False}
 
 
 def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:

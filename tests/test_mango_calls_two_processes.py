@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     LockBusy,
     PARALLEL_PIPELINE_STAGES,
     assert_no_pdn,
+    call_db_has_open_work,
     call_event_source_systems,
     command_path,
     capture_mango_window,
@@ -31,6 +32,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     process_lease,
     pipeline_stages,
     publish_ready_db,
+    publish_ready_db_if_changed,
     read_json,
     read_known_processed_ids,
     run_parallel_pipeline_workers,
@@ -42,6 +44,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     pipeline_freshness,
     safe_daily_payload,
     sha256_file,
+    sqlite_check,
     worker_command,
     write_json,
 )
@@ -511,6 +514,86 @@ def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: P
     assert result["skipped"] == {"recording_set_stabilizing": 1}
 
 
+def test_prepare_ingest_inputs_skips_call_already_present_in_working_db(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 0
+    assert result["skipped"] == {"already_ingested": 1}
+    assert result["incomplete_total"] == 0
+
+
+def test_prepare_ingest_inputs_keeps_missing_known_audio_visible(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(config.recordings_dir / "missing.mp3"),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["skipped"] == {"audio_file_missing": 1}
+    assert result["incomplete_total"] == 1
+
+
+def test_prepare_ingest_inputs_restores_missing_working_audio_for_known_call(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert (config.working_audio_dir / source.name).read_bytes() == b"audio"
+    assert result["incomplete_total"] == 0
+    assert sum(result["link_actions"].values()) == 1
+
+
 def test_existing_manifest_event_is_not_hidden_by_external_known_call(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -655,6 +738,21 @@ def test_publish_ready_db_handles_space_path_wal_tmp(tmp_path: Path) -> None:
     assert manifest["quick_check"] == "ok"
     assert config.ready_db.exists()
     assert not config.ready_db.with_suffix(".sqlite.tmp-shm").exists()
+
+
+def test_unchanged_working_db_rebuilds_modified_ready_copy(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    config.ready_db.write_bytes(b"damaged")
+
+    result = publish_ready_db_if_changed(config, {"total": 1}, changed=False)
+
+    assert result["reused"] is False
+    assert sqlite_check(config.ready_db, "quick_check") == "ok"
 
 
 def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:
@@ -1299,6 +1397,138 @@ def test_process_a_partial_capture_publishes_available_work_and_advances_cursor(
     assert report["downstream_ready"] is True
     assert config.ready_db.exists()
     assert read_json(config.cursor_path)["until"] == "2026-07-09T10:00:00+00:00"
+
+
+def test_process_a_runs_workers_for_existing_open_db_work_without_reingest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("UPDATE call_records SET transcription_status='pending', analysis_status='pending'")
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.prepare_ingest_inputs",
+        lambda _config: {"audio_files": 0, "skipped_total": 0},
+    )
+    commands: list[str] = []
+
+    def command_runner(command: list[str], *_args: object) -> dict[str, object]:
+        commands.append(" ".join(command))
+        return {"rc": 0, "command": command[-1]}
+
+    report = run_process_a(config, skip_capture=True, command_runner=command_runner)
+
+    assert report["status"] == "ok"
+    assert report["counters"]["metadata"]["db_open_work"] is True
+    assert any("worker" in command for command in commands)
+    assert not any(" init-db" in command or " ingest" in command for command in commands)
+
+
+def test_process_a_complete_existing_db_runs_no_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:provider-1", provider_call_id="provider-1",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    first = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: pytest.fail("complete second run must stay empty"),
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.publish_ready_db",
+        lambda *_args, **_kwargs: pytest.fail("unchanged second run must reuse ready DB"),
+    )
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: pytest.fail("complete second run must stay empty"),
+    )
+
+    assert first["status"] == "ok"
+    assert report["status"] == "ok"
+    assert report["counters"]["metadata"]["db_open_work"] is False
+    assert report["counters"]["drop"]["reused"] is True
+
+
+def test_call_db_open_work_includes_interrupted_secondary_backfill(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN pipeline_stage TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='done', pipeline_stage='backfill-second-asr'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_call_db_open_work_excludes_future_retry_and_exhausted_attempts(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN transcribe_attempts INTEGER")
+        con.execute("ALTER TABLE call_records ADD COLUMN next_retry_at TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='failed', transcribe_attempts=3, "
+            "next_retry_at='2099-01-01T00:00:00+00:00'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is False
+
+
+def test_call_db_open_work_includes_stale_analyze_claim(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN analysis_claimed_at TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='in_progress', analysis_claimed_at='2020-01-01T00:00:00+00:00'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_call_db_open_work_includes_secondary_asr_retry(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    payload = {
+        "mode": "mono_or_fallback",
+        "secondary_provider": "gigaam",
+        "full": {"variant_a": "текст", "variant_b": ""},
+    }
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN transcript_variants_json TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='done', transcript_variants_json=?",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
 
 
 def test_missing_downloaded_capture_is_returned_for_recovery(tmp_path: Path) -> None:

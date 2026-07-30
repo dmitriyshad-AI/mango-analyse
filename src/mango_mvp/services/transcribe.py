@@ -262,7 +262,7 @@ class TranscribeService:
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
         for call in done_calls:
-            state = self._secondary_backfill_state_from_payload(
+            state = self.secondary_backfill_state_from_payload(
                 self._safe_json_dict(call.transcript_variants_json),
                 secondary_provider=secondary_provider,
             )
@@ -351,8 +351,9 @@ class TranscribeService:
         # attempt already spent so we only allow one extra retry.
         return 1
 
-    def _secondary_backfill_state_from_payload(
-        self,
+    @classmethod
+    def secondary_backfill_state_from_payload(
+        cls,
         payload: Dict[str, Any],
         *,
         secondary_provider: str,
@@ -360,7 +361,7 @@ class TranscribeService:
         if not payload:
             return "not_needed"
 
-        meta = self._secondary_backfill_meta(payload)
+        meta = cls._secondary_backfill_meta(payload)
         if (
             str(meta.get("provider") or "").strip() == secondary_provider
             and bool(meta.get("exhausted"))
@@ -3408,7 +3409,7 @@ class TranscribeService:
         secondary_provider: str,
     ) -> bool:
         payload = self._safe_json_dict(call.transcript_variants_json)
-        state = self._secondary_backfill_state_from_payload(
+        state = self.secondary_backfill_state_from_payload(
             payload,
             secondary_provider=secondary_provider,
         )
@@ -3519,7 +3520,7 @@ class TranscribeService:
                     secondary_provider=secondary_provider,
                 )
                 result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
-                backfill_state = self._secondary_backfill_state_from_payload(
+                backfill_state = self.secondary_backfill_state_from_payload(
                     result_payload,
                     secondary_provider=secondary_provider,
                 )
@@ -3632,7 +3633,7 @@ class TranscribeService:
         retry_pending = 0
         exhausted = 0
         for call in done_calls:
-            state = self._secondary_backfill_state_from_payload(
+            state = self.secondary_backfill_state_from_payload(
                 self._safe_json_dict(call.transcript_variants_json),
                 secondary_provider=secondary_provider,
             )

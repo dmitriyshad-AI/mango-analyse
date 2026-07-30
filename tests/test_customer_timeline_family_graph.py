@@ -16,6 +16,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
 )
 from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, _connect, build_family_graph
+from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
@@ -156,6 +157,225 @@ def test_family_graph_groups_tallanto_siblings_by_parent_email(tmp_path: Path, m
     assert len({row[1] for row in members}) == 1
     assert {row[2] for row in members} == {"confident"}
     assert report["multi_customer_families"] == 1
+
+
+def test_family_graph_reconciles_shared_phone_after_current_tallanto_cards(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    phone = "+79000000991"
+    customer_ids = ("customer:sibling-a", "customer:sibling-b")
+    student_ids = ("student-a", "student-b")
+    for customer_id, student_id, student_name in zip(
+        customer_ids,
+        student_ids,
+        ("Анна Иванова", "Борис Иванов"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            student_id,
+            "parent@example.com",
+            student_name=student_name,
+            student_phone=phone,
+        )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for customer_id, student_id, student_name in zip(
+            customer_ids,
+            student_ids,
+            ("Анна Иванова", "Борис Иванов"),
+        ):
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="phone",
+                    link_value=phone,
+                    source_system="tallanto_snapshot",
+                    source_ref=f"legacy:{customer_id}:phone",
+                    match_class=IdentityMatchClass.AMBIGUOUS,
+                    confidence=0.5,
+                )
+            )
+            store.upsert_event(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    event_type="tallanto_student_snapshot",
+                    event_at=NOW,
+                    source_system="tallanto_snapshot",
+                    source_id=f"tallanto:{customer_id}",
+                    direction="system",
+                    match_status="ambiguous",
+                    record={},
+                )
+            )
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(
+                f"phone_hash:{stable_digest({'phone': phone})[:16]}",
+                *(f"customer:{customer_id}" for customer_id in customer_ids),
+                *(f"tallanto_student:{student_id}" for student_id in student_ids),
+            ),
+            severity="high",
+            metadata={
+                "phone_hash": stable_digest({"phone": phone})[:16],
+                "tallanto_student_ids": list(student_ids),
+            },
+        )
+
+    first = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        status, first_hash = con.execute(
+            "SELECT status,record_hash FROM timeline_conflicts WHERE conflict_id=?",
+            (conflict.record_id,),
+        ).fetchone()
+        members = con.execute(
+            "SELECT family_id,membership_status FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+    second = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+    with sqlite3.connect(db_path) as con:
+        second_hash = con.execute(
+            "SELECT record_hash FROM timeline_conflicts WHERE conflict_id=?",
+            (conflict.record_id,),
+        ).fetchone()[0]
+
+    assert status == "resolved"
+    assert len({row[0] for row in members}) == 1
+    assert {row[1] for row in members} == {"confident"}
+    assert first["contact_conflict_reconciliation"]["resolved"] == 1
+    assert second["contact_conflict_reconciliation"]["resolved"] == 0
+    assert second_hash == first_hash
+
+
+def test_family_graph_keeps_same_name_shared_phone_for_manual_review(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    phone = "+79000000992"
+    customer_ids = ("customer:duplicate-a", "customer:duplicate-b")
+    student_ids = ("student-a", "student-b")
+    for customer_id, student_id in zip(customer_ids, student_ids):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            student_id,
+            "parent@example.com",
+            student_name="Анна Иванова",
+            student_phone=phone,
+        )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for customer_id, student_id in zip(customer_ids, student_ids):
+            store.upsert_identity_link(
+                IdentityLink(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    link_type="phone",
+                    link_value=phone,
+                    source_system="tallanto_snapshot",
+                    source_ref=f"duplicate:{customer_id}",
+                    match_class=IdentityMatchClass.AMBIGUOUS,
+                    confidence=0.5,
+                )
+            )
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="shared_family_phone",
+            entity_refs=(
+                f"phone_hash:{stable_digest({'phone': phone})[:16]}",
+                *(f"customer:{customer_id}" for customer_id in customer_ids),
+                *(f"tallanto_student:{student_id}" for student_id in student_ids),
+            ),
+            severity="high",
+            metadata={
+                "phone_hash": stable_digest({"phone": phone})[:16],
+                "tallanto_student_ids": list(student_ids),
+            },
+        )
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        status = con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_id=?",
+            (conflict.record_id,),
+        ).fetchone()[0]
+    assert status == "open"
+    assert report["contact_conflict_reconciliation"]["resolved"] == 0
+
+
+def test_family_graph_keeps_contact_conflict_when_phone_and_email_have_different_owners(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, student_id, phone, email, name in (
+        ("customer:left", "student-left", "+79000000981", "left@example.com", "Анна Иванова"),
+        ("customer:right", "student-right", "+79000000982", "right@example.com", "Борис Иванов"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path, tmp_path, customer_id, student_id, email,
+            student_name=name, student_phone=phone,
+        )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:customer:left", "customer:customer:right"),
+            severity="high",
+            metadata={"identifiers": ["phone:+79000000981", "email:right@example.com"]},
+        )
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        status = con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_id=?", (conflict.record_id,)
+        ).fetchone()[0]
+    assert status == "open"
+    assert report["contact_conflict_reconciliation"]["resolved"] == 0
+
+
+def test_family_graph_reopens_managed_contact_conflict_when_owner_moves_outside_original_group(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    for customer_id, phone in (
+        ("customer:left", "+79000000971"),
+        ("customer:right", "+79000000972"),
+        ("customer:new-owner", "+79000000973"),
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+    _seed_tallanto_identity(
+        db_path, tmp_path, "customer:new-owner", "student-new-owner", "owner@example.com",
+        student_name="Анна Иванова", student_phone="+79000000973",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:customer:left", "customer:customer:right"),
+            severity="high",
+            metadata={"identifiers": ["phone:+79000000973"]},
+        )
+    with sqlite3.connect(db_path) as con:
+        payload = json.loads(con.execute(
+            "SELECT record_json FROM timeline_conflicts WHERE conflict_id=?", (conflict.record_id,)
+        ).fetchone()[0])
+        payload.update(status="resolved", resolved_at=NOW.isoformat())
+        payload["metadata"].update(
+            resolved_by="family_graph_v1_builder", resolution_reason="contact_no_longer_shared"
+        )
+        con.execute(
+            "UPDATE timeline_conflicts SET status='resolved',resolved_at=?,record_hash=?,record_json=? WHERE conflict_id=?",
+            (NOW.isoformat(), stable_digest(payload), json.dumps(payload), conflict.record_id),
+        )
+
+    report = build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        status = con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_id=?", (conflict.record_id,)
+        ).fetchone()[0]
+    assert status == "open"
+    assert report["contact_conflict_reconciliation"]["reopened"] == 1
 
 
 def test_family_graph_uses_one_fallback_child_key_for_same_child_in_one_family(tmp_path: Path) -> None:
@@ -1510,6 +1730,7 @@ def _seed_tallanto_identity(
     parent_name: str = "Ирина Иванова",
     match_status: str = "strong_unique",
     student_name: str = "",
+    student_phone: str = "",
 ) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for link_type, link_value in (("tallanto_student_id", student_id), ("email", parent_email)):
@@ -1544,6 +1765,7 @@ def _seed_tallanto_identity(
                     "payload": {
                         "parent_fio": parent_name,
                         "primary_email": parent_email,
+                        **({"primary_phone": student_phone} if student_phone else {}),
                         **({"display_name": student_name} if student_name else {}),
                     }
                 },

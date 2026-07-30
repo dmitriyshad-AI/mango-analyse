@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import mango_mvp.customer_timeline.family_graph as family_graph_module
 import mango_mvp.customer_timeline.nightly_service as nightly_service_module
 from mango_mvp.customer_timeline import (
     CustomerIdentity,
@@ -726,6 +727,36 @@ def test_nightly_service_runs_wappi_then_refreshes_family_graph(
     assert calls == ["wappi", "family"]
     assert report["steps"][0]["summary"]["records_built"] == 3
     assert report["steps"][1]["summary"]["family_members_write_applied"] is True
+
+
+def test_nightly_service_fails_closed_when_family_conflict_reconciliation_breaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+
+    def break_reconciliation(*_args, **_kwargs):
+        raise RuntimeError("family reconciliation negative control")
+
+    monkeypatch.setattr(family_graph_module, "_reconcile_contact_conflicts", break_reconciliation)
+    config_path = staging / "service.json"
+    config_path.write_text(json.dumps({
+        "timeline_db": str(db_path),
+        "allowed_root": str(staging),
+        "out_root": str(staging / "runs"),
+        "publish_dir": str(staging / "published"),
+        "steps": [{"name": "family_graph_refresh", "kind": "family_graph", "required": True, "config": {"apply": True}}],
+    }), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["steps"][0]["status"] == "failed"
+    assert report["snapshot_manifest"]["latest_published"] is False
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM family_members_v1").fetchone()[0] == 0
 
 
 def test_nightly_service_does_not_publish_when_wappi_identity_is_incomplete(

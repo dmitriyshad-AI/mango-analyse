@@ -88,6 +88,30 @@ def test_attendance_import_matches_numeric_excel_barcode_to_text_report(tmp_path
     assert report["counts"]["created"] == 1
 
 
+def test_attendance_import_honours_manual_exact_identity_link(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE identity_links SET match_class='manual' "
+            "WHERE tenant_id='foton' AND link_type='tallanto_student_id' AND link_value='101'"
+        )
+
+    report = run_tallanto_attendance_import(
+        TallantoAttendanceImportConfig(
+            db,
+            tmp_path,
+            _contacts(tmp_path, (("101", "barcode-1"),)),
+            _attendance(tmp_path, "barcode-1"),
+            apply=False,
+        )
+    )
+
+    assert report["counts"]["resolved"] == 1
+    assert report["counts"].get("unmatched", 0) == 0
+
+
 def test_attendance_import_reuses_unique_historical_tallanto_customer_link(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)

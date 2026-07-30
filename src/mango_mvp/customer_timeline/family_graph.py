@@ -139,6 +139,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             customer_ids=tuple(customers),
             generated_at=generated_at,
         )
+        conflict_reconciliation = _reconcile_contact_conflicts(con, tenant_id, assignments, generated_at, config.apply)
         shared_customers = _shared_family_phone_customers(con, tenant_id=tenant_id)
         contexts = {
             customer_id: CustomerContext(
@@ -277,6 +278,7 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
             preserve_child_graph=preserve_child_graph,
             apply=config.apply,
         )
+        summary = {**summary, "contact_conflict_reconciliation": conflict_reconciliation}
         if config.apply:
             _replace_rows(
                 con,
@@ -394,6 +396,15 @@ def _resolve_family_assignments(
         WHERE tenant_id = ? AND source_system = 'tallanto_snapshot'
           AND event_type = 'tallanto_student_snapshot'
           AND customer_id IS NOT NULL AND customer_id != '' AND superseded_by IS NULL
+          AND (
+            EXISTS (SELECT 1 FROM identity_links AS exact_link
+              WHERE exact_link.tenant_id=timeline_events.tenant_id AND exact_link.customer_id=timeline_events.customer_id
+                AND exact_link.link_type='tallanto_student_id' AND exact_link.link_value=timeline_events.source_id
+                AND exact_link.match_class IN ('strong_unique','manual'))
+            OR NOT EXISTS (SELECT 1 FROM identity_links AS exact_link
+              WHERE exact_link.tenant_id=timeline_events.tenant_id AND exact_link.customer_id=timeline_events.customer_id
+                AND exact_link.link_type='tallanto_student_id' AND exact_link.match_class IN ('strong_unique','manual'))
+          )
         UNION ALL
         SELECT link.customer_id, link.link_value, link.match_class
         FROM identity_links AS link
@@ -692,6 +703,135 @@ def _resolve_family_assignments(
     return assignments
 
 
+def _reconcile_contact_conflicts(
+    con: sqlite3.Connection, tenant_id: str, assignments: Mapping[str, FamilyAssignment], generated_at: str, apply: bool
+) -> Mapping[str, Any]:
+    """Recheck stale contact conflicts against current exact Tallanto cards."""
+    contact_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
+    phone_hash_owners: dict[str, set[str]] = defaultdict(set)
+    cards: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for row in con.execute(
+        "SELECT event.customer_id,event.source_id,event.record_json FROM timeline_events event JOIN identity_links exact "
+        "ON exact.tenant_id=event.tenant_id AND exact.customer_id=event.customer_id AND exact.link_type='tallanto_student_id' "
+        "AND exact.link_value=event.source_id AND exact.match_class IN ('strong_unique','manual') WHERE event.tenant_id=? "
+        "AND event.source_system='tallanto_snapshot' AND event.event_type='tallanto_student_snapshot' AND event.match_status IN ('strong_unique','manual') "
+        "AND event.superseded_by IS NULL AND NOT EXISTS (SELECT 1 FROM identity_links other WHERE other.tenant_id=exact.tenant_id "
+        "AND other.link_type=exact.link_type AND other.link_value=exact.link_value AND other.customer_id!=exact.customer_id "
+        "AND other.match_class IN ('strong_unique','manual'))",
+        (tenant_id,)
+    ):
+        customer_id, student_id = str(row["customer_id"]), str(row["source_id"] or "")
+        payload = (_json_loads(row["record_json"]).get("record") or {}).get("payload") or {}
+        name_key = "|".join(sorted(normalized_name_tokens(str(payload.get("display_name") or ""))))
+        if name_key:
+            cards[customer_id].add((student_id, name_key))
+        for value in (payload.get("primary_phone"), *str(payload.get("phone_extra") or "").split("|")):
+            if phone := normalize_phone(value):
+                contact_owners[("phone", phone)].add(customer_id)
+                phone_hash_owners[stable_digest({"phone": phone})[:16]].add(customer_id)
+        for value in (payload.get("primary_email"), *str(payload.get("email_extra") or "").split("|")):
+            if email := normalize_email(value):
+                contact_owners[("email", email)].add(customer_id)
+
+    conflicted_students: set[str] = set()
+    for row in con.execute(
+        "SELECT record_json FROM timeline_conflicts WHERE tenant_id=? AND conflict_type='tallanto_identity_conflict' AND status='open'",
+        (tenant_id,),
+    ):
+        for ref in _json_loads(row["record_json"]).get("entity_refs", ()):
+            if str(ref).startswith("tallanto_student_id:"):
+                conflicted_students.add(str(ref).split(":", 1)[1])
+
+    def confirmed_family(customer_ids: set[str]) -> str:
+        if len(customer_ids) < 2:
+            return ""
+        member_cards = [cards.get(customer_id, set()) for customer_id in customer_ids]
+        if any(len(items) != 1 for items in member_cards):
+            return ""
+        student_ids = {next(iter(items))[0] for items in member_cards}
+        names = {next(iter(items))[1] for items in member_cards}
+        if len(student_ids) != len(customer_ids) or len(names) != len(customer_ids) or student_ids & conflicted_students:
+            return ""
+        family_ids = {
+            assignment.family_id for customer_id in customer_ids
+            if (assignment := assignments.get(customer_id)) and assignment.status == "confident" and assignment.confidence == "high"
+        }
+        return next(iter(family_ids)) if len(family_ids) == 1 else ""
+
+    def all_in_family(customer_ids: set[str], family_id: str) -> bool:
+        return bool(customer_ids) and all(
+            (assignment := assignments.get(customer_id)) and assignment.family_id == family_id
+            and assignment.status == "confident" and assignment.confidence == "high"
+            for customer_id in customer_ids
+        )
+
+    checked = resolved = reopened = 0
+    reasons: Counter[str] = Counter(); types: Counter[str] = Counter()
+    rows = con.execute(
+        "SELECT conflict_id,conflict_type,status,record_json FROM timeline_conflicts "
+        "WHERE tenant_id=? AND conflict_type IN ('shared_family_phone','ambiguous_identity') AND (status='open' OR "
+        "(status='resolved' AND json_extract(record_json,'$.metadata.resolved_by')=?))",
+        (tenant_id, FAMILY_GRAPH_ACTOR),
+    ).fetchall()
+    for row in rows:
+        is_open = str(row["status"]) == "open"
+        checked += int(is_open)
+        payload = _json_loads(row["record_json"])
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        if metadata.get("identity_repair") == "current_source_conflict":
+            continue
+        refs = {str(raw) for raw in payload.get("entity_refs", ()) if str(raw).startswith("customer:")}
+        customer_ids = {ref[len("customer:"):] if ref.startswith("customer:customer:") else ref for ref in refs}
+        reason = ""
+        if str(row["conflict_type"]) == "shared_family_phone":
+            expected = {str(value) for value in metadata.get("tallanto_student_ids", ()) if value}
+            current = {student_id for customer_id in customer_ids for student_id, _ in cards.get(customer_id, ())}
+            family_id = confirmed_family(customer_ids)
+            owners = phone_hash_owners.get(str(metadata.get("phone_hash") or ""), set())
+            if family_id and current == expected and len(expected) >= 2 and all_in_family(owners, family_id):
+                reason = "confirmed_single_family"
+        else:
+            identifiers = metadata.get("identifiers")
+            parsed: list[tuple[str, str]] = []
+            if isinstance(identifiers, list):
+                for raw in identifiers:
+                    kind, separator, value = str(raw).partition(":")
+                    normalized = normalize_phone(value) if kind == "phone" else normalize_email(value) if kind == "email" else ""
+                    if separator and normalized:
+                        parsed.append((kind, normalized))
+            valid_identifiers = isinstance(identifiers, list) and len(parsed) == len(identifiers) > 0
+            owner_sets = [contact_owners.get(key, set()) for key in parsed]
+            unique_owners = set().union(*owner_sets) if owner_sets else set()
+            if valid_identifiers and all(len(owners) == 1 for owners in owner_sets) and len(unique_owners) == 1 and unique_owners <= customer_ids:
+                reason = "contact_no_longer_shared"
+            elif valid_identifiers and all(owner_sets):
+                all_customers = customer_ids | set().union(*owner_sets)
+                family_id = confirmed_family(customer_ids)
+                if family_id and all_in_family(all_customers, family_id):
+                    reason = "confirmed_single_family"
+        if not reason:
+            if not is_open:
+                reopened += 1
+                if apply:
+                    payload.update(status="open", resolved_at=None)
+                    payload["metadata"] = {key: value for key, value in metadata.items() if key not in {"resolved_by", "resolution_reason"}}
+                    con.execute(
+                        "UPDATE timeline_conflicts SET status='open',resolved_at=NULL,record_hash=?,record_json=? WHERE conflict_id=?",
+                        (stable_digest(payload), _json_dumps(payload), str(row["conflict_id"])),
+                    )
+            continue
+        if not is_open:
+            continue
+        resolved += 1
+        reasons[reason] += 1; types[str(row["conflict_type"])] += 1
+        if apply:
+            payload.update(status="resolved", resolved_at=generated_at)
+            payload["metadata"] = {**metadata, "resolved_by": FAMILY_GRAPH_ACTOR, "resolution_reason": reason}
+            con.execute(
+                "UPDATE timeline_conflicts SET status='resolved',resolved_at=?,record_hash=?,record_json=? WHERE conflict_id=?",
+                (generated_at, stable_digest(payload), _json_dumps(payload), str(row["conflict_id"])),
+            )
+    return {"checked": checked, "resolved": resolved, "reopened": reopened, "remaining_open": checked - resolved + reopened, "resolved_reason_counts": dict(sorted(reasons.items())), "resolved_type_counts": dict(sorted(types.items()))}
 def _parent_identity_key(value: str) -> str:
     tokens = sorted(normalized_name_tokens(value))
     return "|".join(tokens) if len(tokens) >= 2 else ""

@@ -1092,16 +1092,14 @@ def _load_unique_identity_customers(db: Path, *, tenant_id: str, link_type: str)
 
 
 def _load_tallanto_customers(db: Path, *, tenant_id: str) -> dict[str, str]:
+    exact = _load_unique_identity_customers(db, tenant_id=tenant_id, link_type="tallanto_student_id")
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
         con.execute("PRAGMA query_only=ON")
-        candidates: dict[str, set[str]] = defaultdict(set)
-        for tallanto_id, customer_id in con.execute(
-                "SELECT link_value, MIN(customer_id) FROM identity_links "
-                "WHERE tenant_id=? AND link_type='tallanto_student_id' AND match_class='strong_unique' "
-                "GROUP BY link_value HAVING COUNT(DISTINCT customer_id)=1",
-                (tenant_id,),
-        ):
-            candidates[str(tallanto_id)].add(str(customer_id))
+        candidates = {key: {value} for key, value in exact.items()}
+        linked_values = {str(row[0]) for row in con.execute(
+            "SELECT DISTINCT link_value FROM identity_links WHERE tenant_id=? AND link_type='tallanto_student_id'",
+            (tenant_id,),
+        )}
         for customer_id, raw in con.execute(
             "SELECT customer_id, record_json FROM timeline_events "
             "WHERE tenant_id=? AND source_system=? AND customer_id IS NOT NULL "
@@ -1112,8 +1110,9 @@ def _load_tallanto_customers(db: Path, *, tenant_id: str) -> dict[str, str]:
                 tallanto_id = json.loads(str(raw or "{}"))["record"]["logical_key"]["tallanto_id"]
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 continue
-            if tallanto_id:
-                candidates[str(tallanto_id)].add(str(customer_id))
+            # Historical events are only a fallback when no current identity decision exists.
+            if tallanto_id and str(tallanto_id) not in linked_values:
+                candidates.setdefault(str(tallanto_id), set()).add(str(customer_id))
         return {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1}
 
 

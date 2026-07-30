@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
@@ -632,7 +632,7 @@ def process_b_failure_report(
 
 def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mapping[str, Any]:
     first = run_process_a(config, **process_a_kwargs)
-    if first.get("status") not in {"ok", "idle"}:
+    if not first.get("downstream_ready"):
         return {
             "schema_version": SCHEMA_VERSION,
             "process": "cycle",
@@ -642,11 +642,13 @@ def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mappi
             "process_b": None,
         }
     second = run_process_b(config)
+    second_ok = second.get("status") in {"ok", "idle", "locked"}
+    cycle_status = "failed" if not second_ok else ("partial" if first.get("status") == "partial" else "ok")
     return {
         "schema_version": SCHEMA_VERSION,
         "process": "cycle",
-        "status": "ok" if second.get("status") in {"ok", "idle", "locked"} else "failed",
-        "stop_reason": "" if second.get("status") in {"ok", "idle", "locked"} else "process_b_failed",
+        "status": cycle_status,
+        "stop_reason": "process_b_failed" if not second_ok else str(first.get("stop_reason") or ""),
         "process_a": first,
         "process_b": second,
     }
@@ -724,14 +726,31 @@ def capture_mango_window(
     mapper = MangoOfficePayloadMapper()
     tenant = TenantRef(config.tenant_id)
     rows: list[Mapping[str, Any]] = []
-    pending_since, pending_keys, pending_expired = pending_recording_state(config, until)
-    chunk_start = min(since, pending_since) if pending_since is not None else since
+    manifest_store = CaptureManifestStore(config.capture_manifest)
+    pending_entries = [entry for entry in manifest_store.latest_by_event_key().values() if entry.status == "skipped_no_recording"]
+    pending_keys = {entry.event_key for entry in pending_entries}
+    threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    expired_keys = {entry.event_key for entry in pending_entries if parse_datetime(entry.created_at) < threshold}
+    overlap = timedelta(minutes=config.poll_overlap_minutes)
+    poll_windows = [(since, until)]
+    for entry in pending_entries:
+        started = parse_datetime(entry.started_at)
+        ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
+        poll_windows.append((started - overlap, ended + overlap))
+    merged_windows: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(poll_windows):
+        if merged_windows and start <= merged_windows[-1][1]:
+            merged_windows[-1] = (merged_windows[-1][0], max(end, merged_windows[-1][1]))
+        else:
+            merged_windows.append((start, end))
     api_requests = 0
-    while chunk_start < until:
-        chunk_end = min(until, chunk_start + timedelta(hours=config.api_window_hours))
-        rows.extend(client.poll_call_history(since=chunk_start, until=chunk_end))
-        api_requests += 1
-        chunk_start = chunk_end
+    for window_start, window_end in merged_windows:
+        chunk_start = window_start
+        while chunk_start < window_end:
+            chunk_end = min(window_end, chunk_start + timedelta(hours=config.api_window_hours))
+            rows.extend(client.poll_call_history(since=chunk_start, until=chunk_end))
+            api_requests += 1
+            chunk_start = chunk_end
     unique_events: dict[str, Any] = {}
     for row in rows:
         event = mapper.from_payload(tenant=tenant, payload=row)
@@ -758,18 +777,21 @@ def capture_mango_window(
     ]
     summary = stage_capture_events(
         events=events,
-        manifest_store=CaptureManifestStore(config.capture_manifest),
+        manifest_store=manifest_store,
         recordings_dir=config.recordings_dir,
         downloader=downloader,
         dry_run=False,
         sleep_sec=1.5,
     )
-    complete = (
-        summary.failed == 0
-        and summary.skipped_no_recording == 0
-        and not pending_keys
-        and pending_expired == 0
-    )
+    latest = manifest_store.latest_by_event_key()
+    pending_expired = 0
+    for event_key in expired_keys:
+        entry = latest.get(event_key)
+        if entry is not None and entry.status == "skipped_no_recording":
+            manifest_store.append(replace(entry, created_at=until.isoformat(), status="recording_retry_expired", error="recording_missing_after_retry_ttl"))
+            pending_expired += 1
+    remaining_pending = {key for key, entry in manifest_store.latest_by_event_key().items() if entry.status == "skipped_no_recording"}
+    complete = summary.failed == 0 and summary.skipped_no_recording == 0 and not remaining_pending and pending_expired == 0
     status = "ok" if complete else "partial"
     return {
         "status": status,
@@ -777,35 +799,13 @@ def capture_mango_window(
         "api_rows_total": len(rows),
         "api_events_total": len(mapped_events),
         "api_events_already_known_external": len(external_known_keys),
-        "pending_recording_retries": len(pending_keys),
+        "pending_recording_retries": len(remaining_pending),
         "pending_recording_expired": pending_expired,
         "api_events_without_recording": sum(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
         **summary.to_json_dict(),
     }
-
-
-def pending_recording_state(
-    config: CallsTwoProcessesConfig,
-    until: datetime,
-) -> tuple[Optional[datetime], set[str], int]:
-    if not config.capture_manifest.exists():
-        return None, set(), 0
-    threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
-    starts: list[datetime] = []
-    keys: set[str] = set()
-    expired = 0
-    for entry in CaptureManifestStore(config.capture_manifest).latest_by_event_key().values():
-        if entry.status != "skipped_no_recording":
-            continue
-        started = parse_datetime(entry.started_at)
-        if started < threshold:
-            expired += 1
-            continue
-        starts.append(started - timedelta(minutes=config.poll_overlap_minutes))
-        keys.add(entry.event_key)
-    return (min(starts) if starts else None), keys, expired
 
 
 def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[TelephonyCallEvent, ...]:
@@ -1474,6 +1474,7 @@ def finalize_report(
             "runs_sync": False,
         },
     }
+    report["downstream_ready"] = bool(process == "process_a" and status in {"ok", "partial"} and isinstance(counters.get("drop"), Mapping) and counters["drop"].get("status") == "ready")
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     local_path = config.reports_dir / f"{run_id}_{process}.json"
     write_json(local_path, report)

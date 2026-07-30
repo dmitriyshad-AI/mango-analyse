@@ -19,6 +19,7 @@ DEFAULT_CAPTURE_FILENAME_TZ = ZoneInfo("Europe/Moscow")
 TERMINAL_EVENT_STATUSES = {
     "downloaded",
     "duplicate_recording",
+    "recording_retry_expired",
 }
 ASSET_STATUSES = {"downloaded"}
 

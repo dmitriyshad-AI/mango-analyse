@@ -36,6 +36,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     run_parallel_pipeline_workers,
     run_process_a,
     run_process_b,
+    run_cycle,
     run_command,
     compact_command_reports,
     pipeline_freshness,
@@ -87,6 +88,48 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
             with process_lease(lock, stale_seconds=60):
                 pass
         assert caught.value.metadata["pid"] == first["pid"]
+
+
+def test_run_cycle_imports_partial_ready_drop_and_keeps_partial_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_a",
+        lambda *_args, **_kwargs: {
+            "status": "partial",
+            "stop_reason": "capture_audio_incomplete",
+            "downstream_ready": True,
+        },
+    )
+
+    def fake_b(*_args, **_kwargs):
+        calls.append("b")
+        return {"status": "ok"}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.run_process_b", fake_b)
+    report = run_cycle(config_for(tmp_path))
+    assert calls == ["b"]
+    assert report["status"] == "partial"
+    assert report["stop_reason"] == "capture_audio_incomplete"
+
+
+@pytest.mark.parametrize("first", [
+    {"status": "partial", "downstream_ready": False},
+    {"status": "failed", "downstream_ready": False},
+])
+def test_run_cycle_does_not_import_without_ready_drop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, first: dict[str, object]
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_a",
+        lambda *_args, **_kwargs: first,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_b",
+        lambda *_args, **_kwargs: pytest.fail("Process B must not start"),
+    )
+    assert run_cycle(config_for(tmp_path))["process_b"] is None
 
 
 def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -256,6 +299,146 @@ def test_pending_recording_widens_poll_window_beyond_normal_overlap(
     assert requested[0] == datetime(2026, 7, 9, 7, 45, tzinfo=timezone.utc)
     assert report["pending_recording_retries"] == 1
     assert report["status"] == "partial"
+
+
+def test_recording_retry_ttl_uses_first_seen_and_expires_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-10T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:old-call-newly-seen",
+            provider_call_id="old-call-newly-seen",
+            recording_id=None,
+            started_at="2025-01-01T00:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="skipped_no_recording",
+        )
+    )
+    requested: list[tuple[datetime, datetime]] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, *, since: datetime, until: datetime) -> list[dict[str, str]]:
+            requested.append((since, until))
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    first = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+    )
+    lines_after_first = len(store.read_entries())
+    second = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 12, tzinfo=timezone.utc),
+    )
+
+    assert first["api_requests"] == 2
+    assert first["status"] == "partial"
+    assert first["pending_recording_expired"] == 1
+    assert store.latest_by_event_key()["foton:mango:old-call-newly-seen"].status == "recording_retry_expired"
+    assert second["status"] == "ok"
+    assert len(store.read_entries()) == lines_after_first
+    assert len(requested) == 3
+
+
+def test_expired_recording_is_recovered_on_last_bounded_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=12, pending_recording_retry_hours=24)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    pending = ManifestEntry(
+        schema_version="v1",
+        created_at="2026-07-10T10:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:recovered",
+        provider_call_id="recovered",
+        recording_id=None,
+        started_at="2025-01-01T00:00:00+00:00",
+        ended_at="2025-01-01T00:20:00+00:00",
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="skipped_no_recording",
+    )
+    store.append(pending)
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, *, since: datetime, **_: object) -> list[dict[str, str]]:
+            if since.year < 2026:
+                return [{
+                    "id": "recovered",
+                    "started_at": "2025-01-01T00:00:00+00:00",
+                    "ended_at": "2025-01-01T00:20:00+00:00",
+                    "direction": "inbound",
+                    "recording_ref": "recording-late",
+                }]
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 0}
+
+    def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
+        assert [event.recording_ref for event in events] == ["recording-late"]
+        store.append(replace(pending, status="downloaded", recording_id="recording-late"))
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+    )
+
+    assert report["api_requests"] == 2
+    assert report["status"] == "ok"
+    assert report["pending_recording_expired"] == 0
+    assert store.latest_by_event_key()[pending.event_key].status == "downloaded"
 
 
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
@@ -1003,6 +1186,7 @@ def test_process_a_partial_capture_publishes_available_work_and_advances_cursor(
 
     assert report["status"] == "partial"
     assert report["counters"]["drop"]["status"] == "ready"
+    assert report["downstream_ready"] is True
     assert config.ready_db.exists()
     assert read_json(config.cursor_path)["until"] == "2026-07-09T10:00:00+00:00"
 

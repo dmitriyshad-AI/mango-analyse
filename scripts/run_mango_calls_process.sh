@@ -31,13 +31,13 @@ OUTPUT="$("${PYTHON_EXECUTABLE}" "${ROOT}/scripts/run_mango_calls_pipeline.py" \
 RC=$?
 set -e
 print -r -- "${OUTPUT}"
-if (( RC != 0 )); then
+if [[ "${COMMAND}" != "process-a" ]] && (( RC != 0 )); then
   exit "${RC}"
 fi
 
 if [[ "${COMMAND}" == "process-a" ]]; then
   set +e
-  STATUS="$(print -r -- "${OUTPUT}" | "${PYTHON_EXECUTABLE}" -c '
+  DOWNSTREAM_READY="$(print -r -- "${OUTPUT}" | "${PYTHON_EXECUTABLE}" -c '
 import json, sys
 text = sys.stdin.read()
 decoder = json.JSONDecoder()
@@ -53,7 +53,7 @@ for index, char in enumerate(text):
         last = value
 if last is None:
     raise SystemExit(2)
-print(last.get("status", ""))
+print("true" if last.get("downstream_ready") is True else "false")
 ')"
   PARSE_RC=$?
   set -e
@@ -61,7 +61,8 @@ print(last.get("status", ""))
     print -u2 '{"status":"failed","stop_reason":"process_a_status_parse_failed"}'
     exit 3
   fi
-  if [[ "${STATUS}" == "ok" ]]; then
-    exec /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b"
+  if [[ "${DOWNSTREAM_READY}" == "true" ]]; then
+    /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b" || exit $?
   fi
 fi
+exit "${RC}"

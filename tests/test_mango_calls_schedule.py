@@ -211,9 +211,15 @@ fi
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     payload["python_executable"] = str(fake_python)
     config_path.write_text(json.dumps(payload), encoding="utf-8")
+    runner = tmp_path / "runner.sh"
+    runner.write_text(
+        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
+        encoding="utf-8",
+    )
+    runner.chmod(0o700)
 
     result = subprocess.run(
-        [str(RUNNER), str(config_path), str(env_path), "process-a"],
+        [str(runner), str(config_path), str(env_path), "process-a"],
         cwd=ROOT,
         env={
             **__import__("os").environ,
@@ -224,6 +230,48 @@ fi
     )
 
     assert result.returncode == 0
+    assert not capture.exists()
+
+
+def test_process_a_partial_without_ready_drop_does_not_start_b(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    capture = tmp_path / "launchctl_args.txt"
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+else
+  print -r -- '{{"status":"partial","downstream_ready":false}}'
+  exit 1
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    fake_launchctl = tmp_path / "launchctl"
+    fake_launchctl.write_text(
+        '#!/bin/zsh\nprintf "%s\\n" "$@" > "$CAPTURED_LAUNCHCTL"\n', encoding="utf-8"
+    )
+    fake_launchctl.chmod(0o700)
+    runner = tmp_path / "runner.sh"
+    runner.write_text(
+        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
+        encoding="utf-8",
+    )
+    runner.chmod(0o700)
+
+    result = subprocess.run(
+        [str(runner), str(config_path), str(env_path), "process-a"],
+        cwd=ROOT,
+        env={**__import__("os").environ, "CAPTURED_LAUNCHCTL": str(capture)},
+        check=False,
+    )
+
+    assert result.returncode == 1
     assert not capture.exists()
 
 
@@ -241,6 +289,7 @@ else
   print -r -- '  "schema_version": "test_v1",'
   print -r -- '  "process": "process_a",'
   print -r -- '  "status": "ok",'
+  print -r -- '  "downstream_ready": true,'
   print -r -- '  "counters": {{"nested": {{"status": "failed"}}}}'
   print -r -- '}}'
 fi
@@ -280,6 +329,48 @@ fi
     ]
 
 
+def test_process_a_partial_ready_starts_b_and_preserves_rc_one(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    capture = tmp_path / "launchctl_args.txt"
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+else
+  print -r -- '{{"status":"partial","downstream_ready":true}}'
+  exit 1
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    fake_launchctl = tmp_path / "launchctl"
+    fake_launchctl.write_text(
+        '#!/bin/zsh\nprintf "%s\\n" "$@" > "$CAPTURED_LAUNCHCTL"\n', encoding="utf-8"
+    )
+    fake_launchctl.chmod(0o700)
+    runner = tmp_path / "runner.sh"
+    runner.write_text(
+        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
+        encoding="utf-8",
+    )
+    runner.chmod(0o700)
+
+    result = subprocess.run(
+        [str(runner), str(config_path), str(env_path), "process-a"],
+        cwd=ROOT,
+        env={**__import__("os").environ, "CAPTURED_LAUNCHCTL": str(capture)},
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert capture.read_text(encoding="utf-8").splitlines()[0] == "kickstart"
+
+
 def test_process_a_reports_kickstart_failure(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     fake_python = tmp_path / "configured-python"
@@ -288,7 +379,7 @@ def test_process_a_reports_kickstart_failure(tmp_path: Path) -> None:
 if [[ "$1" == "-c" ]]; then
   {shlex.quote(sys.executable)} "$@"
 else
-  print -r -- '{{"status":"ok"}}'
+  print -r -- '{{"status":"ok","downstream_ready":true}}'
 fi
 ''',
         encoding="utf-8",

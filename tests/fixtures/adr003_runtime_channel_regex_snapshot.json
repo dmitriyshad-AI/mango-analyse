@@ -530,8 +530,8 @@
   {
     "flags": "re.I",
     "path": "src/mango_mvp/channels/output_verification_floor.py",
-    "pattern_preview": "верн[её]м\\s+деньг|оформим\\s+возврат|гаранти\\w+\\s+(?:результат|поступлен)|обязательно\\s+(?:поступит|сдаст)|точно\\s+верн[её]м",
-    "pattern_sha256": "4f0426374b2691aabe7c1b341441295e162ed30cb570e7b42558079e2fdd2a19",
+    "pattern_preview": "rf\"(?:верн[её]м\\b{_P0_PROMISE_GAP}деньг\\w*\\b|деньг\\w*\\b{_P0_PROMISE_GAP}верн[её]м\\b)|\"\n    rf\"(?:оформим\\b{_P0_PROMISE_GAP}возврат\\w*\\b|возврат\\w*\\b{_P0_PROMISE",
+    "pattern_sha256": "bc60db076e1f71e1daccb3931cc700ffe96a9e860b264afe4ddc49b43af36f50",
     "qualname": "<module>",
     "target": "_P0_PROMISE_RE"
   },

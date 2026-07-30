@@ -12,6 +12,7 @@ import yaml
 
 import mango_mvp.channels.subscription_llm as subscription_llm
 import mango_mvp.channels.subscription_llm_parts.provider as subscription_provider
+import mango_mvp.channels.subscription_llm_parts.post_layers as subscription_post_layers
 from mango_mvp.channels.output_verification_floor import (
     AnswerContract,
     AUTONOMY_SCOPE_PRECISION_ENV,
@@ -7161,14 +7162,23 @@ def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None
     assert "output_sanitizer" not in result.metadata or result.metadata["output_sanitizer"].get("applied") is not True
 
 
-def test_pii_relation_stopwords_flag_keeps_family_words(monkeypatch) -> None:
+def test_client_name_markers_require_capitalized_name_after_case_insensitive_marker() -> None:
+    assert subscription_post_layers._CLIENT_NAME_MARKER_RE.search("Для занятий нужна физика.") is None
+    assert subscription_post_layers._CLIENT_SELF_NAME_MARKER_RE.search("Я хочу узнать расписание.") is None
+    assert subscription_post_layers._CLIENT_NAME_MARKER_RE.search("Сына зовут Артём.").group("name") == "Артём"
+    assert subscription_post_layers._CLIENT_SELF_NAME_MARKER_RE.search("Меня Ирина.").group("name") == "Ирина"
+    assert subscription_post_layers._CLIENT_NAME_MARKER_RE.search("ребёнок Артём\nСпасибо, жду.").group("name") == "Артём"
+    assert subscription_post_layers._CLIENT_CHILD_IDENTITY_PROMPT_RE.search("ребёнок Артём\nСпасибо, жду.").group("name") == "Артём"
+
+
+def test_pii_relation_words_are_not_names_even_when_legacy_flag_is_off(monkeypatch) -> None:
     text = "У меня сын в 7 классе и дочь в 4-м"
 
     monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
     monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "0")
     off_text, off_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)
-    assert off_text == "У меня [данные у менеджера] в 7 классе и дочь в 4-м"
-    assert "client_name_echo" in off_reasons
+    assert off_text == text
+    assert off_reasons == ()
 
     monkeypatch.delenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, raising=False)
     on_text, on_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)

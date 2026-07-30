@@ -2822,17 +2822,15 @@ _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-�
 
 
 _CLIENT_NAME_MARKER_RE = re.compile(
-    r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
-    r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
-    re.I,
+    r"(?i:(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя))\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \t]+[А-ЯЁ][а-яё]{2,}){0,2})",
 )
 
 
 _CLIENT_SELF_NAME_MARKER_RE = re.compile(
-    r"(?:\bя\b|меня|мама|папа|родител[ья])\s*[:—-]?\s*"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,1})",
-    re.I,
+    r"(?i:(?:\bя\b|меня|мама|папа|родител[ья]))\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \t]+[А-ЯЁ][а-яё]{2,}){0,1})",
 )
 
 
@@ -3080,7 +3078,7 @@ def _client_name_echoes(
     allowed_client_message: Optional[str] = None,
 ) -> tuple[str, ...]:
     candidates: list[str] = []
-    client = " ".join(str(client_message or "").split())
+    client = str(client_message or "").strip()
     allowed_names = _client_dialogue_allowed_names(client if allowed_client_message is None else str(allowed_client_message or ""))
     phone = _a2_extract_phone(client)
     for match in _CLIENT_NAME_MARKER_RE.finditer(client):

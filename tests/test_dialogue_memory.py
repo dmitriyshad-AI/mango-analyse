@@ -452,6 +452,18 @@ def test_memory_provenance_extracts_only_client_slots_with_quote(monkeypatch) ->
 
 
 @pytest.mark.parametrize(
+    "message",
+    ("Для занятий нужна физика.", "ребёнок в 7 класс, нужна математика.", "Ребёнок в 7 класс.", "Дочка в 4 класс."),
+)
+def test_memory_provenance_does_not_promote_lowercase_words_to_child_name(monkeypatch, message: str) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(current_message=message, active_brand="foton", session_id="s-name-case")
+
+    assert "child_name" not in memory.to_prompt_view()["known_slots"]
+
+
+@pytest.mark.parametrize(
     ("message", "expected_format"),
     (
         ("Можно онлайн или очно?", ""),

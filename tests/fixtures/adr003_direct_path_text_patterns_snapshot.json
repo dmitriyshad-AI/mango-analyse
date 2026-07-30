@@ -2378,9 +2378,29 @@
   {
     "flags": "",
     "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/dialogue_memory.py",
+    "pattern_preview": "\\b(?P<name>[А-ЯЁ][а-яё]{2,20})\\s+(?i:в)\\s+(?:[1-9]|1[01])\\s*(?i:(?:класс|кл\\.?))\\b",
+    "pattern_sha256": "f17c6853d8906591ef899f5034d6162b83d6a28e5ba5f91bfb0c49fefc5d2f28",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "_NAME_GRADE_RE"
+  },
+  {
+    "flags": "",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/dialogue_memory.py",
+    "pattern_preview": "\\b(?i:(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\\s+зовут)\\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\\b|\\b(?i:(?:зовут|фио|для))\\s*[:\\-]?\\s*(?P<name2>[А-ЯЁ][а-яё]{",
+    "pattern_sha256": "1732ebd4c7d3fa8888b4833b00344701ba40238c9968301a7291e564f8677d52",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "_CHILD_NAME_MARKER_RE"
+  },
+  {
+    "flags": "",
+    "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "pattern_preview": "(?P<prefix>(?i:\\b(?:(?:зовут|фио|имя)\\s*[:—-]?\\s*|(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|е",
-    "pattern_sha256": "36e69f4e0ac95e55e409623f8115152ab8350d9869f4d1b463c072ef74e99611",
+    "pattern_sha256": "f52ab8a535be7bed5c4e9ed27fdf0834bdd6297c7a558f366323634667e0c668",
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "_CLIENT_CHILD_IDENTITY_PROMPT_RE"
@@ -2389,8 +2409,8 @@
     "flags": "",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
-    "pattern_preview": "(?P<prefix>(?i:\\b(?:родител[ья]|мама|папа|меня\\s+зовут|я)\\s*[:—-]?\\s*))(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){0,2})",
-    "pattern_sha256": "7527226deb48bc9a25061bf38a714797c83725bb2e382395e83c7772cc3312b1",
+    "pattern_preview": "(?P<prefix>(?i:\\b(?:родител[ья]|мама|папа|меня\\s+зовут|я)\\s*[:—-]?\\s*))(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ][а-яё]{2,}){0,2})",
+    "pattern_sha256": "dca4fcc33b0b6260bd323dea930aa56e9a9295c287119b3c06d3f939ab544137",
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "_CLIENT_PARENT_IDENTITY_PROMPT_RE"
@@ -2414,6 +2434,26 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "_DRAFT_PERSON_NAME_CONTEXT_RE"
+  },
+  {
+    "flags": "",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "(?i:(?:\\bя\\b|меня|мама|папа|родител[ья]))\\s*[:—-]?\\s*(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ][а-яё]{2,}){0,1})",
+    "pattern_sha256": "325794fb99f3309f9ac4e8a610f45a1c72c94c4d77e921fca2c2410a0b892e3f",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "_CLIENT_SELF_NAME_MARKER_RE"
+  },
+  {
+    "flags": "",
+    "node_kind": "regex_call",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
+    "pattern_preview": "(?i:(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя))\\s*[:",
+    "pattern_sha256": "8599eaf5c90613abbe30c9b953b3aee173904e668386519f0a412440fa49447e",
+    "qualname": "<module>",
+    "symbol": "re.compile",
+    "target": "_CLIENT_NAME_MARKER_RE"
   },
   {
     "flags": "",
@@ -3669,16 +3709,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/dialogue_memory.py",
-    "pattern_preview": "\\b(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\\s+зовут\\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\\b|\\b(?:зовут|фио|для)\\s*[:\\-]?\\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\\b",
-    "pattern_sha256": "bf98f6316cfef46ba2615a9bb370d5d3014914c48d702a6f08bd4ef3b496e225",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_CHILD_NAME_MARKER_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/dialogue_memory.py",
     "pattern_preview": "\\b(?P<grade>[1-9]|1[01])\\s*[- ]?(?:й|ый|ого)?\\s*(?:класс\\w*|кл\\.?)\\b",
     "pattern_sha256": "6f0c47e7080710bc8762510703ff11e7d38fed586f9b95c16e5f37b9125fdf3d",
     "qualname": "<module>",
@@ -3704,16 +3734,6 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "_CHILD_GRADE_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/dialogue_memory.py",
-    "pattern_preview": "\\b(?P<name>[А-ЯЁ][а-яё]{2,20})\\s+в\\s+(?:[1-9]|1[01])\\s*(?:класс|кл\\.?)\\b",
-    "pattern_sha256": "e83a08bdfaa54a4552c3e457da4eba45dcd7a90564134f2e3032689e2dba387b",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_NAME_GRADE_RE"
   },
   {
     "flags": "re.I",
@@ -4369,16 +4389,6 @@
     "flags": "re.I",
     "node_kind": "regex_call",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "(?:\\bя\\b|меня|мама|папа|родител[ья])\\s*[:—-]?\\s*(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){0,1})",
-    "pattern_sha256": "52fcea8c1396e0f554d38649a10550b6948e75ae32650ac755ec8f77f0ab5d22",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_CLIENT_SELF_NAME_MARKER_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "pattern_preview": "(?:^|(?<=[.!?])\\s*)[^.!?\\n]{0,120}?\\b(?:у\\s+меня|я|мы)?\\s*(?:сейчас\\s+)?(?:в\\s+)?(?:фактах|данных|по\\s+фактам|по\\s+данным)[^.!?\\n]{0,80}?\\b(?:нет|не\\s+вижу|не\\s",
     "pattern_sha256": "024093470e18980fbfacda81ff0f8d5293087ab9a7bc2eb0ab94f7509888fdf0",
     "qualname": "<module>",
@@ -4434,16 +4444,6 @@
     "qualname": "<module>",
     "symbol": "re.compile",
     "target": "PRESALE_PII_PHONE_KEY_RE"
-  },
-  {
-    "flags": "re.I",
-    "node_kind": "regex_call",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
-    "pattern_preview": "(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя)\\s*[:—-]?\\",
-    "pattern_sha256": "4454b5449b4a8cbbb6f01df5661afd91e6e843d362167a0c94013d71f75ddf28",
-    "qualname": "<module>",
-    "symbol": "re.compile",
-    "target": "_CLIENT_NAME_MARKER_RE"
   },
   {
     "flags": "re.I",
@@ -6358,8 +6358,8 @@
     "path": "src/mango_mvp/channels/dialogue_memory.py",
     "qualname": "<module>",
     "symbol": "_CHILD_NAME_MARKER_RE",
-    "value_preview": "re.compile(\n    r\"\\b(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\\s+зовут\\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\\b\"\n    r\"|\\b(?:зовут|фио|для)\\s*[:\\-]?\\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\\b\",\n    re.I,\n)",
-    "value_sha256": "9de6fef94447d963734d6fa7bfb846b60d6af595ce29eac63915022886e24ac0"
+    "value_preview": "re.compile(\n    r\"\\b(?i:(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\\s+зовут)\\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\\b\"\n    r\"|\\b(?i:(?:зовут|фио|для))\\s*[:\\-]?\\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\\b\",\n)",
+    "value_sha256": "1573e069a15e08507e72b9aa803d07a6348716bb30fb11c805f7107d078a143e"
   },
   {
     "node_kind": "text_table",
@@ -7126,16 +7126,16 @@
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
     "symbol": "_CLIENT_NAME_MARKER_RE",
-    "value_preview": "re.compile(\n    r\"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|\"\n    r\"ученик(?:а)?|ученица|фио|зовут|имя)\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{",
-    "value_sha256": "341b9c5d41cf1b37259a71291512253f961b44e41fc9d3100f331770f80aa73d"
+    "value_preview": "re.compile(\n    r\"(?i:(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|\"\n    r\"ученик(?:а)?|ученица|фио|зовут|имя))\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ",
+    "value_sha256": "dc029540ed9071c9a56153b294ed0d0543c0e1244d9b8d79bf6e2707f858ef8a"
   },
   {
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/post_layers.py",
     "qualname": "<module>",
     "symbol": "_CLIENT_SELF_NAME_MARKER_RE",
-    "value_preview": "re.compile(\n    r\"(?:\\bя\\b|меня|мама|папа|родител[ья])\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\\s+[А-ЯЁ][а-яё]{2,}){0,1})\",\n    re.I,\n)",
-    "value_sha256": "6c77483b5b5246e6d1d2211659f3ae8eac3e0b7111dcfb02dfb4b8620d1952dc"
+    "value_preview": "re.compile(\n    r\"(?i:(?:\\bя\\b|меня|мама|папа|родител[ья]))\\s*[:—-]?\\s*\"\n    r\"(?P<name>[А-ЯЁ][а-яё]{2,}(?:[ \\t]+[А-ЯЁ][а-яё]{2,}){0,1})\",\n)",
+    "value_sha256": "02f5c9f86cd9a7f9956781a1e443db806c3c59f45433a66997e15f3377147a0b"
   },
   {
     "node_kind": "text_table",

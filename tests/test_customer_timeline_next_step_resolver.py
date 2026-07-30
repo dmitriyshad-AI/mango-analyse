@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.crm_card_aggregator import build_crm_card_projection
 from mango_mvp.customer_timeline import (
     CustomerIdentity,
@@ -162,6 +164,42 @@ def test_summary_without_explicit_next_step_does_not_invent_step() -> None:
     assert result.status == "empty"
     assert result.action == ""
     assert result.reason_code == "no_explicit_next_step"
+
+
+@pytest.mark.parametrize("negation", ("не", "НЕ"))
+def test_summary_negated_manager_action_does_not_become_next_step(negation: str) -> None:
+    events = [
+        event(
+            "call-summary-negated-manager",
+            "mango_call",
+            NOW,
+            summary=f"Менеджер {negation} отправит расписание.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_named_manager_action_remains_next_step() -> None:
+    events = [
+        event(
+            "call-summary-named-manager",
+            "mango_call",
+            NOW,
+            summary="Менеджер Марина отправит расписание.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.action == "Отправит расписание"
 
 
 def test_summary_non_conversation_template_callback_does_not_create_step() -> None:

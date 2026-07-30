@@ -152,6 +152,11 @@ CLIENT_CUES: dict[str, float] = {
 ARTIFACT_ONLY_PHRASES = {
     "продолжение следует",
 }
+TRANSFER_RE = re.compile(r"\b(?:переключаю|соединяю|передаю трубку|позову коллег\w*|продолжит разговор|оставайтесь на линии)\b", re.I)
+CONFERENCE_RE = re.compile(
+    r"\b(?:коллег[аи] подключ|на громкой связи|нас трое|конференц-связ)\w*\b",
+    re.I,
+)
 SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
 TRANSCRIBE_MERGE_PROMPT_VERSION = "v2"
 
@@ -505,6 +510,7 @@ class TranscribeService:
         slot: str,  # manager | client | full
         provider: str,
         primary_provider: str,
+        physical_channel: str = "",
     ) -> Optional[Dict[str, Any]]:
         payload = self._safe_json_dict(call.transcript_variants_json)
         if not payload:
@@ -517,6 +523,15 @@ class TranscribeService:
             return None
 
         block = payload.get(slot)
+        if mode == "stereo" and physical_channel:
+            for candidate_slot in ("manager", "client"):
+                candidate_block = payload.get(candidate_slot)
+                if (
+                    isinstance(candidate_block, dict)
+                    and candidate_block.get("physical_channel") == physical_channel
+                ):
+                    block = candidate_block
+                    break
         cached_primary_provider = str(payload.get("primary_provider") or "").strip()
         cached_secondary_provider = str(payload.get("secondary_provider") or "").strip()
         cached_text = self._variant_text_for_provider(
@@ -1526,6 +1541,90 @@ class TranscribeService:
         if lowered.startswith("алло"):
             client_score += 0.2
         return manager_score, client_score
+
+    def _classify_stereo_call(
+        self,
+        call: CallRecord,
+        left_text: str,
+        right_text: str,
+        *,
+        stereo_similarity: float,
+    ) -> Dict[str, Any]:
+        combined = f"{left_text}\n{right_text}"
+        direction = str(call.direction or "").strip().lower()
+        if direction == "internal":
+            topology = "internal"
+        elif stereo_similarity >= self._settings.stereo_overlap_similarity_threshold:
+            topology = "echo_or_duplicate_channels"
+        elif CONFERENCE_RE.search(combined):
+            topology = "conference_or_multi_party"
+        elif TRANSFER_RE.search(combined):
+            topology = "transfer"
+        elif not left_text.strip() or not right_text.strip():
+            topology = "uncertain"
+        else:
+            topology = "simple_two_party"
+
+        left_manager, left_client = self._score_role_cues(left_text)
+        right_manager, right_client = self._score_role_cues(right_text)
+        normal_score = left_manager + right_client
+        swapped_score = right_manager + left_client
+        suggested_left = "manager" if normal_score >= swapped_score else "client"
+        delta = abs(normal_score - swapped_score)
+        evidence: list[str] = []
+
+        manager_name = (call.manager_name or "").strip() or self._extract_manager_name_from_filename(
+            call.source_filename
+        )
+        name_tokens = [token.lower() for token in WORD_RE.findall(manager_name) if len(token) >= 4]
+        left_hits = sum(token in left_text.lower() for token in name_tokens)
+        right_hits = sum(token in right_text.lower() for token in name_tokens)
+        identity_side = ""
+        if len(name_tokens) >= 2 and left_hits >= 2 and right_hits == 0:
+            identity_side = "left"
+        elif len(name_tokens) >= 2 and right_hits >= 2 and left_hits == 0:
+            identity_side = "right"
+
+        confirmed = False
+        identity_role = "manager" if identity_side == "left" else "client"
+        if (
+            topology == "simple_two_party"
+            and identity_side
+            and suggested_left == identity_role
+            and delta >= 1.0
+        ):
+            suggested_left = "manager" if identity_side == "left" else "client"
+            confirmed = True
+            evidence.extend(("manager_identity", "role_cue_alignment"))
+        elif (
+            topology == "simple_two_party"
+            and delta >= 3.0
+            and left_manager + left_client >= 1.2
+            and right_manager + right_client >= 1.2
+        ):
+            confirmed = True
+            evidence.append("role_cue_margin")
+
+        left_role = suggested_left if confirmed else "manager"
+        right_role = "client" if left_role == "manager" else "manager"
+        confidence = self._clamp_01((0.72 if confirmed else 0.25) + min(delta, 5.0) / 20.0)
+        status = "confirmed_multi_signal" if confirmed else (
+            "blocked_complex_call" if topology != "simple_two_party" else "unverified_low_evidence"
+        )
+        if topology != "simple_two_party":
+            evidence.append(f"topology:{topology}")
+        return {
+            "status": status,
+            "confirmed": confirmed,
+            "topology": topology,
+            "left": left_role,
+            "right": right_role,
+            "suggested_left": suggested_left,
+            "confidence": round(confidence, 4),
+            "manager_quality_allowed": confirmed and topology == "simple_two_party",
+            "evidence": evidence,
+            "scores": {"normal": round(normal_score, 3), "swapped": round(swapped_score, 3)},
+        }
 
     def _build_role_texts_and_lines(
         self,
@@ -2715,6 +2814,7 @@ class TranscribeService:
         primary_provider = self._settings.transcribe_provider
         secondary_provider = self._settings.secondary_transcribe_provider
         warnings: list[str] = []
+        stereo_fallback_mapping: Optional[Dict[str, Any]] = None
         dual_enabled = (
             self._settings.dual_transcribe_enabled
             and bool(secondary_provider)
@@ -2734,6 +2834,7 @@ class TranscribeService:
                         slot="manager",
                         provider=primary_provider,
                         primary_provider=primary_provider,
+                        physical_channel="left",
                     ) or self._try_transcribe_file_with_meta(
                         left, provider=primary_provider
                     )
@@ -2742,6 +2843,7 @@ class TranscribeService:
                         slot="client",
                         provider=primary_provider,
                         primary_provider=primary_provider,
+                        physical_channel="right",
                     ) or self._try_transcribe_file_with_meta(
                         right, provider=primary_provider
                     )
@@ -2753,6 +2855,7 @@ class TranscribeService:
                             slot="manager",
                             provider=secondary_provider,
                             primary_provider=primary_provider,
+                            physical_channel="left",
                         ) or self._try_transcribe_file_with_meta(
                             left, provider=secondary_provider
                         )
@@ -2761,6 +2864,7 @@ class TranscribeService:
                             slot="client",
                             provider=secondary_provider,
                             primary_provider=primary_provider,
+                            physical_channel="right",
                         ) or self._try_transcribe_file_with_meta(
                             right, provider=secondary_provider
                         )
@@ -2798,7 +2902,14 @@ class TranscribeService:
                             manager_primary_text, client_primary_text
                         )
                     )
+                    role_mapping = self._classify_stereo_call(
+                        call,
+                        manager_primary_text,
+                        client_primary_text,
+                        stereo_similarity=stereo_similarity,
+                    )
                     if should_fallback_to_mono:
+                        stereo_fallback_mapping = role_mapping
                         warnings.append(
                             "stereo_split: channels_too_similar "
                             f"(similarity={stereo_similarity:.4f}); fallback_to_full"
@@ -2815,6 +2926,23 @@ class TranscribeService:
                             if dual_enabled
                             else ""
                         )
+
+                        manager_channel = "left"
+                        client_channel = "right"
+                        if role_mapping["confirmed"] and role_mapping["left"] == "client":
+                            manager_primary, client_primary = client_primary, manager_primary
+                            manager_secondary, client_secondary = client_secondary, manager_secondary
+                            manager_primary_text, client_primary_text = (
+                                client_primary_text,
+                                manager_primary_text,
+                            )
+                            manager_secondary_text, client_secondary_text = (
+                                client_secondary_text,
+                                manager_secondary_text,
+                            )
+                            manager_channel, client_channel = "right", "left"
+                        if not role_mapping["manager_quality_allowed"]:
+                            warnings.append(f"role_mapping: {role_mapping['status']}")
 
                         manager_merge = self._merge_variant_pair(
                             manager_primary_text,
@@ -2904,14 +3032,10 @@ class TranscribeService:
                             "primary_provider": primary_provider,
                             "secondary_provider": secondary_provider if dual_enabled else None,
                             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
-                            "role_mapping": {
-                                "status": "unverified_legacy_channel_order",
-                                "confirmed": False,
-                                "left": "manager",
-                                "right": "client",
-                            },
+                            "call_topology": role_mapping["topology"],
+                            "role_mapping": role_mapping,
                             "manager": {
-                                "physical_channel": "left",
+                                "physical_channel": manager_channel,
                                 "variant_a": manager_primary_text,
                                 "variant_b": manager_secondary_text if dual_enabled else None,
                                 "variant_a_segments": self._compact_asr_segments(
@@ -2924,7 +3048,7 @@ class TranscribeService:
                                 "merge_meta": manager_merge,
                             },
                             "client": {
-                                "physical_channel": "right",
+                                "physical_channel": client_channel,
                                 "variant_a": client_primary_text,
                                 "variant_b": client_secondary_text if dual_enabled else None,
                                 "variant_a_segments": self._compact_asr_segments(
@@ -3022,11 +3146,15 @@ class TranscribeService:
             mono_turns, "Спикер (не определен)"
         )
         manager_name = self._extract_manager_name_from_filename(call.source_filename)
-        role_assignment = self._assign_roles_for_mono(
-            mono_turns,
-            manager_name=manager_name,
-            warnings=warnings,
-        )
+        role_assignment = None
+        if stereo_fallback_mapping is None:
+            role_assignment = self._assign_roles_for_mono(
+                mono_turns,
+                manager_name=manager_name,
+                warnings=warnings,
+            )
+        else:
+            warnings.append("role_mapping: blocked_after_stereo_fallback")
         transcript_manager: Optional[str] = None
         transcript_client: Optional[str] = None
         transcript_text = full_text
@@ -3085,6 +3213,9 @@ class TranscribeService:
             },
             "warnings": warnings,
         }
+        if stereo_fallback_mapping is not None:
+            variants_payload["call_topology"] = stereo_fallback_mapping["topology"]
+            variants_payload["role_mapping"] = stereo_fallback_mapping
         return {
             "transcript_manager": transcript_manager,
             "transcript_client": transcript_client,
@@ -3114,12 +3245,15 @@ class TranscribeService:
             if not split:
                 raise RuntimeError("secondary backfill stereo split failed")
             left, right, temp_dir = split
+            manager_path, client_path = (
+                (right, left) if manager.get("physical_channel") == "right" else (left, right)
+            )
             try:
                 manager_secondary = self._try_transcribe_file_with_meta(
-                    left, provider=secondary_provider
+                    manager_path, provider=secondary_provider
                 )
                 client_secondary = self._try_transcribe_file_with_meta(
-                    right, provider=secondary_provider
+                    client_path, provider=secondary_provider
                 )
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)

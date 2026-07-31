@@ -661,6 +661,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "draft_placeholder": "block",
     "promocode_leak": "block",
     "p0_promise": "block",
+    "p0_money_promise": "block",
     "p0_semantic_risk": "block",
     "unsupported_promise": "block",
     "unsupported_product_claim": "block",
@@ -699,6 +700,7 @@ DIRECT_PATH_REPLACE_TEXT_GATE_CODES = frozenset(
         "hard_p0",
         "zero_collect_required",
         "p0_promise",
+        "p0_money_promise",
         "p0_semantic_risk",
         "brand_leak",
         "cross_brand",
@@ -1245,7 +1247,8 @@ def _deal_action_final_p0(
     if safety.p0_required and not suppressed_complaint and not safety.semantic_non_p0:
         return True, f"answer_safety:{safety.primary_risk or 'p0_required'}"
     if result.route == "manager_only" and any(
-        code in {"hard_p0", "zero_collect_required", "p0_promise", "p0_semantic_risk"} for code in gate_codes
+        code in {"hard_p0", "zero_collect_required", "p0_promise", "p0_money_promise", "p0_semantic_risk"}
+        for code in gate_codes
     ):
         return True, "authoritative_output_gate:" + ",".join(dict.fromkeys(gate_codes))
     if _humanity_p0_required(result):
@@ -4665,7 +4668,9 @@ def _bot_safe_memory_item_next_step_status(item: Mapping[str, Any]) -> str:
 
 
 
-_SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset({"derived_product_claim", "invented_generalization", "individual_diagnosis"})
+_SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset(
+    {"derived_product_claim", "invented_generalization", "individual_diagnosis", "p0_money_promise"}
+)
 
 
 _SEMANTIC_VERIFIER_FOTON_OFFLINE_SEMESTER_FACT_KEY = "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester"
@@ -4721,9 +4726,10 @@ def build_semantic_output_verifier_prompt(
     return (
         "Ты — смысловой верификатор финального текста бота учебного центра. "
         "Проверяй только смысловые производные, которые плохо ловятся регулярными правилами. "
-        "Не проверяй цены/проценты/бренд/P0/мета: это делает отдельный детерминированный gate.\n\n"
+        "Не проверяй цены/проценты/бренд/мета и входящий P0: это делает отдельный детерминированный gate. "
+        "Единственное выходное P0-правило здесь — обещание денег самим ботом.\n\n"
         "Верни СТРОГО JSON:\n"
-        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis",'
+        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|p0_money_promise",'
         '"span":"цитата из ответа","evidence":"почему это риск","missing_fact":"какого факта не хватает",'
         '"relation_to_base":"contradicts|absent|adjacent","nearest_fact_key":"fact.key или пусто"}]}\n'
         'Если нарушений нет: {"findings":[]}.\n\n'
@@ -4734,13 +4740,17 @@ def build_semantic_output_verifier_prompt(
         "«обычно», «большинство», «за год-два», если это не дано в фактах.\n"
         "- individual_diagnosis: бот оценивает конкретного ребёнка: справится/потянет/подойдёт/сможет влиться, "
         "«слишком тяжело быть не должно», «посильный ритм», «подберут под ребёнка» — без хеджа и передачи "
-        "менеджеру/преподавателю.\n\n"
+        "менеджеру/преподавателю.\n"
+        "- p0_money_promise: бот от лица центра обещает вернуть, возместить, компенсировать, пересчитать в пользу "
+        "клиента, отдать оплату или перевести деньги обратно. Это обязательство центра, а не описание порядка.\n\n"
         "НЕ ФЛАГАЙ:\n"
         "- дословный или смысловой пересказ факта;\n"
         "- склейку двух реальных фактов без новой приписки;\n"
         "- каноничную фразу разделения брендов;\n"
         "- общий житейский совет с хеджем, если он не делает продуктовый вывод;\n"
         "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру;\n"
+        "- описание порядка возврата, ссылка на договор или передача денежного вопроса менеджеру;\n"
+        "- «вернёмся к вопросу/занятиям/обсуждению» без обещания денег;\n"
         "- сервисное предложение или следующий шаг без новой продуктовой приписки: «Помогу с оформлением», "
         "«помогу записаться к старту», «менеджер сверит/свяжется/проверит наличие мест», "
         "«подберём подходящий вариант/группу»;\n"
@@ -4827,7 +4837,7 @@ def apply_semantic_output_verifier(
         return replace(result, metadata=metadata)
     handoff_claim_text = dialogue_contract_handoff_factual_claim_text(result.draft_text)
     pure_handoff = dialogue_contract_is_pure_handoff_text(result.draft_text)
-    if pure_handoff and not handoff_claim_text and (
+    if pure_handoff and result.route not in AUTONOMOUS_ROUTES and not handoff_claim_text and (
         not _verifier_handoff_claims_enabled(context) or _semantic_verifier_is_whitelisted_pure_handoff(result.draft_text)
     ):
         verifier_meta["skipped"] = True
@@ -5009,7 +5019,7 @@ def _semantic_output_findings_from_payload(payload: object) -> tuple[Mapping[str
         if code == "ok" or code not in _SEMANTIC_OUTPUT_VERIFIER_CODES:
             continue
         action = _authoritative_gate_action(code)
-        if action not in {"annotate", "downgrade_keep_text"}:
+        if action not in {"annotate", "downgrade_keep_text", "block"}:
             continue
         findings.append(
             {
@@ -5040,6 +5050,8 @@ def _semantic_output_filter_findings(
 
 def _semantic_output_verifier_highest_action(findings: Sequence[Mapping[str, Any]]) -> str:
     actions = {str(item.get("action") or "") for item in findings if isinstance(item, Mapping)}
+    if "block" in actions:
+        return "block"
     if "downgrade_keep_text" in actions:
         return "downgrade_keep_text"
     if "annotate" in actions:

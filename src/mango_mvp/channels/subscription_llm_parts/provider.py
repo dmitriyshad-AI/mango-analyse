@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from mango_mvp.channels.output_verification_floor import (
     p0_pre_gate as dialogue_contract_p0_pre_gate,
 )
+from mango_mvp.channels.p0_recall_spec import hard_codes_from_text
 from mango_mvp.channels.tone_block import (
     TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
@@ -869,6 +870,11 @@ class SubscriptionLlmDraftProvider:
                 except Exception as exc:  # noqa: BLE001
                     direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
             result = _direct_path_merge_metadata(result, direct_meta)
+            result = _apply_direct_path_p0_shadow(
+                result,
+                client_message=client_message,
+                context=context,
+            )
             result = _apply_direct_path_model_p0_route(
                 result,
                 client_message=client_message,
@@ -1582,6 +1588,72 @@ def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, 
     return meta if isinstance(meta, Mapping) else {}
 
 
+def _direct_path_p0_shadow_metadata(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not _direct_path_model_p0_enabled(context):
+        return {}
+    meta = _direct_path_model_p0_meta(result)
+    include_v2 = _p0_model_classes_v2_enabled(context)
+    kind = _direct_path_model_p0_kind(meta.get("p0_kind_raw"), include_v2=include_v2)
+    if not kind:
+        kind = _direct_path_model_p0_kind(meta.get("p0_kind"), include_v2=include_v2)
+    model_field_present = (
+        bool(meta.get("is_p0_present"))
+        if "is_p0_present" in meta
+        else "is_p0" in meta
+    )
+    model_is_p0 = bool(meta.get("is_p0")) if model_field_present else False
+    risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
+    model_effective_is_p0 = model_is_p0 or (
+        risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind)
+    )
+    regex_codes = tuple(hard_codes_from_text(client_message))
+    floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
+    if floor_reason and _p0_model_led_enabled(context):
+        _, floor_kind = _direct_path_p0_text(floor_reason, context)
+        if floor_kind == "complaint" and not _p0_model_led_complaint_backstop(client_message):
+            floor_reason = ""
+
+    def comparison(legacy_is_p0: bool) -> str:
+        if not model_field_present:
+            return "model_missing"
+        if legacy_is_p0 == model_is_p0:
+            return "match_p0" if model_is_p0 else "match_benign"
+        return "model_only" if model_is_p0 else "legacy_only"
+
+    return {
+        "schema_version": "p0_model_shadow_v1_2026_07_29",
+        "model_field_present": model_field_present,
+        "model_is_p0": model_is_p0,
+        "model_effective_is_p0": model_effective_is_p0,
+        "model_p0_kind": kind,
+        "regex_is_p0": bool(regex_codes),
+        "regex_codes": list(regex_codes),
+        "legacy_floor_is_p0": bool(floor_reason),
+        "legacy_floor_reason": floor_reason,
+        "regex_vs_model": comparison(bool(regex_codes)),
+        "legacy_floor_vs_model": comparison(bool(floor_reason)),
+    }
+
+
+def _apply_direct_path_p0_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    shadow = _direct_path_p0_shadow_metadata(result, client_message=client_message, context=context)
+    if not shadow:
+        return result
+    metadata = dict(result.metadata)
+    metadata["p0_model_shadow"] = shadow
+    return replace(result, metadata=metadata)
+
+
 def _direct_path_model_intent_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     meta = metadata.get("direct_path_model_intent")
@@ -1596,13 +1668,12 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
     kind = _direct_path_model_p0_kind(meta.get("p0_kind_raw"), include_v2=include_v2)
     if not kind:
         kind = _direct_path_model_p0_kind(meta.get("p0_kind"), include_v2=include_v2)
-    risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
-    model_is_p0 = bool(meta.get("is_p0")) or (risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind))
-    floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
-    if floor_reason and _p0_model_led_enabled(context):
-        _, floor_kind = _direct_path_p0_text(floor_reason, context)
-        if floor_kind == "complaint" and not _p0_model_led_complaint_backstop(client_message):
-            floor_reason = ""
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    shadow = metadata.get("p0_model_shadow")
+    if not isinstance(shadow, Mapping):
+        shadow = _direct_path_p0_shadow_metadata(result, client_message=client_message, context=context)
+    model_is_p0 = bool(shadow.get("model_effective_is_p0"))
+    floor_reason = str(shadow.get("legacy_floor_reason") or "")
     if not model_is_p0 and not floor_reason:
         return {}
     if not kind:
@@ -2629,6 +2700,7 @@ def _normalize_direct_path_payload(
         raw_p0_kind = payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")
         metadata["direct_path_model_p0"] = {
             "is_p0": _direct_path_payload_bool(payload.get("is_p0")),
+            "is_p0_present": "is_p0" in payload,
             "risk_level": risk_level,
             "p0_kind": _direct_path_model_p0_kind(raw_p0_kind),
             "p0_kind_raw": " ".join(str(raw_p0_kind or "").split())[:120],

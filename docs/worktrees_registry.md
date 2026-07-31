@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-07-26.
+Обновлено: 2026-07-31.
 
 Источник факта: `git worktree list --porcelain`, активные `launchd`-конфиги и
 рабочие каталоги процессов на хосте.
@@ -21,6 +21,9 @@
 | Worktree | Состояние | Назначение | Решение |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `main`, после проверенной интеграции A-F главным Codex | Каноническая папка бота, всех четырёх launchd-служб и локальных runtime-данных; Wappi остановлен владельцем. | Оставить на `main`; runtime/live включать только отдельным этапом после реального staging и смысловой приёмки. |
+| `/Users/dmitrijfabarisov/Projects/Mango_critical_gates_20260731` | `codex/critical-gates-integration-20260731`, активный, чистый при старте | Узкая интеграция публичного startup-гейта, карты ADR-003 и теневого P0-замера без live-запуска. | После тестов, audit pack, вливания в `main` и проверки отсутствия процессов запросить снятие worktree; ветку удалить только после поглощения. |
+| `/Users/dmitrijfabarisov/Projects/Mango_customer_timeline_junk_map_20260731` | `codex/customer-timeline-junk-map-20260731`, донор | Содержит отдельный startup-гейт публичного Telegram и независимую работу по пустым звонкам. | В текущую интеграцию переносить только `ccff3f48`; остальное оставить владельцу исходной задачи. |
+| `/Users/dmitrijfabarisov/Projects/Mango_regex_map_d1_20260731` | `codex/regex-to-understanding-map-20260731`, донор | Карта смысловых регулярных выражений и проверки моратория. | Перенести два аудиторских коммита, сохранив более строгие бюджеты `17/8/41` из `main`. |
 | `/Users/dmitrijfabarisov/Projects/Mango_calls_dialogue_m1_20260730` | `codex/calls-dialogue-m1-20260730`, активный, грязный | Отдельный исполнитель дорабатывает инкрементальную загрузку и разбор частей звонков; файлы текущего P0-блока не пересекаются. | Не переключать, не сливать и не удалять до завершения `2026-07-31_TZ_calls_incremental_ingest.md` его владельцем. |
 | `/Users/dmitrijfabarisov/Projects/Mango_name_regex_case_scope_20260730` | `codex/name-regex-case-scope-20260730`, временный | Изолированное исправление ложных имён из-за глобального `re.I`; создан после внешней очистки незакоммиченных правок в канонической папке. | После тестов, audit pack и вливания в `main` снять worktree и удалить ветку. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback Wappi до текущего live-поколения. | Удалить только после M1 PASS, включения защит и live-приёмки. |

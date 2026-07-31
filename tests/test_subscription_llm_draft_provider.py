@@ -6480,6 +6480,116 @@ def test_direct_path_model_p0_benign_messages_stay_autonomous() -> None:
         assert "authoritative_gate:hard_p0" not in result.safety_flags
 
 
+def test_direct_path_p0_shadow_records_both_verdicts_without_changing_output() -> None:
+    source = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, подскажу по подтверждённым условиям.",
+        risk_level="low",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": False,
+                "risk_level": "low",
+                "p0_kind": "none",
+            }
+        },
+    )
+    off_provider = _DirectPathProvider(source)
+    on_provider = _DirectPathProvider(source)
+    base_context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    off = off_provider.build_draft("Подскажите, пожалуйста, расписание.", context=base_context)
+    on = on_provider.build_draft(
+        "Подскажите, пожалуйста, расписание.",
+        context={**base_context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+
+    assert off_provider.calls == on_provider.calls == 1
+    assert (off.route, off.draft_text, off.safety_flags) == (on.route, on.draft_text, on.safety_flags)
+    assert "p0_model_shadow" not in off.metadata
+    assert on.metadata["p0_model_shadow"] == {
+        "schema_version": "p0_model_shadow_v1_2026_07_29",
+        "model_field_present": True,
+        "model_is_p0": False,
+        "model_effective_is_p0": False,
+        "model_p0_kind": "",
+        "regex_is_p0": False,
+        "regex_codes": [],
+        "legacy_floor_is_p0": False,
+        "legacy_floor_reason": "",
+        "regex_vs_model": "match_benign",
+        "legacy_floor_vs_model": "match_benign",
+    }
+
+
+def test_direct_path_p0_shadow_negative_control_is_on_build_draft_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажу по фактам.",
+        metadata={"direct_path_model_p0": {"is_p0": False, "risk_level": "low", "p0_kind": "none"}},
+    )
+    baseline_provider = _DirectPathProvider(source)
+    changed_provider = _DirectPathProvider(source)
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+    }
+    baseline = baseline_provider.build_draft("Подскажите расписание.", context=context)
+    monkeypatch.setattr(
+        subscription_provider,
+        "_direct_path_p0_shadow_metadata",
+        lambda *args, **kwargs: {"schema_version": "broken_negative_control", "model_effective_is_p0": False},
+    )
+    changed = changed_provider.build_draft("Подскажите расписание.", context=context)
+
+    assert baseline_provider.calls == changed_provider.calls == 1
+    assert baseline.metadata["p0_model_shadow"] != changed.metadata["p0_model_shadow"]
+    assert changed.metadata["p0_model_shadow"]["schema_version"] == "broken_negative_control"
+    assert (baseline.route, baseline.draft_text) == (changed.route, changed.draft_text)
+
+
+def test_direct_path_p0_shadow_does_not_store_client_text_or_pii(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subscription_provider, "hard_codes_from_text", lambda text: ())
+    monkeypatch.setattr(subscription_provider, "dialogue_contract_p0_pre_gate", lambda text, context=None: None)
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажу.",
+        metadata={"direct_path_model_p0": {"is_p0": False, "risk_level": "low", "p0_kind": "none"}},
+    )
+
+    shadow = subscription_provider._direct_path_p0_shadow_metadata(
+        result,
+        client_message="Пишите на parent@example.ru или +7 999 123-45-67.",
+        context={subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+    serialized = json.dumps(shadow, ensure_ascii=False)
+
+    assert "parent@example.ru" not in serialized
+    assert "999" not in serialized
+    assert "client_message" not in shadow
+
+
+def test_direct_path_payload_remembers_missing_physical_is_p0_field() -> None:
+    result = subscription_provider._normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Подскажу по фактам.",
+            "risk_level": "low",
+            "p0_kind": "none",
+        }
+    )
+
+    assert result.metadata["direct_path_model_p0"]["is_p0"] is False
+    assert result.metadata["direct_path_model_p0"]["is_p0_present"] is False
+    shadow = subscription_provider._direct_path_p0_shadow_metadata(
+        result,
+        client_message="Подскажите расписание.",
+        context={subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+    assert shadow["model_field_present"] is False
+    assert shadow["regex_vs_model"] == "model_missing"
+
+
 def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Менеджер свяжется и поможет подобрать группу.")

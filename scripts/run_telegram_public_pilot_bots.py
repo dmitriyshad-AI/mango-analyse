@@ -9,6 +9,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from contextlib import suppress
@@ -86,6 +87,7 @@ DEFAULT_P0_REGISTER_PATH = Path(".codex_local/telegram_pilot/p0_incident_registe
 DEFAULT_DEBOUNCE_SECONDS = 7
 MAX_RECENT_MESSAGES = 12
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
+PUBLIC_BOT_MINIMUM_SAFE_REVISION = "ca1c9ce534b9f64b8d0c775df5753694cfbb101f"
 
 FOTON_TOKEN_ENV = "MANGO_TELEGRAM_FOTON_BOT_TOKEN"
 UNPK_TOKEN_ENV = "MANGO_TELEGRAM_UNPK_BOT_TOKEN"
@@ -120,6 +122,60 @@ DEBUG_PHONE_RE = re.compile(
     r"\s*[\"'«»“”]*(?:[,:;.\-—]\s*(?P<rest>.*))?$",
     re.I,
 )
+
+
+def assert_public_bot_minimum_safe_revision(repo_root: Path | str | None = None) -> str:
+    """Refuse live polling from code older than the money-promise output floor."""
+
+    root = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parents[1]
+    try:
+        head = subprocess.run(
+            ("git", "-C", str(root), "rev-parse", "HEAD"),
+            check=False, capture_output=True, text=True,
+        )
+        revision = head.stdout.strip() if head.returncode == 0 else "unknown"
+        ancestry = subprocess.run(
+            ("git", "-C", str(root), "merge-base", "--is-ancestor", PUBLIC_BOT_MINIMUM_SAFE_REVISION, "HEAD"),
+            check=False, capture_output=True, text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError("Refusing public Telegram bot start: Git revision cannot be verified.") from exc
+    if ancestry.returncode != 0:
+        raise RuntimeError(
+            "Refusing public Telegram bot start: "
+            f"HEAD={revision} does not contain required money-promise protection "
+            f"{PUBLIC_BOT_MINIMUM_SAFE_REVISION}."
+        )
+    return revision
+
+
+def assert_public_bot_money_promise_floor() -> None:
+    """Check the deterministic and model-led money-promise legs without an LLM call."""
+
+    from mango_mvp.channels.output_verification_floor import verify_output
+    from mango_mvp.channels.subscription_llm_parts import (
+        SEMANTIC_OUTPUT_VERIFIER_ENV,
+        apply_authoritative_output_gate,
+        apply_semantic_output_verifier,
+    )
+
+    codes = {item.code for item in verify_output("Мы вернём вам деньги.", facts={}, active_brand="foton")}
+    probe = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Сделаем возврат.")
+    checked = apply_semantic_output_verifier(
+        probe,
+        client_message="Подскажите, пожалуйста",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": [{"code": "p0_money_promise", "span": probe.draft_text}]},
+    )
+    gated = apply_authoritative_output_gate(
+        checked,
+        client_message="Подскажите, пожалуйста",
+        context={"active_brand": "foton"},
+    )
+    if "p0_promise" not in codes or gated.route != "manager_only":
+        raise RuntimeError("Refusing public Telegram bot start: money-promise output floor self-check failed.")
+
+
 PHONE_DIGIT_RE = re.compile(r"\D+")
 PUBLIC_TELEGRAM_HIGHLIGHT_RE = re.compile(
     r"(?P<price>\b\d[\d\s]{1,12}\s*(?:₽|руб(?:\.|лей|ля|ль)?))"
@@ -1775,6 +1831,8 @@ async def public_bot_heartbeat_loop(
 
 
 async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mapping[str, Mapping[str, Any]], duration_sec: int | None) -> None:
+    assert_public_bot_minimum_safe_revision()
+    assert_public_bot_money_promise_floor()
     from telegram import Update
     from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 

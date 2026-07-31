@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+import scripts.run_telegram_public_pilot_bots as public_bot_module
 
 from scripts.run_telegram_public_pilot_bots import (
     apply_public_autonomy_kill_switch,
+    assert_public_bot_minimum_safe_revision,
+    assert_public_bot_money_promise_floor,
     BrandBotConfig,
     build_read_only_crm_context,
     build_server_amo_context_readonly,
@@ -32,6 +35,7 @@ from scripts.run_telegram_public_pilot_bots import (
     public_telegram_reply_payload,
     public_reply_text,
     PublicPilotBotRuntime,
+    run_polling,
     sync_env_to_process,
     write_public_bot_heartbeat,
 )
@@ -87,6 +91,32 @@ OFFLINE_STARTUP_ENV_KEYS = (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     "TELEGRAM_PRESALE_SAFETY",
 )
+
+
+def test_public_polling_requires_money_promise_protection_revision(monkeypatch) -> None:
+    def reject_old_revision() -> str:
+        raise RuntimeError("old public bot revision")
+
+    monkeypatch.setattr(public_bot_module, "assert_public_bot_minimum_safe_revision", reject_old_revision)
+
+    polling = run_polling((), debug_clients={}, duration_sec=1)
+    with pytest.raises(RuntimeError, match="old public bot revision"):
+        polling.send(None)
+
+
+def test_current_checkout_contains_public_bot_minimum_safe_revision() -> None:
+    revision = assert_public_bot_minimum_safe_revision()
+
+    assert len(revision) == 40
+
+
+def test_public_bot_money_promise_floor_selfcheck_passes() -> None:
+    assert_public_bot_money_promise_floor()
+
+
+def test_public_bot_minimum_safe_revision_fails_closed_without_git(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="HEAD=unknown"):
+        assert_public_bot_minimum_safe_revision(tmp_path)
 
 
 def test_parse_debug_phone_command_without_payload() -> None:

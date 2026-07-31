@@ -5,6 +5,7 @@ import json
 import os
 import plistlib
 import subprocess
+from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -804,6 +805,7 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
             self.heartbeats.append((status, summary))
 
     emitted: list[str] = []
+    health_messages: list[str] = []
     sleeps: list[float] = []
 
     def fake_sleep(interval: float) -> None:
@@ -812,7 +814,15 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
             raise StopLoop
 
     with pytest.raises(StopLoop):
-        runner.run_loop_forever(FakeLoop(), dry_run=False, interval_sec=1, sleep=fake_sleep, emit=emitted.append)
+        runner.run_loop_forever(
+            FakeLoop(),
+            dry_run=False,
+            interval_sec=1,
+            sleep=fake_sleep,
+            emit=emitted.append,
+            health_notify=lambda text: health_messages.append(text) or True,
+            monotonic=lambda: 0.0,
+        )
 
     first = json.loads(emitted[0])
     second = json.loads(emitted[1])
@@ -824,6 +834,96 @@ def test_run_loop_forever_reports_cycle_error_and_continues() -> None:
     assert "must-not-leak" not in json.dumps(FakeLoop.heartbeats)
     assert second == {"status": "ok", "client_sends": 0, "note_written": 0}
     assert sleeps == [5, 5]
+    assert health_messages == ["Mango Wappi: жив; обработано 0; ошибок 1"]
+
+
+def test_health_notifier_uses_only_internal_chat_and_business_hours() -> None:
+    requests: list[dict[str, object]] = []
+
+    def transport(**kwargs):
+        requests.append(kwargs)
+        return {"ok": True}
+
+    env = {
+        runner.DRAFT_LOOP_HEALTH_BOT_TOKEN_ENV: "secret-token",
+        runner.DRAFT_LOOP_HEALTH_CHAT_ID_ENV: "manager-chat",
+    }
+    notify = runner.build_health_notifier_from_env(
+        env,
+        transport=transport,
+        now=lambda: datetime(2026, 7, 31, 10, 0).astimezone(),
+    )
+
+    assert notify is not None
+    assert notify("Mango Wappi: жив; обработано 12; ошибок 0") is True
+    assert requests[0]["json_body"] == {
+        "chat_id": "manager-chat",
+        "text": "Mango Wappi: жив; обработано 12; ошибок 0",
+    }
+    assert str(requests[0]["url"]).endswith("/sendMessage")
+
+    outside = runner.build_health_notifier_from_env(
+        env,
+        transport=transport,
+        now=lambda: datetime(2026, 7, 31, 23, 0).astimezone(),
+    )
+    assert outside is not None
+    assert outside("not sent") is False
+    assert len(requests) == 1
+
+
+def test_live_loop_reports_health_again_after_two_hours() -> None:
+    class StopLoop(Exception):
+        pass
+
+    class FakeLoop:
+        def run_once(self, *, dry_run: bool) -> dict[str, object]:
+            return {"status": "ok", "processed": 1, "auth_error": False}
+
+    clock = iter((0.0, 0.0, 7199.0, 7200.0))
+    messages: list[str] = []
+    sleeps = 0
+
+    def fake_sleep(_: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 3:
+            raise StopLoop
+
+    with pytest.raises(StopLoop):
+        runner.run_loop_forever(
+            FakeLoop(),
+            dry_run=False,
+            interval_sec=5,
+            sleep=fake_sleep,
+            emit=lambda _: None,
+            health_notify=lambda text: messages.append(text) or True,
+            health_interval_sec=7200,
+            monotonic=lambda: next(clock),
+        )
+
+    assert messages == [
+        "Mango Wappi: жив; обработано 1; ошибок 0",
+        "Mango Wappi: жив; обработано 3; ошибок 0",
+    ]
+
+
+def test_live_loop_refuses_start_without_internal_health_chat(tmp_path: Path, monkeypatch) -> None:
+    args = SimpleNamespace(
+        loop=True,
+        live_write=True,
+        env_file=tmp_path / "empty.env",
+        ai_office_env_file=tmp_path / "missing.env",
+    )
+    args.env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(runner, "parse_args", lambda: args)
+    monkeypatch.delenv(runner.DRAFT_LOOP_HEALTH_BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(runner.DRAFT_LOOP_HEALTH_CHAT_ID_ENV, raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_PILOT_MANAGER_CHAT_IDS", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires a configured internal Telegram health chat"):
+        runner.main()
 
 
 def test_process_lock_allows_only_one_writer(tmp_path: Path) -> None:

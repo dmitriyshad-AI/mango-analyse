@@ -91,6 +91,9 @@ AMO_CHAT_EVENT_LOOKUP_WINDOW_SEC = 60
 AMO_CHAT_SEQUENCE_CONFIRMATION_MIN = 2
 AMO_CHAT_SEQUENCE_MAX_POINTS = 8
 AMO_CHAT_SEQUENCE_MAX_DISTANCE_SEC = 7 * 24 * 60 * 60
+DRAFT_LOOP_HEALTH_BOT_TOKEN_ENV = "DRAFT_LOOP_HEALTH_TELEGRAM_BOT_TOKEN"
+DRAFT_LOOP_HEALTH_CHAT_ID_ENV = "DRAFT_LOOP_HEALTH_TELEGRAM_CHAT_ID"
+DRAFT_LOOP_HEALTH_INTERVAL_SEC_ENV = "DRAFT_LOOP_HEALTH_INTERVAL_SEC"
 
 
 def parse_args() -> argparse.Namespace:
@@ -1055,6 +1058,35 @@ def _loop_error_report(exc: BaseException) -> dict[str, Any]:
     }
 
 
+def build_health_notifier_from_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    transport: Callable[..., Mapping[str, Any]] = _json_http_request,
+    now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
+) -> Callable[[str], bool] | None:
+    source = env or os.environ
+    token = str(source.get(DRAFT_LOOP_HEALTH_BOT_TOKEN_ENV) or source.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    raw_chat_ids = str(source.get(DRAFT_LOOP_HEALTH_CHAT_ID_ENV) or source.get("TELEGRAM_PILOT_MANAGER_CHAT_IDS") or "")
+    chat_id = raw_chat_ids.replace(";", ",").split(",", 1)[0].strip()
+    if not token or not chat_id:
+        return None
+
+    def notify(text: str) -> bool:
+        if not 9 <= now().hour < 21:
+            return False
+        response = transport(
+            method="POST",
+            url=f"https://api.telegram.org/bot{token}/sendMessage",
+            json_body={"chat_id": chat_id, "text": text},
+            timeout_seconds=15,
+        )
+        if response.get("ok") is False:
+            raise RuntimeError("Telegram health notification was rejected.")
+        return True
+
+    return notify
+
+
 def run_loop_forever(
     runner: AmoWappiDraftLoop,
     *,
@@ -1062,8 +1094,15 @@ def run_loop_forever(
     interval_sec: int,
     sleep: Callable[[float], None] = time.sleep,
     emit: Callable[[str], None] = print,
+    health_notify: Callable[[str], bool] | None = None,
+    health_interval_sec: int = 7200,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
     interval = max(5, int(interval_sec))
+    health_interval = max(3600, min(int(health_interval_sec), 10800))
+    last_health_at = monotonic() - health_interval
+    processed_total = 0
+    error_total = 0
     while True:
         try:
             summary = runner.run_once(dry_run=dry_run)
@@ -1075,6 +1114,16 @@ def run_loop_forever(
                 runner._write_heartbeat("cycle_error", summary)
             except Exception:  # noqa: BLE001 -- heartbeat failure must not kill the loop
                 pass
+        processed_total += int(summary.get("processed") or 0)
+        error_total += int(summary.get("status") == "cycle_error" or bool(summary.get("auth_error")))
+        current = monotonic()
+        if health_notify is not None and current - last_health_at >= health_interval:
+            try:
+                sent = health_notify(f"Mango Wappi: жив; обработано {processed_total}; ошибок {error_total}")
+            except Exception:  # noqa: BLE001 -- retry after five minutes, never expose secrets
+                error_total += 1
+                sent = False
+            last_health_at = current if sent else current - health_interval + 300
         emit(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         sleep(interval)
 
@@ -1127,6 +1176,13 @@ def write_startup_manifest(
 def main() -> int:
     args = parse_args()
     dry_run = not bool(args.live_write)
+    if args.loop and args.live_write:
+        load_env_file(args.env_file)
+        if args.ai_office_env_file.expanduser().exists():
+            load_env_file(args.ai_office_env_file)
+    health_notify = build_health_notifier_from_env()
+    if args.loop and args.live_write and health_notify is None:
+        raise RuntimeError("Live Wappi loop requires a configured internal Telegram health chat.")
     process_lock = acquire_process_lock(DEFAULT_WRITER_LOCK_PATH) if args.live_write else None
     runner = build_runner(args)
     manifest_path = str(os.environ.get(STARTUP_MANIFEST_ENV) or "").strip()
@@ -1147,7 +1203,14 @@ def main() -> int:
         summary = runner.run_once(dry_run=dry_run)
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
-    run_loop_forever(runner, dry_run=dry_run, interval_sec=args.interval_sec, emit=lambda line: print(line, flush=True))
+    run_loop_forever(
+        runner,
+        dry_run=dry_run,
+        interval_sec=args.interval_sec,
+        emit=lambda line: print(line, flush=True),
+        health_notify=health_notify,
+        health_interval_sec=int(os.environ.get(DRAFT_LOOP_HEALTH_INTERVAL_SEC_ENV) or "7200"),
+    )
     del process_lock
 
 

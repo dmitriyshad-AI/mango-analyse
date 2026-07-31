@@ -4,12 +4,16 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 SNAPSHOT_PATH = Path(__file__).resolve().parent / "fixtures/adr003_runtime_channel_regex_snapshot.json"
 DIRECT_PATH_PATTERN_SNAPSHOT_PATH = (
     Path(__file__).resolve().parent / "fixtures/adr003_direct_path_text_patterns_snapshot.json"
 )
+UNDERSTANDING_MAP_PATH = Path(__file__).resolve().parents[1] / "docs/adr003_understanding_map.yaml"
 DIRECT_PATH_PATTERN_FILES = (
     "src/mango_mvp/channels/answer_safety_classifier.py",
     "src/mango_mvp/channels/actions.py",
@@ -49,6 +53,13 @@ TEXT_TABLE_NAME_PARTS = (
     "TOKEN",
     "TOPIC",
 )
+
+CONTENT_HASH_FIELDS = {
+    "marker_helper_call": "args_sha256",
+    "regex_call": "pattern_sha256",
+    "string_contains": "expression_sha256",
+    "text_table": "value_sha256",
+}
 TEXT_LIKE_EXPR_PARTS = (
     "client",
     "draft",
@@ -88,9 +99,9 @@ CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {
     "src/mango_mvp/channels/fact_scope_spec.py": 8,
     "src/mango_mvp/channels/held_state.py": 2,
     "src/mango_mvp/channels/new_lead_funnel.py": 31,
-    "src/mango_mvp/channels/semantic_roles.py": 42,
-    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 69,
-    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 38,
+    "src/mango_mvp/channels/semantic_roles.py": 41,
+    "src/mango_mvp/channels/subscription_llm_parts/policy_routing.py": 17,
+    "src/mango_mvp/channels/subscription_llm_parts/post_layers.py": 8,
     "src/mango_mvp/channels/text_signals.py": 1,
 }
 
@@ -403,8 +414,45 @@ def _value_signature(node: ast.AST, source: str) -> tuple[str, str]:
     return _source_signature(source, node)
 
 
-def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
+def _text_literal_counts(node: ast.AST) -> tuple[int, int]:
+    values = [
+        item.value
+        for item in ast.walk(node)
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    ]
+    cyrillic = sum(any("а" <= char.casefold() <= "я" or char.casefold() == "ё" for char in value) for value in values)
+    return len(values), cyrillic
+
+
+def _inventory_row(node: ast.AST, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "lineno": int(getattr(node, "lineno", 0)),
+        "col_offset": int(getattr(node, "col_offset", 0)),
+    }
+
+
+def _assign_inventory_row_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(rows, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    occurrences: dict[str, int] = {}
+    result: list[dict[str, Any]] = []
+    for row in ordered:
+        identity = {key: value for key, value in row.items() if key not in {"lineno", "col_offset", "row_id"}}
+        canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        occurrence = occurrences.get(canonical, 0)
+        occurrences[canonical] = occurrence + 1
+        stable_key = f"{canonical}#{occurrence}"
+        result.append(
+            {
+                **row,
+                "row_id": f"adr003:{hashlib.sha256(stable_key.encode('utf-8')).hexdigest()[:24]}",
+            }
+        )
+    return result
+
+
+def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for rel_path in DIRECT_PATH_PATTERN_FILES:
         path = repo / rel_path
         source = path.read_text(encoding="utf-8")
@@ -434,30 +482,36 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                 for target in node.targets:
                     if isinstance(target, ast.Name) and _is_text_table_name(target.id):
                         signature, preview = _value_signature(node.value, source)
+                        literal_count, cyrillic_count = _text_literal_counts(node.value)
                         rows.append(
-                            {
+                            _inventory_row(node, {
                                 "path": rel_path,
                                 "qualname": ".".join(stack) or "<module>",
                                 "node_kind": "text_table",
                                 "symbol": target.id,
                                 "value_sha256": signature,
                                 "value_preview": preview,
-                            }
+                                "literal_string_count": literal_count,
+                                "cyrillic_string_count": cyrillic_count,
+                            })
                         )
                 self.generic_visit(node)
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name) and node.value is not None and _is_text_table_name(node.target.id):
                     signature, preview = _value_signature(node.value, source)
+                    literal_count, cyrillic_count = _text_literal_counts(node.value)
                     rows.append(
-                        {
+                        _inventory_row(node, {
                             "path": rel_path,
                             "qualname": ".".join(stack) or "<module>",
                             "node_kind": "text_table",
                             "symbol": node.target.id,
                             "value_sha256": signature,
                             "value_preview": preview,
-                        }
+                            "literal_string_count": literal_count,
+                            "cyrillic_string_count": cyrillic_count,
+                        })
                     )
                 self.generic_visit(node)
 
@@ -466,21 +520,21 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                 if marker_helper and _has_literal_marker_args(node):
                     signature, preview = _marker_args_signature(node, source)
                     rows.append(
-                        {
+                        _inventory_row(node, {
                             "path": rel_path,
                             "qualname": ".".join(stack) or "<module>",
                             "node_kind": "marker_helper_call",
                             "symbol": marker_helper,
                             "args_sha256": signature,
                             "args_preview": preview,
-                        }
+                        })
                     )
                 if _is_re_compile_call(node) or _is_inline_re_call(node):
                     func = node.func
                     assert isinstance(func, ast.Attribute)
                     pattern = _pattern_literal(node, source)
                     rows.append(
-                        {
+                        _inventory_row(node, {
                             "path": rel_path,
                             "qualname": ".".join(stack) or "<module>",
                             "node_kind": "regex_call",
@@ -489,7 +543,7 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                             "pattern_sha256": hashlib.sha256(pattern.encode("utf-8")).hexdigest(),
                             "flags": _flags_expr(node, source),
                             "pattern_preview": pattern[:160],
-                        }
+                        })
                     )
                 self.generic_visit(node)
 
@@ -504,19 +558,59 @@ def _direct_path_text_pattern_snapshot(repo: Path) -> list[dict[str, str]]:
                         expression = _source_segment(source, node)
                         operator = " ".join(type(item).__name__ for item in node.ops)
                         rows.append(
-                            {
+                            _inventory_row(node, {
                                 "path": rel_path,
                                 "qualname": ".".join(stack) or "<module>",
                                 "node_kind": "string_contains",
                                 "symbol": operator,
                                 "expression_sha256": hashlib.sha256(expression.encode("utf-8")).hexdigest(),
                                 "expression_preview": expression[:240],
-                            }
+                            })
                         )
                 self.generic_visit(node)
 
         Visitor().visit(tree)
-    return sorted(rows, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    return _assign_inventory_row_ids(rows)
+
+
+def _literal_left_membership_snapshot(repo: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for rel_path in DIRECT_PATH_PATTERN_FILES:
+        path = repo / rel_path
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Compare)
+                and isinstance(node.left, ast.Constant)
+                and isinstance(node.left.value, str)
+                and any(isinstance(operator, (ast.In, ast.NotIn)) for operator in node.ops)
+            ):
+                comparators = " ".join(ast.unparse(comparator) for comparator in node.comparators)
+                rows.append(
+                    {
+                        "path": rel_path,
+                        "lineno": node.lineno,
+                        "col_offset": node.col_offset,
+                        "in_canonical_text_scope": any(
+                            part in comparators.casefold() for part in TEXT_LIKE_EXPR_PARTS
+                        ),
+                    }
+                )
+    return rows
+
+
+def _understanding_map_rows(path: Path = UNDERSTANDING_MAP_PATH) -> dict[str, dict[str, str]]:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    rows = payload.get("rows") or []
+    assert isinstance(rows, list), "ADR-003 understanding map rows must be a list"
+    result: dict[str, dict[str, str]] = {}
+    for item in rows:
+        assert isinstance(item, dict), "ADR-003 understanding map row must be a mapping"
+        row_id = str(item.get("row_id") or "")
+        assert row_id and row_id not in result, f"duplicate or empty understanding-map row_id: {row_id}"
+        result[row_id] = {str(key): str(value) for key, value in item.items()}
+    return result
 
 
 def _marker_helper_counts(rows: list[dict[str, str]]) -> dict[str, int]:
@@ -680,3 +774,167 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
         "If the change is an output scrub/fail-closed/infrastructure parser, document the reason and refresh "
         "tests/fixtures/adr003_direct_path_text_patterns_snapshot.json intentionally."
     )
+
+
+def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
+    rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+
+    assert len(rows) == 832
+    assert len({row["row_id"] for row in rows}) == 832
+    assert {row["node_kind"] for row in rows} == {
+        "marker_helper_call",
+        "regex_call",
+        "string_contains",
+        "text_table",
+    }
+    without_ids = [{key: value for key, value in row.items() if key != "row_id"} for row in rows]
+    assert _assign_inventory_row_ids(without_ids) == rows
+    shifted = [{**row, "lineno": int(row["lineno"]) + 100} for row in without_ids]
+
+    def ids_by_identity(items: list[dict[str, Any]]) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for item in items:
+            identity = {key: value for key, value in item.items() if key not in {"lineno", "col_offset", "row_id"}}
+            canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            result.setdefault(canonical, []).append(item["row_id"])
+        return result
+
+    assert ids_by_identity(_assign_inventory_row_ids(shifted)) == ids_by_identity(rows)
+    for row in rows:
+        assert int(row["lineno"]) > 0
+        assert int(row["col_offset"]) >= 0
+        if row["node_kind"] == "text_table":
+            assert int(row["literal_string_count"]) >= int(row["cyrillic_string_count"]) >= 0
+
+
+def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> None:
+    snapshot_rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    snapshot_by_id = {row["row_id"]: row for row in snapshot_rows}
+    payload = yaml.safe_load(UNDERSTANDING_MAP_PATH.read_text(encoding="utf-8"))
+    mapped = _understanding_map_rows()
+
+    source = payload["source"]
+    assert source["base_repo_head"] == "ca1c9ce534b9f64b8d0c775df5753694cfbb101f"
+    assert source["integrated_patch_heads"] == ["df4aee4395069e86db725d69a686c037a34a375d"]
+    assert source["snapshot_rows"] == len(snapshot_rows) == 832
+    assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
+    assert source["node_kind_counts"] == {
+        kind: sum(row["node_kind"] == kind for row in snapshot_rows)
+        for kind in sorted({row["node_kind"] for row in snapshot_rows})
+    }
+    assert source["regex_symbol_counts"] == {
+        symbol: sum(row["node_kind"] == "regex_call" and row["symbol"] == symbol for row in snapshot_rows)
+        for symbol in sorted({row["symbol"] for row in snapshot_rows if row["node_kind"] == "regex_call"})
+    }
+    assert "text_table_rule" not in source
+    assert source["machine_text_table_rule"] == (
+        "AST assignments whose uppercase name contains one of TEXT_TABLE_NAME_PARTS"
+    )
+    text_tables = [row for row in snapshot_rows if row["node_kind"] == "text_table"]
+    assert source["text_table_rows"] == len(text_tables)
+    assert source["text_table_literal_strings"] == sum(row["literal_string_count"] for row in text_tables)
+    assert source["text_table_cyrillic_strings"] == sum(row["cyrillic_string_count"] for row in text_tables)
+    assert source["text_tables_ge8_cyrillic"] == sum(row["cyrillic_string_count"] >= 8 for row in text_tables)
+    assert source["cyrillic_elements_in_ge8_tables"] == sum(
+        row["cyrillic_string_count"] for row in text_tables if row["cyrillic_string_count"] >= 8
+    )
+    assert source["marker_helper_budget_ceiling"] == sum(CHANNEL_MARKER_HELPER_BUDGET.values()) == 172
+    assert source["marker_helper_actual_snapshot_rows"] == sum(
+        row["node_kind"] == "marker_helper_call" for row in snapshot_rows
+    )
+    membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
+    assert source["literal_left_membership_total"] == len(membership_rows) == 324
+    assert source["literal_left_membership_in_canonical_text_scope"] == sum(
+        row["in_canonical_text_scope"] for row in membership_rows
+    ) == 167
+    assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
+        not row["in_canonical_text_scope"] for row in membership_rows
+    ) == 157
+
+    assert set(mapped) <= set(snapshot_by_id)
+    assert {row["bucket"] for row in mapped.values()} == {"2_verification", "3_format_hygiene"}
+    assert sum(row["bucket"] == "2_verification" for row in mapped.values()) >= 110
+    assert payload["classification_counts"]["2_verification"] == sum(
+        row["bucket"] == "2_verification" for row in mapped.values()
+    )
+    assert payload["classification_counts"]["3_format_hygiene"] == sum(
+        row["bucket"] == "3_format_hygiene" for row in mapped.values()
+    )
+    assert payload["classification_counts"]["unassigned_for_parallel_owner"] == len(snapshot_rows) - len(mapped)
+    classes = payload["classes"]
+    for class_name, class_spec in classes.items():
+        for evidence_path in class_spec.get("evidence_tests", []):
+            assert (UNDERSTANDING_MAP_PATH.parents[1] / evidence_path).is_file()
+        if class_spec["bucket"] == "2_verification":
+            evidence_cases = class_spec.get("evidence_cases") or []
+            assert evidence_cases, f"{class_name} needs exact reproduction cases"
+            for evidence_case in evidence_cases:
+                evidence_path, separator, test_name = evidence_case.partition("::")
+                assert separator and test_name.startswith("test_")
+                source_text = (UNDERSTANDING_MAP_PATH.parents[1] / evidence_path).read_text(encoding="utf-8")
+                assert f"def {test_name}(" in source_text
+    for row_id, map_row in mapped.items():
+        source_row = snapshot_by_id[row_id]
+        assert classes[map_row["class"]]["bucket"] == map_row["bucket"]
+        for key in ("path", "lineno", "col_offset", "node_kind"):
+            assert str(map_row[key]) == str(source_row[key])
+        assert map_row["symbol"] == source_row["symbol"]
+        assert map_row["display_symbol"] == (source_row.get("target") or source_row["symbol"])
+        hash_kind = CONTENT_HASH_FIELDS[source_row["node_kind"]]
+        assert map_row["content_hash_kind"] == hash_kind
+        assert map_row["content_sha256"] == source_row[hash_kind]
+
+
+def test_adr003_understanding_map_keeps_money_p0_traps_in_verification_floor() -> None:
+    snapshot_rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    mapped = _understanding_map_rows()
+
+    for target in ("PAYMENT_CONFIRMATION_RE", "_ROUTE_REFUND_RE"):
+        matches = [row for row in snapshot_rows if row.get("target") == target]
+        assert len(matches) == 1
+        assert mapped[matches[0]["row_id"]]["bucket"] == "2_verification"
+
+
+def test_adr003_understanding_map_keeps_reviewed_safety_families_in_verification_floor() -> None:
+    snapshot_rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    mapped = _understanding_map_rows()
+
+    required_targets = {
+        "BRAND_FORBIDDEN_TERMS",
+        "OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE",
+        "PAYMENT_CONFIRMATION_RE",
+        "PRESALE_PROMPT_SENSITIVE_KEY_RE",
+        "_DEAL_ACTION_CRM_DATA_RE",
+        "_DEAL_ACTION_MANAGER_APPROVAL_ACTIONS",
+        "_DEAL_ACTION_PAYMENT_RE",
+        "_ROUTE_REFUND_RE",
+        "UNSUPPORTED_PROMISE_PATTERNS",
+    }
+    for target in required_targets:
+        matches = [
+            row
+            for row in snapshot_rows
+            if (row.get("target") or row["symbol"]) == target
+        ]
+        assert matches, target
+        assert all(mapped[row["row_id"]]["bucket"] == "2_verification" for row in matches)
+
+    assert all(
+        mapped[row["row_id"]]["bucket"] == "2_verification"
+        for row in snapshot_rows
+        if row["path"] == "src/mango_mvp/channels/p0_recall_spec.py"
+    )
+
+
+def test_adr003_understanding_map_bucket_3_contains_only_reviewed_format_classes() -> None:
+    mapped = _understanding_map_rows()
+    allowed_classes = {
+        "fact_text_normalization",
+        "output_format_hygiene",
+        "output_whitespace_normalization",
+        "parser_normalization",
+    }
+
+    bucket_3 = [row for row in mapped.values() if row["bucket"] == "3_format_hygiene"]
+    assert bucket_3
+    assert {row["class"] for row in bucket_3} <= allowed_classes

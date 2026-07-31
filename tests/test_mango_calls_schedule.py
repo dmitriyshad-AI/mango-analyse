@@ -217,6 +217,68 @@ fi
     assert str(out) in export_call and "process-a" not in export_call
 
 
+def test_process_b_runs_google_publisher_only_with_complete_config(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n"
+        + "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=folder_123456789\n"
+        + f"GOOGLE_APPLICATION_CREDENTIALS={tmp_path / 'credentials.json'}\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf -- "--call--\\n" >> "$CAPTURED"
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","stop_reason":""}}'
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+                   env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
+
+    calls = captured.read_text(encoding="utf-8").split("--call--\n")
+    export_index = next(i for i, call in enumerate(calls) if "export_daily_mango_calls_resolve.py" in call)
+    google_index = next(i for i, call in enumerate(calls) if "publish_daily_mango_calls_google.py" in call)
+    assert export_index < google_index and "--execute" in calls[google_index]
+
+
+def test_process_b_rejects_partial_google_config(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n"
+        + "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=folder_123456789\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","stop_reason":""}}'
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
+
+    assert result.returncode == 4
+
+
 @pytest.mark.parametrize("status,reason", [("locked", "timeline_writer_locked"), ("deferred", "network"), ("idle", "drop_missing")])
 def test_process_b_non_success_does_not_run_daily_export(tmp_path: Path, status: str, reason: str) -> None:
     config_path, env_path = _write_config(tmp_path)

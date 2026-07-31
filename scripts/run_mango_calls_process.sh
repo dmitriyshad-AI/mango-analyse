@@ -85,5 +85,14 @@ print(str(last.get("status") or "") + "|" + str(last.get("stop_reason") or ""))
     --ready-db "${PIPELINE_ROOT}/drop/mango_calls_ready.sqlite" \
     --working-db "${PIPELINE_ROOT}/working/mango_calls_pipeline.sqlite" \
     --out "${MANGO_CALLS_DAILY_EXPORT_OUT}"
+  if [[ -n "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" || -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+    if [[ -z "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" || -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+      print -u2 '{"status":"failed","stop_reason":"google_publish_config_incomplete"}'
+      exit 4
+    fi
+    "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/publish_daily_mango_calls_google.py" \
+      --report-root "${MANGO_CALLS_DAILY_EXPORT_OUT}" --folder-id "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID}" \
+      --credentials "${GOOGLE_APPLICATION_CREDENTIALS}" --execute --confirmation UPLOAD_MANGO_DAILY_REPORT
+  fi
 fi
 exit "${RC}"

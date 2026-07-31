@@ -153,8 +153,8 @@ def test_process_b_launchd_path_does_not_use_cycle_or_asr_runner(tmp_path: Path)
     assert "cycle" not in args
     runner_text = RUNNER.read_text(encoding="utf-8").lower()
     assert "asr" not in runner_text
-    assert "resolve" not in runner_text
-    assert "analyze" not in runner_text
+    assert "--stages" not in runner_text
+    assert "mango_mvp.cli" not in runner_text
     assert "/usr/bin/plutil -extract python_executable" in runner_text
     assert '"${python_executable}" "${root}/scripts/run_mango_calls_pipeline.py"' in runner_text
     assert "launchctl kickstart" in runner_text
@@ -180,6 +180,114 @@ def test_runner_executes_configured_python(tmp_path: Path) -> None:
     args = captured.read_text(encoding="utf-8").splitlines()
     assert args[-1] == "process-b"
     assert "run_mango_calls_pipeline.py" in args[0]
+
+
+def test_successful_process_b_runs_daily_export_when_out_is_configured(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    out = tmp_path / "yandex"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf -- "--call--\\n" >> "$CAPTURED"
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","stop_reason":""}}'
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+                   env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
+
+    calls = captured.read_text(encoding="utf-8").split("--call--\n")
+    assert sum("run_mango_calls_pipeline.py" in call for call in calls) == 1
+    export_call = next(call for call in calls if "export_daily_mango_calls_resolve.py" in call)
+    assert str(out) in export_call and "process-a" not in export_call
+
+
+@pytest.mark.parametrize("status,reason", [("locked", "timeline_writer_locked"), ("deferred", "network"), ("idle", "drop_missing")])
+def test_process_b_non_success_does_not_run_daily_export(tmp_path: Path, status: str, reason: str) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"{status}","stop_reason":"{reason}"}}'
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+                   env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
+
+    assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
+
+
+def test_process_b_idle_unchanged_retries_daily_export(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"idle","stop_reason":"drop_unchanged"}}'
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+                   env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
+
+    assert "export_daily_mango_calls_resolve.py" in captured.read_text(encoding="utf-8")
+
+
+def test_process_b_unparseable_result_fails_closed(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+else
+  print -r -- 'not-json'
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
+
+    assert result.returncode == 3
 
 
 @pytest.mark.parametrize("status", ["failed", "deferred", "locked"])

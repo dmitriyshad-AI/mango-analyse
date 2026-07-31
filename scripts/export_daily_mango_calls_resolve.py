@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import tempfile
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -27,7 +28,6 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
     TallantoApiConfig,
     TallantoApiError,
 )
-from mango_mvp.productization.capture_staging import sanitize_filename_part
 from mango_mvp.productization.mango_office_client import MangoOfficeClient, MangoOfficeCredentials
 from mango_mvp.services.export_excel import call_to_row
 from mango_mvp.utils.filename_repair import repair_manager_name
@@ -35,19 +35,18 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PIPELINE_ROOT = ROOT / "product_data/mango_calls_two_processes"
+PIPELINE_ROOT = Path(os.getenv("MANGO_CALLS_PIPELINE_ROOT", str(ROOT / "product_data/mango_calls_two_processes"))).expanduser()
 DEFAULT_READY_DB = PIPELINE_ROOT / "drop/mango_calls_ready.sqlite"
 DEFAULT_WORKING_DB = PIPELINE_ROOT / "working/mango_calls_pipeline.sqlite"
-DEFAULT_OUT = Path("/Users/dmitrijfabarisov/Yandex.Disk.localized/Mango Calls Resolve")
-DEFAULT_TALLANTO_EXPORT = ROOT / "_external_handoffs/tallanto_contacts_export_2026-06-20/converted/Contacts 20.06.2026.csv"
-DEFAULT_TALLANTO_ENV = Path("~/.mango_secrets/tallanto_readonly.env").expanduser()
-DEFAULT_MANGO_ENV = Path("~/.mango_secrets/mango_office.env").expanduser()
+DEFAULT_OUT = Path(os.getenv("MANGO_CALLS_DAILY_EXPORT_OUT", str(Path.home() / "Yandex.Disk.localized/Mango Calls Resolve"))).expanduser()
+DEFAULT_TALLANTO_EXPORT = Path(os.getenv("MANGO_CALLS_TALLANTO_EXPORT", str(ROOT / "_external_handoffs/tallanto_contacts_export_2026-06-20/converted/Contacts 20.06.2026.csv"))).expanduser()
+DEFAULT_TALLANTO_ENV, DEFAULT_MANGO_ENV = Path(os.getenv("MANGO_CALLS_TALLANTO_ENV", "~/.mango_secrets/tallanto_readonly.env")).expanduser(), Path(os.getenv("MANGO_CALLS_MANGO_ENV", "~/.mango_secrets/mango_office.env")).expanduser()
 DEFAULT_MANAGER_USERS = ROOT / (
     "_local_archive_mango_api_downloads_20260507/quarantine_import/"
     "raw_payload_archive/mango_users_config_20260507.json"
 )
 MOSCOW = ZoneInfo("Europe/Moscow")
-TRANSCRIPT_CHUNK = 30_000
+TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v3"
 TIMED_LINE_RE = re.compile(
     r"^\[(?P<approx>~)?(?P<mm>\d{2}):(?P<ss>\d{2}(?:\.\d)?)\]\s+"
     r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент|Спикер\s*\(не определен\)):\s*(?P<text>.*)$"
@@ -181,6 +180,24 @@ def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str) -
     return f"{warning}\n\n{translate_transcript(fallback)}".strip(), False
 
 
+def manager_roles_confirmed(variants: Mapping[str, Any]) -> bool:
+    mapping = variants.get("role_mapping")
+    channels = {(variants.get(role) if isinstance(variants.get(role), Mapping) else {}).get("physical_channel") for role in ("manager", "client")}
+    return bool(
+        isinstance(mapping, Mapping)
+        and mapping.get("confirmed") is True
+        and mapping.get("manager_quality_allowed") is True
+        and mapping.get("topology") == "simple_two_party"
+        and variants.get("call_topology") == "simple_two_party"
+        and channels == {"left", "right"}
+    )
+
+
+def neutralize_unconfirmed_roles(text: str) -> str:
+    text = re.sub(r"(?m)(Менеджер(?:\s*\([^)]+\))?):", "Спикер A (роль не подтверждена):", text)
+    return re.sub(r"(?m)Клиент:", "Спикер B (роль не подтверждена):", text)
+
+
 def load_tallanto_index(path: Path) -> dict[str, dict[str, str]]:
     index: dict[str, dict[str, str]] = {}
     if not path.is_file():
@@ -286,6 +303,7 @@ def apply_tallanto_names(rows: Sequence[dict[str, Any]], export_path: Path, clie
             row["issues"].append("Не удалось проверить телефон через Tallanto API")
         else:
             row["issues"].append("Телефон не найден в Tallanto")
+        row["manager_ready"] = bool(row.get("complete") and row.get("chronology_confirmed") and not row["issues"])
 
 
 def clean_summary(value: Any) -> str:
@@ -324,22 +342,28 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str]) -> dict[str, Any]:
     raw["started_at"] = started_utc
     base = call_to_row(SimpleNamespace(**raw), analysis) if analysis else {}
     started = started_utc.astimezone(MOSCOW)
-    transcript, chronology_confirmed = ordered_dialogue(Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""))
+    transcript, order_confirmed = ordered_dialogue(Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""))
+    roles_confirmed = manager_roles_confirmed(variants)
+    chronology_confirmed = order_confirmed and roles_confirmed
     extension = str(row["manager_name"] or "").strip()
     manager = names.get(extension, "")
     resolve_ok = row["resolve_status"] == "done" or (row["resolve_status"] == "skipped" and resolve.get("decision") == "skip_short_call")
     complete = bool(row["transcription_status"] == "done" and resolve_ok and row["analysis_status"] == "done" and analysis)
-    chunks = [transcript[i : i + TRANSCRIPT_CHUNK] for i in range(0, len(transcript), TRANSCRIPT_CHUNK)] or [""]
     issues = processing_issues(row, analysis, resolve)
-    if not chronology_confirmed:
+    if not order_confirmed:
         issues.append("Порядок реплик не подтверждён исходными данными")
+    if not roles_confirmed:
+        issues.append("Роли менеджера и клиента не подтверждены")
+        transcript = "Роли не подтверждены; не использовать для оценки сотрудника.\n\n" + neutralize_unconfirmed_roles(transcript)
+    base = base if chronology_confirmed else {}
     if manager_issue := manager_name_issue(manager):
         issues.append(manager_issue)
+    chunks = [transcript[i : i + TRANSCRIPT_CHUNK] for i in range(0, len(transcript), TRANSCRIPT_CHUNK)] or [""]
     return {
         "id": int(row["id"]), "call_id": str(row["source_call_id"] or row["id"]), "started": started,
         "extension": extension, "manager": manager, "direction": "Входящий" if row["direction"] == "inbound" else "Исходящий",
         "phone": str(row["phone"] or ""), "duration": float(row["duration_sec"] or 0), "source": Path(str(row["source_file"])),
-        "complete": complete, "issues": issues, "chunks": chunks, "transcript": transcript, "chronology_confirmed": chronology_confirmed,
+        "complete": complete, "manager_ready": complete and chronology_confirmed and not issues, "issues": issues, "chunks": chunks, "transcript": transcript, "chronology_confirmed": chronology_confirmed,
         "base": base, "client_fio": "", "tallanto_source": "",
         "resolve_status": str(row["resolve_status"] or ""), "analysis_status": str(row["analysis_status"] or ""),
     }
@@ -355,26 +379,73 @@ def merged_day_rows(ready_db: Path, working_db: Path, day: date, names: Mapping[
     return merged, len(pending)
 
 
-def publish_transcripts(rows: Sequence[dict[str, Any]], target: Path) -> tuple[int, int]:
-    target.mkdir(parents=True, exist_ok=True, mode=0o700)
-    copied = reused = 0
+def assign_transcript_targets(rows: Sequence[dict[str, Any]], target: Path) -> None:
+    filenames: set[str] = set()
     for row in rows:
+        filename = f"call_{hashlib.sha256(str(row['call_id']).encode('utf-8')).hexdigest()[:20]}.txt"
+        if filename in filenames:
+            raise RuntimeError("duplicate call_id in daily export")
+        filenames.add(filename)
         body = row["transcript"].rstrip() + "\n"
-        transcript_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        filename = f"{row['started']:%Y-%m-%d__%H-%M-%S}__call_{sanitize_filename_part(row['call_id'])}.txt"
-        destination = target / filename
-        if destination.exists():
-            if sha256_file(destination) != transcript_sha:
-                raise RuntimeError(f"конфликт расшифровки {destination.name}")
-            reused += 1
-        else:
-            temporary = destination.with_suffix(".tmp")
-            temporary.write_text(body, encoding="utf-8")
-            os.replace(temporary, destination)
-            copied += 1
-        destination.chmod(0o600)
-        row["transcript_file"], row["transcript_sha256"] = destination, transcript_sha
-    return copied, reused
+        row["transcript_file"] = target / filename
+        row["transcript_sha256"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def publish_transcripts(rows: Sequence[dict[str, Any]], target: Path) -> tuple[int, int, int]:
+    expected = {Path(row["transcript_file"]).name: row["transcript_sha256"] for row in rows}
+    if target.is_dir():
+        actual = {path.name: sha256_file(path) if path.is_file() else "" for path in target.iterdir()}
+        if actual != expected:
+            raise RuntimeError("existing immutable transcript generation is inconsistent")
+        return 0, len(rows), 0
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=target.parent))
+    try:
+        for row in rows:
+            body = row["transcript"].rstrip() + "\n"
+            destination = staging / Path(row["transcript_file"]).name
+            destination.write_text(body, encoding="utf-8")
+            destination.chmod(0o600)
+        os.replace(staging, target)
+    except Exception:
+        for path in staging.glob("*") if staging.is_dir() else ():
+            path.unlink(missing_ok=True)
+        staging.rmdir() if staging.is_dir() else None
+        raise
+    return len(rows), 0, 0
+
+
+def publication_content_sha256(rows: Sequence[Mapping[str, Any]]) -> str:
+    payload = [{
+        "call_id": row["call_id"], "started": row["started"].isoformat(), "manager": row["manager"],
+        "extension": row["extension"], "direction": row["direction"], "phone": row["phone"],
+        "duration": row["duration"], "complete": row["complete"], "manager_ready": row["manager_ready"],
+        "issues": row["issues"], "transcript": row["transcript"], "base": row["base"],
+        "client_fio": row["client_fio"], "tallanto_source": row["tallanto_source"],
+    } for row in rows]
+    document = {"schema_version": EXPORT_SCHEMA_VERSION, "rows": payload}
+    return hashlib.sha256(json.dumps(document, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def reusable_export(output_root: Path, day: date, content_sha256: str, row_count: int) -> Mapping[str, Any] | None:
+    manifest_path = output_root / f"Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = parse_json(manifest_path.read_text(encoding="utf-8"))
+    xlsx = output_root / str(manifest.get("xlsx") or "")
+    transcript_dir = output_root / str(manifest.get("transcript_dir") or "")
+    transcripts = manifest.get("transcripts") if isinstance(manifest.get("transcripts"), list) else []
+    if manifest.get("schema_version") != EXPORT_SCHEMA_VERSION or manifest.get("content_sha256") != content_sha256:
+        return None
+    if not xlsx.is_file() or sha256_file(xlsx) != manifest.get("xlsx_sha256"): raise RuntimeError("existing immutable XLSX generation is inconsistent")
+    if len(transcripts) != row_count or any(not isinstance(item, Mapping) for item in transcripts):
+        return None
+    if any(not (transcript_dir / str(item.get("file") or "")).is_file() or sha256_file(transcript_dir / str(item["file"])) != item.get("sha256") for item in transcripts):
+        raise RuntimeError("existing immutable transcript generation is inconsistent")
+    expected = {str(item["file"]) for item in transcripts}
+    if transcript_dir.is_dir() and {path.name for path in transcript_dir.iterdir()} != expected:
+        raise RuntimeError("unexpected transcript files in current daily package")
+    return {**manifest, "transcripts_copied": 0, "transcripts_reused": row_count, "transcripts_updated": 0, "reused": True, "xlsx": str(xlsx), "transcript_dir": str(transcript_dir), "manifest": str(manifest_path)}
 
 
 def workbook_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[list[Any]]]:
@@ -440,30 +511,32 @@ def style_header(cells: Sequence[Any]) -> None:
 def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manager_source: str, source_meta: Mapping[str, Any]) -> None:
     wb = Workbook()
     wb.remove(wb.active)
-    ready, unfinished = [row for row in rows if row["complete"]], [row for row in rows if not row["complete"]]
+    ready, manager_ready, unfinished = [row for row in rows if row["complete"]], [row for row in rows if row["manager_ready"]], [row for row in rows if not row["complete"]]
     summary = wb.create_sheet("Сводка")
     for line in (["Ежедневный отчёт РОПа", day.isoformat()], ["Всего звонков", len(rows)], ["Полностью обработано", len(ready)],
                  ["Обработка не завершена", len(unfinished)], ["Требуют проверки", sum(bool(row["issues"]) for row in rows)],
+                 ["Допущено к оценке менеджера", len(manager_ready)],
                  ["Порядок реплик подтверждён", sum(row["chronology_confirmed"] for row in rows)],
                  ["ФИО найдено в Tallanto", sum(bool(row["client_fio"]) for row in rows)],
                  ["ФИО менеджера неполное или не найдено", sum(bool(manager_name_issue(row["manager"])) for row in rows)],
                  ["Источник ФИО менеджеров", manager_source or "не задан"], ["Готовый снимок опубликован", source_meta.get("published_at") or ""]):
         append_safe(summary, line)
     summary.append([])
-    append_safe(summary, ["Менеджер", "Полностью обработанных звонков", "Часов"])
+    append_safe(summary, ["Менеджер", "Допущенных к оценке звонков", "Часов"])
     manager_header_row = summary.max_row
-    counts = Counter((row["manager"] or f"Добавочный {row['extension']}") for row in ready)
+    counts = Counter((row["manager"] or f"Добавочный {row['extension']}") for row in manager_ready)
     for manager, count in counts.most_common():
-        hours = sum(row["duration"] for row in ready if (row["manager"] or f"Добавочный {row['extension']}") == manager) / 3600
+        hours = sum(row["duration"] for row in manager_ready if (row["manager"] or f"Добавочный {row['extension']}") == manager) / 3600
         append_safe(summary, [manager, count, round(hours, 2)])
-    for title, subset in (("Звонки", ready), ("Проблемы данных", [row for row in rows if row["issues"]])):
+    for title, subset in (("Звонки", manager_ready), ("Проблемы данных", [row for row in rows if row["issues"]])):
         sheet = wb.create_sheet(title)
         headers, values = workbook_rows(subset)
         append_safe(sheet, headers)
         for value_row, source_row in zip(values, subset):
             append_safe(sheet, value_row)
             transcript_cell = sheet.cell(sheet.max_row, headers.index("Файл полной расшифровки") + 1)
-            transcript_cell.hyperlink, transcript_cell.style = source_row["transcript_file"].as_uri(), "Hyperlink"
+            transcript_cell.hyperlink = source_row["transcript_file"].relative_to(path.parent).as_posix()
+            transcript_cell.style = "Hyperlink"
         format_sheet(sheet)
     description = wb.create_sheet("Описание полей")
     for line in (["Правило", "Описание"], ["Период", "Полные календарные сутки по Москве."],
@@ -481,12 +554,17 @@ def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manage
     summary.column_dimensions["C"].width = 12
     format_sheet(description)
     temporary = path.with_suffix(".tmp.xlsx")
-    wb.save(temporary)
-    checked = load_workbook(temporary, read_only=True, data_only=False)
-    if checked.sheetnames != ["Сводка", "Звонки", "Проблемы данных", "Описание полей"] or checked["Звонки"].max_row != len(ready) + 1:
-        raise RuntimeError("проверка созданной таблицы не пройдена")
-    checked.close()
-    os.replace(temporary, path)
+    try:
+        wb.save(temporary)
+        checked = load_workbook(temporary, read_only=True, data_only=False)
+        try:
+            if checked.sheetnames != ["Сводка", "Звонки", "Проблемы данных", "Описание полей"] or checked["Звонки"].max_row != len(manager_ready) + 1:
+                raise RuntimeError("проверка созданной таблицы не пройдена")
+        finally:
+            checked.close()
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     path.chmod(0o600)
 
 
@@ -510,26 +588,38 @@ def export_day(
     apply_tallanto_names(rows, tallanto_export, client)
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_root.chmod(0o700)
-    transcript_dir = output_root / f"Расшифровки разговоров {day.isoformat()}"
-    copied, reused = publish_transcripts(rows, transcript_dir)
+    content_sha256 = publication_content_sha256(rows)
     source_after = verify_ready_drop(ready_db)
     if source_before["sha256"] != source_after["sha256"]:
         raise RuntimeError("готовая база изменилась во время выгрузки; повторите запуск")
-    xlsx = output_root / f"Отчёт РОП по звонкам {day.isoformat()}.xlsx"
-    manager_source = "Mango API" if current_manager_users else manager_users.name if manager_users else ""
-    write_workbook(xlsx, day, rows, manager_source, source_before)
+    if reused := reusable_export(output_root, day, content_sha256, len(rows)):
+        return reused
+    generation, transcript_dir = content_sha256[:12], output_root / f"Расшифровки разговоров {day.isoformat()} v3-{content_sha256[:12]}"
+    assign_transcript_targets(rows, transcript_dir)
+    xlsx, manager_source = output_root / f"Отчёт РОП по звонкам {day.isoformat()} v3-{generation}.xlsx", "Mango API" if current_manager_users else manager_users.name if manager_users else ""
+    if xlsx.exists(): raise RuntimeError("unreferenced immutable XLSX generation already exists")
+    with tempfile.NamedTemporaryFile(prefix=f".Отчёт РОП {day.isoformat()}-", suffix=".staging.xlsx", dir=output_root, delete=False) as handle:
+        staged_xlsx = Path(handle.name)
+    try:
+        write_workbook(staged_xlsx, day, rows, manager_source, source_before)
+        copied, reused, updated = publish_transcripts(rows, transcript_dir)
+        os.replace(staged_xlsx, xlsx)
+    finally:
+        staged_xlsx.unlink(missing_ok=True)
     manifest = {
-        "schema_version": "daily_mango_calls_resolve_export_v2", "generated_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": EXPORT_SCHEMA_VERSION, "generated_at": datetime.now(timezone.utc).isoformat(),
         "day": day.isoformat(), "rows": len(rows),
         "ready_rows": sum(row["complete"] for row in rows), "unfinished_rows": sum(not row["complete"] for row in rows),
-        "working_only_rows": working_only, "transcripts_copied": copied, "transcripts_reused": reused,
+        "manager_ready_rows": sum(row["manager_ready"] for row in rows), "content_sha256": content_sha256,
+        "working_only_rows": working_only, "transcripts_copied": copied, "transcripts_reused": reused, "transcripts_updated": updated,
         "chronology_confirmed_rows": sum(row["chronology_confirmed"] for row in rows),
         "tallanto_names_found": sum(bool(row["client_fio"]) for row in rows),
         "tallanto_match_sources": dict(Counter(row["tallanto_source"] or "не найдено" for row in rows)),
         "current_mango_users": len(current_manager_users),
         "source_ready_db_sha256": source_before["sha256"], "tallanto_export_sha256": sha256_file(tallanto_export),
         "xlsx": xlsx.name, "xlsx_sha256": sha256_file(xlsx), "transcript_dir": transcript_dir.name,
-        "transcripts": [{"call_id": row["call_id"], "file": row["transcript_file"].name, "sha256": row["transcript_sha256"]} for row in rows],
+        "transcripts": [{"file": row["transcript_file"].name, "sha256": row["transcript_sha256"]} for row in rows],
+        "reused": False,
     }
     manifest_path = output_root / f"Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
     temporary = manifest_path.with_suffix(".tmp")

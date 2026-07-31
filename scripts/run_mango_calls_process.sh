@@ -65,4 +65,25 @@ print("true" if last.get("downstream_ready") is True else "false")
     /bin/launchctl kickstart "gui/$(/usr/bin/id -u)/com.mango.calls-process-b" || exit $?
   fi
 fi
+if [[ "${COMMAND}" == "process-b" && -n "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" ]]; then
+  PROCESS_B_STATE="$(print -r -- "${OUTPUT}" | "${PYTHON_EXECUTABLE}" -c '
+import json, sys
+text = sys.stdin.read(); decoder = json.JSONDecoder(); last = None
+for index, char in enumerate(text):
+    if char != "{": continue
+    try: value, end = decoder.raw_decode(text[index:])
+    except json.JSONDecodeError: continue
+    if isinstance(value, dict) and not text[index + end:].strip(): last = value
+if last is None: raise SystemExit(2)
+print(str(last.get("status") or "") + "|" + str(last.get("stop_reason") or ""))
+')" || exit 3
+  if [[ "${PROCESS_B_STATE}" != "ok|" && "${PROCESS_B_STATE}" != "idle|drop_unchanged" ]]; then
+    exit "${RC}"
+  fi
+  PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}")"
+  "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/export_daily_mango_calls_resolve.py" \
+    --ready-db "${PIPELINE_ROOT}/drop/mango_calls_ready.sqlite" \
+    --working-db "${PIPELINE_ROOT}/working/mango_calls_pipeline.sqlite" \
+    --out "${MANGO_CALLS_DAILY_EXPORT_OUT}"
+fi
 exit "${RC}"

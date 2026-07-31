@@ -171,6 +171,34 @@ def test_role_blocks_are_not_presented_as_confirmed_chronology(tmp_path: Path, m
     assert "Менеджер:\nПервый блок" in text and "Клиент:\nВторой блок" in text
 
 
+def test_sealed_dialogue_never_reads_mutable_transcript_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(exporter, "PIPELINE_ROOT", tmp_path)
+    source = tmp_path / "audio" / "call.mp3"
+    external = tmp_path / "working" / "transcripts" / "audio" / "call_text.txt"
+    external.parent.mkdir(parents=True)
+    external.write_text("[00:01.00] Менеджер: ВНЕШНИЙ ИЗМЕНЯЕМЫЙ ТЕКСТ", encoding="utf-8")
+
+    text, confirmed = exporter.ordered_dialogue(
+        source, {}, "MANAGER:\nСохранённый текст\nCLIENT:\nОтвет", allow_file_fallback=False,
+    )
+
+    assert confirmed is False and "ВНЕШНИЙ" not in text and "Сохранённый текст" in text
+
+
+def test_sealed_merge_does_not_open_working_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ready, working = tmp_path / "ready.sqlite", tmp_path / "working.sqlite"
+    calls: list[Path] = []
+
+    def fake_read(path: Path, day: date, *, immutable: bool):
+        del day, immutable
+        calls.append(path)
+        return []
+
+    monkeypatch.setattr(exporter, "read_day", fake_read)
+    rows, pending = exporter.merged_day_rows(ready, working, date(2026, 7, 29), {}, sealed_only=True)
+    assert rows == [] and pending == 0 and calls == [ready]
+
+
 def test_estimated_timecodes_are_not_treated_as_confirmed_chronology() -> None:
     lines = ["[~00:01] Менеджер (Иван): Добрый день.", "[~00:05] Клиент: Здравствуйте."]
     _, confirmed = exporter.ordered_dialogue(Path("call.mp3"), {"dialogue_lines": lines}, "")

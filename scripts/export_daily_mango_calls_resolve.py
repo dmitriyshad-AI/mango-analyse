@@ -155,11 +155,13 @@ def translate_transcript(value: Any) -> str:
     return re.sub(r"(?m)^\s*CLIENT\s*:", "Клиент:", text, flags=re.IGNORECASE)
 
 
-def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str) -> tuple[str, bool]:
+def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str, *, allow_file_fallback: bool = True) -> tuple[str, bool]:
     raw_lines = variants.get("dialogue_lines")
-    if not isinstance(raw_lines, list) or not raw_lines:
+    if allow_file_fallback and (not isinstance(raw_lines, list) or not raw_lines):
         exported = PIPELINE_ROOT / "working/transcripts" / source.parent.name / f"{source.stem}_text.txt"
         raw_lines = exported.read_text(encoding="utf-8", errors="ignore").splitlines() if exported.is_file() else []
+    if not isinstance(raw_lines, list):
+        raw_lines = []
     lines, previous = [], -1.0
     for raw in (str(item).strip() for item in raw_lines if str(item).strip()):
         match = TIMED_LINE_RE.fullmatch(raw)
@@ -335,14 +337,17 @@ def processing_issues(row: sqlite3.Row, analysis: Mapping[str, Any], resolve: Ma
     return list(dict.fromkeys(issues))
 
 
-def normalize_row(row: sqlite3.Row, names: Mapping[str, str]) -> dict[str, Any]:
+def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bool = False) -> dict[str, Any]:
     analysis, resolve, variants = parse_json(row["analysis_json"]), parse_json(row["resolve_json"]), parse_json(row["transcript_variants_json"])
     raw = dict(row)
     started_utc = datetime.fromisoformat(str(row["started_at"])).replace(tzinfo=timezone.utc)
     raw["started_at"] = started_utc
     base = call_to_row(SimpleNamespace(**raw), analysis) if analysis else {}
     started = started_utc.astimezone(MOSCOW)
-    transcript, order_confirmed = ordered_dialogue(Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""))
+    transcript, order_confirmed = ordered_dialogue(
+        Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""),
+        allow_file_fallback=not sealed_only,
+    )
     roles_confirmed = manager_roles_confirmed(variants)
     chronology_confirmed = order_confirmed and roles_confirmed
     extension = str(row["manager_name"] or "").strip()
@@ -369,12 +374,12 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def merged_day_rows(ready_db: Path, working_db: Path, day: date, names: Mapping[str, str]) -> tuple[list[dict[str, Any]], int]:
+def merged_day_rows(ready_db: Path, working_db: Path, day: date, names: Mapping[str, str], *, sealed_only: bool = False) -> tuple[list[dict[str, Any]], int]:
     ready = read_day(ready_db, day, immutable=True)
-    working = read_day(working_db, day, immutable=False)
+    working = [] if sealed_only else read_day(working_db, day, immutable=False)
     ready_ids = {str(row["source_call_id"] or row["id"]) for row in ready}
     pending = [row for row in working if str(row["source_call_id"] or row["id"]) not in ready_ids]
-    merged = [normalize_row(row, names) for row in [*ready, *pending]]
+    merged = [normalize_row(row, names, sealed_only=sealed_only) for row in [*ready, *pending]]
     merged.sort(key=lambda item: (item["started"], item["id"]))
     return merged, len(pending)
 
@@ -579,11 +584,14 @@ def export_day(
     tallanto_env: Path = DEFAULT_TALLANTO_ENV,
     tallanto_client: TallantoApiClient | None = None,
     current_manager_users: Sequence[Mapping[str, Any]] = (),
+    sealed_only: bool = False,
 ) -> Mapping[str, Any]:
     if day >= datetime.now(MOSCOW).date():
         raise ValueError("можно выгружать только завершённые сутки по Москве")
     source_before = verify_ready_drop(ready_db)
-    rows, working_only = merged_day_rows(ready_db, working_db, day, load_manager_map(manager_users, current_manager_users))
+    rows, working_only = merged_day_rows(
+        ready_db, working_db, day, load_manager_map(manager_users, current_manager_users), sealed_only=sealed_only,
+    )
     client = tallanto_client or build_tallanto_client(tallanto_env)
     apply_tallanto_names(rows, tallanto_export, client)
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -639,11 +647,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tallanto-export", type=Path, default=DEFAULT_TALLANTO_EXPORT)
     parser.add_argument("--tallanto-env", type=Path, default=DEFAULT_TALLANTO_ENV)
     parser.add_argument("--mango-env", type=Path, default=DEFAULT_MANGO_ENV)
+    parser.add_argument("--sealed-only", action="store_true", help="Не читать рабочую DB и внешние transcript-файлы.")
     args = parser.parse_args(argv)
     result = export_day(
         args.ready_db, args.working_db, args.out, args.day, args.manager_users,
         tallanto_export=args.tallanto_export, tallanto_env=args.tallanto_env,
         current_manager_users=fetch_mango_users(args.mango_env),
+        sealed_only=args.sealed_only,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "transcripts"}, ensure_ascii=False, indent=2))
     return 0

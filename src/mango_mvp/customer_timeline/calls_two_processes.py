@@ -195,6 +195,10 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "locks" / "process_a.lock"
 
     @property
+    def process_b_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "process_b.lock"
+
+    @property
     def reports_dir(self) -> Path:
         return self.pipeline_root / "reports"
 
@@ -573,10 +577,15 @@ def run_process_b(
             exc,
         )
     try:
-        return _run_process_b(
-            config,
-            producer_runner=producer_runner,
-            import_runner=import_runner,
+        with process_lease(config.process_b_lock, stale_seconds=config.stale_lock_seconds):
+            return _run_process_b(
+                config,
+                producer_runner=producer_runner,
+                import_runner=import_runner,
+            )
+    except LockBusy as exc:
+        return finalize_report(
+            config, run_id, "process_b", "locked", "process_b_locked", {"lock": exc.metadata},
         )
     except Exception as exc:  # noqa: BLE001 - Process B must report, never traceback
         stop_reason = f"process_b_exception:{type(exc).__name__}"

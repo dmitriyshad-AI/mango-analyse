@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import io
 import json
+import os
 import re
 import secrets
 import stat
+import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -166,61 +170,77 @@ def readback(session: Any, file_id: str, folder_id: str, plan: Mapping[str, Any]
 
 def best_effort_quarantine(session: Any, file_id: str, plan: Mapping[str, Any]) -> None:
     try:
-        session.patch(
+        response_json(session.patch(
             f"https://www.googleapis.com/drive/v3/files/{file_id}",
             params={"supportsAllDrives": "true"},
             json={"name": plan["temporary_name"], "appProperties": expected_properties(plan, "checking")}, timeout=60,
-        )
+        ))
+        readback(session, file_id, str(plan["folder_id"]), plan, state="checking", check_content=False)
     except Exception:
         pass
 
 
-def publish(session: Any, folder_id: str, plan: Mapping[str, Any]) -> Mapping[str, Any]:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", folder_id):
-        raise RuntimeError("Google Drive folder id is invalid")
-    validate_target_folder(session, folder_id)
-    query = (
-        f"'{folder_id}' in parents and appProperties has {{ key='mango_report_day' and value='{plan['day']}' }} "
-        f"and appProperties has {{ key='mango_report_content_sha256' and value='{plan['content_sha256']}' }} "
-        "and appProperties has { key='mango_report_state' and value='published' } and trashed=false"
-    )
-    lookup = response_json(session.get(
-        "https://www.googleapis.com/drive/v3/files",
-        params={"q": query, "fields": "files(id),nextPageToken", "spaces": "drive", "pageSize": 2,
-                "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}, timeout=60,
-    ))
-    found = lookup.get("files")
-    if not isinstance(found, list) or len(found) > 1 or lookup.get("nextPageToken"):
-        raise RuntimeError("Google Drive exact generation lookup is ambiguous")
-    if found:
-        if not isinstance(found[0], Mapping) or not (file_id := str(found[0].get("id") or "")):
-            raise RuntimeError("Google Drive exact generation lookup is invalid")
-        readback(session, file_id, folder_id, plan, state="published", check_content=True)
-        return {"status": "reused", "day": plan["day"], "spreadsheet_id": file_id}
-    boundary = f"mango_{secrets.token_hex(12)}"
-    metadata = {
-        "name": plan["temporary_name"], "mimeType": GOOGLE_SHEET_MIME, "parents": [folder_id],
-        "appProperties": expected_properties(plan, "checking"),
-    }
-    body = (
-        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{json.dumps(metadata, ensure_ascii=False)}"
-        f"\r\n--{boundary}\r\nContent-Type: {XLSX_MIME}\r\n\r\n"
-    ).encode() + plan["upload_bytes"] + f"\r\n--{boundary}--\r\n".encode()
-    created = response_json(session.post(
-        "https://www.googleapis.com/upload/drive/v3/files",
-        params={"uploadType": "multipart", "fields": "id", "supportsAllDrives": "true"},
-        headers={"Content-Type": f"multipart/related; boundary={boundary}"}, data=body, timeout=180,
-    ))
-    file_id = str(created.get("id") or "")
-    if not file_id:
-        raise RuntimeError("Google Drive create response has no file id")
+def atomic_state(path: Path, payload: Mapping[str, Any]) -> None:
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
     try:
-        readback(session, file_id, folder_id, plan, state="checking", check_content=True)
-    except Exception:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            session.delete(f"https://www.googleapis.com/drive/v3/files/{file_id}", params={"supportsAllDrives": "true"}, timeout=60)
+            os.fsync(directory)
         finally:
-            raise
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def remove_state(path: Path | None) -> None:
+    if path is None or not path.exists():
+        return
+    path.unlink()
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+@contextmanager
+def publication_lock(root: Path, day: str, content_sha256: str, folder_id: str):
+    root_key = hashlib.sha256(str(root.expanduser().resolve()).encode()).hexdigest()
+    generation = hashlib.sha256(f"{folder_id}:{day}:{content_sha256}".encode()).hexdigest()
+    directory = Path.home() / ".mango_local" / "google_publish_locks"
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    directory.chmod(0o700)
+    path = directory / f"{root_key}.lock"
+    with path.open("a+", encoding="utf-8") as handle:
+        path.chmod(0o600)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Google publication is already running") from exc
+        yield directory / f"{root_key}.{generation}.create.json"
+
+
+def validate_journal(path: Path, plan: Mapping[str, Any]) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Google create journal is invalid") from exc
+    if (not isinstance(payload, Mapping) or payload.get("day") != plan["day"]
+            or payload.get("content_sha256") != plan["content_sha256"]
+            or payload.get("folder_id") != plan["folder_id"]):
+        raise RuntimeError("Google create journal belongs to another generation")
+
+
+def finalize_file(session: Any, file_id: str, folder_id: str, plan: Mapping[str, Any]) -> None:
     response_json(session.patch(
         f"https://www.googleapis.com/drive/v3/files/{file_id}",
         params={"fields": "id", "supportsAllDrives": "true"},
@@ -231,6 +251,75 @@ def publish(session: Any, folder_id: str, plan: Mapping[str, Any]) -> Mapping[st
     except Exception:
         best_effort_quarantine(session, file_id, plan)
         raise
+
+
+def publish(session: Any, folder_id: str, plan: Mapping[str, Any], *, journal: Path | None = None) -> Mapping[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", folder_id):
+        raise RuntimeError("Google Drive folder id is invalid")
+    validate_target_folder(session, folder_id)
+    plan = {**plan, "folder_id": folder_id}
+    if journal and journal.exists():
+        validate_journal(journal, plan)
+    query = (
+        f"'{folder_id}' in parents and appProperties has {{ key='mango_report_day' and value='{plan['day']}' }} "
+        f"and appProperties has {{ key='mango_report_content_sha256' and value='{plan['content_sha256']}' }} "
+        f"and appProperties has {{ key='mango_report_schema' and value='{SCHEMA}' }} "
+        "and trashed=false"
+    )
+    lookup = response_json(session.get(
+        "https://www.googleapis.com/drive/v3/files",
+        params={"q": query, "fields": "files(id,appProperties),nextPageToken", "spaces": "drive", "pageSize": 2,
+                "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}, timeout=60,
+    ))
+    found = lookup.get("files")
+    if not isinstance(found, list) or len(found) > 1 or lookup.get("nextPageToken"):
+        raise RuntimeError("Google Drive exact generation lookup is ambiguous")
+    if found:
+        if not isinstance(found[0], Mapping) or not (file_id := str(found[0].get("id") or "")):
+            raise RuntimeError("Google Drive exact generation lookup is invalid")
+        props = found[0].get("appProperties") if isinstance(found[0].get("appProperties"), Mapping) else {}
+        state = str(props.get("mango_report_state") or "")
+        if state not in {"checking", "published"}:
+            raise RuntimeError("Google Drive exact generation state is invalid")
+        readback(session, file_id, folder_id, plan, state=state, check_content=True)
+        if state == "checking":
+            finalize_file(session, file_id, folder_id, plan)
+            remove_state(journal)
+            return {"status": "resumed", "day": plan["day"], "spreadsheet_id": file_id}
+        remove_state(journal)
+        return {"status": "reused", "day": plan["day"], "spreadsheet_id": file_id}
+    if journal and journal.exists():
+        raise RuntimeError("Google create result is uncertain; reconcile the quarantined generation before retry")
+    boundary = f"mango_{secrets.token_hex(12)}"
+    metadata = {
+        "name": plan["temporary_name"], "mimeType": GOOGLE_SHEET_MIME, "parents": [folder_id],
+        "appProperties": expected_properties(plan, "checking"),
+    }
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{json.dumps(metadata, ensure_ascii=False)}"
+        f"\r\n--{boundary}\r\nContent-Type: {XLSX_MIME}\r\n\r\n"
+    ).encode() + plan["upload_bytes"] + f"\r\n--{boundary}--\r\n".encode()
+    if journal:
+        atomic_state(journal, {"day": plan["day"], "content_sha256": plan["content_sha256"],
+                               "folder_id": folder_id, "state": "create_pending"})
+    created = response_json(session.post(
+        "https://www.googleapis.com/upload/drive/v3/files",
+        params={"uploadType": "multipart", "fields": "id", "supportsAllDrives": "true"},
+        headers={"Content-Type": f"multipart/related; boundary={boundary}"}, data=body, timeout=180,
+    ))
+    file_id = str(created.get("id") or "")
+    if not file_id:
+        raise RuntimeError("Google Drive create response has no file id")
+    if journal:
+        atomic_state(journal, {"day": plan["day"], "content_sha256": plan["content_sha256"],
+                               "folder_id": folder_id, "state": "checking", "spreadsheet_id": file_id})
+    try:
+        readback(session, file_id, folder_id, plan, state="checking", check_content=True)
+    except Exception:
+        best_effort_quarantine(session, file_id, plan)
+        raise
+    finalize_file(session, file_id, folder_id, plan)
+    remove_state(journal)
     return {"status": "created", "day": plan["day"], "spreadsheet_id": file_id}
 
 
@@ -255,10 +344,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.execute:
         result = {"status": "dry_run", "day": plan["day"], "name": plan["name"], "content_sha256": plan["content_sha256"]}
     else:
-        if args.confirmation != CONFIRMATION or not args.credentials:
-            raise RuntimeError("explicit Google upload confirmation and credentials are required")
-        credentials = validate_credentials(args.credentials, Path(__file__).resolve().parents[1])
-        result = publish(authorized_session(credentials), args.folder_id, plan)
+        with publication_lock(args.report_root, str(plan["day"]), str(plan["content_sha256"]), args.folder_id) as journal:
+            if args.confirmation != CONFIRMATION or not args.credentials:
+                raise RuntimeError("explicit Google upload confirmation and credentials are required")
+            credentials = validate_credentials(args.credentials, Path(__file__).resolve().parents[1])
+            result = publish(authorized_session(credentials), args.folder_id, plan, journal=journal)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

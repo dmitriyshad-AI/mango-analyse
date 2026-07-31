@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import plistlib
 import shlex
 import subprocess
@@ -43,7 +44,23 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
+    env_path.chmod(0o600)
     return config_path, env_path
+
+
+def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "clean-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    runner = scripts / RUNNER.name
+    runner.write_text(RUNNER.read_text(encoding="utf-8"), encoding="utf-8")
+    runner.chmod(0o700)
+    subprocess.run(["git", "add", "scripts"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "test"], cwd=repo, check=True)
+    return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
 
 def _render(tmp_path: Path, *extra: str) -> dict[str, dict[str, object]]:
@@ -91,6 +108,28 @@ def test_launchd_installer_renders_scheduled_a_and_demand_only_b(tmp_path: Path)
     assert "cycle" not in process_b["ProgramArguments"]
     assert process_a["StandardOutPath"] != process_b["StandardOutPath"]
     assert process_a["StandardErrorPath"] != process_b["StandardErrorPath"]
+
+
+def test_launchd_installer_process_a_only_never_renders_b(tmp_path: Path) -> None:
+    plists = _render(tmp_path, "--process-a-only", "--process-a-interval-seconds", "600")
+    assert set(plists) == {"com.mango.calls-process-a"}
+    assert plists["com.mango.calls-process-a"]["ProgramArguments"][-1] == "process-a-worker"
+
+
+def test_launchd_installer_process_b_only_never_renders_a(tmp_path: Path) -> None:
+    plists = _render(tmp_path, "--process-b-only", "--process-b-interval-seconds", "600")
+    assert set(plists) == {"com.mango.calls-process-b"}
+    assert plists["com.mango.calls-process-b"]["StartInterval"] == 600
+    assert plists["com.mango.calls-process-b"]["ProgramArguments"][-1] == "process-b-pull"
+
+
+def test_launchd_installer_rejects_both_single_process_modes(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    result = subprocess.run([
+        sys.executable, str(INSTALLER), "--config", str(config_path), "--env-file", str(env_path),
+        "--process-a-only", "--process-b-only", "--out-dir", str(tmp_path / "launchd"),
+    ], cwd=ROOT, check=False)
+    assert result.returncode != 0
 
 
 def test_launchd_installer_rejects_sub_300_second_intervals(tmp_path: Path) -> None:
@@ -180,6 +219,13 @@ def test_runner_executes_configured_python(tmp_path: Path) -> None:
     args = captured.read_text(encoding="utf-8").splitlines()
     assert args[-1] == "process-b"
     assert "run_mango_calls_pipeline.py" in args[0]
+
+
+def test_runner_rejects_readable_secret_env_before_source(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    env_path.chmod(0o644)
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT, check=False)
+    assert result.returncode == 2
 
 
 def test_successful_process_b_runs_daily_export_when_out_is_configured(tmp_path: Path) -> None:
@@ -299,9 +345,10 @@ fi
     payload["python_executable"] = str(fake_python)
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
-                   env={**__import__("os").environ, "CAPTURED": str(captured)}, check=True)
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+                            env={**__import__("os").environ, "CAPTURED": str(captured)}, check=False)
 
+    assert result.returncode != 0
     assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
 
 
@@ -499,6 +546,115 @@ fi
     ]
 
 
+@pytest.mark.parametrize("process_status,expected_export", [("ok", True), ("partial", False)])
+def test_process_a_worker_publishes_only_complete_sealed_report(
+    tmp_path: Path, process_status: str, expected_export: bool
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    launchctl_capture = tmp_path / "launchctl_args.txt"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n",
+        encoding="utf-8",
+    )
+    clean_repo, head = _clean_git_repo(tmp_path)
+    env_path.write_text(env_path.read_text(encoding="utf-8")
+                        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n", encoding="utf-8")
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf -- "--call--\\n" >> "$CAPTURED"
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"{process_status}","downstream_ready":true}}'
+  [[ "{process_status}" == "ok" ]] || exit 1
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    fake_launchctl = tmp_path / "launchctl"
+    fake_launchctl.write_text('#!/bin/zsh\nprintf "%s\\n" "$@" > "$CAPTURED_LAUNCHCTL"\n', encoding="utf-8")
+    fake_launchctl.chmod(0o700)
+    runner = clean_repo / "scripts" / RUNNER.name
+
+    result = subprocess.run(
+        [str(runner), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT,
+        env={**__import__("os").environ, "CAPTURED": str(captured), "CAPTURED_LAUNCHCTL": str(launchctl_capture)},
+        check=False,
+    )
+
+    calls = captured.read_text(encoding="utf-8").split("--call--\n")
+    exports = [call for call in calls if "export_daily_mango_calls_resolve.py" in call]
+    ready = str(tmp_path / "pipeline" / "drop" / "mango_calls_ready.sqlite")
+    assert result.returncode == (0 if process_status == "ok" else 1)
+    assert bool(exports) is expected_export
+    if exports:
+        assert exports[0].count(ready) == 2 and "--day" in exports[0] and "--sealed-only" in exports[0]
+    assert not launchctl_capture.exists()
+
+
+def test_process_b_pull_rejects_partial_config_before_pipeline(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    env_path.write_text(env_path.read_text(encoding="utf-8")
+                        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
+                        + "MANGO_CALLS_REMOTE_HOST=main-host\n", encoding="utf-8")
+    result = subprocess.run([str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"],
+                            cwd=ROOT, check=False)
+    assert result.returncode == 4
+
+
+def test_process_b_pull_accepts_remote_drop_before_b_and_never_publishes(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    env_path.write_text(env_path.read_text(encoding="utf-8")
+                        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
+                        + "MANGO_CALLS_REMOTE_HOST=m1-worker\n"
+                        + "MANGO_CALLS_REMOTE_DROP_ROOT=/Users/test/.mango_local/drop\n"
+                        + f"MANGO_CALLS_REMOTE_INCOMING_ROOT={tmp_path / 'incoming'}\n", encoding="utf-8")
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+printf -- "--call--\\n" >> "$CAPTURED"
+printf "%s\\n" "$@" >> "$CAPTURED"
+if [[ "$1" == *pull_mango_calls_drop_remote.py ]]; then
+  print -r -- '{{"status":"accepted"}}'
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"idle","stop_reason":"drop_unchanged"}}'
+elif [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+fi
+''', encoding="utf-8")
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run([str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"], cwd=ROOT,
+                            env={**__import__("os").environ, "CAPTURED": str(captured)}, check=False)
+
+    calls = captured.read_text(encoding="utf-8").split("--call--\n")
+    pull_index = next(index for index, call in enumerate(calls) if "pull_mango_calls_drop_remote.py" in call)
+    assert result.returncode == 0 and pull_index > 0
+    assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
+
+
+def test_split_modes_require_exact_clean_code_revision(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, check=False)
+    assert result.returncode == 4
+    env_path.write_text(env_path.read_text(encoding="utf-8")
+                        + "MANGO_CALLS_EXPECTED_CODE_SHA=0000000000000000000000000000000000000000\n", encoding="utf-8")
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, check=False)
+    assert result.returncode == 4
+
+
 def test_process_a_partial_ready_starts_b_and_preserves_rc_one(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     capture = tmp_path / "launchctl_args.txt"
@@ -610,6 +766,105 @@ def test_install_boots_out_old_loaded_label_without_deleting_plist(
     assert ["launchctl", "bootout", f"{domain}/com.mango.calls-two-processes"] in calls
     assert ["launchctl", "bootstrap", domain, str(out_dir / "com.mango.calls-process-a.plist")] in calls
     assert ["launchctl", "bootstrap", domain, str(out_dir / "com.mango.calls-process-b.plist")] in calls
+
+
+def test_process_a_only_install_refuses_if_process_b_is_loaded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    installer = _load_installer()
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        loaded_b = command[:2] == ["launchctl", "print"] and command[2].endswith(installer.LABEL_B)
+        return subprocess.CompletedProcess(command, 0 if loaded_b else 1, stdout="", stderr="")
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="Process B or legacy service is active"):
+        installer.main([
+            "--config", str(config_path), "--env-file", str(env_path),
+            "--out-dir", str(tmp_path / "launchd"), "--process-a-only", "--install",
+        ])
+
+
+@pytest.mark.parametrize("single_flag", ["--process-a-only", "--process-b-only"])
+def test_single_role_install_refuses_loaded_legacy_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, single_flag: str
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    installer = _load_installer()
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        legacy = command[:2] == ["launchctl", "print"] and command[2].endswith(installer.OLD_LABEL)
+        return subprocess.CompletedProcess(command, 0 if legacy else 1, stdout="", stderr="")
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="legacy service is active"):
+        installer.main([
+            "--config", str(config_path), "--env-file", str(env_path), "--out-dir", str(tmp_path / "launchd"),
+            single_flag, "--install",
+        ])
+
+
+@pytest.mark.parametrize(
+    "single_flag,lock_name,error",
+    [
+        ("--process-b-only", "process_a", "Process A or legacy service is active"),
+        ("--process-a-only", "process_b", "Process B or legacy service is active"),
+    ],
+)
+def test_single_role_install_refuses_opposite_live_process_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, single_flag: str, lock_name: str, error: str
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    locks = Path(config["pipeline_root"]) / "locks"
+    locks.mkdir(parents=True)
+    lock_path = locks / f"{lock_name}.lock"
+    lock_path.write_text(json.dumps({"pid": __import__("os").getpid()}), encoding="utf-8")
+    lock_handle = lock_path.open("r+", encoding="utf-8")
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    installer = _load_installer()
+    monkeypatch.setattr(installer.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1))
+
+    try:
+        with pytest.raises(RuntimeError, match=error):
+            installer.main([
+                "--config", str(config_path), "--env-file", str(env_path), "--out-dir", str(tmp_path / "launchd"),
+                single_flag, "--install",
+            ])
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+
+
+def test_single_role_install_uses_flock_and_standard_launchagents_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    locks = Path(config["pipeline_root"]) / "locks"
+    locks.mkdir(parents=True)
+    (locks / "process_a.lock").write_text(json.dumps({"pid": __import__("os").getpid()}), encoding="utf-8")
+    installer = _load_installer()
+    monkeypatch.setattr(installer.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1))
+    monkeypatch.setattr(installer, "_conflicting_plist_exists", lambda labels: False)
+
+    assert installer._live_process_lock(Path(config["pipeline_root"]), "process_a") is False
+    with pytest.raises(RuntimeError, match="standard LaunchAgents path"):
+        installer.main([
+            "--config", str(config_path), "--env-file", str(env_path), "--out-dir", str(tmp_path / "preview"),
+            "--process-b-only", "--install",
+        ])
+
+
+def test_single_role_install_detects_conflicting_plist_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    installer = _load_installer()
+    conflict = tmp_path / "legacy.plist"
+    conflict.write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(installer, "_standard_plist", lambda label: conflict)
+    assert installer._conflicting_plist_exists((installer.OLD_LABEL,)) is True
 
 
 def test_partial_install_rolls_back_process_a(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

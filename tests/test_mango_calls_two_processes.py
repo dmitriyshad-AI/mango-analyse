@@ -980,6 +980,17 @@ def test_process_b_returns_locked_instead_of_traceback(tmp_path: Path) -> None:
     assert result["stop_reason"] == "timeline_writer_locked"
 
 
+def test_process_b_has_its_own_nonblocking_process_lock(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+
+    with process_lease(config.process_b_lock, stale_seconds=60):
+        result = run_process_b(config)
+
+    assert result["status"] == "locked"
+    assert result["stop_reason"] == "process_b_locked"
+
+
 def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     create_ready_call_db(config.ready_db)
@@ -1195,6 +1206,7 @@ def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path)
         encoding="utf-8",
     )
     env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
+    env_path.chmod(0o600)
 
     subprocess.run(
         [

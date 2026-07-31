@@ -26,10 +26,12 @@ class BrokenJsonResponse(Response):
 
 class Session:
     def __init__(self, plan: dict[str, object], *, found: list[dict[str, str]] | None = None,
-                 mismatch: bool = False, private: bool = True):
+                 mismatch: bool = False, private: bool = True, post_error: bool = False):
         self.plan, self.xlsx, self.found = plan, plan["upload_bytes"], found or []
-        self.mismatch, self.private, self.posts, self.patches, self.deletes, self.gets = mismatch, private, [], [], 0, []
-        self.state = "published" if found else "checking"
+        self.mismatch, self.private, self.post_error = mismatch, private, post_error
+        self.posts, self.patches, self.deletes, self.gets = [], [], 0, []
+        first_props = found[0].get("appProperties", {}) if found else {}
+        self.state = str(first_props.get("mango_report_state") or ("published" if found else "checking"))
 
     def get(self, url: str, **kwargs: object) -> Response:
         self.gets.append((url, kwargs))
@@ -52,6 +54,8 @@ class Session:
 
     def post(self, url: str, **kwargs: object) -> Response:
         self.posts.append((url, kwargs))
+        if self.post_error:
+            raise TimeoutError("response lost")
         return Response({"id": "sheet-123"})
 
     def patch(self, url: str, **kwargs: object) -> Response:
@@ -131,7 +135,7 @@ def test_manifest_wrong_day_and_oversized_xlsx_fail_closed(tmp_path: Path, monke
 def test_exact_generation_is_reused_after_content_readback(tmp_path: Path) -> None:
     root, _, _ = fixture_report(tmp_path)
     plan = publisher.load_plan(root, date(2026, 7, 29))
-    session = Session(plan, found=[{"id": "sheet-123"}])
+    session = Session(plan, found=[{"id": "sheet-123", "appProperties": publisher.expected_properties(plan, "published")}])
 
     result = publisher.publish(session, "folder_123456789", plan)
 
@@ -184,10 +188,11 @@ def test_private_writable_folder_is_required_before_upload(tmp_path: Path) -> No
 def test_generation_lookup_includes_day_for_identical_empty_content(tmp_path: Path) -> None:
     root, manifest, _ = fixture_report(tmp_path)
     plan = publisher.load_plan(root, date(2026, 7, 29))
-    session = Session(plan, found=[{"id": "sheet-123"}])
+    session = Session(plan, found=[{"id": "sheet-123", "appProperties": publisher.expected_properties(plan, "published")}])
     publisher.publish(session, "folder_123456789", plan)
     query = next(kwargs["params"]["q"] for url, kwargs in session.gets if url.endswith("/files"))
-    assert "mango_report_day" in query and "2026-07-29" in query and "mango_report_state" in query
+    assert "mango_report_day" in query and "2026-07-29" in query and publisher.SCHEMA in query
+    assert "mango_report_state" not in query
     assert manifest["content_sha256"] in query
 
 
@@ -229,7 +234,74 @@ def test_remote_content_mismatch_blocks_success(tmp_path: Path) -> None:
     session = Session(plan, mismatch=True)
     with pytest.raises(RuntimeError, match="content readback mismatch"):
         publisher.publish(session, "folder_123456789", plan)
-    assert session.deletes == 1 and not session.patches
+    assert session.deletes == 0
+    assert session.patches[-1][1]["json"]["name"] == plan["temporary_name"]
+
+
+def test_interrupted_checking_generation_is_resumed_without_duplicate(tmp_path: Path) -> None:
+    root, _, _ = fixture_report(tmp_path)
+    plan = publisher.load_plan(root, date(2026, 7, 29))
+    session = Session(plan, found=[{
+        "id": "sheet-123", "appProperties": publisher.expected_properties(plan, "checking"),
+    }])
+
+    result = publisher.publish(session, "folder_123456789", plan)
+
+    assert result["status"] == "resumed" and not session.posts
+    assert session.state == "published"
+
+
+def test_lost_create_response_blocks_duplicate_until_generation_is_found(tmp_path: Path) -> None:
+    root, _, _ = fixture_report(tmp_path)
+    plan = publisher.load_plan(root, date(2026, 7, 29))
+    journal = tmp_path / "create.json"
+    failed = Session(plan, post_error=True)
+    with pytest.raises(TimeoutError, match="response lost"):
+        publisher.publish(failed, "folder_123456789", plan, journal=journal)
+    assert journal.is_file() and len(failed.posts) == 1
+
+    retry = Session(plan)
+    with pytest.raises(RuntimeError, match="uncertain"):
+        publisher.publish(retry, "folder_123456789", plan, journal=journal)
+    assert not retry.posts
+
+    found = Session(plan, found=[{
+        "id": "sheet-123", "appProperties": publisher.expected_properties(plan, "checking"),
+    }])
+    assert publisher.publish(found, "folder_123456789", plan, journal=journal)["status"] == "resumed"
+    assert not journal.exists() and not found.posts
+
+
+def test_google_create_journal_cannot_cross_generations(tmp_path: Path) -> None:
+    root, _, _ = fixture_report(tmp_path)
+    plan = publisher.load_plan(root, date(2026, 7, 29))
+    journal = tmp_path / "create.json"
+    journal.write_text(json.dumps({"day": "2026-07-28", "content_sha256": "0" * 64,
+                                   "folder_id": "folder_123456789"}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="another generation"):
+        publisher.publish(Session(plan), "folder_123456789", plan, journal=journal)
+
+
+def test_google_create_journal_cannot_cross_target_folders(tmp_path: Path) -> None:
+    root, _, _ = fixture_report(tmp_path)
+    plan = publisher.load_plan(root, date(2026, 7, 29))
+    journal = tmp_path / "create.json"
+    journal.write_text(json.dumps({"day": plan["day"], "content_sha256": plan["content_sha256"],
+                                   "folder_id": "folder_original"}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="another generation"):
+        publisher.publish(Session(plan), "folder_123456789", plan, journal=journal)
+
+
+def test_dry_run_does_not_create_publication_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _, _ = fixture_report(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(publisher.Path, "home", classmethod(lambda cls: home))
+
+    publisher.main(["--report-root", str(root), "--day", "2026-07-29"])
+
+    assert not (home / ".mango_local").exists()
 
 
 def test_credentials_must_be_external_owner_only(tmp_path: Path) -> None:

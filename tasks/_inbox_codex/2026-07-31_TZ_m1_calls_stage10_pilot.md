@@ -1,4 +1,4 @@
-Ветка: codex/calls-dialogue-m1-20260730
+Ветка: main
 Зоны: scripts/build_mango_calls_stage10_verdict.py, tests/test_mango_calls_stage10_verdict.py, внешний runtime M1, owner-only secrets, launchd preview, read-only отчёты, Timeline staging, внутренняя публикация Яндекс/Google
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_stage10_verdict.py tests/test_mango_calls_schedule.py tests/test_mango_calls_remote_handoff.py tests/test_export_daily_mango_calls_resolve.py tests/test_publish_daily_mango_calls_google.py
 Семантический-аудит: да

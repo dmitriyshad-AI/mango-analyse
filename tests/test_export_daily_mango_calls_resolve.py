@@ -482,6 +482,27 @@ def test_tallanto_api_is_loaded_once_for_all_missing_phones(tmp_path: Path) -> N
     assert rows[1]["client_fio"] == ""
 
 
+def test_tallanto_api_uses_explicit_snapshot_time_not_copied_file_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export = tmp_path / "tallanto.csv"
+    export.write_text('ID,Имя,Фамилия,ФИО родителя,Тел. (родителя),Тел. (доп.)\n', encoding="utf-8-sig")
+    rows = [{"phone": "+79990001123", "issues": [], "client_fio": "", "tallanto_source": ""}]
+    seen: list[str] = []
+
+    def fake_changes(client: object, wanted: set[str], modified_after: str) -> tuple[dict[str, dict[str, str]], bool]:
+        seen.append(modified_after)
+        return {}, True
+
+    monkeypatch.setattr(exporter, "load_tallanto_api_changes", fake_changes)
+    exporter.apply_tallanto_names(
+        rows, export, FakeTallantoClient(),
+        snapshot_as_of=datetime.fromisoformat("2026-06-20T00:00:00+03:00"),
+    )  # type: ignore[arg-type]
+
+    assert seen == ["2026-06-20 00:00:00"]
+
+
 def test_tallanto_api_failure_is_not_reported_as_phone_absent(tmp_path: Path) -> None:
     export = tmp_path / "tallanto.csv"
     export.write_text('ID,Имя,Фамилия,ФИО родителя,Тел. (родителя),Тел. (доп.)\n', encoding="utf-8-sig")

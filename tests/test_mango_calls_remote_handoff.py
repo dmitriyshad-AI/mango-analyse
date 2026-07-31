@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,15 @@ def make_package(root: Path, value: str) -> tuple[Path, str]:
         "size_bytes": db.stat().st_size, "quick_check": "ok", "counts": {"total": 1},
     }), encoding="utf-8")
     return root, sha
+
+
+def ssh_files(root: Path) -> dict[str, Path]:
+    identity, known_hosts = root / "identity", root / "known_hosts"
+    identity.write_text("identity", encoding="utf-8")
+    known_hosts.write_text("known-host", encoding="utf-8")
+    identity.chmod(0o600)
+    known_hosts.chmod(0o600)
+    return {"identity_file": identity, "known_hosts": known_hosts}
 
 
 def test_receiver_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -158,6 +168,7 @@ def test_pull_dry_run_has_no_network_and_execute_accepts_exact_drop(tmp_path: Pa
     kwargs = {
         "remote_host": "m1-worker", "remote_drop_root": "/Users/test/.mango_local/pipeline/drop",
         "incoming_root": tmp_path / "incoming", "pipeline_root": tmp_path / "pipeline",
+        **ssh_files(tmp_path),
     }
     assert puller.pull_drop(**kwargs, execute=False, confirmation="", runner=runner)["status"] == "dry_run"
     assert not runner.commands
@@ -173,11 +184,66 @@ def test_pull_dry_run_has_no_network_and_execute_accepts_exact_drop(tmp_path: Pa
     assert reused["status"] == "reused" and len(second.commands) == 1
 
 
+def test_rsync_command_uses_owner_only_identity_and_known_hosts(tmp_path: Path) -> None:
+    identity, known_hosts = tmp_path / "identity", tmp_path / "known_hosts"
+    identity.write_text("private placeholder", encoding="utf-8")
+    known_hosts.write_text("host placeholder", encoding="utf-8")
+    identity.chmod(0o600)
+    known_hosts.chmod(0o600)
+
+    command = puller.rsync_command(
+        "worker", "/drop/manifest.json", tmp_path / "manifest.json",
+        identity_file=identity, known_hosts=known_hosts,
+    )
+
+    assert f"-i {identity}" in command[4]
+    assert "IdentitiesOnly=yes" in command[4]
+    assert f"UserKnownHostsFile={known_hosts}" in command[4]
+    identity.chmod(0o644)
+    with pytest.raises(RuntimeError, match="owner-only"):
+        puller.rsync_command(
+            "worker", "/drop/manifest.json", tmp_path / "manifest.json",
+            identity_file=identity, known_hosts=known_hosts,
+        )
+    identity.chmod(0o600)
+    symlink = tmp_path / "identity-link"
+    symlink.symlink_to(identity)
+    with pytest.raises(RuntimeError, match="owner-only"):
+        puller.rsync_command(
+            "worker", "/drop/manifest.json", tmp_path / "manifest.json",
+            identity_file=symlink, known_hosts=known_hosts,
+        )
+
+
+def test_execute_cli_requires_dedicated_ssh_files(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="dedicated SSH"):
+        puller.pull_drop(
+            remote_host="worker", remote_drop_root="/drop",
+            incoming_root=tmp_path / "incoming-library", pipeline_root=tmp_path / "pipeline-library",
+            execute=True, confirmation=puller.CONFIRMATION,
+        )
+    result = subprocess.run(
+        [
+            sys.executable, str(Path(puller.__file__)),
+            "--remote-host", "worker", "--remote-drop-root", "/drop",
+            "--incoming-root", str(tmp_path / "incoming"),
+            "--pipeline-root", str(tmp_path / "pipeline"),
+            "--config", str(tmp_path / "config.json"),
+            "--execute", "--confirmation", puller.CONFIRMATION,
+        ],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["stop_reason"] == "pull_exception:RuntimeError"
+
+
 def test_pull_rejects_confirmation_unsafe_paths_and_manifest_race(tmp_path: Path) -> None:
     package, _ = make_package(tmp_path / "remote", "one")
     kwargs = {
         "remote_host": "m1-worker", "remote_drop_root": "/Users/test/.mango_local/pipeline/drop",
         "incoming_root": tmp_path / "incoming", "pipeline_root": tmp_path / "pipeline",
+        **ssh_files(tmp_path),
     }
     with pytest.raises(RuntimeError, match="confirmation"):
         puller.pull_drop(**kwargs, execute=True, confirmation="wrong", runner=FakePullRunner(package))
@@ -213,7 +279,7 @@ def test_pull_rejects_symlinked_incoming_before_network(tmp_path: Path) -> None:
         puller.pull_drop(
             remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
             incoming_root=incoming, pipeline_root=tmp_path / "pipeline", execute=True,
-            confirmation=puller.CONFIRMATION, runner=runner,
+            confirmation=puller.CONFIRMATION, runner=runner, **ssh_files(tmp_path),
         )
     assert not runner.commands and not any(forbidden.iterdir())
 
@@ -235,7 +301,7 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
         remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
         incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
         config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
-        transfer_runner=OrderedTransfer(package), process_runner=process_ok,
+        transfer_runner=OrderedTransfer(package), process_runner=process_ok, **ssh_files(tmp_path),
     )
     assert result["process_b_status"] == "ok" and events == ["transfer", "transfer", "transfer", "process_b"]
 
@@ -245,7 +311,7 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
             remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
             incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
             config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
-            transfer_runner=FakePullRunner(other),
+            transfer_runner=FakePullRunner(other), **ssh_files(tmp_path),
             process_runner=lambda command: subprocess.CompletedProcess(
                 command, 0, stdout='{"status":"locked","stop_reason":"timeline_writer_locked"}\n', stderr=""),
         )

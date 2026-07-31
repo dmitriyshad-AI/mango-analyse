@@ -10,7 +10,7 @@ if [[ "${COMMAND}" != "process-a" && "${COMMAND}" != "process-a-worker" && "${CO
   print -u2 '{"status":"failed","stop_reason":"unknown_process_command"}'
   exit 2
 fi
-if [[ ! -f "${CONFIG}" || ! -f "${ENV_FILE}" ]]; then
+if [[ ! -f "${CONFIG}" || ! -f "${ENV_FILE}" || -L "${CONFIG}" || -L "${ENV_FILE}" ]]; then
   print -u2 '{"status":"failed","stop_reason":"config_or_env_missing"}'
   exit 2
 fi
@@ -26,15 +26,26 @@ if [[ "$(/usr/bin/stat -f '%u:%Lp' "${ENV_FILE}")" != "$(/usr/bin/id -u):600" ]]
   exit 2
 fi
 
-set -a
-source "${ENV_FILE}"
-set +a
-
 PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}")"
 if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
   print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
   exit 2
 fi
+ENV_READER_PYTHON="/usr/bin/python3"
+[[ -x "${ENV_READER_PYTHON}" ]] || {
+  print -u2 '{"status":"failed","stop_reason":"env_reader_python_missing"}'; exit 2;
+}
+ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" --export-lines "${ENV_FILE}" 2>/dev/null)" || {
+  print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'; exit 2;
+}
+for inherited_name in ${(k)parameters}; do
+  if [[ "${inherited_name}" == MANGO_* || "${inherited_name}" == GOOGLE_APPLICATION_CREDENTIALS ]]; then
+    unset "${inherited_name}"
+  fi
+done
+while IFS= read -r item; do
+  [[ -n "${item}" ]] && export "${item}"
+done <<< "${ENV_EXPORTS}"
 
 PIPELINE_COMMAND="${COMMAND}"
 [[ "${COMMAND}" == "process-a-worker" ]] && PIPELINE_COMMAND="process-a"
@@ -75,6 +86,10 @@ publish_daily_report() {
   report_day="$(TZ=Europe/Moscow /bin/date -v-1d +%F)"
   export_args=(--ready-db "${ready_db}" --working-db "${working_db}" \
     --out "${MANGO_CALLS_DAILY_EXPORT_OUT}" --day "${report_day}")
+  [[ -n "${MANGO_CALLS_TALLANTO_EXPORT:-}" ]] && export_args+=(--tallanto-export "${MANGO_CALLS_TALLANTO_EXPORT}")
+  [[ -n "${MANGO_CALLS_TALLANTO_ENV:-}" ]] && export_args+=(--tallanto-env "${MANGO_CALLS_TALLANTO_ENV}")
+  [[ -n "${MANGO_CALLS_MANGO_ENV:-}" ]] && export_args+=(--mango-env "${MANGO_CALLS_MANGO_ENV}")
+  [[ -n "${MANGO_CALLS_TALLANTO_SNAPSHOT_AS_OF:-}" ]] && export_args+=(--tallanto-snapshot-as-of "${MANGO_CALLS_TALLANTO_SNAPSHOT_AS_OF}")
   [[ "${1:-}" == "sealed" ]] && export_args+=(--sealed-only)
   "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/export_daily_mango_calls_resolve.py" "${export_args[@]}"
   if [[ -n "${MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID:-}" ]]; then
@@ -91,10 +106,15 @@ if [[ "${COMMAND}" == "process-b-pull" ]]; then
     exit 4
   fi
   PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}")"
+  [[ -n "${MANGO_CALLS_REMOTE_SSH_KEY:-}" && -n "${MANGO_CALLS_REMOTE_KNOWN_HOSTS:-}" ]] || {
+    print -u2 '{"status":"failed","stop_reason":"remote_ssh_files_incomplete"}'; exit 4;
+  }
+  typeset -a ssh_args
+  ssh_args=(--identity-file "${MANGO_CALLS_REMOTE_SSH_KEY}" --known-hosts "${MANGO_CALLS_REMOTE_KNOWN_HOSTS}")
   "${PYTHON_EXECUTABLE}" "${ROOT}/scripts/pull_mango_calls_drop_remote.py" \
     --remote-host "${MANGO_CALLS_REMOTE_HOST}" --remote-drop-root "${MANGO_CALLS_REMOTE_DROP_ROOT}" \
     --incoming-root "${MANGO_CALLS_REMOTE_INCOMING_ROOT}" --pipeline-root "${PIPELINE_ROOT}" \
-    --config "${CONFIG}" --execute --confirmation PULL_MANGO_CALLS_REMOTE_DROP
+    --config "${CONFIG}" "${ssh_args[@]}" --execute --confirmation PULL_MANGO_CALLS_REMOTE_DROP
   exit $?
 fi
 

@@ -57,10 +57,28 @@ def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
     runner = scripts / RUNNER.name
     runner.write_text(RUNNER.read_text(encoding="utf-8"), encoding="utf-8")
     runner.chmod(0o700)
+    (scripts / "mango_calls_env.py").write_text(
+        (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     subprocess.run(["git", "add", "scripts"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                     "commit", "-qm", "test"], cwd=repo, check=True)
     return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+
+def _copy_runner(tmp_path: Path, launchctl: Path) -> Path:
+    scripts = tmp_path / "runner-repo" / "scripts"
+    scripts.mkdir(parents=True)
+    runner = scripts / RUNNER.name
+    runner.write_text(
+        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(launchctl)),
+        encoding="utf-8",
+    )
+    runner.chmod(0o700)
+    (scripts / "mango_calls_env.py").write_text(
+        (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return runner
 
 
 def _render(tmp_path: Path, *extra: str) -> dict[str, dict[str, object]]:
@@ -263,6 +281,31 @@ fi
     assert str(out) in export_call and "process-a" not in export_call
 
 
+def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    captured = tmp_path / "python_args.txt"
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        '#!/bin/zsh\nprintf "%s\\n" "$@" >> "$CAPTURED"\n'
+        '[[ "$1" == *run_mango_calls_pipeline.py ]] && print -r -- \'{"status":"idle"}\'\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_path), "process-b"], cwd=ROOT,
+        env={**__import__("os").environ, "CAPTURED": str(captured),
+             "MANGO_CALLS_DAILY_EXPORT_OUT": str(tmp_path / "must-not-be-used")},
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "export_daily_mango_calls_resolve.py" not in captured.read_text(encoding="utf-8")
+
+
 def test_process_b_runs_google_publisher_only_with_complete_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
@@ -428,12 +471,7 @@ fi
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     payload["python_executable"] = str(fake_python)
     config_path.write_text(json.dumps(payload), encoding="utf-8")
-    runner = tmp_path / "runner.sh"
-    runner.write_text(
-        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
-        encoding="utf-8",
-    )
-    runner.chmod(0o700)
+    runner = _copy_runner(tmp_path, fake_launchctl)
 
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a"],
@@ -474,12 +512,7 @@ fi
         '#!/bin/zsh\nprintf "%s\\n" "$@" > "$CAPTURED_LAUNCHCTL"\n', encoding="utf-8"
     )
     fake_launchctl.chmod(0o700)
-    runner = tmp_path / "runner.sh"
-    runner.write_text(
-        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
-        encoding="utf-8",
-    )
-    runner.chmod(0o700)
+    runner = _copy_runner(tmp_path, fake_launchctl)
 
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a"],
@@ -526,12 +559,7 @@ fi
 
     # The wrapper uses the absolute platform path. Keep the test hermetic by
     # copying it and substituting only the command path in the copy.
-    runner = tmp_path / "runner.sh"
-    runner.write_text(
-        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
-        encoding="utf-8",
-    )
-    runner.chmod(0o700)
+    runner = _copy_runner(tmp_path, fake_launchctl)
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a"],
         cwd=ROOT,
@@ -613,11 +641,18 @@ def test_process_b_pull_accepts_remote_drop_before_b_and_never_publishes(tmp_pat
     config_path, env_path = _write_config(tmp_path)
     clean_repo, head = _clean_git_repo(tmp_path)
     captured = tmp_path / "python_args.txt"
+    identity, known_hosts = tmp_path / "identity", tmp_path / "known_hosts"
+    identity.write_text("identity", encoding="utf-8")
+    known_hosts.write_text("known-host", encoding="utf-8")
+    identity.chmod(0o600)
+    known_hosts.chmod(0o600)
     env_path.write_text(env_path.read_text(encoding="utf-8")
                         + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
                         + "MANGO_CALLS_REMOTE_HOST=m1-worker\n"
                         + "MANGO_CALLS_REMOTE_DROP_ROOT=/Users/test/.mango_local/drop\n"
-                        + f"MANGO_CALLS_REMOTE_INCOMING_ROOT={tmp_path / 'incoming'}\n", encoding="utf-8")
+                        + f"MANGO_CALLS_REMOTE_INCOMING_ROOT={tmp_path / 'incoming'}\n"
+                        + f"MANGO_CALLS_REMOTE_SSH_KEY={identity}\n"
+                        + f"MANGO_CALLS_REMOTE_KNOWN_HOSTS={known_hosts}\n", encoding="utf-8")
     fake_python = tmp_path / "configured-python"
     fake_python.write_text(
         f'''#!/bin/zsh
@@ -643,6 +678,27 @@ fi
     pull_index = next(index for index, call in enumerate(calls) if "pull_mango_calls_drop_remote.py" in call)
     assert result.returncode == 0 and pull_index > 0
     assert all("export_daily_mango_calls_resolve.py" not in call for call in calls)
+
+
+def test_process_b_pull_requires_dedicated_ssh_files(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
+        + "MANGO_CALLS_REMOTE_HOST=m1-worker\n"
+        + "MANGO_CALLS_REMOTE_DROP_ROOT=/Users/test/.mango_local/drop\n"
+        + f"MANGO_CALLS_REMOTE_INCOMING_ROOT={tmp_path / 'incoming'}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 4
+    assert "remote_ssh_files_incomplete" in result.stderr
 
 
 def test_split_modes_require_exact_clean_code_revision(tmp_path: Path) -> None:
@@ -679,12 +735,7 @@ fi
         '#!/bin/zsh\nprintf "%s\\n" "$@" > "$CAPTURED_LAUNCHCTL"\n', encoding="utf-8"
     )
     fake_launchctl.chmod(0o700)
-    runner = tmp_path / "runner.sh"
-    runner.write_text(
-        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
-        encoding="utf-8",
-    )
-    runner.chmod(0o700)
+    runner = _copy_runner(tmp_path, fake_launchctl)
 
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a"],
@@ -717,12 +768,7 @@ fi
     fake_launchctl = tmp_path / "launchctl"
     fake_launchctl.write_text("#!/bin/zsh\nexit 9\n", encoding="utf-8")
     fake_launchctl.chmod(0o700)
-    runner = tmp_path / "runner.sh"
-    runner.write_text(
-        RUNNER.read_text(encoding="utf-8").replace("/bin/launchctl", str(fake_launchctl)),
-        encoding="utf-8",
-    )
-    runner.chmod(0o700)
+    runner = _copy_runner(tmp_path, fake_launchctl)
 
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a"],

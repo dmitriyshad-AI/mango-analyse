@@ -279,7 +279,10 @@ def load_tallanto_api_changes(
         return index, False
 
 
-def apply_tallanto_names(rows: Sequence[dict[str, Any]], export_path: Path, client: TallantoApiClient | None) -> None:
+def apply_tallanto_names(
+    rows: Sequence[dict[str, Any]], export_path: Path, client: TallantoApiClient | None,
+    *, snapshot_as_of: datetime | None = None,
+) -> None:
     if not export_path.is_file():
         raise RuntimeError(f"выгрузка Tallanto не найдена: {export_path}")
     local = load_tallanto_index(export_path)
@@ -290,7 +293,10 @@ def apply_tallanto_names(rows: Sequence[dict[str, Any]], export_path: Path, clie
     api_index: dict[str, dict[str, str]] = {}
     api_complete = True
     if missing and client is not None:
-        modified_after = datetime.fromtimestamp(export_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        snapshot = snapshot_as_of or datetime.fromtimestamp(export_path.stat().st_mtime, MOSCOW)
+        if snapshot.tzinfo is None:
+            snapshot = snapshot.replace(tzinfo=MOSCOW)
+        modified_after = snapshot.astimezone(MOSCOW).strftime("%Y-%m-%d %H:%M:%S")
         api_index, api_complete = load_tallanto_api_changes(client, missing, modified_after)
     for row in rows:
         phone = normalize_phone(row["phone"])
@@ -582,6 +588,7 @@ def export_day(
     *,
     tallanto_export: Path = DEFAULT_TALLANTO_EXPORT,
     tallanto_env: Path = DEFAULT_TALLANTO_ENV,
+    tallanto_snapshot_as_of: datetime | None = None,
     tallanto_client: TallantoApiClient | None = None,
     current_manager_users: Sequence[Mapping[str, Any]] = (),
     sealed_only: bool = False,
@@ -593,7 +600,7 @@ def export_day(
         ready_db, working_db, day, load_manager_map(manager_users, current_manager_users), sealed_only=sealed_only,
     )
     client = tallanto_client or build_tallanto_client(tallanto_env)
-    apply_tallanto_names(rows, tallanto_export, client)
+    apply_tallanto_names(rows, tallanto_export, client, snapshot_as_of=tallanto_snapshot_as_of)
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_root.chmod(0o700)
     content_sha256 = publication_content_sha256(rows)
@@ -625,6 +632,7 @@ def export_day(
         "tallanto_match_sources": dict(Counter(row["tallanto_source"] or "не найдено" for row in rows)),
         "current_mango_users": len(current_manager_users),
         "source_ready_db_sha256": source_before["sha256"], "tallanto_export_sha256": sha256_file(tallanto_export),
+        "tallanto_snapshot_as_of": tallanto_snapshot_as_of.isoformat() if tallanto_snapshot_as_of else None,
         "xlsx": xlsx.name, "xlsx_sha256": sha256_file(xlsx), "transcript_dir": transcript_dir.name,
         "transcripts": [{"file": row["transcript_file"].name, "sha256": row["transcript_sha256"]} for row in rows],
         "reused": False,
@@ -646,12 +654,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--manager-users", type=Path, default=DEFAULT_MANAGER_USERS)
     parser.add_argument("--tallanto-export", type=Path, default=DEFAULT_TALLANTO_EXPORT)
     parser.add_argument("--tallanto-env", type=Path, default=DEFAULT_TALLANTO_ENV)
+    parser.add_argument("--tallanto-snapshot-as-of", type=datetime.fromisoformat)
     parser.add_argument("--mango-env", type=Path, default=DEFAULT_MANGO_ENV)
     parser.add_argument("--sealed-only", action="store_true", help="Не читать рабочую DB и внешние transcript-файлы.")
     args = parser.parse_args(argv)
     result = export_day(
         args.ready_db, args.working_db, args.out, args.day, args.manager_users,
         tallanto_export=args.tallanto_export, tallanto_env=args.tallanto_env,
+        tallanto_snapshot_as_of=args.tallanto_snapshot_as_of,
         current_manager_users=fetch_mango_users(args.mango_env),
         sealed_only=args.sealed_only,
     )

@@ -24,7 +24,8 @@
 
    ```bash
    git fetch origin
-   git switch codex/calls-dialogue-m1-20260730
+   git switch main
+   git pull --ff-only origin main
    test -z "$(git status --porcelain)"
    git rev-parse HEAD
    ```
@@ -39,9 +40,9 @@
 4. На M1 установлен клиент Яндекс Диска. Google-ключ хранится отдельно с режимом
    `0600`; папка Google Drive непубличная и дана только нужным сотрудникам и
    служебной учётной записи.
-5. Основной Mac знает SSH-ключ M1 через `known_hosts`. M1 не имеет SSH-ключа к
-   основному Mac. Для чтения ready-drop создаётся отдельная учётная запись без
-   доступа к секретам и ключ с принудительной командой из раздела ниже.
+5. Основной Mac фиксирует ключ хоста M1 в отдельном `known_hosts`. M1 не имеет
+   SSH-ключа к основному Mac. Для чтения ready-drop используется отдельный ключ
+   текущего пользователя M1 с принудительной read-only командой из раздела ниже.
 
 ## Первичная передача рабочего состояния
 
@@ -54,6 +55,8 @@
 ```bash
 SNAP="$HOME/.mango_local/mango_calls_cutover/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$SNAP" && chmod 700 "$SNAP"
+printf '%s\n' "$SNAP" > "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
+chmod 600 "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
 launchctl print "gui/$(id -u)/com.mango.calls-process-a" > "$SNAP/process-a.before.txt" 2>&1 || true
 launchctl print "gui/$(id -u)/com.mango.calls-process-b" > "$SNAP/process-b.before.txt" 2>&1 || true
 launchctl print "gui/$(id -u)/com.mango.calls-two-processes" > "$SNAP/legacy.before.txt" 2>&1 || true
@@ -69,9 +72,10 @@ shasum -a 256 \
 удалённом пути экранирован для удалённой оболочки:
 
 ```bash
+M1_HOST='dmitrijfabarisov@ИМЯ-ИЛИ-IP-M1'
 /usr/bin/rsync -aH --progress \
   "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/mango_calls_two_processes/" \
-  'M1_HOST:/Users/dmitrijfabarisov/Projects/Mango\ analyse/product_data/mango_calls_two_processes/'
+  "$M1_HOST:/Users/dmitrijfabarisov/Projects/Mango\\ analyse/product_data/mango_calls_two_processes/"
 ```
 
 После первой копии Process A на основном Mac остаётся выключенным, выполняется
@@ -79,18 +83,23 @@ shasum -a 256 \
 
 ```bash
 PIPELINE='/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/mango_calls_two_processes'
+chmod 700 "$PIPELINE" "$PIPELINE"/{capture,working,drop,state,locks,reports,logs}
+find "$PIPELINE" -type f \( -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.json' \) -exec chmod 600 {} +
 sqlite3 "$PIPELINE/working/mango_calls_pipeline.sqlite" 'PRAGMA quick_check; PRAGMA integrity_check;'
 sqlite3 "$PIPELINE/drop/mango_calls_ready.sqlite" 'PRAGMA quick_check; PRAGMA integrity_check;'
 ```
 
-Оба результата должны быть `ok`. База истории клиентов на M1 не копируется:
+`stat -f '%Su:%Lp %N'` должен показать текущего пользователя и `700` для
+перечисленных каталогов, `600` для SQLite/JSON. Оба результата SQLite должны
+быть `ok`. База истории клиентов на M1 не копируется:
 Process B остаётся на основном Mac.
 
-### Отдельный SSH-доступ только на чтение
+### Отдельный SSH-ключ только на чтение
 
-На M1 администратор создаёт отдельную учётную запись `mango_drop_reader`, которой
-ACL разрешает только чтение ready-drop и проход к нему, но запрещает запись и
-чтение `~/.mango_secrets`. В `/Users/Shared` создаются root-owned ссылка и копия
+Чтобы не создавать и не настраивать системного пользователя вслепую, основной
+Mac использует отдельный SSH-ключ. На M1 этот ключ разрешён только с
+принудительной read-only командой: произвольная команда и доступ к секретам
+через него невозможны. В `/Users/Shared` создаются root-owned ссылка и копия
 проверяющего скрипта:
 
 ```bash
@@ -102,15 +111,30 @@ sudo ln -sfn "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/mango_
 sudo chown -h root:wheel /Users/Shared/mango_calls_drop_ro
 ```
 
-В `authorized_keys` этой учётной записи ключ основного Mac имеет префикс:
+На основном Mac создать отдельный ключ и зафиксировать fingerprint хоста M1:
+
+```bash
+M1_HOSTNAME='ИМЯ-ИЛИ-IP-M1'
+ssh-keygen -t ed25519 -f "$HOME/.ssh/mango_calls_m1_reader" -C mango-calls-readonly
+ssh-keyscan -t ed25519 "$M1_HOSTNAME" > "$HOME/.ssh/mango_calls_m1_known_hosts.candidate"
+ssh-keygen -lf "$HOME/.ssh/mango_calls_m1_known_hosts.candidate"
+```
+
+Полученный fingerprint вручную сравнить на M1 с
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Только после совпадения
+переименовать candidate в `~/.ssh/mango_calls_m1_known_hosts` и поставить режим
+`0600`.
+
+Публичную часть `~/.ssh/mango_calls_m1_reader.pub` вручную добавить на M1 в
+`~/.ssh/authorized_keys` отдельной строкой с префиксом:
 
 ```text
-restrict,command="/Users/Shared/mango_calls_readonly_rsync_gate.sh /Users/Shared/mango_calls_drop_ro" ssh-ed25519 ...
+restrict,command="/Users/Shared/mango_calls_readonly_rsync_gate.sh /Users/Shared/mango_calls_drop_ro" ssh-ed25519 ... mango-calls-readonly
 ```
 
 До запуска проверить этим ключом: два файла drop читаются, произвольная команда
-и чтение каталога секретов получают отказ. Puller дополнительно использует
-`BatchMode=yes` и `StrictHostKeyChecking=yes`.
+и чтение каталога секретов получают отказ. Puller использует именно этот ключ,
+отдельный known_hosts, `BatchMode=yes` и `StrictHostKeyChecking=yes`.
 
 ## Настройка M1: только Process A
 
@@ -143,6 +167,8 @@ GOOGLE_APPLICATION_CREDENTIALS=/Users/dmitrijfabarisov/.mango_secrets/google-man
 ```bash
 M1_SNAP="$HOME/.mango_local/mango_calls_cutover/$(date -u +%Y%m%dT%H%M%SZ)_m1"
 mkdir -p "$M1_SNAP" && chmod 700 "$M1_SNAP"
+printf '%s\n' "$M1_SNAP" > "$HOME/.mango_local/mango_calls_cutover/M1_SNAPSHOT_PATH"
+chmod 600 "$HOME/.mango_local/mango_calls_cutover/M1_SNAPSHOT_PATH"
 cp -p ~/Library/LaunchAgents/com.mango.calls-process-*.plist "$M1_SNAP/" 2>/dev/null || true
 cp -p ~/.mango_local/mango_calls_two_processes/config.json "$M1_SNAP/"
 launchctl bootout "gui/$(id -u)/com.mango.calls-process-b" 2>/dev/null || true
@@ -164,7 +190,9 @@ mv ~/Library/LaunchAgents/com.mango.calls-two-processes.plist "$M1_SNAP/" 2>/dev
 Файл `~/.mango_secrets/mango_calls_main_receiver.env`, режим `0600`:
 
 ```text
-MANGO_CALLS_REMOTE_HOST=mango_drop_reader@M1_HOST
+MANGO_CALLS_REMOTE_HOST=dmitrijfabarisov@M1_HOST
+MANGO_CALLS_REMOTE_SSH_KEY=/Users/dmitrijfabarisov/.ssh/mango_calls_m1_reader
+MANGO_CALLS_REMOTE_KNOWN_HOSTS=/Users/dmitrijfabarisov/.ssh/mango_calls_m1_known_hosts
 MANGO_CALLS_EXPECTED_CODE_SHA=<тот же подтверждённый SHA>
 MANGO_CALLS_REMOTE_DROP_ROOT=/Users/Shared/mango_calls_drop_ro
 MANGO_CALLS_REMOTE_INCOMING_ROOT=/Users/dmitrijfabarisov/.mango_local/mango_calls_remote_incoming
@@ -188,6 +216,8 @@ MANGO_CALLS_REMOTE_INCOMING_ROOT=/Users/dmitrijfabarisov/.mango_local/mango_call
 ```bash
 MAIN_SNAP="$HOME/.mango_local/mango_calls_cutover/$(date -u +%Y%m%dT%H%M%SZ)_main"
 mkdir -p "$MAIN_SNAP" && chmod 700 "$MAIN_SNAP"
+printf '%s\n' "$MAIN_SNAP" > "$HOME/.mango_local/mango_calls_cutover/MAIN_SNAPSHOT_PATH"
+chmod 600 "$HOME/.mango_local/mango_calls_cutover/MAIN_SNAPSHOT_PATH"
 cp -p ~/Library/LaunchAgents/com.mango.calls-process-*.plist "$MAIN_SNAP/" 2>/dev/null || true
 cp -p ~/.mango_local/mango_calls_two_processes/config.json "$MAIN_SNAP/"
 PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - \
@@ -237,7 +267,7 @@ mv ~/Library/LaunchAgents/com.mango.calls-two-processes.plist "$MAIN_SNAP/" 2>/d
 
 ```bash
 set -euo pipefail
-M1_SNAP="$(find "$HOME/.mango_local/mango_calls_cutover" -maxdepth 1 -type d -name '*_m1' | sort | tail -1)"
+M1_SNAP="$(cat "$HOME/.mango_local/mango_calls_cutover/M1_SNAPSHOT_PATH")"
 test -n "$M1_SNAP" && test -f "$M1_SNAP/config.json"
 launchctl bootout "gui/$(id -u)/com.mango.calls-process-a" 2>/dev/null || true
 cp -p "$M1_SNAP/config.json" ~/.mango_local/mango_calls_two_processes/config.json
@@ -252,7 +282,7 @@ plist, проверить исходный drop и загрузить прежн
 
 ```bash
 set -euo pipefail
-MAIN_SNAP="$(find "$HOME/.mango_local/mango_calls_cutover" -maxdepth 1 -type d -name '*_main' | sort | tail -1)"
+MAIN_SNAP="$(cat "$HOME/.mango_local/mango_calls_cutover/MAIN_SNAPSHOT_PATH")"
 test -n "$MAIN_SNAP" && test -f "$MAIN_SNAP/config.json" && test -f "$MAIN_SNAP/drop.sha256"
 launchctl bootout "gui/$(id -u)/com.mango.calls-process-b" 2>/dev/null || true
 cp -p "$MAIN_SNAP/config.json" ~/.mango_local/mango_calls_two_processes/config.json

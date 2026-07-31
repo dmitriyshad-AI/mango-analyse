@@ -1,0 +1,20 @@
+{
+  "pipeline_root": "<HOME>/Projects/Mango analyse/product_data/mango_calls_two_processes",
+  "timeline_db": "<HOME>/.mango_local/customer_timeline_staging/customer_timeline_staging.sqlite",
+  "timeline_allowed_root": "<HOME>/.mango_local/customer_timeline_staging",
+  "python_executable": "<HOME>/.mango_local/mango_calls_runtime/venv/bin/python",
+  "codex_binary": "/opt/homebrew/bin/codex",
+  "codex_home_root": "<HOME>/.mango_local/mango_calls_pipeline/codex_home",
+  "bootstrap_since": "2026-07-29T00:00:00+03:00",
+  "poll_overlap_minutes": 30,
+  "api_window_hours": 12,
+  "min_free_gib": 40,
+  "stage_limit": 20,
+  "asr_mode": "mlx_dual",
+  "poll_seconds": 10,
+  "max_idle_cycles": 30,
+  "freshness_max_age_minutes": 90,
+  "codex_resolve_model": "gpt-5.4",
+  "codex_analyze_model": "gpt-5.4-mini",
+  "codex_reasoning_effort": "medium"
+}

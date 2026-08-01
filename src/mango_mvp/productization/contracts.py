@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 
 class Direction(str, Enum):
@@ -45,6 +45,7 @@ class TelephonyCallEvent:
     client_phone: Optional[str] = None
     manager_ref: Optional[str] = None
     recording_ref: Optional[str] = None
+    recording_refs: Sequence[str] = ()
     recording_url: Optional[str] = None
     raw_payload: Mapping[str, Any] = field(default_factory=dict)
 
@@ -58,6 +59,11 @@ class TelephonyCallEvent:
                 raise ValueError("ended_at must not be earlier than started_at")
         object.__setattr__(self, "provider", provider)
         object.__setattr__(self, "provider_call_id", provider_call_id)
+        refs = tuple(dict.fromkeys(str(item).strip() for item in self.recording_refs if item is not None and str(item).strip()))
+        if self.recording_ref and self.recording_ref.strip() not in refs:
+            refs = (self.recording_ref.strip(), *refs)
+        object.__setattr__(self, "recording_refs", refs)
+        object.__setattr__(self, "recording_ref", refs[0] if refs else None)
         object.__setattr__(self, "raw_payload", dict(self.raw_payload))
 
     @property

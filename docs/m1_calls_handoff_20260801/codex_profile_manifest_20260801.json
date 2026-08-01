@@ -1,0 +1,58 @@
+{
+  "schema_version": "codex_profile_manifest_v1",
+  "generated_at": "2026-08-01",
+  "contains_secrets": false,
+  "transfer_archive": "codex_skills_clean_20260801.tar.gz",
+  "transfer_archive_excludes": ["system skills", "codex runtime", "node_modules", "auth", "tokens", "cache", "logs"],
+  "local_skills": [
+    "bot-failure-class-review",
+    "business-semantic-review",
+    "cli-creator",
+    "doc",
+    "jupyter-notebook",
+    "mango-breaker-review",
+    "mango-google-sheets",
+    "mango-graphify",
+    "mango-tallanto-finance-reconcile",
+    "multi-model-analysis-review",
+    "pdf",
+    "playwright",
+    "security-best-practices",
+    "security-ownership-map",
+    "security-threat-model"
+  ],
+  "bundled_skills_reinstalled_with_codex": [
+    "imagegen",
+    "openai-docs",
+    "plugin-creator",
+    "skill-creator",
+    "skill-installer"
+  ],
+  "configured_plugins": [
+    "browser@openai-bundled",
+    "build-web-apps@openai-curated",
+    "chrome@openai-bundled",
+    "computer-use@openai-bundled",
+    "documents@openai-primary-runtime",
+    "github@openai-curated",
+    "pdf@openai-primary-runtime",
+    "presentations@openai-primary-runtime",
+    "sites@openai-bundled",
+    "spreadsheets@openai-primary-runtime",
+    "template-creator@openai-primary-runtime",
+    "visualize@openai-bundled"
+  ],
+  "additional_cached_plugins_to_reinstall_if_needed": [
+    "figma@openai-curated-remote",
+    "google-drive@openai-curated-remote",
+    "openai-templates@openai-curated-remote"
+  ],
+  "mcp_and_connectors": [
+    {"name": "node_repl", "kind": "bundled_mcp", "reauthorize": false},
+    {"name": "computer-use", "kind": "bundled_mcp", "reauthorize": false},
+    {"name": "github", "kind": "remote_mcp", "reauthorize": true},
+    {"name": "Todoist", "kind": "connector", "reauthorize": true},
+    {"name": "Google Drive", "kind": "plugin_connector", "reauthorize": true}
+  ],
+  "note": "Resolve и Analyze намеренно работают без skills, plugins и MCP."
+}

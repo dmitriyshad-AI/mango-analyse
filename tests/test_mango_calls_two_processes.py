@@ -7,7 +7,7 @@ import subprocess
 import sqlite3
 import sys
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     LockBusy,
     PARALLEL_PIPELINE_STAGES,
     assert_no_pdn,
+    call_db_has_open_work,
     call_event_source_systems,
     command_path,
     capture_mango_window,
@@ -31,16 +32,19 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     process_lease,
     pipeline_stages,
     publish_ready_db,
+    publish_ready_db_if_changed,
     read_json,
     read_known_processed_ids,
     run_parallel_pipeline_workers,
     run_process_a,
     run_process_b,
+    run_cycle,
     run_command,
     compact_command_reports,
     pipeline_freshness,
     safe_daily_payload,
     sha256_file,
+    sqlite_check,
     worker_command,
     write_json,
 )
@@ -87,6 +91,48 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
             with process_lease(lock, stale_seconds=60):
                 pass
         assert caught.value.metadata["pid"] == first["pid"]
+
+
+def test_run_cycle_imports_partial_ready_drop_and_keeps_partial_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_a",
+        lambda *_args, **_kwargs: {
+            "status": "partial",
+            "stop_reason": "capture_audio_incomplete",
+            "downstream_ready": True,
+        },
+    )
+
+    def fake_b(*_args, **_kwargs):
+        calls.append("b")
+        return {"status": "ok"}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.run_process_b", fake_b)
+    report = run_cycle(config_for(tmp_path))
+    assert calls == ["b"]
+    assert report["status"] == "partial"
+    assert report["stop_reason"] == "capture_audio_incomplete"
+
+
+@pytest.mark.parametrize("first", [
+    {"status": "partial", "downstream_ready": False},
+    {"status": "failed", "downstream_ready": False},
+])
+def test_run_cycle_does_not_import_without_ready_drop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, first: dict[str, object]
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_a",
+        lambda *_args, **_kwargs: first,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.run_process_b",
+        lambda *_args, **_kwargs: pytest.fail("Process B must not start"),
+    )
+    assert run_cycle(config_for(tmp_path))["process_b"] is None
 
 
 def test_capture_keeps_calls_without_recording_in_retry_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -258,6 +304,146 @@ def test_pending_recording_widens_poll_window_beyond_normal_overlap(
     assert report["status"] == "partial"
 
 
+def test_recording_retry_ttl_uses_first_seen_and_expires_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-10T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:old-call-newly-seen",
+            provider_call_id="old-call-newly-seen",
+            recording_id=None,
+            started_at="2025-01-01T00:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="skipped_no_recording",
+        )
+    )
+    requested: list[tuple[datetime, datetime]] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, *, since: datetime, until: datetime) -> list[dict[str, str]]:
+            requested.append((since, until))
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0}
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    first = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+    )
+    lines_after_first = len(store.read_entries())
+    second = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 12, tzinfo=timezone.utc),
+    )
+
+    assert first["api_requests"] == 2
+    assert first["status"] == "partial"
+    assert first["pending_recording_expired"] == 1
+    assert store.latest_by_event_key()["foton:mango:old-call-newly-seen"].status == "recording_retry_expired"
+    assert second["status"] == "ok"
+    assert len(store.read_entries()) == lines_after_first
+    assert len(requested) == 3
+
+
+def test_expired_recording_is_recovered_on_last_bounded_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=12, pending_recording_retry_hours=24)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    pending = ManifestEntry(
+        schema_version="v1",
+        created_at="2026-07-10T10:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:recovered",
+        provider_call_id="recovered",
+        recording_id=None,
+        started_at="2025-01-01T00:00:00+00:00",
+        ended_at="2025-01-01T00:20:00+00:00",
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="skipped_no_recording",
+    )
+    store.append(pending)
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, *, since: datetime, **_: object) -> list[dict[str, str]]:
+            if since.year < 2026:
+                return [{
+                    "id": "recovered",
+                    "started_at": "2025-01-01T00:00:00+00:00",
+                    "ended_at": "2025-01-01T00:20:00+00:00",
+                    "direction": "inbound",
+                    "recording_ref": "recording-late",
+                }]
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 0}
+
+    def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
+        assert [event.recording_ref for event in events] == ["recording-late"]
+        store.append(replace(pending, status="downloaded", recording_id="recording-late"))
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+    )
+
+    assert report["api_requests"] == 2
+    assert report["status"] == "ok"
+    assert report["pending_recording_expired"] == 0
+    assert store.latest_by_event_key()[pending.event_key].status == "downloaded"
+
+
 def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     source = config.recordings_dir / "call.mp3"
@@ -274,6 +460,7 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
                 "event_key": "event:1",
                 "provider_call_id": "call-1",
                 "recording_id": "recording-1",
+                "recording_ids": ["recording-1"],
                 "started_at": "2026-07-09T00:00:00+00:00",
                 "direction": "inbound",
                 "status": "downloaded",
@@ -291,6 +478,195 @@ def test_prepare_ingest_inputs_is_idempotent(tmp_path: Path) -> None:
 
     assert first["audio_files"] == second["audio_files"] == 1
     assert second["link_actions"] == {"exists_same_hash": 1}
+
+
+def test_prepare_ingest_inputs_waits_for_recording_set_stabilization(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    source = config.recordings_dir / "recent.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at=started.isoformat(),
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:recent",
+            provider_call_id="recent",
+            recording_id="rec-1",
+            recording_ids=("rec-1",),
+            started_at=started.isoformat(),
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 0
+    assert result["skipped"] == {"recording_set_stabilizing": 1}
+
+
+def test_prepare_ingest_inputs_skips_call_already_present_in_working_db(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 0
+    assert result["skipped"] == {"already_ingested": 1}
+    assert result["incomplete_total"] == 0
+
+
+def test_prepare_ingest_inputs_keeps_missing_known_audio_visible(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(config.recordings_dir / "missing.mp3"),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["skipped"] == {"audio_file_missing": 1}
+    assert result["incomplete_total"] == 1
+
+
+def test_prepare_ingest_inputs_restores_missing_working_audio_for_known_call(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:known", provider_call_id="known",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(source_call_id TEXT)")
+        con.execute("INSERT INTO call_records VALUES ('known')")
+
+    result = prepare_ingest_inputs(config)
+
+    assert (config.working_audio_dir / source.name).read_bytes() == b"audio"
+    assert result["incomplete_total"] == 0
+    assert sum(result["link_actions"].values()) == 1
+
+
+def test_existing_manifest_event_is_not_hidden_by_external_known_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=1)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    audio = config.recordings_dir / "existing.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"existing")
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:call-multi",
+            provider_call_id="call-multi",
+            recording_id="rec-1",
+            recording_ids=("rec-1",),
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at="2026-07-09T10:10:00+00:00",
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(audio),
+        )
+    )
+    captured: list[TelephonyCallEvent] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, object]]:
+            base = {"id": "call-multi", "started_at": "2026-07-09T10:00:00+00:00", "ended_at": "2026-07-09T10:10:00+00:00"}
+            return [{**base, "records": ["rec-1", "rec-2"]}, {**base, "records": ["rec-1"]}]
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+        needs_review_multiple_recordings = 1
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0, "needs_review_multiple_recordings": 1}
+
+    def fake_stage(*, events: list[TelephonyCallEvent], **_: object) -> Summary:
+        captured.extend(events)
+        store = CaptureManifestStore(config.capture_manifest)
+        current = store.latest_by_event_key()["foton:mango:call-multi"]
+        store.append(replace(current, status="multiple_recordings_needs_review", recording_ids=("rec-1", "rec-2"), recording_paths=(str(audio), str(audio))))
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.read_known_processed_ids",
+        lambda *_args: (set(), {"call-multi"}),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 11, tzinfo=timezone.utc),
+    )
+
+    assert [event.recording_refs for event in captured] == [("rec-1", "rec-2")]
+    assert report["api_events_already_known_external"] == 0
+    assert report["status"] == "partial"
+    assert report["open_multiple_recordings_needs_review"] == 1
 
 
 def test_known_processed_ids_only_accept_successful_downloads(tmp_path: Path) -> None:
@@ -362,6 +738,21 @@ def test_publish_ready_db_handles_space_path_wal_tmp(tmp_path: Path) -> None:
     assert manifest["quick_check"] == "ok"
     assert config.ready_db.exists()
     assert not config.ready_db.with_suffix(".sqlite.tmp-shm").exists()
+
+
+def test_unchanged_working_db_rebuilds_modified_ready_copy(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    config.ready_db.write_bytes(b"damaged")
+
+    result = publish_ready_db_if_changed(config, {"total": 1}, changed=False)
+
+    assert result["reused"] is False
+    assert sqlite_check(config.ready_db, "quick_check") == "ok"
 
 
 def test_network_outage_runs_only_local_asr_stages(tmp_path: Path) -> None:
@@ -589,6 +980,17 @@ def test_process_b_returns_locked_instead_of_traceback(tmp_path: Path) -> None:
     assert result["stop_reason"] == "timeline_writer_locked"
 
 
+def test_process_b_has_its_own_nonblocking_process_lock(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+
+    with process_lease(config.process_b_lock, stale_seconds=60):
+        result = run_process_b(config)
+
+    assert result["status"] == "locked"
+    assert result["stop_reason"] == "process_b_locked"
+
+
 def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     create_ready_call_db(config.ready_db)
@@ -804,6 +1206,7 @@ def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path)
         encoding="utf-8",
     )
     env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
+    env_path.chmod(0o600)
 
     subprocess.run(
         [
@@ -1003,8 +1406,141 @@ def test_process_a_partial_capture_publishes_available_work_and_advances_cursor(
 
     assert report["status"] == "partial"
     assert report["counters"]["drop"]["status"] == "ready"
+    assert report["downstream_ready"] is True
     assert config.ready_db.exists()
     assert read_json(config.cursor_path)["until"] == "2026-07-09T10:00:00+00:00"
+
+
+def test_process_a_runs_workers_for_existing_open_db_work_without_reingest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("UPDATE call_records SET transcription_status='pending', analysis_status='pending'")
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.prepare_ingest_inputs",
+        lambda _config: {"audio_files": 0, "skipped_total": 0},
+    )
+    commands: list[str] = []
+
+    def command_runner(command: list[str], *_args: object) -> dict[str, object]:
+        commands.append(" ".join(command))
+        return {"rc": 0, "command": command[-1]}
+
+    report = run_process_a(config, skip_capture=True, command_runner=command_runner)
+
+    assert report["status"] == "ok"
+    assert report["counters"]["metadata"]["db_open_work"] is True
+    assert any("worker" in command for command in commands)
+    assert not any(" init-db" in command or " ingest" in command for command in commands)
+
+
+def test_process_a_complete_existing_db_runs_no_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    source = config.recordings_dir / "known.mp3"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1", created_at="2026-07-01T00:00:00+00:00", tenant_id="foton",
+            provider="mango", event_key="foton:mango:provider-1", provider_call_id="provider-1",
+            recording_id="rec-1", started_at="2026-07-01T00:00:00+00:00", ended_at=None,
+            direction="inbound", client_phone=None, manager_ref=None, status="downloaded",
+            local_audio_path=str(source),
+        )
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    first = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: pytest.fail("complete second run must stay empty"),
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.publish_ready_db",
+        lambda *_args, **_kwargs: pytest.fail("unchanged second run must reuse ready DB"),
+    )
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=lambda *_args: pytest.fail("complete second run must stay empty"),
+    )
+
+    assert first["status"] == "ok"
+    assert report["status"] == "ok"
+    assert report["counters"]["metadata"]["db_open_work"] is False
+    assert report["counters"]["drop"]["reused"] is True
+
+
+def test_call_db_open_work_includes_interrupted_secondary_backfill(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN pipeline_stage TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='done', pipeline_stage='backfill-second-asr'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_call_db_open_work_excludes_future_retry_and_exhausted_attempts(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN transcribe_attempts INTEGER")
+        con.execute("ALTER TABLE call_records ADD COLUMN next_retry_at TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='failed', transcribe_attempts=3, "
+            "next_retry_at='2099-01-01T00:00:00+00:00'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is False
+
+
+def test_call_db_open_work_includes_stale_analyze_claim(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN analysis_claimed_at TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='in_progress', analysis_claimed_at='2020-01-01T00:00:00+00:00'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
+
+
+def test_call_db_open_work_includes_secondary_asr_retry(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    payload = {
+        "mode": "mono_or_fallback",
+        "secondary_provider": "gigaam",
+        "full": {"variant_a": "текст", "variant_b": ""},
+    }
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN transcript_variants_json TEXT")
+        con.execute(
+            "UPDATE call_records SET transcription_status='done', resolve_status='done', "
+            "analysis_status='done', transcript_variants_json=?",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
 
 
 def test_missing_downloaded_capture_is_returned_for_recovery(tmp_path: Path) -> None:

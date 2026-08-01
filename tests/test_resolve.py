@@ -62,7 +62,7 @@ class ResolveServiceTest(unittest.TestCase):
             self.assertEqual(first["selection"], second["selection"])
             self.assertEqual(first.get("tokens_used_actual"), 710)
 
-    def test_same_ts_postfilter_adjusts_cross_speaker_timecodes(self) -> None:
+    def test_same_ts_postfilter_preserves_cross_speaker_timecodes(self) -> None:
         service = ResolveService(make_settings())
         lines = [
             "[00:10.0] Менеджер (Иван): Добрый день.",
@@ -70,10 +70,8 @@ class ResolveServiceTest(unittest.TestCase):
             "[00:11.5] Менеджер (Иван): Подскажите класс.",
         ]
         fixed = service._postfilter_same_ts_dialogue_lines(lines)
-        self.assertEqual(int(fixed["adjusted"]), 1)
-        out_lines = fixed["dialogue_lines"]
-        self.assertIn("[00:10.0] Менеджер (Иван):", out_lines[0])
-        self.assertIn("[00:10.1] Клиент:", out_lines[1])
+        self.assertEqual(int(fixed["adjusted"]), 0)
+        self.assertEqual(fixed["dialogue_lines"], lines)
 
     def test_dialogue_lines_are_loaded_from_variants_before_export_file(self) -> None:
         lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
@@ -83,6 +81,80 @@ class ResolveServiceTest(unittest.TestCase):
             transcript_variants_json=json.dumps({"dialogue_lines": lines}, ensure_ascii=False),
         )
         self.assertEqual(ResolveService(make_settings())._load_dialogue_lines_from_export(call), lines)
+
+    def test_postfilter_persists_final_lines_in_variants(self) -> None:
+        service = ResolveService(make_settings())
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3")
+        candidate = {
+            "name": "baseline",
+            "dialogue_lines": [
+                "[00:10.0] Менеджер (Иван): Добрый день.",
+                "[00:10.0] Клиент: Здравствуйте.",
+            ],
+            "transcript_variants_json": json.dumps({"mode": "stereo"}),
+        }
+        result = service._maybe_postfilter_candidate_dialogue(call, candidate)
+        stored = json.loads(result["transcript_variants_json"])["dialogue_lines"]
+        self.assertEqual(stored, result["dialogue_lines"])
+        self.assertIn("[00:10.0] Клиент:", stored[1])
+
+    def test_postfilter_never_changes_approximate_overlap(self) -> None:
+        service = ResolveService(make_settings())
+        lines = ["[~00:10] Менеджер (Иван): Добрый день.", "[~00:10] Клиент: Здравствуйте."]
+        fixed = service._postfilter_same_ts_dialogue_lines(lines)
+        self.assertEqual(fixed, {"dialogue_lines": lines, "adjusted": 0})
+
+    def test_postfilter_persists_lines_when_no_adjustment_is_needed(self) -> None:
+        service = ResolveService(make_settings())
+        lines = ["[00:01.0] Менеджер (Иван): Добрый день."]
+        result = service._maybe_postfilter_candidate_dialogue(
+            CallRecord(source_file="a.mp3", source_filename="a.mp3"),
+            {
+                "name": "baseline",
+                "dialogue_lines": lines,
+                "transcript_variants_json": json.dumps({"mode": "stereo"}),
+            },
+        )
+        self.assertEqual(json.loads(result["transcript_variants_json"])["dialogue_lines"], lines)
+
+    def test_dialogue_llm_cannot_swap_exact_turns_or_known_roles(self) -> None:
+        service = ResolveService(make_settings())
+        input_payload = {
+            "turns": [
+                {"turn_id": 1, "ts_sec": 10.0, "speaker": "manager", "baseline_text": "Вопрос", "approximate": False, "flags": ["same_ts_cross"]},
+                {"turn_id": 2, "ts_sec": 10.0, "speaker": "client", "baseline_text": "Ответ", "approximate": False, "flags": ["same_ts_cross"]},
+            ],
+            "role_variants": {},
+        }
+        llm_payload = {
+            "turns": [
+                {"turn_id": 1, "speaker": "client", "final_text": "Вопрос", "swap_with_next": True},
+                {"turn_id": 2, "speaker": "manager", "final_text": "Ответ", "swap_with_next": False},
+            ]
+        }
+        normalized = service._normalize_dialogue_result(input_payload, llm_payload)
+        self.assertEqual([turn["turn_id"] for turn in normalized["turns"]], [1, 2])
+        self.assertEqual([turn["speaker"] for turn in normalized["turns"]], ["manager", "client"])
+        self.assertEqual(normalized["swaps_applied"], 0)
+
+        variants = {
+            "mode": "stereo",
+            "role_mapping": {"confirmed": False, "status": "unverified_legacy_channel_order"},
+            "manager": {"physical_channel": "left", "variant_a_segments": [{"start": 10.0, "text": "Вопрос"}], "variant_b_segments": [{"start": 10.0, "text": "Вопрос."}]},
+            "client": {"physical_channel": "right", "variant_a_segments": [{"start": 10.0, "text": "Ответ"}], "variant_b_segments": [{"start": 10.0, "text": "Ответ."}]},
+        }
+        candidate = service._dialogue_turns_to_candidate(
+            CallRecord(source_file="a.mp3", source_filename="a.mp3", manager_name="Иван"),
+            variants,
+            normalized,
+            provider="test",
+        )
+        stored = json.loads(candidate["transcript_variants_json"])
+        self.assertEqual(stored["manager"]["physical_channel"], "left")
+        self.assertEqual(stored["client"]["physical_channel"], "right")
+        self.assertEqual(len(stored["manager"]["variant_b_segments"]), 1)
+        self.assertEqual(len(stored["client"]["variant_b_segments"]), 1)
+        self.assertFalse(stored["role_mapping"]["confirmed"])
 
     def test_short_calls_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_skip_") as td:

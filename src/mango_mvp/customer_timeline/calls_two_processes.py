@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
@@ -31,7 +31,10 @@ from mango_mvp.customer_timeline.safety import (
 from mango_mvp.productization.capture_staging import (
     CaptureManifestStore,
     ManifestEntry,
-    manifest_audio_exists,
+    entry_recording_ids,
+    event_recording_ids,
+    manifest_assets_exist,
+    merge_recording_ids,
     stage_capture_events,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
@@ -42,6 +45,7 @@ from mango_mvp.productization.mango_office_client import (
 )
 from mango_mvp.productization.mango_recordings import MangoRecordingDownloader
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
+from mango_mvp.services.transcribe import TranscribeService
 
 
 SCHEMA_VERSION = "mango_calls_two_processes_v1"
@@ -191,6 +195,10 @@ class CallsTwoProcessesConfig:
         return self.pipeline_root / "locks" / "process_a.lock"
 
     @property
+    def process_b_lock(self) -> Path:
+        return self.pipeline_root / "locks" / "process_b.lock"
+
+    @property
     def reports_dir(self) -> Path:
         return self.pipeline_root / "reports"
 
@@ -274,31 +282,26 @@ def run_process_a(
                     "capture_failed",
                     {"disk": disk, "environment": environment, "capture": capture, "lock": lock_info},
                 )
-            metadata = prepare_ingest_inputs(config)
+            metadata = dict(prepare_ingest_inputs(config))
+            metadata["db_open_work"] = call_db_has_open_work(config.working_db)
             worker_reports: list[Mapping[str, Any]] = []
-            if not skip_workers and metadata["audio_files"]:
+            if not skip_workers and (metadata["audio_files"] or metadata["db_open_work"]):
                 base_env = worker_environment(config)
-                worker_reports.append(
-                    command_runner(
-                        cli_command(config, "init-db"),
-                        base_env,
-                        config.working_dir,
+                if metadata["audio_files"]:
+                    worker_reports.append(
+                        command_runner(
+                            cli_command(config, "init-db"),
+                            base_env,
+                            config.working_dir,
+                        )
                     )
-                )
-                worker_reports.append(
-                    command_runner(
-                        cli_command(
-                            config,
-                            "ingest",
-                            "--recordings-dir",
-                            str(config.working_audio_dir),
-                            "--metadata-csv",
-                            str(config.metadata_csv),
-                        ),
-                        base_env,
-                        config.working_dir,
+                    worker_reports.append(
+                        command_runner(
+                            cli_command(config, "ingest", "--recordings-dir", str(config.working_audio_dir), "--metadata-csv", str(config.metadata_csv)),
+                            base_env,
+                            config.working_dir,
+                        )
                     )
-                )
                 worker_reports.extend(
                     run_parallel_pipeline_workers(
                         config,
@@ -344,10 +347,10 @@ def run_process_a(
                     },
                 )
             capture_incomplete = capture.get("status") == "partial"
-            audio_incomplete = positive_int(metadata.get("skipped_total")) > 0
+            audio_incomplete = positive_int(metadata.get("incomplete_total", metadata.get("skipped_total"))) > 0
             if capture_incomplete or audio_incomplete:
                 drop = (
-                    publish_ready_db(config, db_counts)
+                    publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers)))
                     if bool(environment.get("codex_network_ok")) and config.working_db.exists()
                     else {"status": "not_created"}
                 )
@@ -393,7 +396,7 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
-            drop = publish_ready_db(config, db_counts) if config.working_db.exists() else {"status": "not_created"}
+            drop = publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers))) if config.working_db.exists() else {"status": "not_created"}
             if not skip_capture:
                 write_cursor(config.cursor_path, window_until, capture)
             counters = {
@@ -574,10 +577,15 @@ def run_process_b(
             exc,
         )
     try:
-        return _run_process_b(
-            config,
-            producer_runner=producer_runner,
-            import_runner=import_runner,
+        with process_lease(config.process_b_lock, stale_seconds=config.stale_lock_seconds):
+            return _run_process_b(
+                config,
+                producer_runner=producer_runner,
+                import_runner=import_runner,
+            )
+    except LockBusy as exc:
+        return finalize_report(
+            config, run_id, "process_b", "locked", "process_b_locked", {"lock": exc.metadata},
         )
     except Exception as exc:  # noqa: BLE001 - Process B must report, never traceback
         stop_reason = f"process_b_exception:{type(exc).__name__}"
@@ -632,7 +640,7 @@ def process_b_failure_report(
 
 def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mapping[str, Any]:
     first = run_process_a(config, **process_a_kwargs)
-    if first.get("status") not in {"ok", "idle"}:
+    if not first.get("downstream_ready"):
         return {
             "schema_version": SCHEMA_VERSION,
             "process": "cycle",
@@ -642,11 +650,13 @@ def run_cycle(config: CallsTwoProcessesConfig, **process_a_kwargs: Any) -> Mappi
             "process_b": None,
         }
     second = run_process_b(config)
+    second_ok = second.get("status") in {"ok", "idle", "locked"}
+    cycle_status = "failed" if not second_ok else ("partial" if first.get("status") == "partial" else "ok")
     return {
         "schema_version": SCHEMA_VERSION,
         "process": "cycle",
-        "status": "ok" if second.get("status") in {"ok", "idle", "locked"} else "failed",
-        "stop_reason": "" if second.get("status") in {"ok", "idle", "locked"} else "process_b_failed",
+        "status": cycle_status,
+        "stop_reason": "process_b_failed" if not second_ok else str(first.get("stop_reason") or ""),
         "process_a": first,
         "process_b": second,
     }
@@ -724,20 +734,43 @@ def capture_mango_window(
     mapper = MangoOfficePayloadMapper()
     tenant = TenantRef(config.tenant_id)
     rows: list[Mapping[str, Any]] = []
-    pending_since, pending_keys, pending_expired = pending_recording_state(config, until)
-    chunk_start = min(since, pending_since) if pending_since is not None else since
+    manifest_store = CaptureManifestStore(config.capture_manifest)
+    latest_manifest = manifest_store.latest_by_event_key()
+    pending_entries = [entry for entry in latest_manifest.values() if entry.status == "skipped_no_recording"]
+    pending_keys = {entry.event_key for entry in pending_entries}
+    threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    recent_entries = [entry for entry in latest_manifest.values() if parse_datetime(entry.started_at) >= threshold]
+    expired_keys = {entry.event_key for entry in pending_entries if parse_datetime(entry.created_at) < threshold}
+    overlap = timedelta(minutes=config.poll_overlap_minutes)
+    poll_windows = [(since, until)]
+    for entry in {entry.event_key: entry for entry in (*pending_entries, *recent_entries)}.values():
+        started = parse_datetime(entry.started_at)
+        ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
+        poll_windows.append((started - overlap, ended + overlap))
+    merged_windows: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(poll_windows):
+        if merged_windows and start <= merged_windows[-1][1]:
+            merged_windows[-1] = (merged_windows[-1][0], max(end, merged_windows[-1][1]))
+        else:
+            merged_windows.append((start, end))
     api_requests = 0
-    while chunk_start < until:
-        chunk_end = min(until, chunk_start + timedelta(hours=config.api_window_hours))
-        rows.extend(client.poll_call_history(since=chunk_start, until=chunk_end))
-        api_requests += 1
-        chunk_start = chunk_end
+    for window_start, window_end in merged_windows:
+        chunk_start = window_start
+        while chunk_start < window_end:
+            chunk_end = min(window_end, chunk_start + timedelta(hours=config.api_window_hours))
+            rows.extend(client.poll_call_history(since=chunk_start, until=chunk_end))
+            api_requests += 1
+            chunk_start = chunk_end
     unique_events: dict[str, Any] = {}
     for row in rows:
         event = mapper.from_payload(tenant=tenant, payload=row)
+        prior = unique_events.get(event.event_key)
+        if prior is not None:
+            refs = merge_recording_ids(event_recording_ids(prior), event_recording_ids(event))
+            event = replace(event, recording_ref=refs[0] if refs else None, recording_refs=refs)
         unique_events[event.event_key] = event
     recovery_events = missing_capture_recovery_events(config)
-    recovery_keys = {event.event_key for event in recovery_events} | pending_keys
+    recovery_keys = set(latest_manifest) | {event.event_key for event in recovery_events} | pending_keys
     for event in recovery_events:
         unique_events.setdefault(event.event_key, event)
     mapped_events = sorted(unique_events.values(), key=lambda event: (event.started_at, event.provider_call_id))
@@ -745,7 +778,7 @@ def capture_mango_window(
     external_known_keys = {
         event.event_key
         for event in mapped_events
-        if event.event_key not in recovery_keys
+        if event.event_key not in recovery_keys and len(event_recording_ids(event)) < 2
         and (
             (event.recording_ref and event.recording_ref in known_recordings)
             or event.provider_call_id in known_calls
@@ -758,18 +791,22 @@ def capture_mango_window(
     ]
     summary = stage_capture_events(
         events=events,
-        manifest_store=CaptureManifestStore(config.capture_manifest),
+        manifest_store=manifest_store,
         recordings_dir=config.recordings_dir,
         downloader=downloader,
         dry_run=False,
         sleep_sec=1.5,
     )
-    complete = (
-        summary.failed == 0
-        and summary.skipped_no_recording == 0
-        and not pending_keys
-        and pending_expired == 0
-    )
+    latest = manifest_store.latest_by_event_key()
+    pending_expired = 0
+    for event_key in expired_keys:
+        entry = latest.get(event_key)
+        if entry is not None and entry.status == "skipped_no_recording":
+            manifest_store.append(replace(entry, created_at=until.isoformat(), status="recording_retry_expired", error="recording_missing_after_retry_ttl"))
+            pending_expired += 1
+    remaining_pending = {key for key, entry in manifest_store.latest_by_event_key().items() if entry.status == "skipped_no_recording"}
+    open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in manifest_store.latest_by_event_key().values())
+    complete = summary.failed == 0 and summary.skipped_no_recording == 0 and not remaining_pending and pending_expired == 0 and open_multi_review == 0
     status = "ok" if complete else "partial"
     return {
         "status": status,
@@ -777,8 +814,9 @@ def capture_mango_window(
         "api_rows_total": len(rows),
         "api_events_total": len(mapped_events),
         "api_events_already_known_external": len(external_known_keys),
-        "pending_recording_retries": len(pending_keys),
+        "pending_recording_retries": len(remaining_pending),
         "pending_recording_expired": pending_expired,
+        "open_multiple_recordings_needs_review": open_multi_review,
         "api_events_without_recording": sum(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
@@ -786,35 +824,13 @@ def capture_mango_window(
     }
 
 
-def pending_recording_state(
-    config: CallsTwoProcessesConfig,
-    until: datetime,
-) -> tuple[Optional[datetime], set[str], int]:
-    if not config.capture_manifest.exists():
-        return None, set(), 0
-    threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
-    starts: list[datetime] = []
-    keys: set[str] = set()
-    expired = 0
-    for entry in CaptureManifestStore(config.capture_manifest).latest_by_event_key().values():
-        if entry.status != "skipped_no_recording":
-            continue
-        started = parse_datetime(entry.started_at)
-        if started < threshold:
-            expired += 1
-            continue
-        starts.append(started - timedelta(minutes=config.poll_overlap_minutes))
-        keys.add(entry.event_key)
-    return (min(starts) if starts else None), keys, expired
-
-
 def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[TelephonyCallEvent, ...]:
     store = CaptureManifestStore(config.capture_manifest)
     recovered: list[TelephonyCallEvent] = []
     for entry in store.latest_by_event_key().values() if config.capture_manifest.exists() else ():
-        if entry.status not in {"downloaded", "failed"} or not entry.recording_id or not entry.local_audio_path:
+        if entry.status not in {"downloaded", "failed", "multiple_recordings_needs_review"} or not entry_recording_ids(entry):
             continue
-        if entry.status == "downloaded" and manifest_audio_exists(entry):
+        if entry.status != "failed" and manifest_assets_exist(entry):
             continue
         recovered.append(capture_event_from_manifest(entry))
     return tuple(recovered)
@@ -835,6 +851,7 @@ def capture_event_from_manifest(entry: ManifestEntry) -> TelephonyCallEvent:
         client_phone=entry.client_phone,
         manager_ref=entry.manager_ref,
         recording_ref=entry.recording_id,
+        recording_refs=entry.recording_ids,
         raw_payload={},
     )
 
@@ -844,9 +861,14 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     rows: list[dict[str, str]] = []
     actions: dict[str, int] = {}
     skipped: dict[str, int] = {}
+    stable_before = datetime.now(timezone.utc) - timedelta(hours=max(1, config.pending_recording_retry_hours))
+    ingested_call_ids = read_ingested_call_ids(config.working_db)
     latest = CaptureManifestStore(config.capture_manifest).latest_by_event_key() if config.capture_manifest.exists() else {}
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
+            continue
+        if parse_datetime(entry.started_at) > stable_before:
+            skipped["recording_set_stabilizing"] = skipped.get("recording_set_stabilizing", 0) + 1
             continue
         source = Path(entry.local_audio_path)
         # A manifest row promised audio that is gone or empty: count it, so a
@@ -858,6 +880,12 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
             skipped["audio_file_empty"] = skipped.get("audio_file_empty", 0) + 1
             continue
         target = config.working_audio_dir / source.name
+        if entry.provider_call_id in ingested_call_ids:
+            if not target.is_file():
+                action = hardlink_or_copy(source, target)
+                actions[action] = actions.get(action, 0) + 1
+            skipped["already_ingested"] = skipped.get("already_ingested", 0) + 1
+            continue
         action = hardlink_or_copy(source, target)
         actions[action] = actions.get(action, 0) + 1
         rows.append(
@@ -885,7 +913,75 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
         "metadata_rows": len(rows),
         "skipped": skipped,
         "skipped_total": sum(skipped.values()),
+        "incomplete_total": sum(count for reason, count in skipped.items() if reason != "already_ingested"),
     }
+
+
+def read_ingested_call_ids(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+            return {str(row[0]) for row in con.execute("SELECT source_call_id FROM call_records WHERE source_call_id IS NOT NULL")}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).casefold():
+            return set()
+        raise
+
+
+def call_db_has_open_work(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        tables = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "call_records" not in tables:
+            return False
+        now = datetime.now(timezone.utc)
+        limits = {
+            "transcribe": max(1, int(os.getenv("TRANSCRIBE_MAX_ATTEMPTS", "3"))),
+            "resolve": max(1, int(os.getenv("RESOLVE_MAX_ATTEMPTS", "2"))),
+            "analyze": max(1, int(os.getenv("ANALYZE_MAX_ATTEMPTS", "3"))),
+        }
+
+        def due(value: Any) -> bool:
+            return not value or parse_datetime(str(value)) <= now
+
+        def stale(value: Any, env_name: str) -> bool:
+            seconds = max(60, int(os.getenv(env_name, "1800")))
+            return not value or parse_datetime(str(value)) <= now - timedelta(seconds=seconds)
+
+        for raw in con.execute("SELECT * FROM call_records WHERE dead_letter_stage IS NULL"):
+            row = dict(raw)
+            stage = row.get("pipeline_stage")
+            if stage:
+                if stale(row.get("pipeline_claimed_at"), "PIPELINE_LEASE_TIMEOUT_SEC"):
+                    return True
+                continue
+            if row.get("analysis_status") == "in_progress":
+                if stale(row.get("analysis_claimed_at"), "ANALYZE_LEASE_TIMEOUT_SEC"):
+                    return True
+                continue
+            retry_due = due(row.get("next_retry_at"))
+            transcription = row.get("transcription_status")
+            if transcription in {"pending", "failed"} and retry_due and int(row.get("transcribe_attempts") or 0) < limits["transcribe"]:
+                return True
+            state = "not_needed"
+            if transcription == "done" and row.get("transcript_variants_json"):
+                try:
+                    payload = json.loads(str(row["transcript_variants_json"]))
+                except json.JSONDecodeError:
+                    payload = {}
+                if isinstance(payload, dict):
+                    state = TranscribeService.secondary_backfill_state_from_payload(payload, secondary_provider="gigaam")
+            if state in {"fresh", "retry"}:
+                return True
+            resolve = row.get("resolve_status")
+            if transcription == "done" and resolve in {"pending", "failed"} and retry_due and int(row.get("resolve_attempts") or 0) < limits["resolve"]:
+                return True
+            if transcription == "done" and resolve in {None, "done", "skipped"} and row.get("analysis_status") in {"pending", "failed"} and retry_due and int(row.get("analyze_attempts") or 0) < limits["analyze"]:
+                return True
+        return False
 
 
 def read_known_processed_ids(product_data_root: Path) -> tuple[set[str], set[str]]:
@@ -1309,11 +1405,33 @@ def publish_ready_db(config: CallsTwoProcessesConfig, counts: Mapping[str, Any])
         "ready_db": str(config.ready_db),
         "sha256": sha,
         "size_bytes": config.ready_db.stat().st_size,
+        "ready_mtime_ns": config.ready_db.stat().st_mtime_ns,
         "quick_check": quick,
         "counts": counts,
+        "source_storage": sqlite_storage_signature(config.working_db),
     }
     write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
     return manifest
+
+
+def sqlite_storage_signature(path: Path) -> Mapping[str, Mapping[str, int]]:
+    result: dict[str, Mapping[str, int]] = {}
+    for label, candidate in (("db", path), ("wal", Path(str(path) + "-wal"))):
+        if candidate.is_file():
+            stat = candidate.stat()
+            result[label] = {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return result
+
+
+def publish_ready_db_if_changed(config: CallsTwoProcessesConfig, counts: Mapping[str, Any], *, changed: bool) -> Mapping[str, Any]:
+    manifest_path = config.ready_db.with_suffix(".manifest.json")
+    if not changed and config.ready_db.is_file() and manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        ready_stat = config.ready_db.stat()
+        ready_unchanged = manifest.get("size_bytes") == ready_stat.st_size and manifest.get("ready_mtime_ns") == ready_stat.st_mtime_ns
+        if manifest.get("status") == "ready" and ready_unchanged and manifest.get("source_storage") == sqlite_storage_signature(config.working_db):
+            return {**manifest, "reused": True}
+    return {**publish_ready_db(config, counts), "reused": False}
 
 
 def ready_drop_fingerprint(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
@@ -1474,6 +1592,7 @@ def finalize_report(
             "runs_sync": False,
         },
     }
+    report["downstream_ready"] = bool(process == "process_a" and status in {"ok", "partial"} and isinstance(counters.get("drop"), Mapping) and counters["drop"].get("status") == "ready")
     config.reports_dir.mkdir(parents=True, exist_ok=True)
     local_path = config.reports_dir / f"{run_id}_{process}.json"
     write_json(local_path, report)

@@ -27,7 +27,6 @@ class FakeDownloader:
         target_path.write_bytes(data)
         return len(data)
 
-
 def fake_validator(path: Path) -> AudioValidation:
     size = path.stat().st_size
     return AudioValidation(
@@ -45,6 +44,7 @@ def event(
     recording_ref: str | None = "rec-1",
     phone: str = "+79990000000",
     started_offset_sec: int = 0,
+    recording_refs: tuple[str, ...] = (),
 ) -> TelephonyCallEvent:
     started = datetime(2026, 5, 7, 9, 0, tzinfo=timezone.utc) + timedelta(seconds=started_offset_sec)
     return TelephonyCallEvent(
@@ -57,6 +57,7 @@ def event(
         client_phone=phone,
         manager_ref="101",
         recording_ref=recording_ref,
+        recording_refs=recording_refs,
         raw_payload={},
     )
 
@@ -105,6 +106,160 @@ def test_stage_capture_events_is_idempotent_on_second_run(tmp_path: Path) -> Non
     assert second.already_manifested == 1
     assert len(second_downloader.calls) == 0
     assert len(read_manifest(manifest)) == 1
+
+
+def test_stage_capture_events_quarantines_late_part_and_keeps_monotonic_set(tmp_path: Path) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    recordings = tmp_path / "recordings"
+    store = CaptureManifestStore(manifest)
+    first_downloader = FakeDownloader()
+    first = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1",))],
+        store,
+        recordings,
+        first_downloader,
+        validator=fake_validator,
+    )
+    second_downloader = FakeDownloader()
+    second = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        second_downloader,
+        validator=fake_validator,
+    )
+    third_downloader = FakeDownloader()
+    third = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        third_downloader,
+        validator=fake_validator,
+    )
+
+    rows = read_manifest(manifest)
+    assert first.downloaded == 1
+    assert second.downloaded == 0
+    assert second.needs_review_multiple_recordings == 1
+    assert [call[0] for call in second_downloader.calls] == ["rec-2"]
+    assert rows[-1]["status"] == "multiple_recordings_needs_review"
+    assert rows[-1]["recording_ids"] == ["rec-1", "rec-2"]
+    assert len(rows[-1]["recording_paths"]) == 2
+    assert len(list(recordings.glob("*.mp3"))) == 2
+    assert third.already_manifested == 1
+    assert third_downloader.calls == []
+
+    shrinking = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1",))],
+        store,
+        recordings,
+        FakeDownloader(),
+        validator=fake_validator,
+    )
+    assert shrinking.already_manifested == 1
+    assert store.latest_by_event_key()[event("CALL-MULTI").event_key].recording_ids == ("rec-1", "rec-2")
+
+    Path(rows[-1]["recording_paths"][1]).write_bytes(b"")
+    repair_downloader = FakeDownloader()
+    repaired = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        repair_downloader,
+        validator=fake_validator,
+    )
+    assert repaired.needs_review_multiple_recordings == 1
+    assert [call[0] for call in repair_downloader.calls] == ["rec-2"]
+
+
+def test_old_scalar_manifest_reads_as_single_recording_tuple(tmp_path: Path) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    manifest.write_text(
+        json.dumps({
+            "created_at": "2026-05-07T00:00:00+00:00",
+            "tenant_id": "foton",
+            "provider": "mango",
+            "event_key": "foton:mango:old",
+            "provider_call_id": "old",
+            "recording_id": "rec-old",
+            "recording_ids": [],
+            "started_at": "2026-05-07T00:00:00+00:00",
+            "direction": "inbound",
+            "status": "failed",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert CaptureManifestStore(manifest).read_entries()[0].recording_ids == ("rec-old",)
+
+
+def test_late_part_failure_preserves_first_part_and_sanitizes_error(tmp_path: Path) -> None:
+    manifest = tmp_path / "capture_manifest.jsonl"
+    recordings = tmp_path / "recordings"
+    store = CaptureManifestStore(manifest)
+    first_event = event("CALL-MULTI", "rec-1", recording_refs=("rec-1",))
+    stage_capture_events([first_event], store, recordings, FakeDownloader(), validator=fake_validator)
+    target = Path(read_manifest(manifest)[0]["local_audio_path"])
+    previous = target.read_bytes()
+
+    failed = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        FakeDownloader(fail_first=True),
+        validator=fake_validator,
+    )
+
+    assert failed.failed == 1
+    assert target.read_bytes() == previous
+    latest = CaptureManifestStore(manifest).latest_by_event_key()[first_event.event_key]
+    assert latest.status == "failed"
+    assert latest.recording_ids == ("rec-1", "rec-2")
+    assert latest.recording_paths == (str(target),)
+    assert latest.error == "RuntimeError:capture_failed"
+    assert "temporary" not in latest.error
+
+    retry_downloader = FakeDownloader()
+    retry = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        retry_downloader,
+        validator=fake_validator,
+    )
+    assert retry.needs_review_multiple_recordings == 1
+    assert [call[0] for call in retry_downloader.calls] == ["rec-2"]
+
+
+def test_corrupt_nonempty_part_is_removed_and_downloaded_on_retry(tmp_path: Path) -> None:
+    store = CaptureManifestStore(tmp_path / "manifest.jsonl")
+    recordings = tmp_path / "recordings"
+    stage_capture_events([event("CALL-MULTI", "rec-1")], store, recordings, FakeDownloader(), validator=fake_validator)
+
+    def reject_second(path: Path) -> AudioValidation:
+        if "__part-" in path.name:
+            raise ValueError("corrupt secret /tmp/+79990000000")
+        return fake_validator(path)
+
+    failed = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        FakeDownloader(),
+        validator=reject_second,
+    )
+    retry_downloader = FakeDownloader()
+    retried = stage_capture_events(
+        [event("CALL-MULTI", "rec-1", recording_refs=("rec-1", "rec-2"))],
+        store,
+        recordings,
+        retry_downloader,
+        validator=fake_validator,
+    )
+
+    assert failed.failed == 1
+    assert retried.needs_review_multiple_recordings == 1
+    assert [call[0] for call in retry_downloader.calls] == ["rec-2"]
+    assert "+79990000000" not in read_manifest(store.path)[-2]["error"]
 
 
 def test_stage_capture_events_redownloads_missing_downloaded_asset(tmp_path: Path) -> None:
@@ -194,6 +349,24 @@ def test_stage_capture_events_links_duplicate_recording_to_canonical_asset(tmp_p
     assert rows[1]["status"] == "duplicate_recording"
     assert rows[1]["canonical_recording_id"] == "rec-shared"
     assert rows[1]["canonical_audio_path"] == rows[0]["local_audio_path"]
+
+
+def test_duplicate_multi_recording_parts_are_downloaded_once(tmp_path: Path) -> None:
+    downloader = FakeDownloader()
+    summary = stage_capture_events(
+        events=[
+            event("CALL-1", "rec-1", recording_refs=("rec-1", "rec-2")),
+            event("CALL-2", "rec-2", recording_refs=("rec-2", "rec-1"), started_offset_sec=1),
+        ],
+        manifest_store=CaptureManifestStore(tmp_path / "manifest.jsonl"),
+        recordings_dir=tmp_path / "recordings",
+        downloader=downloader,
+        validator=fake_validator,
+    )
+
+    assert [call[0] for call in downloader.calls] == ["rec-1", "rec-2"]
+    assert summary.needs_review_multiple_recordings == 1
+    assert summary.duplicate_recording == 1
 
 
 def test_stage_capture_events_records_no_recording_without_downloading(tmp_path: Path) -> None:

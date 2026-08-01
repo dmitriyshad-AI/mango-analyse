@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 import unicodedata
@@ -111,6 +112,66 @@ class IngestFilenameParseTest(unittest.TestCase):
             ):
                 with pytest.raises(OperationalError):
                     ingest_from_directory(session, root)
+
+    def test_ingest_with_metadata_scans_only_named_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_bounded_") as td:
+            root = Path(td)
+            selected, ignored = root / "selected.mp3", root / "ignored.mp3"
+            selected.write_bytes(b"selected")
+            ignored.write_bytes(b"ignored")
+            metadata = root / "metadata.csv"
+            with metadata.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=("filename", "call_id"))
+                writer.writeheader()
+                writer.writerow({"filename": selected.name, "call_id": "selected"})
+            engine = create_engine("sqlite:///:memory:", future=True)
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session, patch(
+                "mango_mvp.services.ingest.probe_audio", return_value={"codec_name": "mp3"}
+            ):
+                result = ingest_from_directory(session, root, metadata)
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["inserted"], 1)
+
+    def test_ingest_with_header_only_metadata_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_empty_") as td:
+            root = Path(td)
+            (root / "ignored.mp3").write_bytes(b"ignored")
+            metadata = root / "metadata.csv"
+            metadata.write_text("filename,call_id\n", encoding="utf-8")
+            engine = create_engine("sqlite:///:memory:", future=True)
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session:
+                result = ingest_from_directory(session, root, metadata)
+            self.assertEqual(result["processed"], 0)
+
+    def test_ingest_metadata_rejects_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_missing_") as td:
+            root = Path(td)
+            metadata = root / "metadata.csv"
+            metadata.write_text("filename,call_id\nmissing.mp3,missing\n", encoding="utf-8")
+            engine = create_engine("sqlite:///:memory:", future=True)
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session:
+                result = ingest_from_directory(session, root, metadata)
+            self.assertEqual((result["inserted"], result["failed"]), (0, 1))
+
+    def test_ingest_metadata_rejects_symlink_outside_recordings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_ingest_symlink_") as td:
+            base = Path(td)
+            root = base / "recordings"
+            root.mkdir()
+            outside = base / "outside.mp3"
+            outside.write_bytes(b"outside")
+            (root / "linked.mp3").symlink_to(outside)
+            metadata = root / "metadata.csv"
+            metadata.write_text("filename,call_id\nlinked.mp3,linked\n", encoding="utf-8")
+            engine = create_engine("sqlite:///:memory:", future=True)
+            Base.metadata.create_all(bind=engine)
+            with Session(engine, future=True) as session:
+                result = ingest_from_directory(session, root, metadata)
+            self.assertEqual((result["inserted"], result["failed"]), (0, 1))
 
     def test_ingest_does_not_mask_system_io_failure_as_bad_audio(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_ingest_io_failure_") as td:

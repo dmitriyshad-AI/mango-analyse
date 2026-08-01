@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from mango_mvp.productization.contracts import Direction, TenantRef
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 
@@ -95,3 +97,30 @@ def test_mango_office_payload_mapper_extracts_record_id_from_brackets() -> None:
     assert event.client_phone == "+79990000003"
     assert event.manager_ref == "101"
     assert event.recording_ref == "MToxMDA3MjE5OToyNjY5NDEwNTgwMzow"
+
+
+def test_mango_office_payload_mapper_preserves_all_ordered_record_ids() -> None:
+    mapper = MangoOfficePayloadMapper()
+    tenant = TenantRef("foton")
+    variants = [
+        ["rec-1", "rec-2", "rec-1"],
+        [None, "", "rec-1", {"recording_id": "rec-2"}],
+        "rec-1, rec-2, rec-1",
+        '["rec-1", "rec-2", "rec-1"]',
+    ]
+
+    for index, records in enumerate(variants):
+        event = mapper.from_payload(
+            tenant,
+            {"id": f"MANGO-MULTI-{index}", "timestamp": 1778144400, "records": records},
+        )
+        assert event.recording_ref == "rec-1"
+        assert event.recording_refs == ("rec-1", "rec-2")
+
+
+def test_mango_office_payload_mapper_rejects_malformed_recording_object() -> None:
+    with pytest.raises(ValueError, match="invalid Mango recording reference"):
+        MangoOfficePayloadMapper().from_payload(
+            TenantRef("foton"),
+            {"id": "MANGO-BAD", "timestamp": 1778144400, "records": {"unexpected": "value"}},
+        )

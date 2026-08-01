@@ -148,14 +148,18 @@ def ingest_from_directory(
     failed = 0
     failure_types: Dict[str, int] = {}
 
-    files = iter_audio_files(recordings_dir)
+    root = recordings_dir.resolve()
+    files = (recordings_dir / filename for filename in metadata) if metadata_csv is not None else iter_audio_files(recordings_dir)
     for file_path in files:
         if limit is not None and processed >= limit:
             break
         processed += 1
         try:
             with session.begin_nested():
-                abs_path = str(file_path.resolve())
+                resolved = file_path.resolve(strict=False)
+                if not resolved.is_relative_to(root) or not file_path.is_file() or file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    raise ValueError("metadata audio path is missing, unsupported, or outside recordings_dir")
+                abs_path = str(resolved)
                 exists = session.scalar(select(CallRecord.id).where(CallRecord.source_file == abs_path))
                 if exists:
                     skipped += 1

@@ -152,6 +152,11 @@ CLIENT_CUES: dict[str, float] = {
 ARTIFACT_ONLY_PHRASES = {
     "продолжение следует",
 }
+TRANSFER_RE = re.compile(r"\b(?:переключаю|соединяю|передаю трубку|позову коллег\w*|продолжит разговор|оставайтесь на линии)\b", re.I)
+CONFERENCE_RE = re.compile(
+    r"\b(?:коллег[аи] подключ|на громкой связи|нас трое|конференц-связ)\w*\b",
+    re.I,
+)
 SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
 TRANSCRIBE_MERGE_PROMPT_VERSION = "v2"
 
@@ -257,7 +262,7 @@ class TranscribeService:
         fresh_ids: list[int] = []
         retry_ids: list[int] = []
         for call in done_calls:
-            state = self._secondary_backfill_state_from_payload(
+            state = self.secondary_backfill_state_from_payload(
                 self._safe_json_dict(call.transcript_variants_json),
                 secondary_provider=secondary_provider,
             )
@@ -346,8 +351,9 @@ class TranscribeService:
         # attempt already spent so we only allow one extra retry.
         return 1
 
-    def _secondary_backfill_state_from_payload(
-        self,
+    @classmethod
+    def secondary_backfill_state_from_payload(
+        cls,
         payload: Dict[str, Any],
         *,
         secondary_provider: str,
@@ -355,7 +361,7 @@ class TranscribeService:
         if not payload:
             return "not_needed"
 
-        meta = self._secondary_backfill_meta(payload)
+        meta = cls._secondary_backfill_meta(payload)
         if (
             str(meta.get("provider") or "").strip() == secondary_provider
             and bool(meta.get("exhausted"))
@@ -464,6 +470,40 @@ class TranscribeService:
             return str(block.get("variant_a") or "").strip()
         return ""
 
+    @staticmethod
+    def _compact_asr_segments(raw_segments: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw_segments, list):
+            return []
+        compact: list[dict[str, Any]] = []
+        for segment in raw_segments:
+            if not isinstance(segment, dict):
+                continue
+            item: dict[str, Any] = {"text": str(segment.get("text") or "").strip()}
+            if "approximate" in segment:
+                item["approximate"] = bool(segment.get("approximate"))
+            for key in ("start", "end"):
+                try:
+                    item[key] = float(segment[key])
+                except (KeyError, TypeError, ValueError):
+                    pass
+            words = []
+            for word in segment.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                normalized = {"word": str(word.get("word") or "").strip()}
+                for key in ("start", "end"):
+                    try:
+                        normalized[key] = float(word[key])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if normalized["word"]:
+                    words.append(normalized)
+            if words:
+                item["words"] = words
+            if item["text"] or words:
+                compact.append(item)
+        return compact
+
     def _cached_variant_candidate(
         self,
         call: CallRecord,
@@ -471,6 +511,7 @@ class TranscribeService:
         slot: str,  # manager | client | full
         provider: str,
         primary_provider: str,
+        physical_channel: str = "",
     ) -> Optional[Dict[str, Any]]:
         payload = self._safe_json_dict(call.transcript_variants_json)
         if not payload:
@@ -483,6 +524,16 @@ class TranscribeService:
             return None
 
         block = payload.get(slot)
+        if mode == "stereo" and physical_channel:
+            matches = [
+                payload.get(candidate_slot)
+                for candidate_slot in ("manager", "client")
+                if isinstance(payload.get(candidate_slot), dict)
+                and payload[candidate_slot].get("physical_channel") == physical_channel
+            ]
+            if len(matches) != 1:
+                return None
+            block = matches[0]
         cached_primary_provider = str(payload.get("primary_provider") or "").strip()
         cached_secondary_provider = str(payload.get("secondary_provider") or "").strip()
         cached_text = self._variant_text_for_provider(
@@ -494,9 +545,15 @@ class TranscribeService:
         )
         if not cached_text:
             return None
+        uses_primary = provider == cached_primary_provider or (
+            provider == primary_provider
+            and not str(block.get("variant_b") or "").strip()
+            and bool(str(block.get("variant_a") or "").strip())
+        )
+        segment_key = "variant_a_segments" if uses_primary else "variant_b_segments"
         return {
             "text": cached_text,
-            "segments": None,
+            "segments": block.get(segment_key) if isinstance(block, dict) else None,
             "error": None,
             "cached": True,
         }
@@ -676,18 +733,19 @@ class TranscribeService:
 
     def _segments_to_timeline(
         self, raw_segments: Any, speaker: str
-    ) -> list[tuple[float, int, str, str]]:
+    ) -> list[tuple[float, int, str, str, bool]]:
         if not isinstance(raw_segments, list):
             return []
-        timeline: list[tuple[float, int, str, str]] = []
+        timeline: list[tuple[float, int, str, str, bool]] = []
         order = 0
         for idx, segment in enumerate(raw_segments):
             if not isinstance(segment, dict):
                 continue
             word_turns = self._segment_words_to_turns(segment)
+            approximate = bool(segment.get("approximate"))
             if word_turns:
                 for start, text in word_turns:
-                    timeline.append((max(0.0, start), order, speaker, text))
+                    timeline.append((max(0.0, start), order, speaker, text, approximate))
                     order += 1
                 continue
             text = str(segment.get("text", "")).strip()
@@ -698,7 +756,9 @@ class TranscribeService:
                 start = float(start_raw)
             except (TypeError, ValueError):
                 continue
-            timeline.append((max(0.0, start), 10_000 + idx, speaker, " ".join(text.split())))
+            timeline.append(
+                (max(0.0, start), 10_000 + idx, speaker, " ".join(text.split()), approximate)
+            )
         return timeline
 
     @staticmethod
@@ -735,16 +795,23 @@ class TranscribeService:
         client_fallback_text: str = "",
         call_duration_sec: Optional[float] = None,
     ) -> list[str]:
-        timeline = self._segments_to_timeline(
+        manager_timeline = self._segments_to_timeline(
             manager_segments, f"Менеджер ({manager_name})"
-        ) + self._segments_to_timeline(client_segments, "Клиент")
+        )
+        client_timeline = self._segments_to_timeline(client_segments, "Клиент")
+        has_missing_role_timing = bool(manager_fallback_text.strip() and not manager_timeline) or bool(
+            client_fallback_text.strip() and not client_timeline
+        )
+        timeline = [] if has_missing_role_timing else manager_timeline + client_timeline
         if timeline:
             timeline.sort(key=lambda x: (x[0], x[1]))
             lines: list[str] = []
             prev_start = 0.0
-            for start, _, speaker, text in timeline:
+            for start, _, speaker, text, approximate in timeline:
                 safe_start = max(prev_start, float(start))
-                lines.append(f"{self._format_timecode(safe_start)} {speaker}: {text}")
+                lines.append(
+                    f"{self._format_timecode(safe_start, approximate=approximate)} {speaker}: {text}"
+                )
                 prev_start = safe_start
             return lines
 
@@ -812,6 +879,7 @@ class TranscribeService:
         return {
             "timecode": match.group("time"),
             "start": self._timecode_to_seconds(match.group("time")),
+            "approximate": match.group("time").startswith("~"),
             "speaker": speaker,
             "role": role,
             "text": text,
@@ -1104,6 +1172,8 @@ class TranscribeService:
         left: Dict[str, Any],
         right: Dict[str, Any],
     ) -> bool:
+        if not (bool(left.get("approximate")) and bool(right.get("approximate"))):
+            return False
         left_role = str(left.get("role", ""))
         right_role = str(right.get("role", ""))
         if left_role == right_role:
@@ -1191,11 +1261,11 @@ class TranscribeService:
                 out_lines.append(line)
                 continue
             start = float(parsed.get("start", 0.0))
-            safe_start = max(prev_start, start)
+            approximate = bool(parsed.get("approximate"))
+            safe_start = max(prev_start, start) if approximate else start
             if safe_start > start + 1e-6:
                 adjusted += 1
             prev_start = safe_start
-            approximate = str(parsed.get("timecode", "")).startswith("~")
             speaker = str(parsed.get("speaker", "")).strip()
             text = str(parsed.get("text", "")).strip()
             out_lines.append(
@@ -1213,8 +1283,8 @@ class TranscribeService:
         if timeline:
             timeline.sort(key=lambda x: (x[0], x[1]))
             return [
-                {"start": start, "approximate": False, "text": text}
-                for start, _, _, text in timeline
+                {"start": start, "approximate": approximate, "text": text}
+                for start, _, _, text, approximate in timeline
             ]
 
         sentences = self._split_sentences(full_fallback_text)
@@ -1473,6 +1543,103 @@ class TranscribeService:
         if lowered.startswith("алло"):
             client_score += 0.2
         return manager_score, client_score
+
+    def _classify_stereo_call(
+        self,
+        call: CallRecord,
+        left_text: str,
+        right_text: str,
+        *,
+        stereo_similarity: float,
+    ) -> Dict[str, Any]:
+        combined = f"{left_text}\n{right_text}"
+        direction = str(call.direction or "").strip().lower()
+        if direction == "internal":
+            topology = "internal"
+        elif stereo_similarity >= self._settings.stereo_overlap_similarity_threshold:
+            topology = "echo_or_duplicate_channels"
+        elif CONFERENCE_RE.search(combined):
+            topology = "conference_or_multi_party"
+        elif TRANSFER_RE.search(combined):
+            topology = "transfer"
+        elif not left_text.strip() or not right_text.strip():
+            topology = "uncertain"
+        else:
+            topology = "simple_two_party"
+
+        left_manager, left_client = self._score_role_cues(left_text)
+        right_manager, right_client = self._score_role_cues(right_text)
+        normal_score = left_manager + right_client
+        swapped_score = right_manager + left_client
+        suggested_left = "manager" if normal_score >= swapped_score else "client"
+        delta = abs(normal_score - swapped_score)
+        evidence: list[str] = []
+
+        manager_name = (call.manager_name or "").strip() or self._extract_manager_name_from_filename(
+            call.source_filename
+        )
+        name_tokens = [token.lower() for token in WORD_RE.findall(manager_name) if len(token) >= 4]
+        left_hits = sum(token in left_text.lower() for token in name_tokens)
+        right_hits = sum(token in right_text.lower() for token in name_tokens)
+        identity_side = ""
+        if len(name_tokens) >= 2 and left_hits >= 2 and right_hits == 0:
+            identity_side = "left"
+        elif len(name_tokens) >= 2 and right_hits >= 2 and left_hits == 0:
+            identity_side = "right"
+
+        confirmed = False
+        identity_role = "manager" if identity_side == "left" else "client"
+        if (
+            topology == "simple_two_party"
+            and identity_side
+            and suggested_left == identity_role
+            and delta >= 1.0
+        ):
+            suggested_left = "manager" if identity_side == "left" else "client"
+            confirmed = True
+            evidence.extend(("manager_identity", "role_cue_alignment"))
+        elif (
+            topology == "simple_two_party"
+            and delta >= 3.0
+            and left_manager + left_client >= 1.2
+            and right_manager + right_client >= 1.2
+        ):
+            confirmed = True
+            evidence.append("role_cue_margin")
+
+        left_role = suggested_left if confirmed else "manager"
+        right_role = "client" if left_role == "manager" else "manager"
+        confidence = self._clamp_01((0.72 if confirmed else 0.25) + min(delta, 5.0) / 20.0)
+        status = "confirmed_multi_signal" if confirmed else (
+            "blocked_complex_call" if topology != "simple_two_party" else "unverified_low_evidence"
+        )
+        if topology != "simple_two_party":
+            evidence.append(f"topology:{topology}")
+        return {
+            "status": status,
+            "confirmed": confirmed,
+            "topology": topology,
+            "left": left_role,
+            "right": right_role,
+            "suggested_left": suggested_left,
+            "confidence": round(confidence, 4),
+            "manager_quality_allowed": confirmed and topology == "simple_two_party",
+            "evidence": evidence,
+            "scores": {"normal": round(normal_score, 3), "swapped": round(swapped_score, 3)},
+        }
+
+    @staticmethod
+    def _neutralize_role_lines(lines: list[str], manager_channel: str) -> list[str]:
+        manager_side = "правая" if manager_channel == "right" else "левая"
+        client_side = "левая" if manager_channel == "right" else "правая"
+        return [
+            re.sub(
+                r"(\]\s*)Менеджер(?:\s*\([^)]*\))?:",
+                rf"\1Дорожка {manager_side}:",
+                line,
+            ).replace("] Клиент:", f"] Дорожка {client_side}:")
+            for line in lines
+        ]
 
     def _build_role_texts_and_lines(
         self,
@@ -2518,6 +2685,7 @@ class TranscribeService:
                             "start": float(idx * segment_sec),
                             "end": float((idx + 1) * segment_sec),
                             "text": normalized_text,
+                            "approximate": True,
                         }
                     )
             else:
@@ -2551,6 +2719,7 @@ class TranscribeService:
                             "start": 0.0,
                             "end": float(segment_sec),
                             "text": normalized_text,
+                            "approximate": True,
                         }
                     )
         finally:
@@ -2660,6 +2829,7 @@ class TranscribeService:
         primary_provider = self._settings.transcribe_provider
         secondary_provider = self._settings.secondary_transcribe_provider
         warnings: list[str] = []
+        stereo_fallback_mapping: Optional[Dict[str, Any]] = None
         dual_enabled = (
             self._settings.dual_transcribe_enabled
             and bool(secondary_provider)
@@ -2679,6 +2849,7 @@ class TranscribeService:
                         slot="manager",
                         provider=primary_provider,
                         primary_provider=primary_provider,
+                        physical_channel="left",
                     ) or self._try_transcribe_file_with_meta(
                         left, provider=primary_provider
                     )
@@ -2687,6 +2858,7 @@ class TranscribeService:
                         slot="client",
                         provider=primary_provider,
                         primary_provider=primary_provider,
+                        physical_channel="right",
                     ) or self._try_transcribe_file_with_meta(
                         right, provider=primary_provider
                     )
@@ -2698,6 +2870,7 @@ class TranscribeService:
                             slot="manager",
                             provider=secondary_provider,
                             primary_provider=primary_provider,
+                            physical_channel="left",
                         ) or self._try_transcribe_file_with_meta(
                             left, provider=secondary_provider
                         )
@@ -2706,6 +2879,7 @@ class TranscribeService:
                             slot="client",
                             provider=secondary_provider,
                             primary_provider=primary_provider,
+                            physical_channel="right",
                         ) or self._try_transcribe_file_with_meta(
                             right, provider=secondary_provider
                         )
@@ -2743,7 +2917,14 @@ class TranscribeService:
                             manager_primary_text, client_primary_text
                         )
                     )
+                    role_mapping = self._classify_stereo_call(
+                        call,
+                        manager_primary_text,
+                        client_primary_text,
+                        stereo_similarity=stereo_similarity,
+                    )
                     if should_fallback_to_mono:
+                        stereo_fallback_mapping = role_mapping
                         warnings.append(
                             "stereo_split: channels_too_similar "
                             f"(similarity={stereo_similarity:.4f}); fallback_to_full"
@@ -2760,6 +2941,51 @@ class TranscribeService:
                             if dual_enabled
                             else ""
                         )
+                        if dual_enabled:
+                            secondary_mapping = (
+                                self._classify_stereo_call(
+                                    call,
+                                    manager_secondary_text,
+                                    client_secondary_text,
+                                    stereo_similarity=self._similarity_ratio(
+                                        manager_secondary_text, client_secondary_text
+                                    ),
+                                )
+                                if manager_secondary_text and client_secondary_text
+                                else None
+                            )
+                            role_mapping["secondary_mapping"] = secondary_mapping
+                            if not (
+                                secondary_mapping
+                                and role_mapping["confirmed"]
+                                and secondary_mapping["confirmed"]
+                                and role_mapping["left"] == secondary_mapping["left"]
+                                and secondary_mapping["topology"] == "simple_two_party"
+                            ):
+                                role_mapping.update(
+                                    status="blocked_asr_role_disagreement",
+                                    confirmed=False,
+                                    manager_quality_allowed=False,
+                                )
+                            else:
+                                role_mapping["evidence"].append("dual_asr_consensus")
+
+                        manager_channel = "left"
+                        client_channel = "right"
+                        if role_mapping["confirmed"] and role_mapping["left"] == "client":
+                            manager_primary, client_primary = client_primary, manager_primary
+                            manager_secondary, client_secondary = client_secondary, manager_secondary
+                            manager_primary_text, client_primary_text = (
+                                client_primary_text,
+                                manager_primary_text,
+                            )
+                            manager_secondary_text, client_secondary_text = (
+                                client_secondary_text,
+                                manager_secondary_text,
+                            )
+                            manager_channel, client_channel = "right", "left"
+                        if not role_mapping["manager_quality_allowed"]:
+                            warnings.append(f"role_mapping: {role_mapping['status']}")
 
                         manager_merge = self._merge_variant_pair(
                             manager_primary_text,
@@ -2842,22 +3068,46 @@ class TranscribeService:
                         if rebuilt_manager and rebuilt_client:
                             manager_text = rebuilt_manager
                             client_text = rebuilt_client
-                        combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
+                        if role_mapping["manager_quality_allowed"]:
+                            combined = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
+                            output_manager, output_client = manager_text, client_text
+                        else:
+                            dialogue_lines = self._neutralize_role_lines(
+                                dialogue_lines, manager_channel
+                            )
+                            combined = f"CHANNEL_LEFT:\n{manager_text}\n\nCHANNEL_RIGHT:\n{client_text}"
+                            output_manager = output_client = None
                         variants_payload = {
                             "mode": "stereo",
                             "dialogue_lines": dialogue_lines,
                             "primary_provider": primary_provider,
                             "secondary_provider": secondary_provider if dual_enabled else None,
                             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
+                            "call_topology": role_mapping["topology"],
+                            "role_mapping": role_mapping,
                             "manager": {
+                                "physical_channel": manager_channel,
                                 "variant_a": manager_primary_text,
                                 "variant_b": manager_secondary_text if dual_enabled else None,
+                                "variant_a_segments": self._compact_asr_segments(
+                                    manager_primary.get("segments")
+                                ),
+                                "variant_b_segments": self._compact_asr_segments(
+                                    (manager_secondary or {}).get("segments")
+                                ),
                                 "final": manager_text,
                                 "merge_meta": manager_merge,
                             },
                             "client": {
+                                "physical_channel": client_channel,
                                 "variant_a": client_primary_text,
                                 "variant_b": client_secondary_text if dual_enabled else None,
+                                "variant_a_segments": self._compact_asr_segments(
+                                    client_primary.get("segments")
+                                ),
+                                "variant_b_segments": self._compact_asr_segments(
+                                    (client_secondary or {}).get("segments")
+                                ),
                                 "final": client_text,
                                 "merge_meta": client_merge,
                             },
@@ -2887,8 +3137,8 @@ class TranscribeService:
                             "warnings": warnings,
                         }
                         return {
-                            "transcript_manager": manager_text,
-                            "transcript_client": client_text,
+                            "transcript_manager": output_manager,
+                            "transcript_client": output_client,
                             "transcript_text": combined,
                             "dialogue_lines": dialogue_lines,
                             "transcript_variants_json": json.dumps(
@@ -2947,11 +3197,15 @@ class TranscribeService:
             mono_turns, "Спикер (не определен)"
         )
         manager_name = self._extract_manager_name_from_filename(call.source_filename)
-        role_assignment = self._assign_roles_for_mono(
-            mono_turns,
-            manager_name=manager_name,
-            warnings=warnings,
-        )
+        role_assignment = None
+        if stereo_fallback_mapping is None:
+            role_assignment = self._assign_roles_for_mono(
+                mono_turns,
+                manager_name=manager_name,
+                warnings=warnings,
+            )
+        else:
+            warnings.append("role_mapping: blocked_after_stereo_fallback")
         transcript_manager: Optional[str] = None
         transcript_client: Optional[str] = None
         transcript_text = full_text
@@ -2980,15 +3234,31 @@ class TranscribeService:
                 transcript_text = (
                     f"MANAGER:\n{transcript_manager}\n\nCLIENT:\n{transcript_client}"
                 )
+        mono_role_mapping = stereo_fallback_mapping or {
+            "status": "unverified_mono_or_legacy",
+            "confirmed": False,
+            "topology": "mono_or_unknown",
+            "manager_quality_allowed": False,
+            "evidence": ["mono_has_no_physical_role_separation"],
+        }
         variants_payload = {
             "mode": "mono_or_fallback",
             "dialogue_lines": dialogue_lines,
             "primary_provider": primary_provider,
             "secondary_provider": secondary_provider if dual_enabled else None,
             "merge_provider": self._settings.dual_merge_provider if dual_enabled else "primary",
+            "call_topology": mono_role_mapping["topology"],
+            "role_mapping": mono_role_mapping,
             "full": {
+                "physical_channel": "mono",
                 "variant_a": full_primary_text,
                 "variant_b": full_secondary_text if dual_enabled else None,
+                "variant_a_segments": self._compact_asr_segments(
+                    full_primary.get("segments")
+                ),
+                "variant_b_segments": self._compact_asr_segments(
+                    (full_secondary or {}).get("segments")
+                ),
                 "final": full_text,
                 "merge_meta": full_merge,
             },
@@ -3026,18 +3296,26 @@ class TranscribeService:
             client = payload.get("client")
             if not isinstance(manager, dict) or not isinstance(client, dict):
                 raise RuntimeError("secondary backfill requires stereo role payload")
+            if {manager.get("physical_channel"), client.get("physical_channel")} != {
+                "left",
+                "right",
+            }:
+                raise RuntimeError("secondary backfill requires one unique left and right channel")
             if path.suffix.lower() not in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
                 raise RuntimeError("secondary backfill stereo split requires supported audio extension")
             split = split_stereo_to_mono(path)
             if not split:
                 raise RuntimeError("secondary backfill stereo split failed")
             left, right, temp_dir = split
+            manager_path, client_path = (
+                (right, left) if manager.get("physical_channel") == "right" else (left, right)
+            )
             try:
                 manager_secondary = self._try_transcribe_file_with_meta(
-                    left, provider=secondary_provider
+                    manager_path, provider=secondary_provider
                 )
                 client_secondary = self._try_transcribe_file_with_meta(
-                    right, provider=secondary_provider
+                    client_path, provider=secondary_provider
                 )
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -3055,10 +3333,23 @@ class TranscribeService:
             client_text = str(client_secondary.get("text") or "").strip()
             if manager_text:
                 manager_block["variant_b"] = manager_text
+                manager_block["variant_b_segments"] = self._compact_asr_segments(
+                    manager_secondary.get("segments")
+                )
             if client_text:
                 client_block["variant_b"] = client_text
+                client_block["variant_b_segments"] = self._compact_asr_segments(
+                    client_secondary.get("segments")
+                )
             updated_payload["manager"] = manager_block
             updated_payload["client"] = client_block
+            role_mapping = dict(updated_payload.get("role_mapping") or {})
+            role_mapping.update(
+                status="unverified_after_secondary_backfill",
+                confirmed=False,
+                manager_quality_allowed=False,
+            )
+            updated_payload["role_mapping"] = role_mapping
         elif mode == "mono_or_fallback":
             full = payload.get("full")
             if not isinstance(full, dict):
@@ -3073,19 +3364,40 @@ class TranscribeService:
             full_text = str(full_secondary.get("text") or "").strip()
             if full_text:
                 full_block["variant_b"] = full_text
+                full_block["variant_b_segments"] = self._compact_asr_segments(
+                    full_secondary.get("segments")
+                )
             updated_payload["full"] = full_block
         else:
             raise RuntimeError(f"secondary backfill does not support payload mode={mode or 'empty'}")
 
+        if mode == "stereo":
+            manager_channel = str(manager.get("physical_channel") or "left")
+            updated_payload["dialogue_lines"] = self._neutralize_role_lines(
+                list(updated_payload.get("dialogue_lines") or []), manager_channel
+            )
+            left_text, right_text = (
+                (client.get("final") or client.get("variant_a"), manager.get("final") or manager.get("variant_a"))
+                if manager_channel == "right"
+                else (manager.get("final") or manager.get("variant_a"), client.get("final") or client.get("variant_a"))
+            )
+            output_manager = output_client = None
+            output_text = f"CHANNEL_LEFT:\n{left_text or ''}\n\nCHANNEL_RIGHT:\n{right_text or ''}"
+        else:
+            output_manager, output_client, output_text = (
+                call.transcript_manager,
+                call.transcript_client,
+                call.transcript_text,
+            )
         updated_payload["secondary_provider"] = secondary_provider
         updated_payload["warnings"] = self._merge_warning_lists(
             payload.get("warnings"),
             warnings,
         )
         return {
-            "transcript_manager": call.transcript_manager,
-            "transcript_client": call.transcript_client,
-            "transcript_text": call.transcript_text,
+            "transcript_manager": output_manager,
+            "transcript_client": output_client,
+            "transcript_text": output_text,
             "dialogue_lines": updated_payload.get("dialogue_lines"),
             "transcript_variants_json": json.dumps(updated_payload, ensure_ascii=False),
         }
@@ -3097,7 +3409,7 @@ class TranscribeService:
         secondary_provider: str,
     ) -> bool:
         payload = self._safe_json_dict(call.transcript_variants_json)
-        state = self._secondary_backfill_state_from_payload(
+        state = self.secondary_backfill_state_from_payload(
             payload,
             secondary_provider=secondary_provider,
         )
@@ -3208,7 +3520,7 @@ class TranscribeService:
                     secondary_provider=secondary_provider,
                 )
                 result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
-                backfill_state = self._secondary_backfill_state_from_payload(
+                backfill_state = self.secondary_backfill_state_from_payload(
                     result_payload,
                     secondary_provider=secondary_provider,
                 )
@@ -3321,7 +3633,7 @@ class TranscribeService:
         retry_pending = 0
         exhausted = 0
         for call in done_calls:
-            state = self._secondary_backfill_state_from_payload(
+            state = self.secondary_backfill_state_from_payload(
                 self._safe_json_dict(call.transcript_variants_json),
                 secondary_provider=secondary_provider,
             )

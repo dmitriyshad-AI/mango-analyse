@@ -138,6 +138,17 @@ def assert_public_bot_minimum_safe_revision(repo_root: Path | str | None = None)
             ("git", "-C", str(root), "merge-base", "--is-ancestor", PUBLIC_BOT_MINIMUM_SAFE_REVISION, "HEAD"),
             check=False, capture_output=True, text=True,
         )
+        top_level = subprocess.run(
+            ("git", "-C", str(root), "rev-parse", "--show-toplevel"),
+            check=False, capture_output=True, text=True,
+        )
+        worktree = subprocess.run(
+            (
+                "git", "-C", str(root), "status", "--porcelain=v1", "-z",
+                "--untracked-files=all", "--ignore-submodules=none",
+            ),
+            check=False, capture_output=True, text=True,
+        )
     except OSError as exc:
         raise RuntimeError("Refusing public Telegram bot start: Git revision cannot be verified.") from exc
     if ancestry.returncode != 0:
@@ -146,6 +157,18 @@ def assert_public_bot_minimum_safe_revision(repo_root: Path | str | None = None)
             f"HEAD={revision} does not contain required money-promise protection "
             f"{PUBLIC_BOT_MINIMUM_SAFE_REVISION}."
         )
+    if worktree.returncode != 0:
+        raise RuntimeError("Refusing public Telegram bot start: Git worktree state cannot be verified.")
+    if top_level.returncode != 0 or not top_level.stdout.strip() or Path(top_level.stdout.strip()).resolve() != root:
+        raise RuntimeError("Refusing public Telegram bot start: Git root does not match the bot checkout.")
+    if worktree.stdout:
+        raise RuntimeError("Refusing public Telegram bot start: Git worktree is not clean.")
+    loaded_module = sys.modules.get("mango_mvp.channels.subscription_llm")
+    loaded_path = Path(str(getattr(loaded_module, "__file__", ""))).resolve()
+    try:
+        loaded_path.relative_to((root / "src").resolve())
+    except ValueError as exc:
+        raise RuntimeError("Refusing public Telegram bot start: mango_mvp was loaded outside the bot checkout.") from exc
     return revision
 
 

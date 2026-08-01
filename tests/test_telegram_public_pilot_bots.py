@@ -104,7 +104,15 @@ def test_public_polling_requires_money_promise_protection_revision(monkeypatch) 
         polling.send(None)
 
 
-def test_current_checkout_contains_public_bot_minimum_safe_revision() -> None:
+def test_current_checkout_contains_public_bot_minimum_safe_revision(monkeypatch) -> None:
+    real_run = public_bot_module.subprocess.run
+
+    def clean_status(command, **kwargs):
+        if "status" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(public_bot_module.subprocess, "run", clean_status)
     revision = assert_public_bot_minimum_safe_revision()
 
     assert len(revision) == 40
@@ -117,6 +125,69 @@ def test_public_bot_money_promise_floor_selfcheck_passes() -> None:
 def test_public_bot_minimum_safe_revision_fails_closed_without_git(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="HEAD=unknown"):
         assert_public_bot_minimum_safe_revision(tmp_path)
+
+
+@pytest.mark.parametrize("status", [" M tracked.py\0", "M  tracked.py\0", "?? untracked.py\0"])
+def test_public_bot_minimum_safe_revision_rejects_dirty_worktree(monkeypatch, status: str) -> None:
+    def fake_run(command, **kwargs):
+        if "--show-toplevel" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout=str(Path(public_bot_module.__file__).parents[1]) + "\n", stderr="")
+        if "rev-parse" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="a" * 40 + "\n", stderr="")
+        if "merge-base" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return public_bot_module.subprocess.CompletedProcess(command, 0, stdout=status, stderr="")
+
+    monkeypatch.setattr(public_bot_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="not clean"):
+        assert_public_bot_minimum_safe_revision()
+
+
+def test_public_bot_minimum_safe_revision_fails_closed_when_status_fails(monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        if "--show-toplevel" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout=str(Path(public_bot_module.__file__).parents[1]) + "\n", stderr="")
+        if "rev-parse" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="a" * 40 + "\n", stderr="")
+        if "merge-base" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return public_bot_module.subprocess.CompletedProcess(command, 1, stdout="", stderr="status failed")
+
+    monkeypatch.setattr(public_bot_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="worktree state cannot be verified"):
+        assert_public_bot_minimum_safe_revision()
+
+
+def test_public_bot_minimum_safe_revision_rejects_different_git_root(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(command, **kwargs):
+        if "--show-toplevel" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout=str(tmp_path) + "\n", stderr="")
+        if "rev-parse" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="a" * 40 + "\n", stderr="")
+        return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(public_bot_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Git root does not match"):
+        assert_public_bot_minimum_safe_revision()
+
+
+def test_public_bot_minimum_safe_revision_rejects_mixed_pythonpath(monkeypatch, tmp_path: Path) -> None:
+    real_run = public_bot_module.subprocess.run
+
+    def clean_status(command, **kwargs):
+        if "status" in command:
+            return public_bot_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    foreign_module = type("ForeignModule", (), {"__file__": str(tmp_path / "mango_mvp" / "channels" / "subscription_llm.py")})()
+    monkeypatch.setattr(public_bot_module.subprocess, "run", clean_status)
+    monkeypatch.setitem(public_bot_module.sys.modules, "mango_mvp.channels.subscription_llm", foreign_module)
+
+    with pytest.raises(RuntimeError, match="loaded outside the bot checkout"):
+        assert_public_bot_minimum_safe_revision()
 
 
 def test_parse_debug_phone_command_without_payload() -> None:

@@ -62,25 +62,108 @@ class ResolveServiceTest(unittest.TestCase):
             self.assertEqual(first["selection"], second["selection"])
             self.assertEqual(first.get("tokens_used_actual"), 710)
 
-    def test_same_ts_postfilter_preserves_cross_speaker_timecodes(self) -> None:
+    def test_timed_line_parser_accepts_hours_and_rejects_invalid_seconds(self) -> None:
         service = ResolveService(make_settings())
-        lines = [
-            "[00:10.0] Менеджер (Иван): Добрый день.",
-            "[00:10.0] Клиент: Здравствуйте.",
-            "[00:11.5] Менеджер (Иван): Подскажите класс.",
-        ]
-        fixed = service._postfilter_same_ts_dialogue_lines(lines)
-        self.assertEqual(int(fixed["adjusted"]), 0)
-        self.assertEqual(fixed["dialogue_lines"], lines)
+        parsed = service._parse_timed_line("[01:00:00.0] Клиент: Продолжаем разговор.")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["ts_sec"], 3600.0)
+        self.assertEqual(service._parse_timed_line("[100:00:00.0] Клиент: Запись.")["ts_sec"], 360000.0)
+        self.assertIsNone(service._parse_timed_line("[00:99.9] Клиент: Ошибка часов."))
+        self.assertIsNone(service._parse_timed_line("[01:99:00.0] Клиент: Ошибка минут."))
 
     def test_dialogue_lines_are_loaded_from_variants_before_export_file(self) -> None:
         lines = ["[00:01.0] Менеджер (Иван): Добрый день.", "[00:02.0] Клиент: Здравствуйте."]
         call = CallRecord(
             source_file="calls/a.mp3",
             source_filename="a.mp3",
+            transcript_manager="Добрый день.",
+            transcript_client="Здравствуйте.",
             transcript_variants_json=json.dumps({"dialogue_lines": lines}, ensure_ascii=False),
         )
         self.assertEqual(ResolveService(make_settings())._load_dialogue_lines_from_export(call), lines)
+
+    def test_dialogue_export_file_must_match_stored_role_texts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_sidecar_") as td:
+            export_dir = Path(td) / "transcripts"
+            path = export_dir / "calls" / "a_text.txt"
+            path.parent.mkdir(parents=True)
+            call = CallRecord(
+                source_file="calls/a.mp3",
+                source_filename="a.mp3",
+                transcript_manager="Оплата подтверждена.",
+                transcript_client="Ждём договор.",
+                transcript_variants_json="{}",
+            )
+            service = ResolveService(replace(make_settings(), transcript_export_dir=str(export_dir)))
+            valid = ["[00:01.0] Менеджер: Оплата подтверждена.", "[00:02.0] Клиент: Ждём договор."]
+            path.write_text("\n".join(valid) + "\n", encoding="utf-8")
+            self.assertEqual(service._load_dialogue_lines_from_export(call), valid)
+
+            path.write_text("[00:01.0] Менеджер: Ждём договор.\n[00:02.0] Клиент: Оплата подтверждена.\n", encoding="utf-8")
+            self.assertEqual(service._load_dialogue_lines_from_export(call), [])
+
+    def test_dialogue_resolve_rejects_partially_parsed_lines(self) -> None:
+        service = ResolveService(make_settings())
+        call = CallRecord(source_file="a.mp3", source_filename="a.mp3")
+        payload = {
+            "mode": "stereo",
+            "manager": {"physical_channel": "left"},
+            "client": {"physical_channel": "right"},
+        }
+        lines = ["[00:01.0] Менеджер: Текст.", "[00:02.0 Клиент: Важная реплика."]
+        self.assertIsNone(service._build_dialogue_resolve_payload(call, payload, lines))
+
+    def test_dialogue_resolve_from_sidecar_revokes_manager_quality(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_sidecar_quality_") as td:
+            export_dir = Path(td) / "transcripts"
+            path = export_dir / "calls" / "a_text.txt"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "[00:01.0] Менеджер: Оплата подтверждена.\n"
+                "[00:02.0] Клиент: Ждём договор.\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "mode": "stereo",
+                "call_topology": "simple_two_party",
+                "role_mapping": {
+                    "confirmed": True,
+                    "manager_quality_allowed": True,
+                    "topology": "simple_two_party",
+                },
+                "manager": {"physical_channel": "left"},
+                "client": {"physical_channel": "right"},
+            }
+            call = CallRecord(
+                source_file="calls/a.mp3",
+                source_filename="a.mp3",
+                transcript_manager="Оплата подтверждена.",
+                transcript_client="Ждём договор.",
+                transcript_variants_json=json.dumps(payload, ensure_ascii=False),
+            )
+            service = ResolveService(replace(
+                make_settings(),
+                transcript_export_dir=str(export_dir),
+                resolve_llm_provider="codex_cli",
+            ))
+            service._run_dialogue_llm = lambda request: {
+                "turns": [
+                    {
+                        "turn_id": turn["turn_id"],
+                        "speaker": turn["speaker"],
+                        "final_text": turn["baseline_text"],
+                    }
+                    for turn in request["turns"]
+                ]
+            }
+
+            candidate = service._resolve_dialogue_with_llm(call, payload)
+
+            self.assertIsNotNone(candidate)
+            mapping = json.loads(candidate["transcript_variants_json"])["role_mapping"]
+            self.assertFalse(mapping["confirmed"])
+            self.assertFalse(mapping["manager_quality_allowed"])
+            self.assertEqual(mapping["status"], "mutable_sidecar_timing")
 
     def test_postfilter_persists_final_lines_in_variants(self) -> None:
         service = ResolveService(make_settings())
@@ -98,11 +181,51 @@ class ResolveServiceTest(unittest.TestCase):
         self.assertEqual(stored, result["dialogue_lines"])
         self.assertIn("[00:10.0] Клиент:", stored[1])
 
-    def test_postfilter_never_changes_approximate_overlap(self) -> None:
-        service = ResolveService(make_settings())
-        lines = ["[~00:10] Менеджер (Иван): Добрый день.", "[~00:10] Клиент: Здравствуйте."]
-        fixed = service._postfilter_same_ts_dialogue_lines(lines)
-        self.assertEqual(fixed, {"dialogue_lines": lines, "adjusted": 0})
+    def test_postfilter_keeps_mutable_sidecar_provenance_and_revokes_roles(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_sidecar_provenance_") as td:
+            export_dir = Path(td) / "transcripts"
+            path = export_dir / "calls" / "a_text.txt"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "[00:01.0] Менеджер: Первый ответ.\n[00:20.0] Клиент: Первый вопрос.\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "mode": "stereo",
+                "call_topology": "simple_two_party",
+                "role_mapping": {
+                    "confirmed": True,
+                    "manager_quality_allowed": True,
+                    "topology": "simple_two_party",
+                },
+                "manager": {"physical_channel": "left"},
+                "client": {"physical_channel": "right"},
+            }
+            call = CallRecord(
+                source_file="calls/a.mp3",
+                source_filename="a.mp3",
+                transcript_manager="Первый ответ.",
+                transcript_client="Первый вопрос.",
+                transcript_variants_json=json.dumps(payload, ensure_ascii=False),
+            )
+            service = ResolveService(replace(make_settings(), transcript_export_dir=str(export_dir)))
+
+            result = service._maybe_postfilter_candidate_dialogue(
+                call, service._candidate_from_call(call)
+            )
+
+            stored = json.loads(result["transcript_variants_json"])
+            self.assertEqual(stored["dialogue_lines_source"], "mutable_sidecar")
+            self.assertFalse(stored["role_mapping"]["confirmed"])
+            self.assertFalse(stored["role_mapping"]["manager_quality_allowed"])
+
+            call.transcript_variants_json = result["transcript_variants_json"]
+            repeated = service._maybe_postfilter_candidate_dialogue(
+                call, service._candidate_from_call(call)
+            )
+            repeated_payload = json.loads(repeated["transcript_variants_json"])
+            self.assertEqual(repeated_payload["dialogue_lines_source"], "mutable_sidecar")
+            self.assertFalse(repeated_payload["role_mapping"]["confirmed"])
 
     def test_postfilter_persists_lines_when_no_adjustment_is_needed(self) -> None:
         service = ResolveService(make_settings())
@@ -155,6 +278,31 @@ class ResolveServiceTest(unittest.TestCase):
         self.assertEqual(len(stored["manager"]["variant_b_segments"]), 1)
         self.assertEqual(len(stored["client"]["variant_b_segments"]), 1)
         self.assertFalse(stored["role_mapping"]["confirmed"])
+
+    def test_model_speaker_correction_revokes_confirmed_role_mapping(self) -> None:
+        service = ResolveService(make_settings())
+        normalized = service._normalize_dialogue_result(
+            {
+                "turns": [{"turn_id": 1, "ts_sec": 10.0, "speaker": "unknown", "baseline_text": "Вопрос", "approximate": False}],
+                "role_variants": {},
+            },
+            {"turns": [{"turn_id": 1, "speaker": "manager", "final_text": "Вопрос"}]},
+        )
+        candidate = service._dialogue_turns_to_candidate(
+            CallRecord(source_file="a.mp3", source_filename="a.mp3", manager_name="Иван"),
+            {
+                "mode": "stereo",
+                "call_topology": "simple_two_party",
+                "role_mapping": {"confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party"},
+                "manager": {"physical_channel": "left"},
+                "client": {"physical_channel": "right"},
+            },
+            normalized,
+            provider="test",
+        )
+        mapping = json.loads(candidate["transcript_variants_json"])["role_mapping"]
+        self.assertFalse(mapping["confirmed"])
+        self.assertFalse(mapping["manager_quality_allowed"])
 
     def test_short_calls_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_skip_") as td:

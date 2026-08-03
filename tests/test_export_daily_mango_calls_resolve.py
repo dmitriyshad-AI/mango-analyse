@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from scripts import export_daily_mango_calls_resolve as exporter
+from scripts import evaluate_dialogue_quality as dialogue_quality
 
 
 SCHEMA = """
@@ -79,7 +81,7 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                 "done",
                 "pending" if pending else "done",
                 "pending" if pending else "done",
-                "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nИщу сыну Петру очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
+                "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nДобрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
                 json.dumps({
                     "dialogue_lines": dialogue,
                     "call_topology": "simple_two_party",
@@ -160,6 +162,15 @@ def test_current_mango_users_override_archived_manager_name(tmp_path: Path) -> N
     current = [{"general": {"name": "Новое имя"}, "telephony": {"extension": "405"}}]
     assert exporter.load_manager_map(archived, current)["405"] == "Новое имя"
     assert exporter.manager_name_issue("Ольга") == "В справочнике Mango указано неполное имя менеджера"
+    assert exporter.manager_name_issue("Тест 4") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Тестовый сотрудник") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Test 4") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Demo User") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Демо-аккаунт") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("test_user") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Служебный аккаунт") == "В Mango указана техническая тестовая учётная запись"
+    assert exporter.manager_name_issue("Иван Тестов") == ""
+    assert exporter.manager_name_issue("Костин Тест-Мамедов") == ""
     assert exporter.manager_name_issue("Новое имя") == ""
 
 
@@ -183,6 +194,157 @@ def test_sealed_dialogue_never_reads_mutable_transcript_file(tmp_path: Path, mon
     )
 
     assert confirmed is False and "ВНЕШНИЙ" not in text and "Сохранённый текст" in text
+
+
+def test_mutable_sidecar_must_match_stored_call_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(exporter, "PIPELINE_ROOT", tmp_path)
+    source = tmp_path / "audio" / "call.mp3"
+    sidecar = tmp_path / "working" / "transcripts" / "audio" / "call_text.txt"
+    sidecar.parent.mkdir(parents=True)
+    fallback = "MANAGER:\nСохранённый текст.\nCLIENT:\nОтвет клиента."
+    sidecar.write_text(
+        "[00:01.0] Менеджер: Сохранённый текст.\n[00:02.0] Клиент: Ответ клиента.\n",
+        encoding="utf-8",
+    )
+    text, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed and exporter.ORDER_WARNING in text and "Ответ клиента" in text
+
+    sidecar.write_text("[00:01.0] Менеджер: Чужой разговор.\n", encoding="utf-8")
+    text, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed and "Чужой разговор" not in text and "Сохранённый текст" in text
+
+    sidecar.write_text("[00:01.0 Менеджер: Непривязанный текст.\n", encoding="utf-8")
+    text, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed and "Непривязанный текст" not in text and "Сохранённый текст" in text
+
+    sidecar.write_text(
+        "[00:01.0] Менеджер: Чужой разговор.\n"
+        "[00:02.0] Спикер (не определен): Чужая деталь.\n",
+        encoding="utf-8",
+    )
+    text, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed and "Чужой разговор" not in text and "Сохранённый текст" in text
+
+    sidecar.write_text(
+        "[00:01.0] Менеджер: Ответ клиента.\n[00:02.0] Клиент: Сохранённый текст.\n",
+        encoding="utf-8",
+    )
+    _, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed
+
+    sidecar.write_text(
+        "[00:01.0] Менеджер: Сохранённый\n"
+        "[00:02.0] Клиент: Ответ\n"
+        "[00:03.0] Клиент: клиента.\n"
+        "[00:04.0] Менеджер: текст.\n",
+        encoding="utf-8",
+    )
+    _, confirmed = exporter.ordered_dialogue(source, {}, fallback)
+    assert not confirmed
+
+
+@pytest.mark.parametrize("dialogue_source", ["sidecar", "stored"])
+def test_role_swapped_dialogue_never_reaches_manager_sheet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dialogue_source: str,
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    swapped_lines = [
+        "[00:01.0] Менеджер: Ищу сыну Петру очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
+        "[00:02.0] Клиент: Здравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.",
+    ]
+    for db in (ready_db, working_db):
+        with sqlite3.connect(db) as con:
+            raw = con.execute(
+                "SELECT transcript_variants_json FROM call_records WHERE source_call_id='call-ready'"
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            if dialogue_source == "sidecar":
+                payload.pop("dialogue_lines", None)
+            else:
+                payload["dialogue_lines"] = swapped_lines
+            con.execute(
+                "UPDATE call_records SET transcript_variants_json=? WHERE source_call_id='call-ready'",
+                (json.dumps(payload, ensure_ascii=False),),
+            )
+    if dialogue_source == "sidecar":
+        sidecar = exporter.PIPELINE_ROOT / "working" / "transcripts" / "audio" / "ready_text.txt"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text("\n".join(swapped_lines) + "\n", encoding="utf-8")
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    assert wb["Звонки"].max_row == 1
+    assert wb["Проблемы данных"].max_row >= 2
+    if dialogue_source == "stored":
+        problem_text = " ".join(
+            str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
+        )
+        assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
+        assert "Роли менеджера и клиента не подтверждены" not in problem_text
+        assert "Спикер A (роль не подтверждена)" in problem_text
+    wb.close()
+
+
+def test_per_role_rewrite_reports_text_alignment_not_false_role_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    for db in (ready_db, working_db):
+        with sqlite3.connect(db) as con:
+            raw = con.execute(
+                "SELECT transcript_variants_json FROM call_records WHERE source_call_id='call-ready'"
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            payload["resolve"] = {"mode": "stereo_per_role", "applied": True}
+            con.execute(
+                "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
+                (
+                    "MANAGER:\nЗдравствуйте, Анна Иванова, я слушаю вас. Хорошо, отправлю договор и позвоню завтра.\n\n"
+                    "CLIENT:\nИщу сыну Петру очный летний лагерь по математике. Бюджет около ста тысяч рублей, "
+                    "цена для меня важна. Есть ли скидка? Сначала нужно обсудить договор. Отправьте его и свяжитесь завтра.",
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    problem_text = " ".join(
+        str(cell) for row in wb["Проблемы данных"].iter_rows(values_only=True) for cell in row
+    )
+    assert "Текст с таймкодами не совпадает с итоговой расшифровкой" in problem_text
+    assert "Роли менеджера и клиента не подтверждены" not in problem_text
+    assert "Спикер A (роль не подтверждена)" in problem_text
+    wb.close()
 
 
 def test_sealed_merge_does_not_open_working_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -224,6 +386,111 @@ def test_equal_cross_role_timecodes_are_not_treated_as_confirmed_order() -> None
     ]
     _, empty_confirmed = exporter.ordered_dialogue(Path("call.mp3"), {"dialogue_lines": empty}, "")
     assert not empty_confirmed
+
+
+def test_hour_timecode_is_preserved_and_invalid_seconds_are_rejected() -> None:
+    for hour_line in (
+        "[01:00:00.0] Менеджер: Продолжаем разговор.",
+        "[100:00:00.0] Менеджер: Длинная запись.",
+    ):
+        text, confirmed = exporter.ordered_dialogue(
+            Path("call.mp3"), {"dialogue_lines": [hour_line]}, "",
+        )
+        assert confirmed and text == hour_line
+
+    for invalid_line in (
+        "[00:99.9] Клиент: Ошибка секунд.",
+        "[01:99:00.0] Клиент: Ошибка минут.",
+    ):
+        _, invalid_confirmed = exporter.ordered_dialogue(
+            Path("call.mp3"), {"dialogue_lines": [invalid_line]}, "",
+        )
+        assert not invalid_confirmed
+
+
+def test_dialogue_quality_evaluator_reads_hour_timecodes(tmp_path: Path) -> None:
+    transcript = tmp_path / "call_text.txt"
+    transcript.write_text(
+        "[01:00:00.0] Клиент: Продолжаем разговор.\n"
+        "[~01:30:00] Клиент: Приблизительная метка.\n"
+        "[100:00:00.0] Менеджер: Длинная запись.\n",
+        encoding="utf-8",
+    )
+    assert dialogue_quality._parse_timed_lines(transcript) == [
+        (3600.0, "client", "Продолжаем разговор."),
+        (360000.0, "manager", "Длинная запись."),
+    ]
+    metrics = dialogue_quality.evaluate_text_file(transcript, 24, 0.92)
+    assert metrics["approximate_lines"] == 1
+
+
+def test_dialogue_quality_summary_reports_untrusted_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "call_text.txt").write_text(
+        "[01:00:00.0] Клиент: Точная строка.\n"
+        "[~01:30:00] Клиент: Приблизительная строка.\n"
+        "[01:40:00.0] Спикер (не определен): Неизвестная роль.\n"
+        "[01:50:00.0 Клиент: Битая строка.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["evaluate_dialogue_quality.py", "--transcripts-dir", str(tmp_path)])
+
+    assert dialogue_quality.main() == 0
+    summary = json.loads(capsys.readouterr().out)["summary"]
+    assert summary["approximate_lines_total"] == 1
+    assert summary["unknown_speaker_lines_total"] == 1
+    assert summary["unparsed_lines_total"] == 1
+    assert summary["files_without_timed_format"] == 0
+
+
+def test_dialogue_quality_separates_files_without_timed_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "call_text.txt").write_text(
+        "Менеджер (Иван):\nДобрый день.\n\nКлиент:\nЗдравствуйте.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["evaluate_dialogue_quality.py", "--transcripts-dir", str(tmp_path)])
+
+    assert dialogue_quality.main() == 0
+    summary = json.loads(capsys.readouterr().out)["summary"]
+    assert summary["files_without_timed_format"] == 1
+    assert summary["unparsed_lines_total"] == 4
+
+
+def test_persisted_mutable_sidecar_is_never_confirmed() -> None:
+    variants = {
+        "dialogue_lines_source": "mutable_sidecar",
+        "dialogue_lines": [
+            "[00:01.0] Менеджер: Первый ответ.",
+            "[00:20.0] Клиент: Первый вопрос.",
+        ],
+        "call_topology": "simple_two_party",
+        "role_mapping": {
+            "confirmed": True,
+            "manager_quality_allowed": True,
+            "topology": "simple_two_party",
+        },
+        "manager": {"physical_channel": "left"},
+        "client": {"physical_channel": "right"},
+    }
+    _, chronology_confirmed = exporter.ordered_dialogue(
+        Path("call.mp3"), variants, "MANAGER:\nПервый ответ.\nCLIENT:\nПервый вопрос."
+    )
+    assert not chronology_confirmed
+    assert not exporter.manager_roles_confirmed(variants)
+
+
+def test_invalid_stored_line_is_preserved_for_manual_review() -> None:
+    lines = [
+        "[00:01.0] Менеджер: Добрый день.",
+        "[00:02.0 Клиент: Важная договорённость.",
+    ]
+    text, confirmed = exporter.ordered_dialogue(
+        Path("call.mp3"), {"dialogue_lines": lines}, "MANAGER:\nЗапасной текст.",
+    )
+    assert not confirmed and "Важная договорённость" in text
 
 
 def test_equal_cross_role_timecodes_are_excluded_from_manager_report(
@@ -298,7 +565,35 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert wb["Проблемы данных"].max_row == 2
     problem_headers = {cell.value: cell.column for cell in wb["Проблемы данных"][1]}
     assert wb["Проблемы данных"].cell(2, problem_headers["ФИО клиента из Tallanto"]).value == "Петров Пётр"
+    description = " ".join(str(cell) for row in wb["Описание полей"].iter_rows(values_only=True) for cell in row)
+    assert "сверить с полной расшифровкой" in description
     assert "audio" not in json.dumps(result, ensure_ascii=False).casefold()
+    wb.close()
+
+
+def test_incomplete_row_without_specific_issue_remains_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(ready_db) as con:
+        con.execute("UPDATE call_records SET analysis_json='{}' WHERE source_call_id='call-ready'")
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    values = list(wb["Проблемы данных"].iter_rows(values_only=True))
+    headers = {value: index for index, value in enumerate(values[0])}
+    assert any(row[headers["Телефон клиента"]] == "+79990001122" for row in values[1:])
     wb.close()
 
 
@@ -338,6 +633,45 @@ def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, mon
     row = next(item for item in values[1:] if item[headers["Телефон клиента"]] == "+79990001122")
     for column in ("Тип звонка по смысловому анализу", "Краткое содержание разговора", "Продукт", "Возражения и ограничения", "Следующий шаг"):
         assert row[headers[column]] is None
+    wb.close()
+
+
+def test_historical_model_speaker_correction_is_review_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    for db in (ready_db, working_db):
+        with sqlite3.connect(db) as con:
+            raw = con.execute(
+                "SELECT transcript_variants_json FROM call_records WHERE source_call_id='call-ready'"
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            payload["dialogue_resolve"] = {"speaker_corrections": 1}
+            con.execute(
+                "UPDATE call_records SET transcript_variants_json=? WHERE source_call_id='call-ready'",
+                (json.dumps(payload, ensure_ascii=False),),
+            )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    assert wb["Звонки"].max_row == 1
+    assert any(
+        "Роли менеджера и клиента не подтверждены" in str(cell)
+        for row in wb["Проблемы данных"].iter_rows(values_only=True)
+        for cell in row
+    )
     wb.close()
 
 
@@ -575,12 +909,13 @@ def test_missing_tallanto_export_blocks_matching(tmp_path: Path) -> None:
 
 def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
-    lines = [f"[00:01.0] Менеджер (Иван): {'а' * 70_000}", "[00:02.0] Клиент: конец"]
+    manager_text = "а" * 70_000
+    lines = [f"[00:01.0] Менеджер (Иван): {manager_text}", "[00:02.0] Клиент: конец"]
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
                 con.execute(
-                    "UPDATE call_records SET transcript_variants_json=? WHERE source_call_id='call-ready'",
-                    (json.dumps({
+                    "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
+                    (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
                         "dialogue_lines": lines,
                         "call_topology": "simple_two_party",
                         "role_mapping": {"confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party"},

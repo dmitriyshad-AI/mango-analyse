@@ -75,7 +75,7 @@ RESOLVE_DIALOGUE_PROMPT_VERSION = "v2"
 
 
 TIMED_LINE_RE = re.compile(
-    r"^\[(?P<approx>~)?(?P<mm>\d{2}):(?P<ss>\d{2}(?:\.\d)?)\]\s+"
+    r"^\[(?P<approx>~)?(?:(?P<hh>\d{2,}):)?(?P<mm>[0-5]\d):(?P<ss>[0-5]\d(?:\.\d)?)\]\s+"
     r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент|Спикер\s*\(не определен\)):\s*(?P<text>.*)$"
 )
 WORD_RE = re.compile(r"\S+", flags=re.UNICODE)
@@ -287,20 +287,34 @@ class ResolveService:
         payload = self._safe_json(call.transcript_variants_json or "")
         stored = payload.get("dialogue_lines")
         if isinstance(stored, list) and stored:
-            return [str(line).strip() for line in stored if str(line).strip()]
-        path = self._dialogue_export_path(call)
-        if not path or not path.exists():
+            lines = [str(line).strip() for line in stored if str(line).strip()]
+        else:
+            path = self._dialogue_export_path(call)
+            if not path or not path.exists():
+                return []
+            lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+        parsed = [self._parse_timed_line(line) for line in lines]
+        if any(item is None for item in parsed):
             return []
-        return [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+        manager = " ".join(str(item["text"]) for item in parsed if item and item["role"] == "manager")
+        client = " ".join(str(item["text"]) for item in parsed if item and item["role"] == "client")
+        normalize = self._transcribe_helper._normalize_artifact_text
+        if (normalize(manager), normalize(client)) != (
+            normalize(call.transcript_manager or ""),
+            normalize(call.transcript_client or ""),
+        ):
+            return []
+        return lines
 
     @staticmethod
     def _parse_timed_line(line: str) -> Optional[Dict[str, Any]]:
         match = TIMED_LINE_RE.match(str(line).strip())
         if not match:
             return None
+        hh = int(match.group("hh") or 0)
         mm = int(match.group("mm"))
         ss = float(match.group("ss"))
-        ts = mm * 60.0 + ss
+        ts = hh * 3600.0 + mm * 60.0 + ss
         speaker = (match.group("speaker") or "").strip()
         if speaker.startswith("Менеджер"):
             role = "manager"
@@ -345,25 +359,6 @@ class ResolveService:
             )
         return rows
 
-    @staticmethod
-    def _format_timecode(seconds: float, approximate: bool = False) -> str:
-        total_ms = max(0, int(round(seconds * 1000.0)))
-        hours, rem_ms = divmod(total_ms, 3_600_000)
-        minutes, rem_ms = divmod(rem_ms, 60_000)
-        secs, ms = divmod(rem_ms, 1000)
-        prefix = "~" if approximate else ""
-        if hours > 0:
-            if approximate:
-                return f"[{prefix}{hours:02d}:{minutes:02d}:{secs:02d}]"
-            return f"[{prefix}{hours:02d}:{minutes:02d}:{secs:02d}.{ms // 100}]"
-        if approximate:
-            return f"[{prefix}{minutes:02d}:{secs:02d}]"
-        return f"[{prefix}{minutes:02d}:{secs:02d}.{ms // 100}]"
-
-    def _postfilter_same_ts_dialogue_lines(self, dialogue_lines: List[str]) -> Dict[str, Any]:
-        # Resolve may improve text, but timing evidence is immutable.
-        return {"dialogue_lines": list(dialogue_lines), "adjusted": 0}
-
     def _maybe_postfilter_candidate_dialogue(
         self,
         call: CallRecord,
@@ -371,14 +366,21 @@ class ResolveService:
     ) -> Dict[str, Any]:
         name = str(candidate.get("name") or "")
         lines = candidate.get("dialogue_lines")
+        loaded_from_sidecar = False
         if (not isinstance(lines, list) or not lines) and name == "baseline":
             lines = self._load_dialogue_lines_from_export(call)
+            loaded_from_sidecar = bool(lines)
         if not isinstance(lines, list) or not lines:
             return candidate
 
         meta = candidate.get("meta")
         if not isinstance(meta, dict):
             meta = {}
+        dialogue_lines_source = str(meta.get("dialogue_lines_source") or "")
+        if loaded_from_sidecar:
+            dialogue_lines_source = "mutable_sidecar"
+        if dialogue_lines_source:
+            meta["dialogue_lines_source"] = dialogue_lines_source
         rows_before = self._parse_dialogue_lines(call, lines, allow_export_fallback=False)
         if rows_before:
             before_metrics = self._line_metrics(rows_before)
@@ -386,36 +388,22 @@ class ResolveService:
                 before_metrics.get("same_ts_cross_speaker_events", 0) or 0
             )
 
-        fixed = self._postfilter_same_ts_dialogue_lines(lines)
-        adjusted = int(fixed.get("adjusted") or 0)
-        candidate["dialogue_lines"] = fixed["dialogue_lines"] if adjusted > 0 else lines
-        if adjusted > 0:
-            meta["same_ts_postfilter_adjusted_lines"] = adjusted
-            rows_after = self._parse_dialogue_lines(
-                call,
-                candidate["dialogue_lines"],
-                allow_export_fallback=False,
-            )
-            if rows_after:
-                after_metrics = self._line_metrics(rows_after)
-                meta["same_ts_events_after_postfilter"] = int(
-                    after_metrics.get("same_ts_cross_speaker_events", 0) or 0
-                )
+        candidate["dialogue_lines"] = lines
         candidate["meta"] = meta
 
         payload = self._safe_json(str(candidate.get("transcript_variants_json") or ""))
         if payload:
             payload["dialogue_lines"] = candidate["dialogue_lines"]
-            if adjusted > 0:
-                warnings = self._get_warnings(payload)
-                marker = f"resolve_same_ts_postfilter: adjusted_lines={adjusted}"
-                if marker not in warnings:
-                    warnings.append(marker)
-                payload["warnings"] = warnings
-                payload["resolve_same_ts_postfilter"] = {
-                    "applied": True,
-                    "adjusted_lines": adjusted,
-                }
+            if dialogue_lines_source:
+                payload["dialogue_lines_source"] = dialogue_lines_source
+            if dialogue_lines_source == "mutable_sidecar":
+                role_mapping = payload.get("role_mapping")
+                if isinstance(role_mapping, dict):
+                    role_mapping.update({
+                        "confirmed": False,
+                        "manager_quality_allowed": False,
+                        "status": "mutable_sidecar_timing",
+                    })
             candidate["transcript_variants_json"] = json.dumps(payload, ensure_ascii=False)
         return candidate
 
@@ -899,7 +887,7 @@ class ResolveService:
         for idx, raw in enumerate(baseline_dialogue_lines, start=1):
             parsed = self._parse_timed_line(raw)
             if parsed is None:
-                continue
+                return None
             role = str(parsed.get("role") or "unknown")
             text = str(parsed.get("text") or "").strip()
             flags: List[str] = []
@@ -913,7 +901,7 @@ class ResolveService:
                 {
                     "turn_id": idx,
                     "ts_sec": round(ts_sec, 3),
-                    "ts_label": self._format_timecode(
+                    "ts_label": self._transcribe_helper._format_timecode(
                         ts_sec,
                         approximate=bool(parsed.get("approximate")),
                     ).strip("[]"),
@@ -1290,7 +1278,7 @@ class ResolveService:
             else:
                 speaker_label = "Спикер (не определен)"
             dialogue_lines.append(
-                f"{self._format_timecode(ts_sec, approximate=approximate)} {speaker_label}: {text}"
+                f"{self._transcribe_helper._format_timecode(ts_sec, approximate=approximate)} {speaker_label}: {text}"
             )
 
         manager_text = " ".join(manager_parts).strip()
@@ -1301,6 +1289,14 @@ class ResolveService:
             transcript_text = "\n".join(dialogue_lines).strip()
 
         payload = self._copy_payload(variants_payload)
+        if int(normalized_result.get("speaker_corrections") or 0):
+            role_mapping = payload.get("role_mapping")
+            if isinstance(role_mapping, dict):
+                role_mapping.update({
+                    "confirmed": False,
+                    "manager_quality_allowed": False,
+                    "status": "model_speaker_correction",
+                })
         warnings = self._get_warnings(payload)
         for item in normalized_result.get("warnings", []):
             text = str(item).strip()
@@ -1358,6 +1354,11 @@ class ResolveService:
         provider = self._dialogue_resolve_provider()
         if provider == "rule":
             return None
+        stored_lines = variants_payload.get("dialogue_lines")
+        from_sidecar = variants_payload.get("dialogue_lines_source") == "mutable_sidecar" or not (
+            isinstance(stored_lines, list)
+            and any(str(line).strip() for line in stored_lines)
+        )
         baseline_dialogue_lines = self._load_dialogue_lines_from_export(call)
         input_payload = self._build_dialogue_resolve_payload(
             call,
@@ -1369,6 +1370,14 @@ class ResolveService:
         raw_result = self._run_dialogue_llm(input_payload)
         llm_meta = raw_result.get("_llm_meta") if isinstance(raw_result.get("_llm_meta"), dict) else None
         normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
+        if from_sidecar:
+            role_mapping = variants_payload.get("role_mapping")
+            if isinstance(role_mapping, dict):
+                role_mapping.update({
+                    "confirmed": False,
+                    "manager_quality_allowed": False,
+                    "status": "mutable_sidecar_timing",
+                })
         return self._dialogue_turns_to_candidate(
             call,
             variants_payload,
@@ -1542,14 +1551,26 @@ class ResolveService:
         return result
 
     def _candidate_from_call(self, call: CallRecord) -> Dict[str, Any]:
+        payload = self._safe_json(call.transcript_variants_json or "")
+        stored = payload.get("dialogue_lines")
+        has_stored_lines = isinstance(stored, list) and any(str(line).strip() for line in stored)
+        dialogue_lines = self._load_dialogue_lines_from_export(call)
+        declared_source = str(payload.get("dialogue_lines_source") or "")
         return {
             "name": "baseline",
             "transcript_manager": call.transcript_manager,
             "transcript_client": call.transcript_client,
             "transcript_text": call.transcript_text or "",
-            "dialogue_lines": self._load_dialogue_lines_from_export(call),
+            "dialogue_lines": dialogue_lines,
             "transcript_variants_json": call.transcript_variants_json or "{}",
-            "meta": {"provider": "baseline"},
+            "meta": {
+                "provider": "baseline",
+                "dialogue_lines_source": (
+                    declared_source
+                    if declared_source in {"stored", "mutable_sidecar"}
+                    else "stored" if has_stored_lines else "mutable_sidecar" if dialogue_lines else "none"
+                ),
+            },
         }
 
     @staticmethod
@@ -1806,11 +1827,6 @@ class ResolveService:
                 best = self._choose_best(candidates)
                 best_score = int(best.get("quality", {}).get("score", 0))
                 best_name = str(best.get("name") or "baseline")
-                best_meta = best.get("meta")
-                if not isinstance(best_meta, dict):
-                    best_meta = {}
-                postfilter_adjusted = int(best_meta.get("same_ts_postfilter_adjusted_lines") or 0)
-
                 if best_score >= accept_threshold:
                     if best_name != "baseline":
                         call.transcript_manager = best.get("transcript_manager")
@@ -1819,7 +1835,7 @@ class ResolveService:
                     if isinstance(best.get("transcript_variants_json"), str):
                         call.transcript_variants_json = str(best.get("transcript_variants_json") or "{}")
 
-                    should_export = best_name != "baseline" or postfilter_adjusted > 0
+                    should_export = best_name != "baseline"
                     if should_export:
                         self._transcribe_helper._export_transcript_file(
                             call,

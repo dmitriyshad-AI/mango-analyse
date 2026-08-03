@@ -48,8 +48,9 @@ DEFAULT_MANAGER_USERS = ROOT / (
 )
 MOSCOW = ZoneInfo("Europe/Moscow")
 TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v3"
+ORDER_WARNING = "Порядок реплик не сохранён в исходных данных; ниже приведён полный текст по ролям без выдуманной очередности."
 TIMED_LINE_RE = re.compile(
-    r"^\[(?P<approx>~)?(?P<mm>\d{2}):(?P<ss>\d{2}(?:\.\d)?)\]\s+"
+    r"^\[(?P<approx>~)?(?:(?P<hh>\d{2,}):)?(?P<mm>[0-5]\d):(?P<ss>[0-5]\d(?:\.\d)?)\]\s+"
     r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент|Спикер\s*\(не определен\)):\s*(?P<text>.*)$"
 )
 
@@ -123,6 +124,13 @@ def manager_name_issue(value: Any) -> str:
     name = " ".join(str(value or "").split())
     if not name:
         return "ФИО менеджера не найдено в справочнике Mango"
+    if re.search(
+        r"(?:^|[\s._-])(?:тест(?:овый|овая|овое)|test|demo|демо|служебн(?:ый|ая|ое))"
+        r"(?:[\s._-]*\d+)?(?:[\s._-]|$)|(?:^|[\s._-])тест(?:[\s._]*\d+)?(?:[\s._]|$)",
+        name,
+        flags=re.IGNORECASE,
+    ):
+        return "В Mango указана техническая тестовая учётная запись"
     return "В справочнике Mango указано неполное имя менеджера" if len(name.split()) < 2 else ""
 
 
@@ -156,39 +164,98 @@ def translate_transcript(value: Any) -> str:
     return re.sub(r"(?m)^\s*CLIENT\s*:", "Клиент:", text, flags=re.IGNORECASE)
 
 
+def _role_words(value: Any) -> dict[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {"manager": [], "client": []}
+    role = ""
+    for raw in str(value or "").splitlines():
+        match = re.match(
+            r"^\s*(MANAGER|CLIENT|Менеджер(?:\s*\([^)]+\))?|Клиент)\s*:\s*(.*)$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        text = raw
+        if match:
+            speaker, text = match.group(1).casefold(), match.group(2)
+            role = "manager" if speaker == "manager" or speaker.startswith("менеджер") else "client"
+        if role:
+            result[role].extend(re.findall(r"\w+", text.casefold().replace("ё", "е")))
+    return {key: tuple(words) for key, words in result.items()}
+
+
+def _role_binding_matches(lines: Sequence[Any], fallback: Any) -> bool:
+    source_lines = [str(item).strip() for item in lines if str(item).strip()]
+    if not source_lines or not str(fallback or "").strip():
+        return True
+    binding = [TIMED_LINE_RE.fullmatch(line) for line in source_lines]
+    if any(match is None or match.group("speaker").startswith("Спикер") for match in binding):
+        return False
+    role_text = "\n".join(
+        f"{'MANAGER' if match.group('speaker').startswith('Менеджер') else 'CLIENT'}: {match.group('text')}"
+        for match in binding if match is not None
+    )
+    return _role_words(role_text) == _role_words(fallback)
+
+
 def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str, *, allow_file_fallback: bool = True) -> tuple[str, bool]:
     raw_lines = variants.get("dialogue_lines")
+    from_sidecar = variants.get("dialogue_lines_source") == "mutable_sidecar"
     if allow_file_fallback and (not isinstance(raw_lines, list) or not raw_lines):
         exported = PIPELINE_ROOT / "working/transcripts" / source.parent.name / f"{source.stem}_text.txt"
-        raw_lines = exported.read_text(encoding="utf-8", errors="ignore").splitlines() if exported.is_file() else []
+        raw_lines = [line for line in exported.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()] if exported.is_file() else []
+        from_sidecar = bool(raw_lines)
     if not isinstance(raw_lines, list):
         raw_lines = []
     source_lines = [str(item).strip() for item in raw_lines if str(item).strip()]
+    binding = [TIMED_LINE_RE.fullmatch(line) for line in source_lines]
+    if from_sidecar and (
+        any(match is None for match in binding)
+        or any(match is not None and match.group("speaker").startswith("Спикер") for match in binding)
+    ):
+        source_lines = []
+    elif not _role_binding_matches(source_lines, fallback):
+        if from_sidecar:
+            source_lines = []
+        else:
+            return f"{ORDER_WARNING}\n\n{chr(10).join(source_lines)}".strip(), False
     lines, previous, previous_role, preserve_source = [], -1.0, "", False
     for raw in source_lines:
         match = TIMED_LINE_RE.fullmatch(raw)
         if match is None or match.group("approx") or match.group("speaker").startswith("Спикер"):
-            lines = []
+            lines, preserve_source = [], True
             break
         content = match.group("text").strip()
         if not "".join(char for char in content if unicodedata.category(char) != "Cf").strip():
             continue
-        stamp = int(match.group("mm")) * 60 + float(match.group("ss"))
+        stamp = int(match.group("hh") or 0) * 3600 + int(match.group("mm")) * 60 + float(match.group("ss"))
         speaker = match.group("speaker")
         role = "Менеджер" if speaker.startswith("Менеджер") else "Клиент" if speaker == "Клиент" else "Спикер (не определён)"
         if stamp < previous or (stamp == previous and previous_role and role != previous_role):
             lines, preserve_source = [], True
             break
         previous, previous_role = stamp, role
-        lines.append(f"[{match.group('mm')}:{match.group('ss')}] {role}: {content}")
+        clock = f"{match.group('hh')}:" if match.group("hh") else ""
+        lines.append(f"[{clock}{match.group('mm')}:{match.group('ss')}] {role}: {content}")
     if lines:
-        return "\n".join(lines), True
-    warning = "Порядок реплик не сохранён в исходных данных; ниже приведён полный текст по ролям без выдуманной очередности."
+        text = "\n".join(lines)
+        if from_sidecar:
+            return f"{ORDER_WARNING}\n\n{text}", False
+        return text, True
     preserved = "\n".join(source_lines) if preserve_source else translate_transcript(fallback).strip() or "\n".join(source_lines)
-    return f"{warning}\n\n{preserved}".strip(), False
+    return f"{ORDER_WARNING}\n\n{preserved}".strip(), False
 
 
 def manager_roles_confirmed(variants: Mapping[str, Any]) -> bool:
+    if variants.get("dialogue_lines_source") == "mutable_sidecar":
+        return False
+    for key in ("resolve", "dialogue_resolve"):
+        block = variants.get(key)
+        if not isinstance(block, Mapping):
+            continue
+        try:
+            if int(block.get("speaker_corrections") or 0) != 0:
+                return False
+        except (TypeError, ValueError):
+            return False
     mapping = variants.get("role_mapping")
     channels = {(variants.get(role) if isinstance(variants.get(role), Mapping) else {}).get("physical_channel") for role in ("manager", "client")}
     return bool(
@@ -360,18 +427,32 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bo
         Path(str(row["source_file"])), variants, str(row["transcript_text"] or ""),
         allow_file_fallback=not sealed_only,
     )
+    stored_lines = variants.get("dialogue_lines")
+    dialogue_text_aligned = not isinstance(stored_lines, list) or _role_binding_matches(
+        stored_lines, str(row["transcript_text"] or "")
+    )
     roles_confirmed = manager_roles_confirmed(variants)
-    chronology_confirmed = order_confirmed and roles_confirmed
+    chronology_confirmed = order_confirmed and roles_confirmed and dialogue_text_aligned
     extension = str(row["manager_name"] or "").strip()
     manager = names.get(extension, "")
     resolve_ok = row["resolve_status"] == "done" or (row["resolve_status"] == "skipped" and resolve.get("decision") == "skip_short_call")
     complete = bool(row["transcription_status"] == "done" and resolve_ok and row["analysis_status"] == "done" and analysis)
     issues = processing_issues(row, analysis, resolve)
+    if not complete and not issues:
+        issues.append("Обработка звонка не завершена")
     if not order_confirmed:
         issues.append("Порядок реплик не подтверждён исходными данными")
+    if not dialogue_text_aligned:
+        issues.append("Текст с таймкодами не совпадает с итоговой расшифровкой")
     if not roles_confirmed:
         issues.append("Роли менеджера и клиента не подтверждены")
-        transcript = "Роли не подтверждены; не использовать для оценки сотрудника.\n\n" + neutralize_unconfirmed_roles(transcript)
+    if not roles_confirmed or not dialogue_text_aligned:
+        warning = (
+            "Роли не подтверждены; не использовать для оценки сотрудника."
+            if not roles_confirmed
+            else "Связь подписей реплик с итоговой расшифровкой не подтверждена; не использовать для оценки сотрудника."
+        )
+        transcript = warning + "\n\n" + neutralize_unconfirmed_roles(transcript)
     base = base if chronology_confirmed else {}
     if manager_issue := manager_name_issue(manager):
         issues.append(manager_issue)
@@ -560,6 +641,7 @@ def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manage
                  ["ФИО менеджера", "Из архивного справочника Mango; пустое значение означает, что подтверждённого соответствия нет."],
                  ["ФИО клиента", "Однозначное совпадение нормализованного телефона: сначала локальная выгрузка Tallanto, затем read-only Tallanto API."],
                  ["Расшифровка", "Полный последовательный диалог только при сохранённом порядке реплик. Длинный текст без обрезки разбит на соседние столбцы и продублирован в TXT."],
+                 ["Краткое содержание", "Автоматическая выжимка; перед оценкой менеджера её нужно сверить с полной расшифровкой."],
                  ["Следующий шаг и возражения", "Подсказка смыслового анализа, а не автоматическое поручение; сверить с записью и CRM."],
                  ["Незавершённые", "На листе «Проблемы данных»; не смешиваются с полностью обработанными звонками."],
                  ["Использование", "Внутренний отчёт. Не применять для санкций или KPI без прослушивания и контекста CRM."]):

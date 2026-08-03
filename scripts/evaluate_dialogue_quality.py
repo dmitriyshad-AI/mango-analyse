@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 TIMED_LINE_RE = re.compile(
-    r"^\[(?P<mm>\d{2}):(?P<ss>\d{2}(?:\.\d)?)\]\s+"
-    r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент):\s*(?P<text>.*)$"
+    r"^\[(?P<approx>~)?(?:(?P<hh>\d{2,}):)?(?P<mm>[0-5]\d):(?P<ss>[0-5]\d(?:\.\d)?)\]\s+"
+    r"(?P<speaker>Менеджер(?:\s*\([^)]+\))?|Клиент|Спикер\s*\(не определен\)):\s*(?P<text>.*)$"
 )
 WORD_RE = re.compile(r"\S+", flags=re.UNICODE)
 
@@ -66,8 +66,8 @@ def _safe_mean(values: List[float]) -> float:
     return float(statistics.mean(values))
 
 
-def _timestamp_seconds(mm: str, ss: str) -> float:
-    return int(mm) * 60.0 + float(ss)
+def _timestamp_seconds(hh: str | None, mm: str, ss: str) -> float:
+    return int(hh or 0) * 3600.0 + int(mm) * 60.0 + float(ss)
 
 
 def _list_files(root: Path, suffix: str) -> List[Path]:
@@ -90,18 +90,32 @@ def _load_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _parse_timed_lines(path: Path) -> List[Tuple[float, str, str]]:
+def _parse_timed_file(path: Path) -> Tuple[List[Tuple[float, str, str]], Dict[str, int]]:
     rows: List[Tuple[float, str, str]] = []
+    stats = {"approximate_lines": 0, "unknown_speaker_lines": 0, "unparsed_lines": 0}
     for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
         match = TIMED_LINE_RE.match(raw.strip())
         if not match:
+            stats["unparsed_lines"] += 1
             continue
-        ts = _timestamp_seconds(match.group("mm"), match.group("ss"))
+        if match.group("approx"):
+            stats["approximate_lines"] += 1
+            continue
+        if match.group("speaker").startswith("Спикер"):
+            stats["unknown_speaker_lines"] += 1
+            continue
+        ts = _timestamp_seconds(match.group("hh"), match.group("mm"), match.group("ss"))
         speaker_raw = match.group("speaker")
         speaker = "manager" if speaker_raw.startswith("Менеджер") else "client"
         text = match.group("text").strip()
         rows.append((ts, speaker, text))
-    return rows
+    return rows, stats
+
+
+def _parse_timed_lines(path: Path) -> List[Tuple[float, str, str]]:
+    return _parse_timed_file(path)[0]
 
 
 def evaluate_text_file(
@@ -109,7 +123,7 @@ def evaluate_text_file(
     min_near_dup_chars: int,
     near_dup_threshold: float,
 ) -> Dict[str, Any]:
-    rows = _parse_timed_lines(path)
+    rows, parse_stats = _parse_timed_file(path)
     backward_events = 0
     same_ts_cross_speaker_events = 0
     max_same_speaker_run = 0
@@ -152,6 +166,8 @@ def evaluate_text_file(
         prev_speaker = speaker
 
     return {
+        **parse_stats,
+        "has_timed_format": bool(rows or parse_stats["approximate_lines"] or parse_stats["unknown_speaker_lines"]),
         "lines": len(rows),
         "words": words,
         "switches": switches,
@@ -242,6 +258,10 @@ def main() -> int:
     near_dup_pairs_total = 0
     same_ts_cross_speaker_files = 0
     same_ts_cross_speaker_events_total = 0
+    approximate_lines_total = 0
+    unknown_speaker_lines_total = 0
+    unparsed_lines_total = 0
+    files_without_timed_format = 0
 
     for key in all_keys:
         text_path = text_by_key.get(key)
@@ -260,6 +280,10 @@ def main() -> int:
             words_values.append(float(text_eval["words"]))
             switches_values.append(float(text_eval["switches"]))
             max_run_values.append(float(text_eval["max_same_speaker_run"]))
+            approximate_lines_total += int(text_eval["approximate_lines"])
+            unknown_speaker_lines_total += int(text_eval["unknown_speaker_lines"])
+            unparsed_lines_total += int(text_eval["unparsed_lines"])
+            files_without_timed_format += int(not text_eval["has_timed_format"])
 
             backward_timestamp_events += int(text_eval["backward_events"])
             if text_eval["has_backward"]:
@@ -360,6 +384,10 @@ def main() -> int:
             "backward_timestamp_events": backward_timestamp_events,
             "same_ts_cross_speaker_files": same_ts_cross_speaker_files,
             "same_ts_cross_speaker_events": same_ts_cross_speaker_events_total,
+            "approximate_lines_total": approximate_lines_total,
+            "unknown_speaker_lines_total": unknown_speaker_lines_total,
+            "unparsed_lines_total": unparsed_lines_total,
+            "files_without_timed_format": files_without_timed_format,
             "residual_cross_speaker_near_duplicate_files": near_dup_files_count,
             "residual_cross_speaker_near_duplicate_pairs": near_dup_pairs_total,
         },

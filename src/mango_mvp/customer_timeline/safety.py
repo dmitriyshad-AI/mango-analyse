@@ -75,6 +75,8 @@ def guard_customer_timeline_writable_path(path: Path | str) -> Path:
     resolved = Path(path).expanduser().resolve(strict=False)
     if is_customer_timeline_prod_path(resolved):
         raise ValueError(f"customer timeline prod is snapshot-only; write staging and publish atomically: {resolved}")
+    if resolved.is_file() and resolved.stat().st_nlink > 1:
+        raise ValueError(f"customer timeline writable path must not be a hard link: {resolved}")
     return resolved
 
 

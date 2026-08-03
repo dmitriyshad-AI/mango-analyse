@@ -1984,7 +1984,7 @@ def test_mango_increment_non_conversation_has_no_summary_chunk_or_signal() -> No
     assert batch.signals == ()
 
 
-def test_mango_increment_explicit_non_contentful_overrides_sales_call_type() -> None:
+def test_mango_increment_explicit_non_contentful_blocks_unknown_call_type() -> None:
     batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
         TimelineSourceRecord(
             source_system="mango_processed_summary",
@@ -1993,7 +1993,7 @@ def test_mango_increment_explicit_non_contentful_overrides_sales_call_type() -> 
                 "call_id": "provider:explicit-non-contentful",
                 "call_at": "2026-05-04T12:00:00+00:00",
                 "summary": "Автоответчик.",
-                "call_type": "sales_call",
+                "call_type": "unknown",
                 "contentful": "Нет",
                 "customer_id": "customer:existing",
                 "match_class": "strong_unique",
@@ -2011,6 +2011,13 @@ def test_non_contentful_call_predicate_keeps_real_technical_service_and_unknown_
         assert not is_non_contentful_call_record({"record": {"call_type": call_type}})
     assert is_non_contentful_call_record({"record": {"call_type": "non_conversation"}})
     assert is_non_contentful_call_record({"record": {"contentful": "Нет", "call_type": "sales_call"}})
+    assert is_non_contentful_call_record({"subject": "service_call", "record": {"contentful": "Нет"}})
+    assert is_non_contentful_call_record({"subject": "non_conversation", "record": {"contentful": True}})
+    assert is_non_contentful_call_record({"record": {"contentful": False}})
+    assert is_non_contentful_call_record({"record": {"contentful": 0}})
+    assert is_non_contentful_call_record({"record": {"contentful": 0.0}})
+    assert is_non_contentful_call_record({"record": {"call": {"contentful": False}}})
+    assert not is_non_contentful_call_record({"record": {"contentful": True}})
 
 
 def test_dry_run_preview_is_deterministic_and_does_not_mutate_store(tmp_path: Path) -> None:

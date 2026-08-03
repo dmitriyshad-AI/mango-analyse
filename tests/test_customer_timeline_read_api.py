@@ -133,6 +133,84 @@ def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp
     assert timeline["items"][0]["event_type"] == "mango_call"
 
 
+def test_read_api_skips_malformed_record_without_crashing_customer_memory(tmp_path: Path) -> None:
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE bot_context_chunks SET record_json='{bad' WHERE allowed_for_bot=1"
+        )
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.bot_context("foton", customer_id, allowed_only=True)
+
+    assert result["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("source_system", "corrupt_event"),
+    (
+        ("mail_archive_stage2", False),
+        ("mail_archive_stage2", True),
+        ("customer_timeline_bot_safe_summary", False),
+    ),
+)
+def test_bot_safe_boundary_rejects_malformed_protected_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_system: str,
+    corrupt_event: bool,
+) -> None:
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
+    monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")
+    db_path, customer_id = seed_timeline_db(tmp_path)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="email_message",
+            event_at=NOW + timedelta(minutes=2),
+            source_system="mail_archive_stage2",
+            source_id=f"malformed-{source_system}-{corrupt_event}",
+            direction="inbound",
+            match_status="strong_unique",
+            metadata={"brand_context_authorized": True},
+            created_at=NOW + timedelta(minutes=2),
+        )
+        store.upsert_event(event)
+        chunk = BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer_id,
+            chunk_id=f"malformed-{source_system}-{corrupt_event}",
+            event_id=event.event_id if source_system == "mail_archive_stage2" else None,
+            source_system=source_system,
+            source_ref="malformed-probe",
+            chunk_type="email_message",
+            text="Эта поврежденная запись не должна быть видна.",
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            metadata={"brand_context_authorized": True},
+            created_at=NOW + timedelta(minutes=2),
+        )
+        store.upsert_bot_context_chunk(chunk)
+
+    with sqlite3.connect(db_path) as con:
+        table = "timeline_events" if corrupt_event else "bot_context_chunks"
+        key = event.event_id if corrupt_event else chunk.chunk_id
+        key_column = "event_id" if corrupt_event else "chunk_id"
+        con.execute(f"UPDATE {table} SET record_json='{{bad' WHERE {key_column}=?", (key,))
+        con.commit()
+
+    with CustomerTimelineReadApi.open(
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)
+    ) as api:
+        result = api.bot_context("foton", customer_id, allowed_only=True, limit=50)
+
+    assert all(item.get("chunk_id") != chunk.chunk_id for item in result["items"])
+
+
 def test_read_api_bot_context_dedupes_mail_stage2_by_message_sha_on_read(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE", "1")
     monkeypatch.setenv("CUSTOMER_TIMELINE_E4B_MAIL_STAGE2_BOT_VISIBLE_ALLOW_TEST_PATHS", "1")

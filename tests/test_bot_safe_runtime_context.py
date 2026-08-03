@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import mango_mvp.customer_timeline.bot_safe_runtime_context as runtime_context_module
 from mango_mvp.channels.subscription_llm_parts.direct_path import _build_direct_path_prompt
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BotSafeLookup,
@@ -333,6 +334,34 @@ def test_bot_safe_lead_attributed_child_does_not_mix_other_child_history(tmp_pat
                 metadata={"brand_context_authorized": True},
             )
         )
+        empty_call = TimelineEvent(
+            tenant_id="foton",
+            customer_id="customer:second-child",
+            event_type="mango_call",
+            event_at=NOW,
+            source_system="mango_processed_summary",
+            source_id="selected-child-empty-call",
+            direction="inbound",
+            summary="Нет содержательного диалога.",
+            match_status="strong_unique",
+            record={"contentful": False},
+        )
+        store.upsert_event(empty_call)
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id="customer:second-child",
+                event_id=empty_call.event_id,
+                chunk_type="mango_call_summary",
+                text="Нет содержательного диалога.",
+                source_system="mango_processed_summary",
+                source_ref="mango:selected-child-empty-call",
+                event_at=NOW,
+                relevance_tags=("call", "bot_visible", "mango_processed_summary"),
+                allowed_for_bot=False,
+                requires_manager_review=True,
+            )
+        )
     with sqlite3.connect(db_path) as con:
         con.execute(
             "INSERT INTO opportunity_child_attribution_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -357,6 +386,27 @@ def test_bot_safe_lead_attributed_child_does_not_mix_other_child_history(tmp_pat
                 "exact event", "{}", NOW.isoformat(), "selected-event-hash", "{}",
             ),
         )
+        row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE event_id=?", (empty_call.event_id,)
+        ).fetchone()
+        stale_payload = json.loads(row[0])
+        stale_payload["allowed_for_bot"] = True
+        stale_payload["requires_manager_review"] = False
+        stale_payload["relevance_tags"] = ["call", "bot_visible", "mango_processed_summary"]
+        stale_payload["metadata"] = {"brand_context_authorized": True}
+        con.execute(
+            "UPDATE bot_context_chunks SET source_system='customer_timeline_bot_safe_summary',"
+            "allowed_for_bot=1,requires_manager_review=0,record_json=? "
+            "WHERE event_id=?",
+            (json.dumps(stale_payload, ensure_ascii=False), empty_call.event_id),
+        )
+        con.execute(
+            "INSERT INTO event_child_attribution_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", empty_call.event_id, "customer:second-child", "child:2", "matched", "high",
+                "exact event", "{}", NOW.isoformat(), "empty-call-hash", "{}",
+            ),
+        )
 
     context = build_bot_safe_crm_context(
         timeline_db=db_path,
@@ -369,6 +419,7 @@ def test_bot_safe_lead_attributed_child_does_not_mix_other_child_history(tmp_pat
     assert "предметы: математика" in context["summary"]
     assert "олимпиадная математика" in context["summary"]
     assert "онлайн-курс" not in context["summary"]
+    assert "Нет содержательного диалога" not in context["summary"]
 
 
 def test_bot_safe_family_projection_rejects_unknown_brand_and_hides_old_chunks(tmp_path: Path) -> None:
@@ -1182,6 +1233,135 @@ def test_bot_safe_crm_context_reads_opened_mango_calls_as_brand_neutral_input(tm
     assert set(item["relevance_tags"]) == {"call", "bot_visible", "mango_processed_summary"}
 
 
+def test_bot_safe_crm_context_rechecks_legacy_non_contentful_call_before_prompt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    useful_text = "Звонок: клиент обсудил подготовку к экзамену и попросил подобрать формат."
+    empty_text = "Нет содержательного диалога."
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_mango_call(
+            store, customer_id=customer_id, source_id="useful-call", text=useful_text,
+            contentful=True, event_at=NOW,
+        )
+        _upsert_mango_call(
+            store, customer_id=customer_id, source_id="legacy-empty-call", text=empty_text,
+            contentful=False, event_at=NOW.replace(hour=13),
+        )
+    _open_test_mango_calls(db_path, tmp_path, "legacy-empty")
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE chunk_id='chunk-legacy-empty-call'"
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload["allowed_for_bot"] = True
+        payload["requires_manager_review"] = False
+        payload["relevance_tags"] = [
+            "call", "bot_visible", "mango_processed_summary", "brand_unknown",
+        ]
+        con.execute(
+            "UPDATE bot_context_chunks SET allowed_for_bot=1,requires_manager_review=0,record_json=? "
+            "WHERE chunk_id='chunk-legacy-empty-call'",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+        con.commit()
+
+    def prompt_text() -> str:
+        context = build_bot_safe_crm_context(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            active_brand="foton",
+            lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+            allow_explicit_customer_id=True,
+            limit=5,
+        )
+        return build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
+
+    guarded = prompt_text()
+    assert useful_text in guarded
+    assert empty_text not in guarded
+
+    monkeypatch.setattr(runtime_context_module, "is_non_contentful_call_record", lambda _event: False)
+    assert empty_text in prompt_text()
+
+
+def test_bot_safe_crm_context_rechecks_mango_event_after_chunk_source_and_type_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    empty_text = "Нет содержательного диалога после подмены полей фрагмента."
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        event = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="mango_call",
+            event_at=NOW,
+            source_system="mango_processed_summary",
+            source_id="changed-empty-call",
+            direction="inbound",
+            summary=empty_text,
+            match_status="strong_unique",
+            record={"contentful": False},
+            metadata={"brand_context_authorized": True},
+            created_at=NOW,
+        )
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer_id,
+                event_id=event.event_id,
+                chunk_id="chunk-changed-empty-call",
+                chunk_type="bot_safe_summary",
+                text=empty_text,
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref="botsafe:changed-empty-call",
+                relevance_tags=("bot_safe", "structured", "foton"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"brand_context_authorized": True},
+                created_at=NOW,
+            )
+        )
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE chunk_id='chunk-changed-empty-call'"
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload["chunk_id"] = "forged-safe-chunk-id"
+        payload["event_id"] = None
+        con.execute(
+            "UPDATE bot_context_chunks SET record_json=? "
+            "WHERE chunk_id='chunk-changed-empty-call'",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+        limit=5,
+    )
+
+    assert empty_text not in json.dumps(context, ensure_ascii=False)
+    assert empty_text not in build_customer_memory_for_prompt(context, active_brand="foton").prompt_text
+
+    monkeypatch.setattr(runtime_context_module, "_mango_linked_chunk_ids", lambda *_args, **_kwargs: frozenset())
+    leaked = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+        limit=5,
+    )
+    assert empty_text in build_customer_memory_for_prompt(leaked, active_brand="foton").prompt_text
+
+
 def test_bot_safe_crm_context_rechecks_d084_call_identity_at_read_time(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
@@ -1203,6 +1383,45 @@ def test_bot_safe_crm_context_rechecks_d084_call_identity_at_read_time(tmp_path:
     )
 
     assert "клиент обсуждал подготовку к экзамену" not in json.dumps(context, ensure_ascii=False)
+
+
+def test_bot_safe_crm_context_skips_superseded_event_and_malformed_chunk(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+    superseded_text = "Звонок: этот заменённый факт не должен попасть в память."
+    malformed_text = "Звонок: этот повреждённый фрагмент не должен уронить память."
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        _upsert_mango_call(
+            store, customer_id=customer_id, source_id="superseded-call", text=superseded_text,
+        )
+        _upsert_mango_call(
+            store, customer_id=customer_id, source_id="malformed-call", text=malformed_text,
+        )
+    _open_test_mango_calls(db_path, tmp_path, "superseded-malformed")
+    with sqlite3.connect(db_path) as con:
+        superseded_event_id = con.execute(
+            "SELECT event_id FROM timeline_events WHERE source_id='superseded-call'"
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE timeline_events SET superseded_by=? WHERE event_id=?",
+            (superseded_event_id, superseded_event_id),
+        )
+        con.execute(
+            "UPDATE bot_context_chunks SET record_json='{bad' WHERE chunk_id='chunk-malformed-call'"
+        )
+        con.commit()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        allow_explicit_customer_id=True,
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert superseded_text not in raw
+    assert malformed_text not in raw
 
 
 def _open_test_mango_calls(db_path: Path, tmp_path: Path, name: str) -> dict:
@@ -1794,19 +2013,22 @@ def _upsert_mango_call(
     *,
     customer_id: str,
     source_id: str,
+    text: str = "Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий.",
+    contentful: object | None = None,
+    event_at: datetime = NOW,
 ) -> None:
-    text = "Звонок: клиент обсуждал подготовку к экзамену и просил подобрать формат занятий."
     event = TimelineEvent(
-        tenant_id="foton", customer_id=customer_id, event_type="mango_call", event_at=NOW,
+        tenant_id="foton", customer_id=customer_id, event_type="mango_call", event_at=event_at,
         source_system="mango_processed_summary", source_id=source_id, direction="inbound",
-        summary=text, text_preview=text, match_status="strong_unique", created_at=NOW,
+        summary=text, text_preview=text, match_status="strong_unique",
+        record={} if contentful is None else {"contentful": contentful}, created_at=event_at,
     )
     store.upsert_event(event)
     store.upsert_bot_context_chunk(
         BotContextChunk(
             tenant_id="foton", customer_id=customer_id, event_id=event.event_id,
             chunk_id=f"chunk-{source_id}", chunk_type="mango_call_summary", text=text,
-            source_system="mango_processed_summary", source_ref=f"mango:{source_id}", event_at=NOW,
+            source_system="mango_processed_summary", source_ref=f"mango:{source_id}", event_at=event_at,
             relevance_tags=("call", "bot_visible", "mango_processed_summary", "brand_unknown"),
             allowed_for_bot=False, requires_manager_review=True,
         )

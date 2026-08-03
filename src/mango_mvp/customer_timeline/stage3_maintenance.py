@@ -14,7 +14,10 @@ from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SOURCE_SYSTEM
 from mango_mvp.customer_timeline.mail_stage2_visibility import harden_mail_stage2_bot_visibility
 from mango_mvp.customer_timeline.objections import backfill_customer_objections_v1
-from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
+)
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     json_dumps,
@@ -54,8 +57,9 @@ class Stage3MaintenanceConfig:
 
 def run_stage3_maintenance(config: Stage3MaintenanceConfig) -> Mapping[str, Any]:
     started = time.monotonic()
-    db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
-    _reject_prod_path(db_path)
+    db_path = guard_customer_timeline_writable_path(
+        guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    )
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {
@@ -524,12 +528,6 @@ def _scalar(con: sqlite3.Connection, query: str, params: Sequence[Any] = ()) -> 
 
 def _table_exists(con: sqlite3.Connection, name: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
-
-
-def _reject_prod_path(path: Path) -> None:
-    resolved = str(path.expanduser().resolve(strict=False))
-    if "customer_timeline_prod_" in resolved:
-        raise ValueError(f"refusing to run stage3 maintenance on prod timeline path: {resolved}")
 
 
 __all__ = [

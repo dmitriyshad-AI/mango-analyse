@@ -11,7 +11,10 @@ from typing import Any, Mapping, Sequence
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_offline_brand
 from mango_mvp.customer_timeline.ids import stable_digest
 from mango_mvp.customer_timeline.mail_stage2_ingest import MAIL_STAGE2_INGEST_SOURCE_SYSTEM
-from mango_mvp.customer_timeline.safety import guard_customer_timeline_output_path
+from mango_mvp.customer_timeline.safety import (
+    guard_customer_timeline_output_path,
+    guard_customer_timeline_writable_path,
+)
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
     MANGO_PROCESSED_SOURCE_SYSTEM,
@@ -91,7 +94,9 @@ class Stage4BBotOpeningConfig:
 
 def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any]:
     started = time.monotonic()
-    db_path = guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    db_path = guard_customer_timeline_writable_path(
+        guard_customer_timeline_output_path(config.timeline_db_path, config.allowed_root)
+    )
     _assert_stage4b_staging_path(db_path, config.allowed_root, allow_test_paths=config.allow_test_paths)
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,9 +134,14 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
                 openable_chunk_ids=openable_chunk_ids,
                 tenant_id=config.tenant_id,
             )
-            con.commit()
         else:
             report["apply"] = {"chunks_updated": 0, "dry_run": True}
+        opened_non_contentful = _opened_mango_non_contentful_count(con, tenant_id=config.tenant_id)
+        if config.apply and opened_non_contentful != 0:
+            con.rollback()
+            raise RuntimeError("stage4b refused to leave non-contentful Mango calls open for bot memory")
+        if config.apply:
+            con.commit()
         after = _metrics(con, tenant_id=config.tenant_id)
         report["after"] = after
         opened_chunk_ids = _opened_chunk_ids(con, tenant_id=config.tenant_id)
@@ -141,6 +151,7 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
             "candidate_review_violations_after": len(openable_chunk_ids - opened_chunk_ids),
             "opened_disallowed_identity_after": len(opened_chunk_ids - openable_chunk_ids),
             "opened_mango_processed_non_strong_after": _opened_mango_non_strong_count(con, tenant_id=config.tenant_id),
+            "opened_mango_processed_non_contentful_after": opened_non_contentful,
             "opened_unknown_brand_non_call_after": _opened_unknown_brand_count(
                 con,
                 tenant_id=config.tenant_id,
@@ -599,11 +610,14 @@ def _opening_tags(
         source_tags = ("call", MANGO_PROCESSED_SOURCE_SYSTEM)
     elif source_system in CHANNEL_HISTORY_SOURCE_SYSTEMS:
         source_tags = ("channel", source_system)
+    generated_tags = {
+        "manager_review", "brand_unknown", "foton", "unpk", "bot_visible", *source_tags,
+    }
     return tuple(
         dict.fromkeys(
             (
-                *(tag for tag in _metadata_tags(metadata) if tag not in {"manager_review", "brand_unknown"}),
                 *brand_tags,
+                *(tag for tag in _metadata_tags(metadata) if tag not in generated_tags),
                 *_sensitivity_tags(payload),
                 "bot_visible",
                 *source_tags,
@@ -648,6 +662,23 @@ def _opened_mango_non_strong_count(con: sqlite3.Connection, *, tenant_id: str) -
         """,
         (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
     )
+
+
+def _opened_mango_non_contentful_count(con: sqlite3.Connection, *, tenant_id: str) -> int:
+    rows = con.execute(
+        """
+        SELECT e.record_json
+        FROM bot_context_chunks c
+        JOIN timeline_events e
+          ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id
+         AND e.customer_id=c.customer_id AND e.source_system=c.source_system
+        WHERE c.tenant_id=? AND c.source_system=?
+          AND c.superseded_by IS NULL AND e.superseded_by IS NULL
+          AND c.allowed_for_bot=1 AND c.requires_manager_review=0
+        """,
+        (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM),
+    ).fetchall()
+    return sum(1 for row in rows if is_non_contentful_call_record(json_loads(row["record_json"])))
 
 
 def _opened_unknown_brand_count(
@@ -976,8 +1007,6 @@ def _assert_stage4b_staging_path(path: Path, allowed_root: Path, *, allow_test_p
     resolved_path = path.expanduser().resolve(strict=False)
     resolved_root = allowed_root.expanduser().resolve(strict=False)
     resolved = str(resolved_path)
-    if "customer_timeline_prod_" in resolved:
-        raise ValueError(f"refusing to run stage4b bot opening on prod timeline path: {resolved}")
     if allow_test_paths:
         return
     try:

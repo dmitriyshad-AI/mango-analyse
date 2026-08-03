@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,7 @@ from mango_mvp.customer_timeline import (
     stable_digest,
     stable_event_id,
 )
+from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
 
 
 NOW = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
@@ -646,6 +648,19 @@ def test_customer_timeline_safety_contract_blocks_external_effects(tmp_path: Pat
         guard_customer_timeline_output_path(tmp_path / "Stable_Runtime" / "timeline.sqlite", tmp_path)
     with pytest.raises(ValueError, match="allowed root"):
         guard_customer_timeline_output_path(tmp_path.parent / "outside.sqlite", tmp_path)
+
+
+def test_customer_timeline_writable_path_rejects_hard_link(tmp_path: Path) -> None:
+    original = tmp_path / "customer_timeline.sqlite"
+    linked = tmp_path / "staging.sqlite"
+    original.write_bytes(b"not a database")
+    os.link(original, linked)
+
+    with pytest.raises(ValueError, match="hard link"):
+        guard_customer_timeline_writable_path(linked)
+
+    assert guard_customer_timeline_writable_path(tmp_path / "new-staging.sqlite").name == "new-staging.sqlite"
+    assert guard_customer_timeline_writable_path(tmp_path) == tmp_path
 
 
 def test_contract_inventory_lists_core_types_and_safety() -> None:

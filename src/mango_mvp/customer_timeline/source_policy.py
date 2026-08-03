@@ -60,14 +60,17 @@ def is_non_contentful_call_record(value: Mapping[str, Any]) -> bool:
     metadata = value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {}
     payloads = (value, record, call, analysis, metadata)
     contentful_values = {
-        str(payload.get("contentful") or "").strip().casefold()
+        str(payload.get("contentful", "")).strip().casefold()
         for payload in payloads
     }
     call_types = {
-        str(payload.get("call_type") or "").strip().casefold()
+        str(payload.get(field, "")).strip().casefold()
         for payload in payloads
+        for field in ("call_type", "subject")
     }
-    return bool(contentful_values & {"0", "false", "нет", "no", "non_conversation"}) or "non_conversation" in call_types
+    return bool(contentful_values & {"0", "0.0", "false", "нет", "no", "non_conversation"}) or (
+        "non_conversation" in call_types
+    )
 
 
 def mail_stage2_bot_visible_enabled(value: object = None, *, timeline_db_path: Path | str | None = None) -> bool:

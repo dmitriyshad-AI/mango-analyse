@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 from mango_mvp.customer_timeline.derived_signals import _is_active_deal
@@ -20,6 +20,7 @@ from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_SOURCE_SYSTEMS,
     MAIL_STAGE2_SOURCE_SYSTEM,
     MANGO_PROCESSED_SOURCE_SYSTEM,
+    is_non_contentful_call_record,
 )
 from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE
 
@@ -274,14 +275,18 @@ def build_bot_safe_crm_context(
         if not customer_id:
             return _empty_context(*(warnings or ("customer_not_resolved",)), active_brand=brand)
         bot_context = api.bot_context(tenant_id, customer_id, allowed_only=True, limit=max(1, min(int(limit or 3) * 4, 50)))
+        raw_items = tuple(item for item in (bot_context.get("items") or ()) if isinstance(item, Mapping))
+        mango_linked_chunk_ids = _mango_linked_chunk_ids(api, tenant_id=tenant_id, items=raw_items)
 
-    raw_items = tuple(item for item in (bot_context.get("items") or ()) if isinstance(item, Mapping))
     non_call_items = tuple(
         item
         for item in raw_items
         if not (
-            _normalize_tag(item.get("source_system")) == MANGO_PROCESSED_SOURCE_SYSTEM
-            and _normalize_tag(item.get("chunk_type")) == MANGO_CALL_CHUNK_TYPE
+            _clean_text(item.get("chunk_id")) in mango_linked_chunk_ids
+            or (
+                _normalize_tag(item.get("source_system")) == MANGO_PROCESSED_SOURCE_SYSTEM
+                and _normalize_tag(item.get("chunk_type")) == MANGO_CALL_CHUNK_TYPE
+            )
         )
     )
     validated_call_items = _customer_call_bot_items(
@@ -1108,6 +1113,27 @@ def _build_bot_safe_family_projection(
         }
 
 
+def _mango_linked_chunk_ids(
+    api: CustomerTimelineReadApi,
+    *,
+    tenant_id: str,
+    items: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    chunk_ids = tuple(sorted({_clean_text(item.get("chunk_id")) for item in items} - {""}))
+    if not chunk_ids:
+        return frozenset()
+    placeholders = ",".join("?" for _ in chunk_ids)
+    return frozenset(
+        str(row["chunk_id"])
+        for row in api.store._con.execute(  # noqa: SLF001 - one read-time source boundary.
+            "SELECT c.chunk_id FROM bot_context_chunks c JOIN timeline_events e "
+            "ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
+            f"WHERE c.tenant_id=? AND e.source_system=? AND c.chunk_id IN ({placeholders})",
+            (tenant_id, MANGO_PROCESSED_SOURCE_SYSTEM, *chunk_ids),
+        )
+    )
+
+
 def _child_attributed_bot_items(
     db_path: Path,
     *,
@@ -1130,6 +1156,8 @@ def _child_attributed_bot_items(
             "a.child_key = ?",
             "a.status = 'matched'",
             "a.confidence IN ('high','medium')",
+            "e.customer_id = c.customer_id",
+            "e.superseded_by IS NULL",
         ]
         params: list[Any] = [tenant_id, selected_customer_id, selected_child_key]
         api.store._append_chunk_filters(  # noqa: SLF001 - same canonical bot-safe boundary as read API.
@@ -1143,17 +1171,19 @@ def _child_attributed_bot_items(
             table_alias="c",
         )
         rows = api.store._con.execute(  # noqa: SLF001 - child attribution is not exposed by the public read API.
-            "SELECT c.record_json FROM bot_context_chunks c "
+            "SELECT c.record_json,e.source_system AS event_source_system,"
+            "e.record_json AS event_record_json "
+            "FROM bot_context_chunks c "
             "JOIN event_child_attribution_v1 a ON a.tenant_id=c.tenant_id AND a.event_id=c.event_id "
             "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
             "JOIN customer_identities i ON i.tenant_id=c.tenant_id AND i.customer_id=c.customer_id "
             f"WHERE {' AND '.join(clauses)} "
             "AND (c.source_system!=? OR (e.source_system=? AND e.match_status='strong_unique' "
-            "AND e.customer_id=c.customer_id AND i.identity_status IN ('strong','partial'))) "
-            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id LIMIT ?",
-            (*params, MANGO_PROCESSED_SOURCE_SYSTEM, MANGO_PROCESSED_SOURCE_SYSTEM, max(1, min(int(limit), 200))),
-        ).fetchall()
-    return tuple(json.loads(str(row["record_json"])) for row in rows)
+            "AND i.identity_status IN ('strong','partial'))) "
+            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id",
+            (*params, MANGO_PROCESSED_SOURCE_SYSTEM, MANGO_PROCESSED_SOURCE_SYSTEM),
+        )
+        return _validated_bot_context_row_payloads(rows, limit=limit)
 
 
 def _chat_scoped_bot_items(
@@ -1203,6 +1233,7 @@ def _customer_call_bot_items(
         clauses = [
             "c.tenant_id=?", "c.customer_id=?", "c.source_system=?", "c.chunk_type=?",
             "e.source_system=?", "e.match_status='strong_unique'", "e.customer_id=c.customer_id",
+            "e.superseded_by IS NULL",
             "i.identity_status IN ('strong','partial')",
         ]
         params: list[Any] = [
@@ -1218,14 +1249,42 @@ def _customer_call_bot_items(
             table_alias="c",
         )
         rows = api.store._con.execute(  # noqa: SLF001 - source-specific read avoids cross-source crowd-out.
-            "SELECT c.record_json FROM bot_context_chunks c "
+            "SELECT c.record_json,e.source_system AS event_source_system,"
+            "e.record_json AS event_record_json FROM bot_context_chunks c "
             "JOIN timeline_events e ON e.tenant_id=c.tenant_id AND e.event_id=c.event_id "
             "JOIN customer_identities i ON i.tenant_id=c.tenant_id AND i.customer_id=c.customer_id "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id LIMIT ?",
-            (*params, max(1, min(int(limit), 200))),
-        ).fetchall()
-    return tuple(json.loads(str(row["record_json"])) for row in rows)
+            "ORDER BY c.event_at DESC, c.created_at DESC, c.ordinal, c.chunk_id",
+            tuple(params),
+        )
+        return _validated_bot_context_row_payloads(rows, limit=limit)
+
+
+def _validated_bot_context_row_payloads(
+    rows: Iterable[sqlite3.Row],
+    *,
+    limit: int,
+) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["record_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        event_source = _normalize_tag(row["event_source_system"])
+        if event_source == MANGO_PROCESSED_SOURCE_SYSTEM:
+            try:
+                event_payload = json.loads(str(row["event_record_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(event_payload, Mapping) or is_non_contentful_call_record(event_payload):
+                continue
+        result.append(payload)
+        if len(result) >= max(1, min(int(limit), 200)):
+            break
+    return tuple(result)
 
 
 def _safe_json_list(raw: object, *, kind: str) -> list[str]:

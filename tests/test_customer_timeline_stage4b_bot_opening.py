@@ -5,6 +5,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
+import mango_mvp.customer_timeline.stage4b_bot_opening as stage4b_module
 from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
@@ -393,6 +396,31 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             brand="foton",
             contentful="Нет",
         )
+        boolean_non_contentful_event = _mango_call_event(
+            customer,
+            "mango-false-contentful",
+            match_status="strong_unique",
+            text="Служебная запись без разговора.",
+            brand="foton",
+            contentful=False,
+        )
+        numeric_non_contentful_event = _mango_call_event(
+            customer,
+            "mango-zero-contentful",
+            match_status="strong_unique",
+            text="Ещё одна служебная запись без разговора.",
+            brand="foton",
+            contentful=0,
+        )
+        conflicting_contentful_event = _mango_call_event(
+            customer,
+            "mango-conflicting-contentful",
+            match_status="strong_unique",
+            text="Противоречивая классификация должна остаться на ручной переоценке.",
+            brand="foton",
+            contentful="Нет",
+            subject="service_call",
+        )
         wrong_chunk_type_event = _mango_call_event(
             customer,
             "mango-wrong-chunk-type",
@@ -421,6 +449,9 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             partial_event,
             unknown_brand_event,
             non_contentful_event,
+            boolean_non_contentful_event,
+            numeric_non_contentful_event,
+            conflicting_contentful_event,
             wrong_chunk_type_event,
             mismatch_event,
             ambiguous_identity_event,
@@ -435,6 +466,23 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
             else:
                 store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
 
+    with sqlite3.connect(db_path) as con:
+        row_count_before = con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0]
+        row = con.execute(
+            "SELECT record_json FROM bot_context_chunks WHERE event_id=?",
+            (non_contentful_event.event_id,),
+        ).fetchone()
+        stale_payload = json.loads(row[0])
+        stale_payload["allowed_for_bot"] = True
+        stale_payload["requires_manager_review"] = False
+        stale_payload["relevance_tags"] = ["call", "bot_visible", "mango_processed_summary"]
+        con.execute(
+            "UPDATE bot_context_chunks SET allowed_for_bot=1,requires_manager_review=0,record_json=? "
+            "WHERE event_id=?",
+            (json.dumps(stale_payload, ensure_ascii=False), non_contentful_event.event_id),
+        )
+        con.commit()
+
     report = run_stage4b_bot_opening(
         Stage4BBotOpeningConfig(
             timeline_db_path=db_path,
@@ -446,10 +494,12 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     )
 
     assert report["plan"]["source_system_counts"] == {"mango_processed_summary": 3}
-    assert report["plan"]["skipped"]["non_contentful_mango_call_chunks"] == 1
+    assert report["plan"]["skipped"]["non_contentful_mango_call_chunks"] == 4
     assert report["apply"]["chunks_updated"] == 3
+    assert report["apply"]["chunks_retracted_not_openable"] == 1
     assert report["after"]["mango_processed_summary_chunks_bot_visible"] == 3
     assert report["final_checks"]["opened_mango_processed_non_strong_after"] == 0
+    assert report["final_checks"]["opened_mango_processed_non_contentful_after"] == 0
     assert report["final_checks"]["opened_disallowed_identity_after"] == 0
     assert report["final_checks"]["opened_unknown_brand_non_call_after"] == 0
     assert report["final_checks"]["opened_mango_processed_unknown_brand_after"] == 1
@@ -461,6 +511,7 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
                 "SELECT event_id, allowed_for_bot, requires_manager_review, record_json FROM bot_context_chunks"
             )
         }
+        assert con.execute("SELECT count(*) FROM bot_context_chunks").fetchone()[0] == row_count_before
     assert rows[strong_event.event_id]["allowed_for_bot"] == 1
     assert rows[strong_event.event_id]["requires_manager_review"] == 0
     payload = json.loads(rows[strong_event.event_id]["record_json"])
@@ -472,6 +523,9 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert rows[unknown_brand_event.event_id]["allowed_for_bot"] == 1
     assert rows[non_contentful_event.event_id]["allowed_for_bot"] == 0
     assert rows[non_contentful_event.event_id]["requires_manager_review"] == 1
+    assert rows[boolean_non_contentful_event.event_id]["allowed_for_bot"] == 0
+    assert rows[numeric_non_contentful_event.event_id]["allowed_for_bot"] == 0
+    assert rows[conflicting_contentful_event.event_id]["allowed_for_bot"] == 0
     unknown_payload = json.loads(rows[unknown_brand_event.event_id]["record_json"])
     assert {"call", "mango_processed_summary", "bot_visible", "brand_unknown"}.issubset(
         set(unknown_payload["relevance_tags"])
@@ -479,6 +533,67 @@ def test_stage4b_opens_only_strong_unique_mango_processed_summary_chunks(tmp_pat
     assert rows[wrong_chunk_type_event.event_id]["allowed_for_bot"] == 0
     assert rows[mismatch_event.event_id]["allowed_for_bot"] == 0
     assert rows[ambiguous_identity_event.event_id]["allowed_for_bot"] == 0
+
+    second = run_stage4b_bot_opening(
+        Stage4BBotOpeningConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out-second",
+            apply=True,
+            allow_test_paths=True,
+        )
+    )
+    assert second["apply"]["chunks_updated"] == 0
+    assert second["apply"]["chunks_retracted_not_openable"] == 0
+
+
+def test_stage4b_rolls_back_when_noncontentful_final_gate_fails(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        customer = CustomerIdentity(
+            tenant_id="foton",
+            identity_status="strong",
+            customer_id="customer:gate-rollback",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        store.upsert_customer(customer)
+        event = _mango_call_event(
+            customer,
+            "mango-gate-rollback",
+            match_status="strong_unique",
+            text="Звонок: полезный разговор для проверки отката.",
+        )
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(_mango_call_chunk(event, text=event.summary or ""))
+
+    monkeypatch.setattr(stage4b_module, "_opened_mango_non_contentful_count", lambda *_args, **_kwargs: 1)
+    dry_run = run_stage4b_bot_opening(
+        Stage4BBotOpeningConfig(
+            timeline_db_path=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "out-gate-dry-run",
+            apply=False,
+            allow_test_paths=True,
+        )
+    )
+    assert dry_run["final_checks"]["opened_mango_processed_non_contentful_after"] == 1
+
+    with pytest.raises(RuntimeError, match="refused to leave non-contentful"):
+        run_stage4b_bot_opening(
+            Stage4BBotOpeningConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "out-gate-rollback",
+                apply=True,
+                allow_test_paths=True,
+            )
+        )
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT allowed_for_bot FROM bot_context_chunks WHERE event_id=?", (event.event_id,)
+        ).fetchone()[0] == 0
 
 
 def test_stage4b_retracts_previously_opened_non_strong_or_conflicted_chunks(tmp_path: Path) -> None:
@@ -845,7 +960,8 @@ def _mango_call_event(
     match_status: str,
     text: str,
     brand: str = "unknown",
-    contentful: str = "Да",
+    contentful: object = "Да",
+    subject: str | None = None,
 ) -> TimelineEvent:
     return TimelineEvent(
         tenant_id=customer.tenant_id,
@@ -855,6 +971,7 @@ def _mango_call_event(
         source_system="mango_processed_summary",
         source_id=f"{suffix:0<64}"[:64],
         direction="inbound",
+        subject=subject,
         summary=text,
         text_preview=text,
         match_status=match_status,

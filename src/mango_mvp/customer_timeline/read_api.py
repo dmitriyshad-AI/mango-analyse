@@ -496,10 +496,28 @@ class CustomerTimelineReadApi:
         if table not in READ_API_TABLES:
             raise ValueError(f"unsupported read API table: {table}")
         effective_where = self._read_where(table, where_sql)
+        json_guard = " AND json_valid(record_json)=1" if table == "bot_context_chunks" else ""
+        selected_columns = (
+            "record_json,chunk_id,event_id,source_system,chunk_type"
+            if table == "bot_context_chunks"
+            else "record_json"
+        )
         rows = self.store._con.execute(  # noqa: SLF001 - read facade wraps store internals for callers.
-            f"SELECT record_json FROM {table} WHERE {effective_where} ORDER BY {order_by} LIMIT ?",
+            f"SELECT {selected_columns} FROM {table} WHERE ({effective_where}){json_guard} "
+            f"ORDER BY {order_by} LIMIT ?",
             (*params, bounded_limit(limit, default=50, max_limit=500)),
         ).fetchall()
+        if table == "bot_context_chunks":
+            result: list[Mapping[str, Any]] = []
+            for row in rows:
+                payload = json.loads(row["record_json"])
+                if not isinstance(payload, Mapping):
+                    continue
+                trusted = dict(payload)
+                for key in ("chunk_id", "event_id", "source_system", "chunk_type"):
+                    trusted[key] = row[key]
+                result.append(trusted)
+            return result
         return [json.loads(row["record_json"]) for row in rows]
 
     def _count(self, table: str, where_sql: str, params: Sequence[Any]) -> int:

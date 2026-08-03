@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.customer_timeline import (
     BotContextChunk,
     CustomerIdentity,
@@ -233,3 +235,19 @@ def test_stage3_hardens_legacy_mail_chunk_columns_and_json(tmp_path: Path) -> No
     assert (allowed, review) == (0, 1)
     assert payload["allowed_for_bot"] is False
     assert payload["requires_manager_review"] is True
+
+
+def test_stage3_rejects_case_insensitive_prod_path_before_writing(tmp_path: Path) -> None:
+    db_path = tmp_path / "CUSTOMER_TIMELINE_PROD_TEST" / "customer_timeline.sqlite"
+
+    with pytest.raises(ValueError, match="snapshot-only"):
+        run_stage3_maintenance(
+            Stage3MaintenanceConfig(
+                timeline_db_path=db_path,
+                allowed_root=tmp_path,
+                out_dir=tmp_path / "out",
+                apply=True,
+            )
+        )
+
+    assert not db_path.exists()

@@ -205,6 +205,63 @@ def test_estimated_timecodes_are_not_treated_as_confirmed_chronology() -> None:
     assert not confirmed
 
 
+def test_equal_cross_role_timecodes_are_not_treated_as_confirmed_order() -> None:
+    ambiguous = ["[00:10.0] Менеджер: Вопрос.", "[00:10.0] Клиент: Ответ."]
+    text, confirmed = exporter.ordered_dialogue(
+        Path("call.mp3"), {"dialogue_lines": ambiguous}, "MANAGER:\nНеполный запасной текст",
+    )
+    assert not confirmed and text.startswith("Порядок реплик не сохранён")
+    assert "Вопрос." in text and "Ответ." in text
+
+    same_role = ["[00:10.0] Менеджер: Первая часть.", "[00:10.0] Менеджер: Вторая часть."]
+    _, same_role_confirmed = exporter.ordered_dialogue(Path("call.mp3"), {"dialogue_lines": same_role}, "")
+    assert same_role_confirmed
+
+    empty = [
+        "[00:10.0] Менеджер: \u200c",
+        "[00:11.0] Клиент: \u200d",
+        "[00:12.0] Менеджер: \ufeff",
+    ]
+    _, empty_confirmed = exporter.ordered_dialogue(Path("call.mp3"), {"dialogue_lines": empty}, "")
+    assert not empty_confirmed
+
+
+def test_equal_cross_role_timecodes_are_excluded_from_manager_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    for db in (ready_db, working_db):
+        with sqlite3.connect(db) as con:
+            raw = con.execute(
+                "SELECT transcript_variants_json FROM call_records WHERE source_call_id='call-ready'"
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            payload["dialogue_lines"][1] = "[00:01.0] Клиент: Ответ с неоднозначным порядком."
+            con.execute(
+                "UPDATE call_records SET transcript_variants_json=? WHERE source_call_id='call-ready'",
+                (json.dumps(payload, ensure_ascii=False),),
+            )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users,
+        tallanto_export=tallanto, tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    assert wb["Звонки"].max_row == 1
+    assert any(
+        "Порядок реплик не подтверждён" in str(cell)
+        for row in wb["Проблемы данных"].iter_rows(values_only=True)
+        for cell in row
+    )
+    wb.close()
+
+
 def test_summary_removes_only_duplicated_technical_preamble() -> None:
     raw = "28.07.2026 12:24 менеджер 202 общался с клиентом. Обсудили лагерь. Приоритет лида: теплый. Итог: Есть согласованный следующий шаг."
     assert exporter.clean_summary(raw) == "Обсудили лагерь. Итог: Есть согласованный следующий шаг."

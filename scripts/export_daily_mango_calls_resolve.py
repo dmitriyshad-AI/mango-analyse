@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import unicodedata
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -162,24 +163,29 @@ def ordered_dialogue(source: Path, variants: Mapping[str, Any], fallback: str, *
         raw_lines = exported.read_text(encoding="utf-8", errors="ignore").splitlines() if exported.is_file() else []
     if not isinstance(raw_lines, list):
         raw_lines = []
-    lines, previous = [], -1.0
-    for raw in (str(item).strip() for item in raw_lines if str(item).strip()):
+    source_lines = [str(item).strip() for item in raw_lines if str(item).strip()]
+    lines, previous, previous_role, preserve_source = [], -1.0, "", False
+    for raw in source_lines:
         match = TIMED_LINE_RE.fullmatch(raw)
         if match is None or match.group("approx") or match.group("speaker").startswith("Спикер"):
             lines = []
             break
+        content = match.group("text").strip()
+        if not "".join(char for char in content if unicodedata.category(char) != "Cf").strip():
+            continue
         stamp = int(match.group("mm")) * 60 + float(match.group("ss"))
-        if stamp < previous:
-            lines = []
-            break
-        previous = stamp
         speaker = match.group("speaker")
         role = "Менеджер" if speaker.startswith("Менеджер") else "Клиент" if speaker == "Клиент" else "Спикер (не определён)"
-        lines.append(f"[{match.group('mm')}:{match.group('ss')}] {role}: {match.group('text').strip()}")
+        if stamp < previous or (stamp == previous and previous_role and role != previous_role):
+            lines, preserve_source = [], True
+            break
+        previous, previous_role = stamp, role
+        lines.append(f"[{match.group('mm')}:{match.group('ss')}] {role}: {content}")
     if lines:
         return "\n".join(lines), True
     warning = "Порядок реплик не сохранён в исходных данных; ниже приведён полный текст по ролям без выдуманной очередности."
-    return f"{warning}\n\n{translate_transcript(fallback)}".strip(), False
+    preserved = "\n".join(source_lines) if preserve_source else translate_transcript(fallback).strip() or "\n".join(source_lines)
+    return f"{warning}\n\n{preserved}".strip(), False
 
 
 def manager_roles_confirmed(variants: Mapping[str, Any]) -> bool:

@@ -16,7 +16,7 @@
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `e917db33`, `claude/timeline-final-20260803` | Канонический путь данных и процессов calls A/B и Customer Timeline nightly. Кодовая ветка временно отстаёт от `main`; дерево чистое. | Только после отдельного cutover служб на проверенный `main` и проверки PID/HEAD/env. |
-| `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main` после коммита этого блока | Последовательная приёмка донорских веток. | Удалить сам worktree только когда закончена очередь доноров. |
+| `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `6e98a38f`, `main` | Чистый канонический код: все донорские ветки разобраны; отсюда готовится следующий рефакторинг и будущий cutover. | После перевода служб на проверенный `main` в основной папке. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback старого Wappi runtime. | После M1 PASS, безопасного редеплоя и отдельного решения владельца. |
 
 ## Runtime
@@ -24,8 +24,9 @@
 - Wappi остановлен владельцем.
 - Calls A/B и Customer Timeline используют путь `Mango analyse`; эту папку
   нельзя переключать или удалять в ходе интеграции Git.
-- Последний известный код выхода процесса A/nightly `1` требует отдельного
-  операционного разбора и не является следствием дисковой уборки.
+- Calls A/B 4 августа запущены из `Mango analyse`; `live_truth.py` их не видит,
+  потому что проверяет клиентские каналы, поэтому cutover требует отдельной
+  сверки PID, командной строки и конфигурации calls.
 - Текущая Timeline-БД:
   `product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
 - Истина по runtime-указателям: `stable_runtime/CURRENT_RUNTIME.json`.

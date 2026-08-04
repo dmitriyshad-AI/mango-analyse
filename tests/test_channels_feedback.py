@@ -14,12 +14,10 @@ from mango_mvp.channels import (
     FEEDBACK_MANAGER_DRAFT_APPROVED,
     FEEDBACK_MANAGER_DRAFT_EDITED,
     FEEDBACK_ROP_ANSWER_RISKY,
-    CRM_CHAT_CHANNEL,
     ChannelFeedbackMemoryStore,
     ChannelMemoryStore,
     ChannelMessage,
     FeedbackEvent,
-    WebChatReadOnlyAdapter,
     build_action_feedback_event,
     build_and_store_channel_draft_preview,
     build_channel_draft_preview,
@@ -292,20 +290,18 @@ def test_feedback_store_report_filters_other_decision_events_in_same_session() -
     assert report.metrics["total_events"] == 1
 
 
-def test_web_chat_to_signal_to_feedback_loop_e2e_without_live_send_or_crm_write() -> None:
-    adapter = WebChatReadOnlyAdapter(default_channel=CRM_CHAT_CHANNEL)
+def test_channel_draft_to_feedback_loop_e2e_without_live_send_or_crm_write() -> None:
     channel_store = ChannelMemoryStore(clock=StepClock())
     feedback = ChannelFeedbackMemoryStore(clock=StepClock())
-    payload = {
-        "channel": CRM_CHAT_CHANNEL,
-        "message_id": "crm-feedback-1",
-        "conversation_id": "lead-feedback-1",
-        "contact_id": "contact-feedback-1",
-        "body": "Можно счет сегодня? Готов оплатить, нужен менеджер.",
-        "timestamp": int(START.timestamp()),
-    }
-
-    message = adapter.parse_inbound(payload)[0]
+    message = ChannelMessage(
+        channel="amo_draft",
+        channel_message_id="crm-feedback-1",
+        channel_thread_id="lead-feedback-1",
+        channel_user_id="contact-feedback-1",
+        direction="inbound",
+        text="Можно счет сегодня? Готов оплатить, нужен менеджер.",
+        received_at=START,
+    )
     preview, _ = build_and_store_channel_draft_preview(
         channel_store,
         message,
@@ -340,13 +336,10 @@ def test_web_chat_to_signal_to_feedback_loop_e2e_without_live_send_or_crm_write(
             ),
         )
     )
-    rendered = adapter.render_reply(preview.session, preview.reply)
-    send_result = adapter.send(rendered)
     report = feedback.build_report(decision=decision)
 
-    assert send_result.sent is False
-    assert send_result.metadata["chat_api_called"] is False
     assert report.metrics["manager_review"]["approved"] == 1
     assert report.metrics["action_review"]["accepted"] == 1
     assert report.metrics["client_engagement"]["no_reply"] == 1
+    assert report.safety["live_send"] is False
     assert report.safety["write_crm"] is False

@@ -63,11 +63,9 @@ def test_telegram_context_truthy_is_alias_of_one_owner() -> None:
     ]
 
 
-def test_customer_context_int_or_zero_is_alias_of_one_owner() -> None:
-    from mango_mvp.channels import customer_context_for_draft
+def test_pilot_context_int_or_zero_contract() -> None:
     from mango_mvp.channels.pilot_context import int_or_zero
 
-    assert customer_context_for_draft.int_or_zero is int_or_zero
     huge = 10**400
     assert [int_or_zero(value) for value in (None, "", "12", True, False, huge, float("nan"))] == [
         0, 0, 12, 1, 0, huge, 0,

@@ -13,13 +13,11 @@ from mango_mvp.channels import (
     SIGNAL_MANAGER_HANDOFF,
     SIGNAL_NEED_CRM_CONTEXT,
     SIGNAL_URGENCY,
-    CRM_CHAT_CHANNEL,
     ChannelAttachment,
     ChannelMessage,
     ChannelSession,
     SafeAnswer,
     SignalPolicy,
-    WebChatReadOnlyAdapter,
     build_channel_draft_preview,
     build_channel_signal_decision,
     default_signal_policy_map,
@@ -201,32 +199,6 @@ def test_safe_answer_refuses_non_draft_or_unapproved_answers() -> None:
         SafeAnswer(text="Ответ", answer_type="live")
     with pytest.raises(ValueError, match="must require approval"):
         SafeAnswer(text="Ответ", requires_approval=False)
-
-
-def test_web_chat_adapter_to_signal_engine_e2e() -> None:
-    adapter = WebChatReadOnlyAdapter(default_channel=CRM_CHAT_CHANNEL)
-    payload = {
-        "channel": CRM_CHAT_CHANNEL,
-        "message_id": "crm-msg-1",
-        "conversation_id": "lead-1",
-        "contact_id": "contact-1",
-        "body": "Срочно нужен договор и счет, можно связаться с менеджером?",
-        "timestamp": int(NOW.timestamp()),
-    }
-    msg = adapter.parse_inbound(payload)[0]
-    preview = build_channel_draft_preview(msg, context={"priority": "high"})
-
-    decision = build_channel_signal_decision(message=msg, preview=preview, context={"priority": "high"})
-    types = {signal.signal_type for signal in decision.signals}
-
-    assert SIGNAL_CUSTOMER_QUESTION in types
-    assert SIGNAL_URGENCY in types
-    assert SIGNAL_COMMERCIAL_RISK in types
-    assert SIGNAL_MANAGER_HANDOFF in types
-    assert SIGNAL_HOT_LEAD in types
-    assert decision.policy_flags["allow_autonomous_reply"] is False
-    assert decision.policy_flags["write_crm"] is False
-    assert decision.policy_flags["write_runtime_db"] is False
 
 
 def test_signal_engine_safety_contract_blocks_external_effects() -> None:

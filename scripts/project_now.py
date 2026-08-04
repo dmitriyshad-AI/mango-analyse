@@ -113,10 +113,10 @@ def _live_snapshot(root: Path) -> dict[str, object]:
 
 def _live_lines(root: Path) -> list[str]:
     snapshot = _live_snapshot(root)
-    lines = ["## Live", f"- Статус проверки: `{snapshot.get('status') or 'UNKNOWN'}`"]
+    lines = ["## Клиентские live-каналы", f"- Статус проверки клиентских каналов: `{snapshot.get('status') or 'UNKNOWN'}`"]
     processes = snapshot.get("processes")
     if not isinstance(processes, list) or not processes:
-        lines.append("- Процессы: не найдены")
+        lines.append("- Процессы клиентских каналов: не найдены; calls и Timeline здесь не проверяются")
     else:
         for raw in processes:
             if not isinstance(raw, dict):

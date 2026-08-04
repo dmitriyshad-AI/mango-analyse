@@ -63,7 +63,8 @@ def test_project_now_writes_passport_from_tmp_project(tmp_path, monkeypatch):
     assert "`TZ_running.md`" in text
     assert "`TZ_inbox.md`" in text
     assert "wait for owner" in text
-    assert "## Live" in text
+    assert "## Клиентские live-каналы" in text
+    assert "Статус проверки клиентских каналов" in text
     assert "loaded123" in text
     assert "head_drift" in text
     assert "TELEGRAM_PILOT_MANAGER_CHAT_IDS=[set]" in text

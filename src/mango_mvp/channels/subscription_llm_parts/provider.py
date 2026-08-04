@@ -1602,15 +1602,15 @@ def _direct_path_p0_shadow_metadata(
     if not kind:
         kind = _direct_path_model_p0_kind(meta.get("p0_kind"), include_v2=include_v2)
     model_field_present = (
-        bool(meta.get("is_p0_present"))
+        meta.get("is_p0_present") is True
         if "is_p0_present" in meta
         else "is_p0" in meta
     )
-    model_is_p0 = bool(meta.get("is_p0")) if model_field_present else False
-    risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
-    model_effective_is_p0 = model_is_p0 or (
-        risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind)
-    )
+    validity_marker = meta.get("is_p0_valid", True)
+    model_field_valid = model_field_present and isinstance(meta.get("is_p0"), bool) and validity_marker is True
+    model_contract_status = "missing" if not model_field_present else "valid" if model_field_valid else "invalid"
+    model_is_p0 = bool(meta.get("is_p0")) if model_field_valid else False
+    model_effective_is_p0 = model_is_p0
     regex_codes = tuple(hard_codes_from_text(client_message))
     floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
     if floor_reason and _p0_model_led_enabled(context):
@@ -1628,6 +1628,8 @@ def _direct_path_p0_shadow_metadata(
     return {
         "schema_version": "p0_model_shadow_v1_2026_07_29",
         "model_field_present": model_field_present,
+        "model_field_valid": model_field_valid,
+        "model_contract_status": model_contract_status,
         "model_is_p0": model_is_p0,
         "model_effective_is_p0": model_effective_is_p0,
         "model_p0_kind": kind,
@@ -1672,6 +1674,9 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
     shadow = metadata.get("p0_model_shadow")
     if not isinstance(shadow, Mapping):
         shadow = _direct_path_p0_shadow_metadata(result, client_message=client_message, context=context)
+    contract_status = str(shadow.get("model_contract_status") or "")
+    if contract_status == "missing" or contract_status == "invalid":
+        return {"contract_error": contract_status}
     model_is_p0 = bool(shadow.get("model_effective_is_p0"))
     floor_reason = str(shadow.get("legacy_floor_reason") or "")
     if not model_is_p0 and not floor_reason:
@@ -1697,6 +1702,24 @@ def _apply_direct_path_model_p0_route(
     signal = _direct_path_model_p0_signal(result, client_message=client_message, context=context)
     if not signal:
         return result
+    contract_error = str(signal.get("contract_error") or "")
+    if contract_error:
+        metadata = dict(result.metadata)
+        direct = dict(metadata.get("direct_path") or {})
+        direct["reason_class"] = "provider_runtime"
+        direct["reason_evidence"] = {"provider_error": f"model_p0_contract_{contract_error}"}
+        direct["text_composition_source"] = "provider_runtime_fallback"
+        metadata["direct_path"] = direct
+        metadata["direct_path_model_p0_contract"] = {
+            "schema_version": "direct_path_model_p0_contract_v1_2026_08_04",
+            "status": contract_error,
+        }
+        metadata["is_manager_deferral"] = True
+        fallback = safe_fallback_draft(reason="model_p0_contract_invalid", metadata=metadata)
+        return replace(
+            fallback,
+            safety_flags=tuple(dict.fromkeys((*fallback.safety_flags, "direct_path_model_contract_invalid"))),
+        )
     kind = str(signal.get("p0_kind") or "complaint")
     legacy_kind = _direct_path_model_p0_legacy_kind(kind)
     metadata = dict(result.metadata)
@@ -1710,8 +1733,8 @@ def _apply_direct_path_model_p0_route(
         "floor_reason": str(signal.get("floor_reason") or ""),
         "source": str(signal.get("source") or "model_p0"),
     }
-    metadata["direct_path"] = direct
     metadata["direct_path_model_p0"] = dict(direct["model_p0"])
+    metadata["direct_path"] = direct
     metadata["reason_class"] = "p0_deferral"
     metadata["is_manager_deferral"] = True
     mapped_flags: list[str] = [f"direct_path_model_p0_{kind}", kind]
@@ -2696,16 +2719,20 @@ def _normalize_direct_path_payload(
         route = "bot_answer_self_for_pilot"
     metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
     risk_level = str(payload.get("risk_level") or "low").strip()
-    if any(key in payload for key in ("is_p0", "risk_level", "p0_kind", "p0_code", "model_reason")):
-        raw_p0_kind = payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")
-        metadata["direct_path_model_p0"] = {
-            "is_p0": _direct_path_payload_bool(payload.get("is_p0")),
-            "is_p0_present": "is_p0" in payload,
-            "risk_level": risk_level,
-            "p0_kind": _direct_path_model_p0_kind(raw_p0_kind),
-            "p0_kind_raw": " ".join(str(raw_p0_kind or "").split())[:120],
-            "model_reason": " ".join(str(payload.get("model_reason") or payload.get("p0_reason") or "").split())[:240],
-        }
+    raw_is_p0 = payload.get("is_p0")
+    is_p0_present = "is_p0" in payload
+    is_p0_valid = is_p0_present and isinstance(raw_is_p0, bool)
+    raw_p0_kind = payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")
+    # Model-provided nested metadata is untrusted; only the physical top-level field defines this contract.
+    metadata["direct_path_model_p0"] = {
+        "is_p0": raw_is_p0 if is_p0_valid else False,
+        "is_p0_present": is_p0_present,
+        "is_p0_valid": is_p0_valid,
+        "risk_level": risk_level,
+        "p0_kind": _direct_path_model_p0_kind(raw_p0_kind),
+        "p0_kind_raw": " ".join(str(raw_p0_kind or "").split())[:120],
+        "model_reason": " ".join(str(payload.get("model_reason") or payload.get("p0_reason") or "").split())[:240],
+    }
     model_intent_meta = _direct_path_model_intent_meta_from_payload(payload)
     if model_intent_meta:
         metadata["direct_path_model_intent"] = model_intent_meta

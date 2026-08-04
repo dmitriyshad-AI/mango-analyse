@@ -6509,6 +6509,8 @@ def test_direct_path_p0_shadow_records_both_verdicts_without_changing_output() -
     assert on.metadata["p0_model_shadow"] == {
         "schema_version": "p0_model_shadow_v1_2026_07_29",
         "model_field_present": True,
+        "model_field_valid": True,
+        "model_contract_status": "valid",
         "model_is_p0": False,
         "model_effective_is_p0": False,
         "model_p0_kind": "",
@@ -6581,13 +6583,209 @@ def test_direct_path_payload_remembers_missing_physical_is_p0_field() -> None:
 
     assert result.metadata["direct_path_model_p0"]["is_p0"] is False
     assert result.metadata["direct_path_model_p0"]["is_p0_present"] is False
+    assert result.metadata["direct_path_model_p0"]["is_p0_valid"] is False
     shadow = subscription_provider._direct_path_p0_shadow_metadata(
         result,
         client_message="Подскажите расписание.",
         context={subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
     )
     assert shadow["model_field_present"] is False
+    assert shadow["model_field_valid"] is False
+    assert shadow["model_contract_status"] == "missing"
     assert shadow["regex_vs_model"] == "model_missing"
+
+
+def test_direct_path_payload_cannot_spoof_top_level_is_p0_through_metadata() -> None:
+    result = subscription_provider._normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Подскажу.",
+            "metadata": {
+                "direct_path_model_p0": {
+                    "is_p0": False,
+                    "is_p0_present": True,
+                    "is_p0_valid": True,
+                }
+            },
+        }
+    )
+    provider = _DirectPathProvider(result)
+
+    answer = provider.build_draft(
+        "Подскажите расписание.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert answer.route == "manager_only"
+    assert answer.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert answer.metadata["direct_path_model_p0_contract"]["status"] == "missing"
+
+
+def test_direct_path_shadow_does_not_trust_claimed_validity_for_non_boolean_is_p0() -> None:
+    source = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажу.",
+        metadata={"direct_path_model_p0": {"is_p0": 0, "is_p0_present": True, "is_p0_valid": True}},
+    )
+    provider = _DirectPathProvider(source)
+
+    answer = provider.build_draft(
+        "Подскажите расписание.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+
+    assert answer.route == "manager_only"
+    assert answer.metadata["direct_path_model_p0_contract"]["status"] == "invalid"
+
+
+@pytest.mark.parametrize("validity_marker", ("false", None, 0, 1))
+def test_direct_path_shadow_rejects_non_boolean_validity_markers(validity_marker: object) -> None:
+    source = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажу.",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": False,
+                "is_p0_present": True,
+                "is_p0_valid": validity_marker,
+            }
+        },
+    )
+    provider = _DirectPathProvider(source)
+
+    answer = provider.build_draft(
+        "Подскажите расписание.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+
+    assert answer.route == "manager_only"
+    assert answer.metadata["direct_path_model_p0_contract"]["status"] == "invalid"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    (
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "risk_level": "low"}, "missing"),
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "is_p0": None}, "invalid"),
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "is_p0": "false"}, "invalid"),
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "is_p0": 0}, "invalid"),
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "is_p0": []}, "invalid"),
+        ({"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "is_p0": {}}, "invalid"),
+    ),
+)
+def test_direct_path_model_p0_contract_failures_route_to_manager_without_p0_latch(
+    payload: Mapping[str, object],
+    expected_status: str,
+) -> None:
+    provider = _DirectPathProvider(subscription_provider._normalize_direct_path_payload(payload))
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+    }
+
+    result = provider.build_draft(
+        "Подскажите расписание.",
+        context=context,
+    )
+
+    assert provider.calls == 1
+    assert result.route == result.message_type == "manager_only"
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert {"manager_approval_required", "no_auto_send", "direct_path_model_contract_invalid"} <= set(
+        result.safety_flags
+    )
+    assert not {"refund", "legal", "legal_threat", "complaint", "payment_dispute"} & set(result.safety_flags)
+    assert result.metadata["direct_path_model_p0_contract"]["status"] == expected_status
+    assert result.metadata["direct_path"]["reason_class"] == "provider_runtime"
+    assert result.metadata["direct_path"]["text_composition_source"] == "provider_runtime_fallback"
+    assert result.metadata["direct_path"]["reason_evidence"] == {
+        "provider_error": f"model_p0_contract_{expected_status}"
+    }
+    memory = build_dialogue_memory(active_brand="foton", current_message="Подскажите расписание.", context=context)
+    memory = update_dialogue_memory_after_answer(
+        memory,
+        answer_text=result.draft_text,
+        route=result.route,
+        safety_flags=result.safety_flags,
+    )
+    assert memory.p0_latch.active is False
+
+
+def test_direct_path_model_p0_contract_is_inert_when_model_led_is_off() -> None:
+    source = subscription_provider._normalize_direct_path_payload(
+        {"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу по фактам.", "risk_level": "low"}
+    )
+    baseline_provider = _DirectPathProvider(source)
+    disabled_provider = _DirectPathProvider(source)
+    base_context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    baseline = baseline_provider.build_draft("Подскажите расписание.", context=base_context)
+    disabled = disabled_provider.build_draft(
+        "Подскажите расписание.",
+        context={**base_context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"},
+    )
+
+    assert baseline_provider.calls == disabled_provider.calls == 1
+    assert (disabled.route, disabled.draft_text, disabled.safety_flags) == (
+        baseline.route,
+        baseline.draft_text,
+        baseline.safety_flags,
+    )
+    assert "direct_path_model_p0_contract" not in disabled.metadata
+
+
+def test_direct_path_model_p0_pilot_rollback_requires_both_existing_flags_off() -> None:
+    source = subscription_provider._normalize_direct_path_payload(
+        {"route": "bot_answer_self_for_pilot", "draft_text": "Подскажу.", "risk_level": "low"}
+    )
+    base = {subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    only_led_off = subscription_provider._apply_direct_path_model_p0_route(
+        source, client_message="Подскажите расписание.", context={**base, subscription_llm.P0_MODEL_LED_ENV: "0"}
+    )
+    only_direct_off = subscription_provider._apply_direct_path_model_p0_route(
+        source, client_message="Подскажите расписание.", context={**base, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}
+    )
+    both_off = subscription_provider._apply_direct_path_model_p0_route(
+        source,
+        client_message="Подскажите расписание.",
+        context={**base, subscription_llm.P0_MODEL_LED_ENV: "0", subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"},
+    )
+
+    assert only_led_off.route == only_direct_off.route == "manager_only"
+    assert both_off.route == "bot_answer_self_for_pilot"
+
+
+def test_direct_path_model_p0_route_negative_control_changes_build_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = subscription_provider._normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Подскажу по фактам.",
+            "risk_level": "low",
+            "is_p0": True,
+            "p0_kind": "complaint",
+        }
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+    }
+    baseline_provider = _DirectPathProvider(source)
+    baseline = baseline_provider.build_draft("Подскажите расписание.", context=context)
+    monkeypatch.setattr(subscription_provider, "_direct_path_model_p0_signal", lambda *args, **kwargs: {})
+    changed_provider = _DirectPathProvider(source)
+    changed = changed_provider.build_draft("Подскажите расписание.", context=context)
+
+    assert baseline_provider.calls == changed_provider.calls == 1
+    assert baseline.route == "manager_only"
+    assert changed.route == "bot_answer_self_for_pilot"
 
 
 def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:

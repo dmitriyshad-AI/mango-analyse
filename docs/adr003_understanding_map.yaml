@@ -5,7 +5,7 @@ source:
   - df4aee4395069e86db725d69a686c037a34a375d
   snapshot_path: tests/fixtures/adr003_direct_path_text_patterns_snapshot.json
   snapshot_rows: 832
-  snapshot_sha256: 81c08a15f7409eff852e22d33299d59e653d873c5b3587c59077e4d745021566
+  snapshot_sha256: 9c4f9ab8b16a8ce62115b2899e2241afe580c7ddad5dcf7e300e12897334e026
   denominator: all_snapshot_rows
   node_kind_counts:
     marker_helper_call: 130

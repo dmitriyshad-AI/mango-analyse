@@ -1887,7 +1887,7 @@
   {
     "col_offset": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1754,
+    "lineno": 1777,
     "literal_string_count": 1,
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
@@ -1896,32 +1896,6 @@
     "symbol": "SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION",
     "value_preview": "\"semantic_frame_manager_action_gate_v1_2026_07_01\"",
     "value_sha256": "470ca1926f6d514548e29a9db2f009e9098c6990c92eec1f9e9f3bf5b5bb0c07"
-  },
-  {
-    "col_offset": 0,
-    "cyrillic_string_count": 0,
-    "lineno": 1779,
-    "literal_string_count": 16,
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
-    "qualname": "<module>",
-    "row_id": "adr003:12037794f37d5a81361e4706",
-    "symbol": "_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST",
-    "value_preview": "{\n    \"answer_question\": \"answer_only\",\n    \"check_availability\": \"capture_lead\",\n    \"enroll\": \"capture_lead\",\n    \"send_materials\": \"send_materials\",\n    \"send_payment_link\": \"send_payment_link\",\n    \"send_document\": \"send_document\",\n    ",
-    "value_sha256": "c402a66ced325e1c2ee36bc46e5fe0c0c7f750d398e5bb987b527f0b0cfd6da2"
-  },
-  {
-    "col_offset": 0,
-    "cyrillic_string_count": 0,
-    "lineno": 1792,
-    "literal_string_count": 5,
-    "node_kind": "text_table",
-    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
-    "qualname": "<module>",
-    "row_id": "adr003:a873771b0b1e0e617077c805",
-    "symbol": "_SEMANTIC_FRAME_CLOSE_VETO_ACTIONS",
-    "value_preview": "{\n    \"check_availability\",\n    \"enroll\",\n    \"send_materials\",\n    \"send_payment_link\",\n    \"send_document\",\n}",
-    "value_sha256": "7cceaece86e38cc6cafb5fc921f22c6058d000e95613a647a5c90dec20545e8c"
   },
   {
     "col_offset": 0,
@@ -1939,7 +1913,33 @@
   {
     "col_offset": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1800,
+    "lineno": 1802,
+    "literal_string_count": 16,
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "row_id": "adr003:12037794f37d5a81361e4706",
+    "symbol": "_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST",
+    "value_preview": "{\n    \"answer_question\": \"answer_only\",\n    \"check_availability\": \"capture_lead\",\n    \"enroll\": \"capture_lead\",\n    \"send_materials\": \"send_materials\",\n    \"send_payment_link\": \"send_payment_link\",\n    \"send_document\": \"send_document\",\n    ",
+    "value_sha256": "c402a66ced325e1c2ee36bc46e5fe0c0c7f750d398e5bb987b527f0b0cfd6da2"
+  },
+  {
+    "col_offset": 0,
+    "cyrillic_string_count": 0,
+    "lineno": 1815,
+    "literal_string_count": 5,
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "row_id": "adr003:a873771b0b1e0e617077c805",
+    "symbol": "_SEMANTIC_FRAME_CLOSE_VETO_ACTIONS",
+    "value_preview": "{\n    \"check_availability\",\n    \"enroll\",\n    \"send_materials\",\n    \"send_payment_link\",\n    \"send_document\",\n}",
+    "value_sha256": "7cceaece86e38cc6cafb5fc921f22c6058d000e95613a647a5c90dec20545e8c"
+  },
+  {
+    "col_offset": 0,
+    "cyrillic_string_count": 0,
+    "lineno": 1823,
     "literal_string_count": 0,
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
@@ -1952,7 +1952,7 @@
   {
     "col_offset": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1801,
+    "lineno": 1824,
     "literal_string_count": 3,
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
@@ -1965,7 +1965,7 @@
   {
     "col_offset": 0,
     "cyrillic_string_count": 0,
-    "lineno": 1802,
+    "lineno": 1825,
     "literal_string_count": 2,
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",

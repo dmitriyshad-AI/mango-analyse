@@ -1563,7 +1563,7 @@ def test_tone_warm_frame_rewrites_robotic_fact_prefix_only_when_enabled() -> Non
     assert schedule.startswith(("Подобрала для вас вариант:", "Есть такая группа:"))
 
 
-def test_tone_close_detect_replaces_handoff_on_clean_thanks_without_repeating_numbers() -> None:
+def test_tone_close_detect_preserves_handoff_on_clean_thanks() -> None:
     result = SubscriptionDraftResult(
         route="draft_for_manager",
         draft_text=SAFE_FALLBACK_DRAFT_TEXT,
@@ -1583,15 +1583,11 @@ def test_tone_close_detect_replaces_handoff_on_clean_thanks_without_repeating_nu
 
     closed = apply_tone_close_detect_layer(result, client_message="Спасибо, всё понятно", context=context)
 
-    assert closed.route == "bot_answer_self_for_pilot"
+    assert closed.route == result.route
     assert closed.metadata["close_detect"]["status"] == "suppressed_handoff"
-    assert closed.metadata["close_detect"]["step"] == "contact"
-    assert closed.metadata["is_manager_deferral"] is False
-    assert closed.metadata["reason_class"] == ""
-    assert "телефон" in closed.draft_text.casefold()
-    assert closed.draft_text.startswith("Рада была помочь!")
-    assert "позвоним" in closed.draft_text.casefold()
-    assert "49 000" not in closed.draft_text
+    assert closed.metadata["close_detect"]["step"] == ""
+    assert closed.draft_text == result.draft_text
+    assert closed.safety_flags == result.safety_flags
 
 
 @pytest.mark.parametrize(
@@ -1685,7 +1681,7 @@ def test_tone_close_gate_findings_floor_is_unconditional() -> None:
     assert result.metadata["close_detect"]["status"] == "suppressed_authoritative_gate"
 
 
-def test_tone_close_gate_findings_floor_keeps_clean_thanks_warm() -> None:
+def test_tone_close_clean_gate_still_preserves_manager_handoff() -> None:
     source = SubscriptionDraftResult(
         route="draft_for_manager",
         draft_text="Передам вопрос менеджеру.",
@@ -1702,8 +1698,10 @@ def test_tone_close_gate_findings_floor_keeps_clean_thanks_warm() -> None:
         },
     )
 
-    assert result.route == "bot_answer_self_for_pilot"
-    assert result.draft_text != source.draft_text
+    assert result.route == source.route
+    assert result.draft_text == source.draft_text
+    assert result.safety_flags == source.safety_flags
+    assert result.metadata["close_detect"]["status"] == "suppressed_handoff"
 
 
 def test_tone_close_detect_contact_step_records_contact_requested() -> None:
@@ -2020,7 +2018,7 @@ def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_questi
     assert "close_detect" not in result.metadata
 
 
-def test_direct_path_tone_close_detect_replaces_cautious_handoff_without_phone_cta() -> None:
+def test_direct_path_tone_close_detect_preserves_cautious_handoff() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="draft_for_manager",
@@ -2036,12 +2034,12 @@ def test_direct_path_tone_close_detect_replaces_cautious_handoff_without_phone_c
     )
 
     assert provider.calls == 1
-    assert closed.route == "bot_answer_self_for_pilot"
+    assert closed.route == "draft_for_manager"
     assert closed.metadata["close_detect"]["status"] == "suppressed_handoff"
-    assert closed.metadata["close_detect"]["step"] == "return"
-    lowered = closed.draft_text.casefold()
-    assert "телефон" not in lowered
-    assert "позвоним" not in lowered
+    assert closed.metadata["close_detect"]["step"] == ""
+    assert closed.draft_text == "Передам менеджеру, чтобы уточнить детали."
+    assert {"manager_approval_required", "no_auto_send"} <= set(closed.safety_flags)
+    assert "tone_close_detect" not in closed.safety_flags
 
 
 def test_payment_dispute_handoff_antirepeat_rotates_without_product_promises() -> None:
@@ -3622,6 +3620,14 @@ class _DirectPathSequenceProvider(SubscriptionLlmDraftProvider):
 
 def test_payment_subject_guards_default_off_keeps_current_output() -> None:
     claim = "Вижу, что оплата отмечена."
+    model_meta = {
+        "direct_path_model_p0": {
+            "is_p0": False,
+            "is_p0_present": True,
+            "is_p0_valid": True,
+            "p0_kind": "",
+        }
+    }
     context = {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
@@ -3630,10 +3636,20 @@ def test_payment_subject_guards_default_off_keeps_current_output() -> None:
         "amo_payment_status": "paid",
     }
     default_off = _DirectPathProvider(
-        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=claim,
+            topic_id="theme:003_payment_status",
+            metadata=model_meta,
+        )
     ).build_draft("Прошла ли оплата?", context=context)
     explicit_off = _DirectPathProvider(
-        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=claim, topic_id="theme:003_payment_status")
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=claim,
+            topic_id="theme:003_payment_status",
+            metadata=model_meta,
+        )
     ).build_draft(
         "Прошла ли оплата?", context={**context, "TELEGRAM_PAYMENT_SUBJECT_GUARDS": "0"}
     )
@@ -3641,6 +3657,11 @@ def test_payment_subject_guards_default_off_keeps_current_output() -> None:
     assert default_off == explicit_off
     assert "TELEGRAM_PAYMENT_SUBJECT_GUARDS" not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert "payment_confirmation_guarded" not in default_off.safety_flags
+    assert "authoritative_gate:payment_confirmation_without_two_sources" not in default_off.safety_flags
+    assert "payment_confirmation_without_two_sources" not in {
+        finding.get("code")
+        for finding in default_off.metadata["authoritative_output_gate"]["findings"]
+    }
 
 
 def test_payment_subject_guards_require_two_paid_sources_through_build_draft() -> None:
@@ -4872,6 +4893,8 @@ def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_
 
     assert "required_fact_keys" not in prompt_seen
     assert "prices.current" not in prompt_seen
+    assert "primary_intent" not in prompt_seen
+    assert "answer_topics" not in prompt_seen
     assert "сам по смыслу определи" in prompt_seen
     assert calls == 1
     assert pack["llm_retrieve"]["mode"] == "model_driven"
@@ -4909,7 +4932,7 @@ def test_tz119_model_driven_requires_assumed_scope_guard(tmp_path: Path) -> None
     assert subscription_llm._retriever_model_driven_enabled({**context, ASSUMED_SCOPE_GUARD_ENV: "1"}) is True
 
 
-def test_tz110_model_driven_requires_needed_fact_declaration_and_falls_back_to_keyword(tmp_path: Path) -> None:
+def test_tz110_model_driven_requires_needed_fact_declaration_and_fails_closed(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     context = {
         "active_brand": "foton",
@@ -4919,15 +4942,14 @@ def test_tz110_model_driven_requires_needed_fact_declaration_and_falls_back_to_k
         RETRIEVER_MODEL_DRIVEN_ENV: "1",
         "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
     }
-    keyword = _direct_path_context_fact_pack({**context, LLM_RETRIEVE_ENV: "0"}, client_message="Сколько стоит?")
-
     pack = _direct_path_context_fact_pack(
         context,
         client_message="Сколько стоит?",
         retriever_fn=lambda prompt: {"exact_ids": ["foton.price.online"], "adjacent_ids": []},
     )
 
-    assert pack["facts"] == keyword["facts"]
+    assert pack["facts"] == {}
+    assert pack["selected_category"] == "llm_retrieve_fail_closed"
     assert pack["llm_retrieve"]["fallback"] is True
     assert pack["llm_retrieve"]["fallback_reason"] == "missing_needed_facts"
     assert pack["llm_retrieve"]["needed_fact_declaration_missing"] is True
@@ -7940,20 +7962,29 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.PRICE_AXES_SELECTOR_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PRICE_AXES_CLEAN_DEFER_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert AUTONOMY_SCOPE_PRECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert ASSUMED_SCOPE_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert ASSUMED_SCOPE_GUARD_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert RETRIEVER_MODEL_DRIVEN_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm._assumed_scope_guard_enabled(context) is False
+    assert subscription_llm._assumed_scope_guard_enabled(context) is True
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
-    assert subscription_llm._retriever_model_driven_enabled(context) is False
+    assert subscription_llm._retriever_model_driven_enabled(context) is True
+    assert subscription_llm._retriever_model_driven_enabled(
+        {**context, RETRIEVER_MODEL_DRIVEN_ENV: "0"}
+    ) is False
+    assert subscription_llm._assumed_scope_guard_enabled(
+        {**context, ASSUMED_SCOPE_GUARD_ENV: "0"}
+    ) is False
+    assert subscription_llm._retriever_model_driven_enabled(
+        {**context, ASSUMED_SCOPE_GUARD_ENV: "0"}
+    ) is False
     assert subscription_llm._answerability_shadow_enabled(context) is True
     assert subscription_llm._retriever_need_shadow_enabled({**context, RETRIEVER_NEED_SHADOW_ENV: "1"}) is True
-    assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is False
+    assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
     assert subscription_llm._retriever_model_driven_enabled(
         {**context, ASSUMED_SCOPE_GUARD_ENV: "1", RETRIEVER_MODEL_DRIVEN_ENV: "1"}
     ) is True

@@ -226,6 +226,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
+    _semantic_frame_shadow_enabled,
     _semantic_frame_posthoc_shadow_enabled,
     _semantic_frame_decision_shadow_enabled,
     _semantic_frame_manager_action_gate_enabled,
@@ -1498,6 +1499,9 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any], *, sour
         "requested_action": _direct_path_semantic_frame_safe_text(raw.get("requested_action"), limit=120),
         "answerability": _direct_path_semantic_frame_answerability_value(raw.get("answerability")),
         "must_handoff": _direct_path_payload_bool(raw.get("must_handoff")),
+        "open_question_unanswered": raw.get("open_question_unanswered")
+        if isinstance(raw.get("open_question_unanswered"), bool)
+        else None,
         "evidence": [
             safe_item
             for item in _clean_list(raw.get("evidence"), max_items=8, max_chars=300)
@@ -1515,6 +1519,7 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any], *, sour
             frame["requested_action"],
             frame["answerability"],
             frame["must_handoff"],
+            frame["open_question_unanswered"],
             frame["evidence"],
             frame["confidence"],
         )
@@ -1943,29 +1948,43 @@ def _apply_tone_close_frame_veto(
     if not _tone_close_frame_veto_enabled(context):
         return after_close
     close_detect = after_close.metadata.get("close_detect") if isinstance(after_close.metadata, Mapping) else {}
-    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() not in {
-        "fired",
-        "suppressed_handoff",
-    }:
+    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() != "fired":
         return after_close
     frame = _semantic_frame_from_result(before_close) or _semantic_frame_from_result(after_close)
-    if not frame or not _semantic_frame_close_veto_candidate(frame):
+    frame_confidence = _clamp_float(frame.get("confidence", 0.0)) if frame else 0.0
+    open_question_value = frame.get("open_question_unanswered") if frame else None
+    open_question_valid = isinstance(open_question_value, bool)
+    open_question = open_question_value is True
+    frame_unavailable = _semantic_frame_shadow_enabled(context) and (
+        not frame or not open_question_valid or frame_confidence < 0.6
+    )
+    hot_lead = bool(frame) and _semantic_frame_close_veto_candidate(frame)
+    if not (open_question or frame_unavailable or hot_lead):
         return after_close
+
+    if open_question:
+        reason = "semantic_frame_open_question_veto"
+    elif frame_unavailable:
+        reason = "semantic_frame_unavailable_close_veto"
+    else:
+        reason = "semantic_frame_hot_lead_close_veto"
 
     trace = {
         "enabled": True,
         "status": "applied",
-        "reason": "semantic_frame_hot_lead_close_veto",
+        "reason": reason,
         "close_status_before_veto": str(close_detect.get("status") or "").strip(),
         "close_step": str(close_detect.get("step") or "").strip(),
         "route_before_close": before_close.route,
         "route_after_close": after_close.route,
         "frame": {
-            "confidence": _clamp_float(frame.get("confidence", 0.0)),
+            "confidence": frame_confidence,
             "deal_stage": _semantic_frame_value(frame, "deal_stage"),
             "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
             "requested_action": _semantic_frame_value(frame, "requested_action"),
             "answerability": _semantic_frame_value(frame, "answerability"),
+            "open_question_unanswered": open_question,
+            "open_question_unanswered_valid": open_question_valid,
         },
     }
     metadata = dict(before_close.metadata)
@@ -2717,7 +2736,9 @@ def _normalize_direct_path_payload(
         route = "draft_for_manager" if _direct_default_manager_enabled() else "bot_answer_self_for_pilot"
     if route == "bot_answer_self":
         route = "bot_answer_self_for_pilot"
-    metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+    # Internal metadata is assembled locally below. The model cannot provide
+    # service traces or gates through its free-form metadata object.
+    metadata: dict[str, Any] = {}
     risk_level = str(payload.get("risk_level") or "low").strip()
     raw_is_p0 = payload.get("is_p0")
     is_p0_present = "is_p0" in payload

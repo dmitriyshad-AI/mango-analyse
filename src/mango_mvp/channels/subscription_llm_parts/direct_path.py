@@ -376,7 +376,7 @@ def _retriever_need_shadow_enabled(context: Optional[Mapping[str, Any]] = None) 
     )
 
 def _assumed_scope_guard_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         ASSUMED_SCOPE_GUARD_ENV,
         aliases=("assumed_scope_guard", "assumed_scope_guard_enabled"),
@@ -399,7 +399,7 @@ def _direct_path_format_guidance_enabled(context: Optional[Mapping[str, Any]] = 
     )
 
 def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _assumed_scope_guard_enabled(context) and _default_off_flag_enabled(
+    return _assumed_scope_guard_enabled(context) and _pilot_profile_default_on_flag_enabled(
         context,
         RETRIEVER_MODEL_DRIVEN_ENV,
         aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
@@ -2214,7 +2214,7 @@ def _direct_path_needed_fact_declaration(payload: Mapping[str, Any]) -> list[dic
             for key in allowed_keys
             if _compact_retriever_text(item.get(key), max_chars=260 if key == "why_needed" else 80)
         }
-        if normalized:
+        if normalized.get("fact_type"):
             result.append(normalized)
     return result
 
@@ -2259,17 +2259,24 @@ def build_direct_path_llm_retriever_prompt(
     candidates: Sequence[Mapping[str, Any]],
 ) -> str:
     recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(нет истории)"
-    slots = json.dumps(_direct_path_prompt_known_slots(context), ensure_ascii=False, sort_keys=True)
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
+    prompt_slots = (
+        _direct_path_confirmed_slot_scope(context)
+        if model_driven
+        else _direct_path_prompt_known_slots(context)
+    )
+    slots = json.dumps(prompt_slots, ensure_ascii=False, sort_keys=True)
     venue_scope = _fact_venue_scope_enabled(context)
     fact_select = _fact_select_frame_enabled(context)
     plan = {}
-    if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
+    if (
+        not model_driven
+        and isinstance(context, Mapping)
+        and isinstance(context.get("conversation_intent_plan"), Mapping)
+    ):
         source_plan = context["conversation_intent_plan"]
-        plan_keys = ("primary_intent", "answer_topics", "planner_slots", "planner_confidence")
-        if not model_driven:
-            plan_keys = ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
+        plan_keys = ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
         plan = {
             key: source_plan.get(key)
             for key in plan_keys
@@ -2307,7 +2314,8 @@ def build_direct_path_llm_retriever_prompt(
             f"Версия схемы декларации: {RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION}.\n"
             f"{driver_line}"
             "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, venue, program_kind, product, "
-            "why_needed, importance. importance только required или helpful. Если нужных фактов нет, верни пустой список.\n"
+            "why_needed, importance. importance только required или helpful. Генератор получит только exact_ids типов "
+            "importance=required; helpful и adjacent_ids останутся диагностикой. Если нужных фактов нет, верни пустой список.\n"
         )
         if fact_select:
             product_instruction = (
@@ -2340,7 +2348,9 @@ def build_direct_path_llm_retriever_prompt(
     return (
         "Ты выбираешь факты для черновика ответа учебного центра.\n"
         "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
-        "Выбирай ВСЕ факты, которые могут помочь ответить на вопрос, включая смысловые связи и следующий шаг; "
+        "Выбирай минимальный набор фактов, без которого нельзя ответить на прямо заданный вопрос. "
+        "Не добавляй расписание, наличие мест или следующий шаг только потому, что они могут пригодиться позже. "
+        "Если продукт не определён, не перечисляй цены разных программ про запас; "
         "не ограничивайся дословными совпадениями.\n"
         "Если текущий вопрос неполный («а по физике?», «а очно?») — восстанови его по последним репликам диалога "
         "и подбирай факты для восстановленного вопроса.\n"
@@ -2488,6 +2498,7 @@ def _direct_path_apply_venue_scope_to_records(
     exact_records: Sequence[Mapping[str, Any]],
     adjacent_records: Sequence[Mapping[str, Any]],
     requested_scope: str,
+    allow_target_promotion: bool = True,
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], Mapping[str, Any]]:
     requested = normalize_requested_scope(requested_scope)
     metadata: dict[str, Any] = {
@@ -2544,7 +2555,7 @@ def _direct_path_apply_venue_scope_to_records(
             remove_or_demote(fact, from_exact=False)
         else:
             add_adjacent(fact, "target_adjacent" if fact_venue(fact) == requested else "any_adjacent")
-    if not final_exact:
+    if allow_target_promotion and not final_exact:
         for idx, fact in enumerate(tuple(final_adjacent)):
             if fact_venue(fact) != requested:
                 continue
@@ -2650,16 +2661,32 @@ def _direct_path_llm_retrieve_fact_pack(
     fact_select_confidence = 0.0
     fact_select_conflicts: tuple[str, ...] = ()
     fact_select_source = "disabled"
+    required_fact_types: set[str] = set()
+    non_required_fact_types: set[str] = set()
     if need_declaration:
         needed_facts = _direct_path_needed_fact_declaration(payload)
+        for item in needed_facts:
+            root = _direct_path_fact_type_root(item.get("fact_type") or "")
+            if not root:
+                continue
+            if str(item.get("importance") or "").strip().casefold() == "required":
+                required_fact_types.add(root)
+            else:
+                non_required_fact_types.add(root)
+        required_fact_types.difference_update(non_required_fact_types)
         metadata["needed_facts"] = needed_facts
         metadata["needed_fact_declaration_missing"] = not bool(needed_facts)
+        metadata["required_fact_types"] = sorted(required_fact_types)
+        metadata["non_required_fact_types"] = sorted(non_required_fact_types)
         metadata["declaration_comparison"] = _direct_path_declaration_comparison(
             keyword_required_fact_keys=keyword_required_fact_keys,
             needed_facts=needed_facts,
         )
         if model_driven and not needed_facts:
             metadata.update({"fallback": True, "fallback_reason": "missing_needed_facts"})
+            return None, metadata
+        if model_driven and not required_fact_types:
+            metadata.update({"fallback": True, "fallback_reason": "missing_required_needed_facts"})
             return None, metadata
     if fact_select_enabled:
         fact_select_product, fact_select_confidence, fact_select_conflicts, fact_select_source = _fact_select_product_from_payload(payload)
@@ -2692,12 +2719,33 @@ def _direct_path_llm_retrieve_fact_pack(
             selected_exact.append(key)
         else:
             selected_adjacent.append(key)
-    metadata["invalid_ids"] = invalid
-    metadata["discarded_ids"] = list(invalid)
     metadata["model_selected_exact_ids"] = list(selected_exact)
     metadata["model_selected_adjacent_ids"] = list(selected_adjacent)
+    declaration_mismatched: list[str] = []
+    if model_driven:
+        for key in (*selected_exact, *selected_adjacent):
+            fact_type = _direct_path_fact_type_root(str(candidate_by_key[key].get("fact_type") or ""))
+            if not fact_type or fact_type not in required_fact_types:
+                declaration_mismatched.append(key)
+        if declaration_mismatched:
+            selected_exact = [key for key in selected_exact if key not in declaration_mismatched]
+            selected_adjacent = [key for key in selected_adjacent if key not in declaration_mismatched]
+    non_exact_ids = list(selected_adjacent) if model_driven else []
+    if model_driven:
+        selected_adjacent = []
+    metadata["invalid_ids"] = invalid
+    metadata["declaration_mismatched_ids"] = declaration_mismatched
+    metadata["non_exact_ids"] = non_exact_ids
+    metadata["discarded_ids"] = list(dict.fromkeys([*invalid, *declaration_mismatched, *non_exact_ids]))
     if not selected_exact and not selected_adjacent:
-        metadata.update({"fallback": True, "fallback_reason": "empty_selection"})
+        reason = (
+            "declaration_selection_mismatch"
+            if declaration_mismatched
+            else "no_required_exact_selection"
+            if non_exact_ids
+            else "empty_selection"
+        )
+        metadata.update({"fallback": True, "fallback_reason": reason})
         return None, metadata
 
     slots = _direct_path_slot_scope(context)
@@ -2725,22 +2773,23 @@ def _direct_path_llm_retrieve_fact_pack(
         if key not in final_adjacent_ids:
             final_adjacent_ids.append(key)
     supplemented_exact: list[str] = []
-    for fact in _direct_path_course_fact_supplements(
-        records,
-        context=context,
-        slots=slots,
-        existing_keys=set(selected_exact),
-    ):
-        key = _direct_path_snapshot_fact_key(fact)
-        if not key or key in selected_exact:
-            continue
-        if key in final_adjacent_ids:
-            final_adjacent_ids.remove(key)
-            adjacent_records = [item for item in adjacent_records if _direct_path_snapshot_fact_key(item) != key]
-        if key not in final_exact_ids:
-            final_exact_ids.append(key)
-        exact_records.append(fact)
-        supplemented_exact.append(key)
+    if not model_driven:
+        for fact in _direct_path_course_fact_supplements(
+            records,
+            context=context,
+            slots=slots,
+            existing_keys=set(selected_exact),
+        ):
+            key = _direct_path_snapshot_fact_key(fact)
+            if not key or key in selected_exact:
+                continue
+            if key in final_adjacent_ids:
+                final_adjacent_ids.remove(key)
+                adjacent_records = [item for item in adjacent_records if _direct_path_snapshot_fact_key(item) != key]
+            if key not in final_exact_ids:
+                final_exact_ids.append(key)
+            exact_records.append(fact)
+            supplemented_exact.append(key)
     fact_select_meta: Optional[Mapping[str, Any]] = None
     if fact_select_enabled:
         exact_records, adjacent_records, fact_select_meta = _direct_path_apply_fact_select_frame_to_records(
@@ -2769,6 +2818,7 @@ def _direct_path_llm_retrieve_fact_pack(
             exact_records=exact_records,
             adjacent_records=adjacent_records,
             requested_scope=requested_scope,
+            allow_target_promotion=not model_driven,
         )
         final_exact_ids = [
             _direct_path_snapshot_fact_key(fact) for fact in exact_records if _direct_path_snapshot_fact_key(fact)
@@ -2781,6 +2831,27 @@ def _direct_path_llm_retrieve_fact_pack(
         venue_meta = dict(metadata["venue_scope"])
         venue_meta.update(dict(venue_scope_meta))
         metadata["venue_scope"] = venue_meta
+    if model_driven and final_adjacent_ids:
+        metadata["discarded_ids"] = list(
+            dict.fromkeys([*metadata["discarded_ids"], *final_adjacent_ids])
+        )
+        adjacent_records = []
+        final_adjacent_ids = []
+    if model_driven:
+        exact_fact_types = {
+            _direct_path_fact_type_root(str(fact.get("fact_type") or ""))
+            for fact in exact_records
+        }
+        missing_required_fact_types = sorted(required_fact_types - exact_fact_types)
+        metadata["missing_required_fact_types"] = missing_required_fact_types
+        if missing_required_fact_types:
+            reason = (
+                "post_filter_no_required_exact"
+                if not exact_records
+                else "post_filter_missing_required_fact_types"
+            )
+            metadata.update({"fallback": True, "fallback_reason": reason})
+            return None, metadata
     metadata.update(
         {
             "used": True,
@@ -2812,6 +2883,9 @@ def _direct_path_llm_retrieve_fact_pack(
         include_scope_axes=venue_scope_enabled_flag,
         evaluation_day=date.fromisoformat(_direct_path_evaluation_date(context)),
     )
+    if model_driven and pack.get("selected_category") == "legacy_context":
+        metadata.update({"fallback": True, "fallback_reason": "post_filter_empty"})
+        return None, metadata
     return pack, metadata
 
 def _direct_path_wide_fact_pack(
@@ -2834,7 +2908,7 @@ def _direct_path_wide_fact_pack(
         for fact in _direct_path_snapshot_facts(snapshot)
         if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand, today=evaluation_day)
     ]
-    if not records:
+    if not records and not (_llm_retrieve_enabled(context) and _retriever_model_driven_enabled(context)):
         return {
             "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
             "facts": legacy,
@@ -2858,6 +2932,15 @@ def _direct_path_wide_fact_pack(
         )
         if llm_pack is not None:
             return llm_pack
+        if _retriever_model_driven_enabled(context):
+            # A valid "no matching fact" and a retriever failure both fail
+            # closed; keyword understanding is available only via explicit rollback.
+            fail_closed = dict(
+                _direct_path_empty_fact_pack(active_brand, selected_category="llm_retrieve_fail_closed")
+            )
+            if llm_retrieve_metadata is not None:
+                fail_closed["llm_retrieve"] = llm_retrieve_metadata
+            return fail_closed
 
     return _direct_path_keyword_fact_pack_from_records(
         records,
@@ -3601,8 +3684,9 @@ def _build_direct_path_prompt(
         )
     if _semantic_frame_shadow_enabled(context):
         semantic_frame_instruction = (
-            "SemanticFrame SHADOW: дополнительно заполни поле semantic_frame. Это только телеметрия для анализа; "
-            "не меняй из-за него route, draft_text, safety_flags, manager_checklist и другие поля ответа. "
+            "SemanticFrame: дополнительно заполни поле semantic_frame. Сам не меняй из-за него route, draft_text, "
+            "safety_flags, manager_checklist и другие поля ответа: после ответа модели детерминированный слой использует "
+            "open_question_unanswered только как запрет стереть содержательный ответ косметическим завершением. "
             "Опиши смысл всей ситуации с учётом текущей реплики, последних реплик, известных слотов и фактов. "
             "intent — главный смысл вопроса; risk_class — safe|p0|manager_action|missing_facts|unknown; "
             "deal_stage — cold|interest|qualification|offer|closing|post_payment|support|unknown; "
@@ -3615,6 +3699,8 @@ def _build_direct_path_prompt(
             "живые места, запись, бронь, конкретную группу или личный статус. check_availability ставь только для "
             "настоящего запроса о свободных местах/подходящей группе/можно ли попасть сейчас/бронь/лист ожидания. "
             "answerability — answer_self|manager_only|uncertain; must_handoff — true только если по смыслу нужен менеджер/P0; "
+            "open_question_unanswered — строгий JSON boolean: true, если клиент прямо показывает, что прошлый вопрос или проблема "
+            "остались без ответа; false, если такого сигнала нет. Благодарность сама по себе не закрывает вопрос. "
             "evidence — короткие неперсональные причины без телефонов, email и ФИО; confidence — 0..1.\n\n"
         )
         semantic_frame_field = (
@@ -3623,7 +3709,8 @@ def _build_direct_path_prompt(
             '"payment_readiness": "none|asking_price|considering|ready_to_pay|paid|dispute|unknown", '
             '"requested_product": {"brand": "", "subject": "", "grade": "", "format": "", "venue": "", "program_kind": "", "raw_text": ""}, '
             '"requested_action": "answer_question|check_availability|enroll|send_materials|send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown", '
-            '"answerability": "answer_self|manager_only|uncertain", "must_handoff": false, "evidence": [], "confidence": 0.0},\n'
+            '"answerability": "answer_self|manager_only|uncertain", "must_handoff": false, '
+            '"open_question_unanswered": false, "evidence": [], "confidence": 0.0},\n'
         )
     if _dialog_summary_rolling_enabled(context):
         previous_summary = ""

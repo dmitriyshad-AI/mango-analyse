@@ -165,6 +165,8 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     MEMORY_CHILD_ELLIPSIS_ENV,
     PRICE_AXES_SELECTOR_ENV,
     PRICE_AXES_CLEAN_DEFER_ENV,
+    "TELEGRAM_ASSUMED_SCOPE_GUARD",
+    "TELEGRAM_RETRIEVER_MODEL_DRIVEN",
 )
 
 
@@ -558,6 +560,8 @@ def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, 
         SEMANTIC_OUTPUT_VERIFIER_ENV: ("semantic_output_verifier_enabled",),
         ROUTE_RUBRIC_ENV: ("route_rubric_enabled",),
         LLM_RETRIEVE_ENV: ("llm_retrieve_enabled",),
+        "TELEGRAM_ASSUMED_SCOPE_GUARD": ("assumed_scope_guard", "assumed_scope_guard_enabled"),
+        "TELEGRAM_RETRIEVER_MODEL_DRIVEN": ("retriever_model_driven", "retriever_model_driven_enabled"),
         VERIFIER_HANDOFF_CLAIMS_ENV: ("verifier_handoff_claims_enabled",),
         TEMPLATE_FROM_KB_ENV: ("template_from_kb",),
     }

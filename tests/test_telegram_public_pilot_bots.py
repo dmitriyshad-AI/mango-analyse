@@ -738,7 +738,14 @@ def test_public_pilot_context_exposes_snapshot_to_direct_fact_pack(tmp_path: Pat
             for line in prompt.splitlines()
             if line.startswith("- ")
         ]
-        return {"exact_ids": ids, "adjacent_ids": []}
+        return {
+            "needed_facts": [
+                {"fact_type": "price", "why_needed": "проверка цены", "importance": "required"},
+                {"fact_type": "deadline", "why_needed": "проверка расписания", "importance": "required"},
+            ],
+            "exact_ids": ids,
+            "adjacent_ids": [],
+        }
 
     pack = _direct_path_context_fact_pack(context, client_message="8 класс физика", retriever_fn=select_all_candidates)
 

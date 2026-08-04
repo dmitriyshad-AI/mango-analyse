@@ -550,7 +550,7 @@ def update_dialogue_memory_after_answer(
     commitments = tuple(dict.fromkeys([*current.last_bot_commitments, *_detect_commitments(turns)]))[-8:]
     semantic_reading_slots = dict(current.semantic_reading_slots)
     if semantic_reading is not None:
-        semantic_reading_slots.update(_semantic_reading_slots_from_payload(semantic_reading, turns))
+        semantic_reading_slots.update(_semantic_reading_slots_from_payload(semantic_reading, turns, context))
     answered = current.answered_questions
     open_question = current.open_question
     unanswered = tuple(current.unanswered_questions)
@@ -1702,6 +1702,7 @@ def _semantic_reading_slots_mapping(value: Any) -> Mapping[str, Mapping[str, Any
 def _semantic_reading_slots_from_payload(
     value: Mapping[str, Any],
     turns: Sequence[DialogueTurn],
+    context: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Mapping[str, Any]]:
     try:
         from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
@@ -1711,7 +1712,7 @@ def _semantic_reading_slots_from_payload(
         )
     except Exception:
         return {}
-    if not reading_class_enabled(None, "slots_gsf"):
+    if not reading_class_enabled(context, "slots_gsf"):
         return {}
     reading_payload = _semantic_reading_memory_mapping(value)
     if not reading_payload:

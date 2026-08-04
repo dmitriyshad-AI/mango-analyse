@@ -118,7 +118,7 @@ def test_semantic_frame_posthoc_shadow_flag_is_default_off_and_not_profile_on(mo
     assert subscription_llm._semantic_frame_posthoc_shadow_enabled({SEMANTIC_FRAME_POSTHOC_SHADOW_ENV: "0"}) is False
 
 
-def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
+def test_semantic_frame_prompt_names_its_only_deterministic_consumer() -> None:
     context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
     profile_context = {
         **context,
@@ -133,11 +133,12 @@ def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
     )
 
     assert '"semantic_frame"' not in off_prompt
-    assert "SemanticFrame SHADOW" not in off_prompt
+    assert "SemanticFrame:" not in off_prompt
     assert '"semantic_frame"' in profile_prompt
-    assert "SemanticFrame SHADOW" in profile_prompt
+    assert "SemanticFrame:" in profile_prompt
+    assert "только как запрет стереть содержательный ответ" in profile_prompt
     assert '"semantic_frame"' in on_prompt
-    assert "SemanticFrame SHADOW" in on_prompt
+    assert "SemanticFrame:" in on_prompt
     assert "не меняй из-за него route, draft_text" in on_prompt
     assert '"must_handoff": false' in on_prompt
 
@@ -301,6 +302,7 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
         "requested_action": "enroll",
         "answerability": "answer_self",
         "must_handoff": False,
+        "open_question_unanswered": None,
         "evidence": ["клиент спрашивает про запись без P0, телефон [phone], id [id]"],
         "confidence": 0.91,
     }

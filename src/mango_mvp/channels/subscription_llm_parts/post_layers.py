@@ -690,6 +690,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "derived_product_number": "downgrade_keep_text",
     "derived_product_claim": "downgrade_keep_text",
     "individual_diagnosis": "downgrade_keep_text",
+    "irrelevant_to_question": "block",
     "unsafe_future_commitment": "downgrade_keep_text",
     "invented_generalization": "annotate",
 }
@@ -704,6 +705,7 @@ DIRECT_PATH_REPLACE_TEXT_GATE_CODES = frozenset(
         "p0_semantic_risk",
         "brand_leak",
         "cross_brand",
+        "irrelevant_to_question",
         "unsupported_product_number",
     }
 )
@@ -2073,6 +2075,13 @@ def apply_tone_close_detect_layer(
         return _tone_close_metadata(result, status="suppressed_authoritative_gate", step="", context=context)
     if _tone_close_detect_is_p0(result, context=context):
         return _tone_close_metadata(result, status="suppressed_p0", step="", context=context)
+    if result.route in {"manager_only", "draft_for_manager"}:
+        status = (
+            "suppressed_pending"
+            if _tone_close_pending_manager(context, client_message=client_message)
+            else "suppressed_handoff"
+        )
+        return _tone_close_metadata(result, status=status, step="pending" if status == "suppressed_pending" else "", context=context)
     if _tone_close_pending_manager(context, client_message=client_message):
         return _tone_close_metadata(
             replace(
@@ -2085,7 +2094,6 @@ def apply_tone_close_detect_layer(
             step="pending",
             context=context,
         )
-    status = "suppressed_handoff" if result.route in {"manager_only", "draft_for_manager"} else "fired"
     previous_bot_texts = _humanity_previous_bot_texts(context)
     refused_previous_step = _tone_close_refused_previous_step(client_message, previous_bot_texts)
     old_p0_without_active_latch = _tone_close_old_p0_history(context)
@@ -2116,9 +2124,9 @@ def apply_tone_close_detect_layer(
             draft_text=text,
             safety_flags=flags,
             manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, "Tone close-detect: проверить тёплое закрытие без новых фактов."])),
-            error=None if status == "fired" else result.error,
+            error=None,
         ),
-        status=status,
+        status="fired",
         step=step,
         contact_requested=_tone_close_contact_requested_after_step(context, step=step, previous_bot_texts=previous_bot_texts),
         context=context,
@@ -3391,6 +3399,13 @@ def _authoritative_gate_findings(
     previous_bot_texts = _humanity_previous_bot_texts(gate_context)
     p0_already_guarded = _authoritative_gate_p0_already_guarded(result)
     has_pipeline = _authoritative_gate_has_pipeline(result)
+    semantic_verifier = result.metadata.get("semantic_output_verifier") if isinstance(result.metadata, Mapping) else {}
+    semantic_relevance_checked = bool(
+        isinstance(semantic_verifier, Mapping)
+        and semantic_verifier.get("checked") is True
+        and not semantic_verifier.get("skipped")
+        and not semantic_verifier.get("unavailable")
+    )
     for finding in verify_dialogue_contract_output(
         result.draft_text,
         facts=facts,
@@ -3401,6 +3416,8 @@ def _authoritative_gate_findings(
         previous_bot_texts=previous_bot_texts,
     ):
         if not has_pipeline and finding.code not in {"brand_leak", "meta_leak", "ai_disclosure", "p0_promise", "p0_semantic_risk"}:
+            continue
+        if finding.code == "wrong_intent_fact" and semantic_relevance_checked:
             continue
         if finding.code == "p0_promise" and _authoritative_gate_verified_content_flag(result):
             continue
@@ -4669,7 +4686,13 @@ def _bot_safe_memory_item_next_step_status(item: Mapping[str, Any]) -> str:
 
 
 _SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset(
-    {"derived_product_claim", "invented_generalization", "individual_diagnosis", "p0_money_promise"}
+    {
+        "derived_product_claim",
+        "invented_generalization",
+        "individual_diagnosis",
+        "irrelevant_to_question",
+        "p0_money_promise",
+    }
 )
 
 
@@ -4729,7 +4752,7 @@ def build_semantic_output_verifier_prompt(
         "Не проверяй цены/проценты/бренд/мета и входящий P0: это делает отдельный детерминированный gate. "
         "Единственное выходное P0-правило здесь — обещание денег самим ботом.\n\n"
         "Верни СТРОГО JSON:\n"
-        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|p0_money_promise",'
+        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis|irrelevant_to_question|p0_money_promise",'
         '"span":"цитата из ответа","evidence":"почему это риск","missing_fact":"какого факта не хватает",'
         '"relation_to_base":"contradicts|absent|adjacent","nearest_fact_key":"fact.key или пусто"}]}\n'
         'Если нарушений нет: {"findings":[]}.\n\n'
@@ -4741,6 +4764,8 @@ def build_semantic_output_verifier_prompt(
         "- individual_diagnosis: бот оценивает конкретного ребёнка: справится/потянет/подойдёт/сможет влиться, "
         "«слишком тяжело быть не должно», «посильный ритм», «подберут под ребёнка» — без хеджа и передачи "
         "менеджеру/преподавателю.\n"
+        "- irrelevant_to_question: финальный текст отвечает на другой вопрос или добавляет факт, который не нужен "
+        "для прямого вопроса клиента и не является кратким уточнением либо безопасным следующим шагом.\n"
         "- p0_money_promise: бот от лица центра обещает вернуть, возместить, компенсировать, пересчитать в пользу "
         "клиента, отдать оплату или перевести деньги обратно. Это обязательство центра, а не описание порядка.\n\n"
         "НЕ ФЛАГАЙ:\n"
@@ -4994,12 +5019,17 @@ def _run_semantic_output_verifier_once(
         return (), "timeout"
     except Exception as exc:  # noqa: BLE001
         return (), str(exc)[:200] or "verifier_error"
-    return _semantic_output_findings_from_payload(payload), ""
+    findings = _semantic_output_findings_from_payload(payload)
+    if findings is None:
+        return (), "invalid_schema"
+    return findings, ""
 
 
-def _semantic_output_findings_from_payload(payload: object) -> tuple[Mapping[str, Any], ...]:
+def _semantic_output_findings_from_payload(
+    payload: object,
+) -> Optional[tuple[Mapping[str, Any], ...]]:
     if not isinstance(payload, Mapping):
-        return ()
+        return None
     raw_findings = payload.get("findings")
     if raw_findings is None and _truthy_value(payload.get("individual_diagnosis")):
         raw_findings = [
@@ -5010,14 +5040,14 @@ def _semantic_output_findings_from_payload(payload: object) -> tuple[Mapping[str
             }
         ]
     if not isinstance(raw_findings, Sequence) or isinstance(raw_findings, (str, bytes, bytearray)):
-        return ()
+        return None
     findings: list[Mapping[str, Any]] = []
     for raw in raw_findings:
         if not isinstance(raw, Mapping):
-            continue
+            return None
         code = str(raw.get("code") or "").strip()
-        if code == "ok" or code not in _SEMANTIC_OUTPUT_VERIFIER_CODES:
-            continue
+        if code not in _SEMANTIC_OUTPUT_VERIFIER_CODES:
+            return None
         action = _authoritative_gate_action(code)
         if action not in {"annotate", "downgrade_keep_text", "block"}:
             continue

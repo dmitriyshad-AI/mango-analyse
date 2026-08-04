@@ -1092,7 +1092,14 @@ def _build_bot_safe_family_projection(
                 event["record"] = _timeline_record(event.get("record_json"))
                 if _event_brand(event) == active_brand:
                     events.append(event)
-        purchases = "fact_confirmed" if any(_is_confirmed_payment_event(event) for event in events) else "unknown"
+        purchase_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(customer_purchases_v1)")}
+        purchase = con.execute(
+            "SELECT total_in FROM customer_purchases_v1 WHERE tenant_id=? AND customer_id=? "
+            "AND period='all_time' AND money_kind='fact' AND typeof(total_in) IN ('integer','real') LIMIT 1",
+            (tenant_id, selected_customer),
+        ).fetchone() if {"tenant_id", "customer_id", "period", "money_kind", "total_in"}.issubset(purchase_columns) else None
+        purchase_total = float(purchase["total_in"]) if purchase is not None else 0.0
+        purchases = "fact_confirmed" if math.isfinite(purchase_total) and purchase_total > 0 else "unknown"
         return {
             "child_scope": scope,
             "needs_clarification": False,
@@ -1353,17 +1360,6 @@ def _event_brand(event: Mapping[str, Any]) -> str:
     return _normalize_brand(record.get("brand") or record.get("brand_code") or record.get("product_brand"))
 
 
-def _is_confirmed_payment_event(event: Mapping[str, Any]) -> bool:
-    if event.get("event_type") != "tallanto_payment" or event.get("source_system") != "tallanto_crm_call":
-        return False
-    record = event.get("record") if isinstance(event.get("record"), Mapping) else {}
-    try:
-        amount = float(str(record.get("amount") if record.get("amount") is not None else ""))
-    except ValueError:
-        return False
-    return math.isfinite(amount) and amount > 0 and _normalize_tag(record.get("payment_direction")) == "in"
-
-
 def _is_active_amo_deal(opportunity: Mapping[str, Any]) -> bool:
     if str(opportunity.get("status") or "").strip() in {"142", "143"}:
         return False
@@ -1392,7 +1388,9 @@ def _family_dossier_item(projection: Mapping[str, Any], *, active_brand: str) ->
         commerce = projection.get("commerce") if isinstance(projection.get("commerce"), Mapping) else {}
         grades = _safe_json_list(json.dumps(child.get("grades") or [], ensure_ascii=False), kind="grade")
         subjects = _safe_json_list(json.dumps(child.get("subjects") or [], ensure_ascii=False), kind="subject")
-        payment_history = "fact_confirmed" if commerce.get("payment_history") == "fact_confirmed" else "unknown"
+        payment_history = "unknown"
+        if commerce.get("payment_history") == "fact_confirmed":
+            payment_history = "входящая оплата подтверждена; бренд платежа и текущий доступ не подтверждены"
         access = "current_confirmed" if commerce.get("access") == "current_confirmed" else "unknown"
         learning_activity = (
             "class_writeoff_confirmed"
@@ -1407,7 +1405,7 @@ def _family_dossier_item(projection: Mapping[str, Any], *, active_brand: str) ->
         active_deals = projection.get("active_deals")
         deal_count = min(3, len(active_deals)) if isinstance(active_deals, Sequence) and not isinstance(active_deals, (str, bytes)) else 0
         parts.append("активных сделок: " + str(deal_count))
-        parts.append("история оплат: " + payment_history)
+        parts.append("общая история оплат: " + payment_history)
         parts.append("доступ: " + access)
         parts.append("учебная активность: " + learning_activity)
         text = "Подтверждённый учебный профиль: " + "; ".join(parts) + "."

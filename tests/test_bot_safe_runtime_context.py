@@ -18,7 +18,6 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     build_customer_memory_for_prompt,
     build_bot_safe_crm_context,
     _is_active_amo_deal,
-    _is_confirmed_payment_event,
     _is_current_access_event,
     _mango_call_item_visible_for_bot,
     _bot_safe_item_pii_findings,
@@ -37,6 +36,7 @@ from mango_mvp.customer_timeline.contracts import (
     TimelineEvent,
 )
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.purchases import upsert_customer_purchase_rows
 from mango_mvp.customer_timeline.source_policy import (
     CHANNEL_HISTORY_BOT_VISIBLE_ALLOW_TEST_PATHS_ENV,
     CHANNEL_HISTORY_BOT_VISIBLE_ENV,
@@ -109,6 +109,11 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
 def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        upsert_customer_purchase_rows(con, [{
+            "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
+            "money_kind": "fact", "total_in": 50_000,
+        }])
 
     context = build_bot_safe_crm_context(
         timeline_db=db_path,
@@ -122,10 +127,15 @@ def test_bot_safe_crm_context_prepends_single_child_family_projection(tmp_path: 
     assert dossier["child"] == {"grades": ["8"], "subjects": ["физика"]}
     assert "класс: 8" in context["summary"]
     assert "предметы: физика" in context["summary"]
+    assert "общая история оплат: входящая оплата подтверждена" in context["summary"]
+    assert "бренд платежа и текущий доступ не подтверждены" in context["summary"]
     assert "онлайн-курс" in context["summary"]
     assert customer_id not in json.dumps(context, ensure_ascii=False)
     memory = build_customer_memory_for_prompt(context, active_brand="foton")
     assert "класс: 8" in memory.prompt_text
+    assert "общая история оплат: входящая оплата подтверждена" in memory.prompt_text
+    assert "бренд платежа и текущий доступ не подтверждены" in memory.prompt_text
+    assert "50000" not in memory.prompt_text
 
     live_context = {"active_brand": "foton", "read_only_customer_context": context}
     live_memory = build_customer_memory_for_prompt(live_context, active_brand="foton")
@@ -149,6 +159,37 @@ def test_bot_safe_crm_context_hides_history_when_child_is_ambiguous(tmp_path: Pa
     memory = build_customer_memory_for_prompt(context, active_brand="foton")
     assert "уточни, о каком ребёнке" in memory.prompt_text
     assert "онлайн-курс" not in memory.prompt_text
+
+
+def test_bot_safe_family_projection_rejects_invalid_payment_totals_and_legacy_schema(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        upsert_customer_purchase_rows(con, [{
+            "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
+            "money_kind": "fact", "total_in": 1,
+        }])
+
+    for invalid_total in (None, 0, float("inf"), float("-inf"), "NaN", "0 ₽", "not-a-number"):
+        with sqlite3.connect(db_path) as con:
+            con.execute("UPDATE customer_purchases_v1 SET total_in=?", (invalid_total,))
+        context = build_bot_safe_crm_context(
+            timeline_db=db_path, allowed_root=tmp_path, active_brand="foton",
+            lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+        )
+        assert "история оплат: unknown" in context["summary"]
+
+    with sqlite3.connect(db_path) as con:
+        con.execute("DROP TABLE customer_purchases_v1")
+        con.execute(
+            "CREATE TABLE customer_purchases_v1 (tenant_id TEXT, customer_id TEXT, period TEXT, total_in REAL)"
+        )
+        con.execute("INSERT INTO customer_purchases_v1 VALUES (?,?,?,?)", ("foton", customer_id, "all_time", 5000))
+    legacy_context = build_bot_safe_crm_context(
+        timeline_db=db_path, allowed_root=tmp_path, active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+    assert "история оплат: unknown" in legacy_context["summary"]
 
 
 def test_ambiguous_child_keeps_only_active_brand_channel_history(tmp_path: Path, monkeypatch) -> None:
@@ -588,6 +629,20 @@ def test_bot_safe_family_projection_scopes_deals_and_events_to_selected_child(tm
         )
         store.upsert_event(other_payment)
     with sqlite3.connect(db_path) as con:
+        upsert_customer_purchase_rows(con, [
+            {
+                "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
+                "money_kind": "plan", "total_in": 50_000,
+            },
+            {
+                "tenant_id": "foton", "customer_id": customer_id, "period": "all_time",
+                "money_kind": "fact", "total_in": 0,
+            },
+            {
+                "tenant_id": "foton", "customer_id": "customer:second-child", "period": "all_time",
+                "money_kind": "fact", "total_in": 50_000,
+            },
+        ])
         con.execute(
             "CREATE TABLE IF NOT EXISTS event_child_attribution_v1 (tenant_id TEXT, event_id TEXT PRIMARY KEY, "
             "customer_id TEXT, child_key TEXT, status TEXT, confidence TEXT, reason TEXT, evidence_json TEXT, "
@@ -768,23 +823,7 @@ def test_bot_safe_family_projection_never_reuses_persisted_family_free_text(tmp_
     assert "123456789" not in context["summary"]
 
 
-def test_bot_safe_family_commerce_requires_exact_facts_and_current_access() -> None:
-    assert _is_confirmed_payment_event(
-        {"event_type": "tallanto_payment", "source_system": "tallanto_crm_call", "record": {"amount": 1000, "payment_direction": "in"}}
-    ) is True
-    for direction in ("pending", "invalid", "printed", "planned", "out", "school_out"):
-        assert _is_confirmed_payment_event(
-            {"event_type": "tallanto_payment", "source_system": "tallanto_crm_call", "record": {"amount": 1000, "payment_direction": direction}}
-        ) is False
-    assert _is_confirmed_payment_event(
-        {"event_type": "tallanto_payment", "source_system": "tallanto_crm_call", "record": {"amount": 0, "cost": 1000, "payment_direction": "in"}}
-    ) is False
-    assert _is_confirmed_payment_event(
-        {"event_type": "tallanto_payment", "source_system": "tallanto_crm_call", "record": {"amount": "Infinity", "payment_direction": "in"}}
-    ) is False
-    assert _is_confirmed_payment_event(
-        {"event_type": "tallanto_payment", "source_system": "manual", "record": {"amount": 1000, "payment_direction": "in"}}
-    ) is False
+def test_bot_safe_family_commerce_requires_current_access() -> None:
     assert _is_current_access_event(
         {"event_type": "tallanto_abonement", "source_system": "tallanto_crm_call", "record": {"visits_left": 2, "status": "closed", "finish_date": "2099-01-01"}}
     ) is False

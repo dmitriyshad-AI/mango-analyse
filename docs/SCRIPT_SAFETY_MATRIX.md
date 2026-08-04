@@ -57,15 +57,12 @@
 | `build_rop_deal_pack.py` | crm | `SAFE_REPORT_WRITES` | Формирует ROP pack, не должен писать в CRM. | Проверять входные данные. |
 | `build_rop_validation_pack.py` | insights | `SAFE_REPORT_WRITES` | Пишет validation pack. | Безопасно для ROP-review. |
 | `build_sales_insight_knowledge_base.py` | insights | `SAFE_REPORT_WRITES` | Пишет knowledge base artifacts. | Безопасно для insight layer. |
-| `build_transcript_quality_auto_fix_review.py` | processing | `SAFE_REPORT_WRITES` | Принадлежит transcript quality ветке, auto-fix review artifacts. | Не трогать в этом диалоге. |
 | `build_transcript_quality_baseline.py` | processing | `PROCESSING_MUTATES_DB` | Принадлежит transcript quality ветке. | Не трогать в этом диалоге. |
-| `build_transcript_quality_guardrails_dry_run.py` | processing | `SAFE_REPORT_WRITES` | Принадлежит transcript quality ветке, dry-run guardrail report. | Не трогать в этом диалоге. |
 | `build_transcript_quality_stage14_comparison.py` | processing | `SAFE_REPORT_WRITES` | Сравнивает качество v2/v3, пишет Stage14 acceptance/audit package. | Запускать перед Stage15 export gate. |
 | `run_transcript_quality_stage15_gate.py` | processing | `SAFE_REPORT_WRITES` | Проверяет Stage14/baseline/allowlist перед ROP/CRM/bot export, пишет safe bot allowlist. | Обязательный gate перед production export; не пишет CRM и DB. |
 | `estimate_token_budget.py` | ops | `SAFE_READ_ONLY` | Считает budget. | Безопасно. |
 | `evaluate_dialogue_quality.py` | processing | `SAFE_REPORT_WRITES` | Оценка качества, может читать transcripts. | Не менять processing-логику здесь. |
 | `export_tallanto_schema.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto schema. | Можно для field mapping. |
-| `finalize_manual_non_conversation_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует хвосты обработки. | Только processing-диалог. |
 | `finalize_messages30_tail.py` | processing | `PROCESSING_MUTATES_DB` | Финализирует batch/tail. | Только processing-диалог. |
 | `mango_office_mail_archive.py` | productization | `NETWORK_READ_ONLY` | Read-only IMAP ingest через `BODY.PEEK[]`; пишет локальный mail archive/matching artifacts, не отправляет, не удаляет, не двигает письма, не пишет CRM/Tallanto. | Запускать малыми pilot batch; output держать в ignored `_external_handoffs/`. |
 | `mango_office_tallanto_snapshot_export.py` | productization | `NETWORK_READ_ONLY` | Читает Tallanto contacts по телефонам из product DB и пишет локальный snapshot. | Не пишет Tallanto/CRM, не меняет product DB. |

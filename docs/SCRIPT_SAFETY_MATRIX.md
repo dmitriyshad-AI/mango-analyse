@@ -57,15 +57,11 @@
 | `build_rop_deal_pack.py` | crm | `SAFE_REPORT_WRITES` | Формирует ROP pack, не должен писать в CRM. | Проверять входные данные. |
 | `build_rop_validation_pack.py` | insights | `SAFE_REPORT_WRITES` | Пишет validation pack. | Безопасно для ROP-review. |
 | `build_sales_insight_knowledge_base.py` | insights | `SAFE_REPORT_WRITES` | Пишет knowledge base artifacts. | Безопасно для insight layer. |
-| `build_telegram_high_utility_drafts.py` | crm | `SAFE_REPORT_WRITES` | Генерирует drafts, не должен отправлять. | Проверять перед live-отправкой. |
-| `build_telegram_openclaw_final.py` | crm | `SAFE_REPORT_WRITES` | Генерирует final pack. | Проверять secrets/contacts в output. |
-| `build_telegram_outreach_pack.py` | crm | `SAFE_REPORT_WRITES` | Генерирует outreach pack. | Не считать live-send. |
 | `build_transcript_quality_auto_fix_review.py` | processing | `SAFE_REPORT_WRITES` | Принадлежит transcript quality ветке, auto-fix review artifacts. | Не трогать в этом диалоге. |
 | `build_transcript_quality_baseline.py` | processing | `PROCESSING_MUTATES_DB` | Принадлежит transcript quality ветке. | Не трогать в этом диалоге. |
 | `build_transcript_quality_guardrails_dry_run.py` | processing | `SAFE_REPORT_WRITES` | Принадлежит transcript quality ветке, dry-run guardrail report. | Не трогать в этом диалоге. |
 | `build_transcript_quality_stage14_comparison.py` | processing | `SAFE_REPORT_WRITES` | Сравнивает качество v2/v3, пишет Stage14 acceptance/audit package. | Запускать перед Stage15 export gate. |
 | `run_transcript_quality_stage15_gate.py` | processing | `SAFE_REPORT_WRITES` | Проверяет Stage14/baseline/allowlist перед ROP/CRM/bot export, пишет safe bot allowlist. | Обязательный gate перед production export; не пишет CRM и DB. |
-| `enrich_telegram_phones_live.py` | crm | `NETWORK_READ_ONLY` | Live enrichment через внешние данные, риск credentials. | Запускать малыми batch, без отправки сообщений. |
 | `estimate_token_budget.py` | ops | `SAFE_READ_ONLY` | Считает budget. | Безопасно. |
 | `evaluate_dialogue_quality.py` | processing | `SAFE_REPORT_WRITES` | Оценка качества, может читать transcripts. | Не менять processing-логику здесь. |
 | `export_tallanto_schema.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto schema. | Можно для field mapping. |
@@ -75,7 +71,6 @@
 | `mango_office_tallanto_snapshot_export.py` | productization | `NETWORK_READ_ONLY` | Читает Tallanto contacts по телефонам из product DB и пишет локальный snapshot. | Не пишет Tallanto/CRM, не меняет product DB. |
 | `match_priority_contacts_with_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает/матчит Tallanto. | Проверять output. |
 | `merge_pilot_sales_moment_llm_reviews.py` | insights | `SAFE_REPORT_WRITES` | Merge local LLM reviews. | Безопасно. |
-| `merge_telegram_live_enrichment_chunks.py` | crm | `SAFE_REPORT_WRITES` | Merge enrichment chunks. | Безопасно. |
 | `monitor_subset_progress.py` | processing | `SAFE_READ_ONLY` | Мониторит progress. | Безопасно. |
 | `normalize_tallanto_contacts.py` | crm | `SAFE_REPORT_WRITES` | Нормализует contacts export. | Безопасно. |
 | `prefill_asr_from_dbs.py` | processing | `PROCESSING_MUTATES_DB` | Может префиллить ASR из DB. | Только processing-диалог. |

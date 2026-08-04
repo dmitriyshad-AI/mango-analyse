@@ -91,7 +91,6 @@ def _active_kb_mentions(root: Path) -> list[str]:
         "src/mango_mvp/integrations/draft_loop.py",
         "scripts/build_mango_clean_bundle.py",
         "scripts/run_telegram_dynamic_client_sim.py",
-        "scripts/run_telegram_public_pilot_bots.py",
     ):
         path = root / rel
         if not path.exists():

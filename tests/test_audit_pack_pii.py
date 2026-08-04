@@ -55,3 +55,7 @@ def test_audit_pack_rejects_stable_runtime_and_codex_outputs(tmp_path):
         make_audit_pack.create_audit_pack(root, "bad", out_root=root / "stable_runtime" / "audit")
     with pytest.raises(ValueError, match="codex"):
         make_audit_pack.create_audit_pack(root, "bad", out_root=tmp_path / ".codex" / "audit")
+
+
+def test_removed_public_bot_path_still_requires_semantic_review():
+    assert make_audit_pack._semantic_required("A scripts/run_telegram_public_pilot_bots.py")

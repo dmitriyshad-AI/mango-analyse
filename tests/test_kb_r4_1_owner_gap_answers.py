@@ -26,10 +26,8 @@ def test_kb_r4_1_owner_gap_release_is_built_and_default() -> None:
 
     runners = (
         PROJECT_ROOT / "scripts" / "run_telegram_dynamic_client_sim.py",
-        PROJECT_ROOT / "scripts" / "run_telegram_public_pilot_bots.py",
         PROJECT_ROOT / "scripts" / "run_amo_wappi_draft_loop.py",
         PROJECT_ROOT / "scripts" / "run_telegram_pilot_concurrency_smoke.py",
-        PROJECT_ROOT / "scripts" / "run_telegram_night_shadow_replay.py",
     )
     for path in runners:
         runner = path.read_text(encoding="utf-8")

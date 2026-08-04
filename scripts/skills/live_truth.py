@@ -23,10 +23,11 @@ for _path in (REPO_ROOT, REPO_ROOT / "src"):
 import scripts.wappi_draft_loop_ops as wappi_ops
 
 
+FORBIDDEN_PROCESS_MARKERS = ("run_telegram_public_pilot_bots.py",)
 PROCESS_MARKERS = (
-    "run_telegram_public_pilot_bots.py",
     "run_amo_wappi_draft_loop.py",
     "m1_watcher.py",
+    *FORBIDDEN_PROCESS_MARKERS,
 )
 DEFAULT_DAILY_DIR = Path.home() / "Claude Projects" / "Foton" / "_daily"
 DEFAULT_WAPPI_RUNTIME_DIR = Path.home() / ".mango_local" / "draft_loop"
@@ -254,6 +255,8 @@ def build_snapshot(
         worktree_head = _git_value(worktree, "rev-parse", "HEAD")
         process_started = process_started_reader(process.pid)
         warnings: list[str] = []
+        if marker in FORBIDDEN_PROCESS_MARKERS:
+            warnings.append(f"forbidden_process marker={marker}")
         if process_cwd is None:
             warnings.append(f"cwd_unavailable command_path_fallback={worktree}")
         head = worktree_head

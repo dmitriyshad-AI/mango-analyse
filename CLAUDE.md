@@ -92,7 +92,6 @@
 - **Wappi/AMO draft-loop, снимок 2026-08-04:** процесса нет (`NO_PROCESS`). Старый PID `35089` и runtime `ca1779bc` больше не являются живой истиной. Любой запуск или редеплой требует отдельной приёмки и проверки `python3 scripts/skills/live_truth.py --no-write`.
 - Черновиковый контур: в `~/.mango_secrets/draft_loop_pairs.json` есть 3 записи конфигурации, но они не считаются рабочими парами до read-only проверки схемы и реального запуска. Стоп-файл `~/.mango_secrets/STOP_DRAFT_LOOP`; журнал `~/.mango_local/draft_loop/journal.jsonl`; сердцебиение `~/.mango_local/draft_loop/heartbeat.json`. Запись примечаний — через AI Office только для явно разрешённых пар; клиентам бот не пишет.
 - Wappi-профили (карта 12.06): Фотон TG `ec2eed50-b55f`, УНПК TG `18b255b8-7a67`, Фотон Max `2952990f-9e4c`, УНПК Max `152b441d-81a2`. Чаты без пары в allowlist намеренно пропускаются (`pair_missing` в журнале — норма до выдачи пар Дмитрием).
-- Публичные TG-боты (внутренний тест): самопроверка `scripts/check_public_bot_live.py` после каждого рестарта; журнал `.codex_local/telegram_pilot/telegram_pilot.sqlite`.
 - Read-only доступ к AMO/Tallanto — MCP-контур `https://api.fotonai.online/api/mcp/foton-crm-readonly` (токен только в `~/.mango_secrets/`, в git не писать).
 
 ## Дисциплина измерений

@@ -296,6 +296,23 @@ def test_live_truth_ignores_test_process_that_only_mentions_live_script(tmp_path
     assert snapshot.processes == []
 
 
+def test_live_truth_rejects_removed_public_bot_from_old_worktree(tmp_path: Path) -> None:
+    process = ProcessInfo(pid=44, ppid=1, command="python3 scripts/run_telegram_public_pilot_bots.py --mode poll")
+
+    snapshot = live_truth.build_snapshot(
+        repo_root=tmp_path,
+        processes=[process],
+        env_reader=lambda _pid: ({}, "test"),
+        lsof_reader=lambda _pid: [],
+        cwd_reader=lambda _pid: tmp_path,
+        process_started_reader=_fixed_process_start,
+    )
+
+    assert snapshot.status == "WARN"
+    assert snapshot.processes[0].kind == "run_telegram_public_pilot_bots.py"
+    assert snapshot.processes[0].warnings[0] == "forbidden_process marker=run_telegram_public_pilot_bots.py"
+
+
 def test_live_truth_uses_process_cwd_for_relative_live_command(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     live = tmp_path / "live"

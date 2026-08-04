@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from scripts import export_daily_mango_calls_resolve as exporter
 from scripts import publish_daily_mango_calls_google as publisher
 
 
@@ -93,6 +94,12 @@ def fixture_report(tmp_path: Path) -> tuple[Path, dict[str, object], bytes]:
     }
     (root / "Отчёт РОП по звонкам 2026-07-29.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return root, manifest, raw
+
+
+def test_export_and_publisher_share_schema_contract(tmp_path: Path) -> None:
+    assert publisher.SCHEMA == exporter.EXPORT_SCHEMA_VERSION
+    root, _, _ = fixture_report(tmp_path)
+    assert "— v4-" in publisher.load_plan(root, date(2026, 7, 29))["name"]
 
 
 def test_dry_run_validates_without_google_import_or_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

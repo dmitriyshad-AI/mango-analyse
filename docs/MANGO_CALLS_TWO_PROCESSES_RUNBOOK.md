@@ -119,7 +119,7 @@ read-only, обращается к Mango и Tallanto только за спра�
 ### Google-таблица
 
 Если одновременно заданы `MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID` и
-`GOOGLE_APPLICATION_CREDENTIALS`, служба после локального v3-XLSX загружает его
+`GOOGLE_APPLICATION_CREDENTIALS`, служба после локального v4-XLSX загружает его
 в указанную папку Drive и преобразует в нативную Google-таблицу. В локальном
 режиме публикация идёт после Process B; в раздельном режиме на M1 — только после
 того, как Process A создал проверенную неизменяемую ready-базу. Рабочая база с

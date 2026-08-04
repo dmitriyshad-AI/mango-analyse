@@ -47,7 +47,7 @@ DEFAULT_MANAGER_USERS = ROOT / (
     "raw_payload_archive/mango_users_config_20260507.json"
 )
 MOSCOW = ZoneInfo("Europe/Moscow")
-TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v3"
+TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v4"
 ORDER_WARNING = "Порядок реплик не сохранён в исходных данных; ниже приведён полный текст по ролям без выдуманной очередности."
 TIMED_LINE_RE = re.compile(
     r"^\[(?P<approx>~)?(?:(?P<hh>\d{2,}):)?(?P<mm>[0-5]\d):(?P<ss>[0-5]\d(?:\.\d)?)\]\s+"
@@ -269,8 +269,8 @@ def manager_roles_confirmed(variants: Mapping[str, Any]) -> bool:
 
 
 def neutralize_unconfirmed_roles(text: str) -> str:
-    text = re.sub(r"(?m)(Менеджер(?:\s*\([^)]+\))?):", "Спикер A (роль не подтверждена):", text)
-    return re.sub(r"(?m)Клиент:", "Спикер B (роль не подтверждена):", text)
+    text = re.sub(r"(?i)\bМенеджер(?:\s*\([^)]+\))?\s*:", "Спикер A (роль не подтверждена):", text)
+    return re.sub(r"(?i)\bКлиент(?:\s*\([^)]+\))?\s*:", "Спикер B (роль не подтверждена):", text)
 
 
 def load_tallanto_index(path: Path) -> dict[str, dict[str, str]]:
@@ -453,7 +453,8 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bo
             else "Связь подписей реплик с итоговой расшифровкой не подтверждена; не использовать для оценки сотрудника."
         )
         transcript = warning + "\n\n" + neutralize_unconfirmed_roles(transcript)
-    base = base if chronology_confirmed else {}
+    if not chronology_confirmed:
+        base = {key: base.get(key) for key in ("call_type", "history_summary", "interests_products", "recommended_product", "objections", "next_step_action") if base.get(key)}
     if manager_issue := manager_name_issue(manager):
         issues.append(manager_issue)
     chunks = [transcript[i : i + TRANSCRIPT_CHUNK] for i in range(0, len(transcript), TRANSCRIPT_CHUNK)] or [""]
@@ -551,10 +552,11 @@ def workbook_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[list[
     transcript_headers = [f"Расшифровка разговора, часть {i}" for i in range(1, parts + 1)]
     headers = [
         "Дата и время", "ФИО менеджера", "Добавочный номер", "Направление", "Телефон клиента", "ФИО клиента из Tallanto",
-        "Источник сопоставления клиента", "Длительность, сек", "Тип звонка по смысловому анализу", "Краткое содержание разговора",
+        "Источник сопоставления клиента", "Длительность, сек", "Нужна проверка", "Причина проверки", "Статус смысловой выжимки",
+        "Тип звонка по смысловому анализу", "Краткое содержание разговора",
         *transcript_headers, "Файл полной расшифровки", "Продукт", "Предметы", "Формат", "Целевые экзамены", "Класс", "Возражения и ограничения",
         "Следующий шаг", "Срок следующего шага", "Предпочтительный канал", "Озвученный бюджет",
-        "Чувствительность к цене", "Интерес к скидке", "Нужна проверка", "Причина проверки",
+        "Чувствительность к цене", "Интерес к скидке",
     ]
     values: list[list[Any]] = []
     for row in rows:
@@ -562,7 +564,9 @@ def workbook_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[list[
         issues = "; ".join(row["issues"])
         values.append([
             row["started"].replace(tzinfo=None), row["manager"], row["extension"], row["direction"], row["phone"], row["client_fio"], row["tallanto_source"],
-            round(row["duration"], 1), CALL_TYPE_RU.get(base.get("call_type", ""), base.get("call_type", "")), clean_summary(base.get("history_summary", "")),
+            round(row["duration"], 1), "Да" if issues else "Нет", issues,
+            "Гипотезы: до прослушивания и сверки с CRM не выполнять следующий шаг и не использовать смысловые поля для оценки или KPI." if issues else "Автоматическая выжимка; сверить с записью и CRM.",
+            CALL_TYPE_RU.get(base.get("call_type", ""), base.get("call_type", "")), clean_summary(base.get("history_summary", "")),
         ] + row["chunks"] + [""] * (parts - len(row["chunks"])) + [row["transcript_file"].name,
             base.get("interests_products") or base.get("recommended_product", ""), base.get("interests_subjects", ""),
             base.get("interests_format", ""), base.get("exam_targets", ""), base.get("grade_current", ""),
@@ -570,7 +574,6 @@ def workbook_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[list[
             CHANNEL_RU.get(base.get("preferred_channel", ""), base.get("preferred_channel", "")), base.get("budget", ""),
             PRICE_RU.get(base.get("price_sensitivity", ""), base.get("price_sensitivity", "")),
             "Да" if str(base.get("discount_interest", "")).casefold() in {"true", "yes", "да", "1"} else "",
-            "Да" if issues else "Нет", issues,
         ])
     return headers, values
 
@@ -591,7 +594,7 @@ def format_sheet(sheet: Any, *, table: bool = True) -> None:
     style_header(sheet[1])
     for column in sheet.columns:
         header = str(column[0].value or "")
-        width = 65 if "Расшифровка" in header else 42 if header in {"Краткое содержание разговора", "Возражения и ограничения", "Следующий шаг", "Причина проверки"} else 18
+        width = 65 if "Расшифровка" in header else 42 if header in {"Краткое содержание разговора", "Возражения и ограничения", "Следующий шаг", "Причина проверки", "Статус смысловой выжимки"} else 18
         sheet.column_dimensions[column[0].column_letter].width = width
         for cell in column[1:]:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -643,7 +646,7 @@ def write_workbook(path: Path, day: date, rows: Sequence[dict[str, Any]], manage
                  ["Расшифровка", "Полный последовательный диалог только при сохранённом порядке реплик. Длинный текст без обрезки разбит на соседние столбцы и продублирован в TXT."],
                  ["Краткое содержание", "Автоматическая выжимка; перед оценкой менеджера её нужно сверить с полной расшифровкой."],
                  ["Следующий шаг и возражения", "Подсказка смыслового анализа, а не автоматическое поручение; сверить с записью и CRM."],
-                 ["Незавершённые", "На листе «Проблемы данных»; не смешиваются с полностью обработанными звонками."],
+                 ["Проблемы данных", "Автоматическая выжимка может быть показана, но до подтверждения ролей и порядка не является фактом для оценки менеджера или KPI."],
                  ["Использование", "Внутренний отчёт. Не применять для санкций или KPI без прослушивания и контекста CRM."]):
         append_safe(description, line)
     format_sheet(summary, table=False)
@@ -697,9 +700,9 @@ def export_day(
         raise RuntimeError("готовая база изменилась во время выгрузки; повторите запуск")
     if reused := reusable_export(output_root, day, content_sha256, len(rows)):
         return reused
-    generation, transcript_dir = content_sha256[:12], output_root / f"Расшифровки разговоров {day.isoformat()} v3-{content_sha256[:12]}"
+    generation, transcript_dir = content_sha256[:12], output_root / f"Расшифровки разговоров {day.isoformat()} v4-{content_sha256[:12]}"
     assign_transcript_targets(rows, transcript_dir)
-    xlsx, manager_source = output_root / f"Отчёт РОП по звонкам {day.isoformat()} v3-{generation}.xlsx", "Mango API" if current_manager_users else manager_users.name if manager_users else ""
+    xlsx, manager_source = output_root / f"Отчёт РОП по звонкам {day.isoformat()} v4-{generation}.xlsx", "Mango API" if current_manager_users else manager_users.name if manager_users else ""
     if xlsx.exists(): raise RuntimeError("unreferenced immutable XLSX generation already exists")
     with tempfile.NamedTemporaryFile(prefix=f".Отчёт РОП {day.isoformat()}-", suffix=".staging.xlsx", dir=output_root, delete=False) as handle:
         staged_xlsx = Path(handle.name)

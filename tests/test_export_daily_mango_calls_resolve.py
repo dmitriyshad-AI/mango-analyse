@@ -182,6 +182,14 @@ def test_role_blocks_are_not_presented_as_confirmed_chronology(tmp_path: Path, m
     assert "Менеджер:\nПервый блок" in text and "Клиент:\nВторой блок" in text
 
 
+def test_neutralize_unconfirmed_roles_handles_case_and_spacing() -> None:
+    text = "МЕНЕДЖЕР : Первый\nклиент (Анна) : Второй\nМенеджер (Иван Иванов) : Третий"
+    neutral = exporter.neutralize_unconfirmed_roles(text)
+    assert neutral.count("Спикер A (роль не подтверждена):") == 2
+    assert neutral.count("Спикер B (роль не подтверждена):") == 1
+    assert not any(label in neutral.casefold() for label in ("менеджер", "клиент"))
+
+
 def test_sealed_dialogue_never_reads_mutable_transcript_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exporter, "PIPELINE_ROOT", tmp_path)
     source = tmp_path / "audio" / "call.mp3"
@@ -556,6 +564,11 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert transcript.index("Менеджер:") < transcript.index("Клиент:") < transcript.rindex("Менеджер:")
     assert "MANAGER:" not in transcript and "CLIENT:" not in transcript
     assert sheet.cell(2, headers["ФИО клиента из Tallanto"]).value == "Анна Иванова"
+    assert sheet.cell(2, headers["Предметы"]).value == "математика"
+    assert sheet.cell(2, headers["Формат"]).value == "очно"
+    assert sheet.cell(2, headers["Класс"]).value == "7"
+    assert sheet.cell(2, headers["Озвученный бюджет"]).value == "100000 рублей"
+    assert sheet.cell(2, headers["Интерес к скидке"]).value == "Да"
     assert headers["Расшифровка разговора, часть 1"] == headers["Краткое содержание разговора"] + 1
     assert "Статус обработки" not in headers and "Школа" not in headers and "Аудиозапись" not in headers
     phone = sheet.cell(2, headers["Телефон клиента"])
@@ -615,7 +628,13 @@ def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, mon
             row = con.execute("SELECT transcript_variants_json FROM call_records WHERE source_call_id='call-ready'").fetchone()
             payload = json.loads(row[0])
             payload.pop("role_mapping", None)
-            con.execute("UPDATE call_records SET transcript_variants_json=? WHERE source_call_id='call-ready'", (json.dumps(payload, ensure_ascii=False),))
+            analysis = json.loads(con.execute("SELECT analysis_json FROM call_records WHERE source_call_id='call-ready'").fetchone()[0])
+            analysis["structured_fields"]["interests"]["products"] = []
+            analysis["target_product"] = "летний курс M9"
+            con.execute(
+                "UPDATE call_records SET transcript_variants_json=?, analysis_json=? WHERE source_call_id='call-ready'",
+                (json.dumps(payload, ensure_ascii=False), json.dumps(analysis, ensure_ascii=False)),
+            )
     manifest_path = ready_db.with_suffix(".manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
@@ -631,8 +650,20 @@ def test_timed_dialogue_without_role_evidence_is_review_only(tmp_path: Path, mon
     assert any("Роли не подтверждены; не использовать для оценки сотрудника" in str(cell) for row in values for cell in row)
     headers = {value: index for index, value in enumerate(values[0])}
     row = next(item for item in values[1:] if item[headers["Телефон клиента"]] == "+79990001122")
-    for column in ("Тип звонка по смысловому анализу", "Краткое содержание разговора", "Продукт", "Возражения и ограничения", "Следующий шаг"):
+    assert row[headers["Статус смысловой выжимки"]].startswith("Гипотезы:")
+    assert row[headers["Тип звонка по смысловому анализу"]] == "Продажа / подбор обучения"
+    assert row[headers["Краткое содержание разговора"]] == "Клиент обсудил летний лагерь и попросил договор."
+    assert row[headers["Продукт"]] == "летний курс M9"
+    assert row[headers["Возражения и ограничения"]] == "нужно обсудить договор"
+    assert row[headers["Следующий шаг"]] == "Отправить договор"
+    for column in ("Предметы", "Формат", "Целевые экзамены", "Класс", "Срок следующего шага", "Предпочтительный канал", "Озвученный бюджет", "Чувствительность к цене", "Интерес к скидке"):
         assert row[headers[column]] is None
+    transcript = "\n".join(str(row[index] or "") for name, index in headers.items() if str(name).startswith("Расшифровка разговора"))
+    assert "Спикер A (роль не подтверждена):" in transcript
+    assert "Спикер B (роль не подтверждена):" in transcript
+    assert "Менеджер (" not in transcript and "Клиент:" not in transcript
+    description = list(wb["Описание полей"].iter_rows(values_only=True))
+    assert any("не является фактом для оценки менеджера или KPI" in str(cell) for item in description for cell in item)
     wb.close()
 
 

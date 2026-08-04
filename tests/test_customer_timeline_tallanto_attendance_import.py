@@ -640,6 +640,96 @@ def test_attendance_api_preserves_tallanto_amo_identity_conflict_without_advanci
         ).fetchone() == ("tallanto_attendance_api_identity_conflict", "open")
 
 
+@pytest.mark.parametrize(
+    ("conflict_type", "candidate_count", "expected_resolved"),
+    (
+        ("shared_family_phone", None, True),
+        ("tallanto_identity_ambiguous", 1, True),
+        ("tallanto_identity_ambiguous", True, False),
+        ("tallanto_identity_ambiguous", 4, False),
+        ("tallanto_identity_conflict", None, False),
+    ),
+)
+def test_attendance_api_uses_exact_student_owner_without_ignoring_real_ambiguity(
+    tmp_path: Path,
+    conflict_type: str,
+    candidate_count: int | None,
+    expected_resolved: bool,
+) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    metadata = {} if candidate_count is None else {"candidate_customer_count": candidate_count}
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type=conflict_type,
+            entity_refs=("customer:student", "tallanto_student_id:101"),
+            severity="high",
+            metadata=metadata,
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    with sqlite3.connect(db) as con:
+        event_count = con.execute(
+            "SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0]
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_type=?",
+            (conflict_type,),
+        ).fetchone()[0] == "open"
+        api_conflict = con.execute(
+            "SELECT conflict_type, severity FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_attendance_api_identity_conflict'"
+        ).fetchone()
+    if expected_resolved:
+        assert report["status"] == "completed"
+        assert report["counts"]["events_resolved"] == 1
+        assert event_count == 1
+    else:
+        assert report["status"] == "partial"
+        assert report["counts"]["identity_conflict"] == 1
+        assert report["cursor_after"] == report["cursor_before"]
+        assert event_count == 0
+        assert api_conflict == ("tallanto_attendance_api_identity_conflict", "high")
+
+
+def test_attendance_api_rejects_two_exact_tallanto_owners(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    _seed_customer(db, tmp_path, "customer:other")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:other",
+                link_type=IdentityLinkType.TALLANTO_STUDENT_ID,
+                link_value="101",
+                source_system="legacy_tallanto",
+                source_ref="legacy:tallanto:101",
+            )
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "partial"
+    assert report["counts"]["events_resolved"] == 0
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 0
+
+
 def test_attendance_api_partially_imports_reliable_events_and_retries_idempotently(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)

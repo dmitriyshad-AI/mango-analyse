@@ -1,3 +1,7 @@
+> DONE 2026-08-04 22:01 | ветка main | codex
+
+> TAKE 2026-08-04 21:39 | ветка main | codex
+
 Ветка: main
 Зоны: src/mango_mvp/customer_timeline/tallanto_attendance_import.py, tests/test_customer_timeline_tallanto_attendance_import.py, tasks/, audits/_inbox/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_tallanto_attendance_import.py tests/test_customer_timeline_store.py tests/test_block4_wappi_personal_memory.py

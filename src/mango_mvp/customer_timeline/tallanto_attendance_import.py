@@ -168,10 +168,12 @@ def run_tallanto_attendance_api_increment(
     }
     class_by_id.update(_fetch_class_rows(api, missing_class_ids))
 
-    tallanto_customers = _load_unique_identity_customers(
+    blocked_tallanto_ids: set[str] = set()
+    tallanto_customers = _load_tallanto_customers(
         db,
         tenant_id=config.tenant_id,
-        link_type="tallanto_student_id",
+        include_history=False,
+        blocked_exact_ids=blocked_tallanto_ids,
     )
     amo_customers = _load_unique_identity_customers(
         db,
@@ -237,7 +239,10 @@ def run_tallanto_attendance_api_increment(
             #   this contact_id at all, so resolution could not even be
             #   attempted -- a data-completeness problem with this run, not
             #   an "expected" unmatched identity.
-            reason = "identity_unmatched_expected" if contact_id in contact_rows else "identity_infrastructure_gap"
+            if contact_id in blocked_tallanto_ids:
+                reason = "identity_conflict"
+            else:
+                reason = "identity_unmatched_expected" if contact_id in contact_rows else "identity_infrastructure_gap"
             counters[reason] += 1
             counters["identity_unmatched"] += 1  # backward-compatible total of both buckets.
             unresolved.append(
@@ -1044,7 +1049,7 @@ def _resolve_missing_barcodes_with_api(
 ) -> tuple[dict[str, tuple[str, str, str]], set[str]]:
     client = _build_tallanto_client(env_file)
     amo_customers = _load_unique_identity_customers(db, tenant_id=tenant_id, link_type="amo_contact_id")
-    tallanto_customers = _load_unique_identity_customers(db, tenant_id=tenant_id, link_type="tallanto_student_id")
+    tallanto_customers = _load_tallanto_customers(db, tenant_id=tenant_id)
     resolved: dict[str, tuple[str, str, str]] = {}
     conflicts: set[str] = set()
     for barcode in sorted(barcodes):
@@ -1092,13 +1097,45 @@ def _load_unique_identity_customers(db: Path, *, tenant_id: str, link_type: str)
         }
 
 
-def _load_tallanto_customers(db: Path, *, tenant_id: str) -> dict[str, str]:
-    exact = _load_unique_identity_customers(db, tenant_id=tenant_id, link_type="tallanto_student_id")
+def _load_tallanto_customers(
+    db: Path, *, tenant_id: str, include_history: bool = True, blocked_exact_ids: set[str] | None = None
+) -> dict[str, str]:
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
+        con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
+        exact_conflict_types = ("tallanto_identity_ambiguous", "tallanto_identity_conflict")
+        conflict_rows = con.execute(
+            "SELECT DISTINCT lower(conflict.conflict_type), conflict.record_json, CAST(ref.value AS TEXT) "
+            "FROM timeline_conflicts AS conflict, json_each(conflict.record_json, '$.entity_refs') AS ref "
+            "WHERE conflict.tenant_id=? AND conflict.status IN ('open','active') "
+            "AND lower(conflict.conflict_type) IN (?,?) "
+            "AND (CAST(ref.value AS TEXT) LIKE 'tallanto_student_id:%' "
+            "OR CAST(ref.value AS TEXT) LIKE 'tallanto_student:%' "
+            "OR CAST(ref.value AS TEXT) LIKE 'tallanto:student:%')",
+            (tenant_id, *exact_conflict_types),
+        ).fetchall()
+        exact_blocked: set[str] = set()
+        for conflict_type, raw, entity_ref in conflict_rows:
+            try:
+                metadata = json.loads(str(raw or "{}")).get("metadata") or {}
+                raw_count = metadata.get("candidate_customer_count")
+                candidate_count = None if isinstance(raw_count, bool) else int(raw_count)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                candidate_count = None
+            if conflict_type == "tallanto_identity_conflict" or candidate_count != 1:
+                exact_blocked.add(str(entity_ref).split(":")[-1])
+        if blocked_exact_ids is not None:
+            blocked_exact_ids.update(exact_blocked)
+        exact = {
+            str(row["link_value"]): str(row["customer_id"])
+            for row in authoritative_exact_identity_rows(con, tenant_id, link_types=("tallanto_student_id",))
+            if int(row["owner_count"]) == 1 and str(row["link_value"]) not in exact_blocked
+        }
+        if not include_history:
+            return exact
         candidates = {key: {value} for key, value in exact.items()}
-        protected_values = set(exact)
         blocking_types = tuple(sorted(BLOCKING_FAMILY_CONFLICT_TYPES))
+        protected_values = set(exact)
         protected_values.update(
             str(row[0]).split(":")[-1]
             for row in con.execute(

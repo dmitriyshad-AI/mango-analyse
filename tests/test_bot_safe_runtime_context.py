@@ -580,6 +580,13 @@ def test_bot_safe_family_projection_scopes_deals_and_events_to_selected_child(tm
             direction="system", match_status="strong_unique", confidence=1.0,
         )
         store.upsert_event(other_event)
+        other_payment = TimelineEvent(
+            tenant_id="foton", customer_id="customer:second-child", event_type="tallanto_payment",
+            event_at=NOW, source_system="tallanto_crm_call", source_id="most_finances:other-child-payment",
+            direction="system", match_status="strong_unique", confidence=1.0,
+            record={"amount": 50_000, "payment_direction": "in"},
+        )
+        store.upsert_event(other_payment)
     with sqlite3.connect(db_path) as con:
         con.execute(
             "CREATE TABLE IF NOT EXISTS event_child_attribution_v1 (tenant_id TEXT, event_id TEXT PRIMARY KEY, "
@@ -597,6 +604,10 @@ def test_bot_safe_family_projection_scopes_deals_and_events_to_selected_child(tm
         con.execute(
             "INSERT INTO event_child_attribution_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             ("foton", other_event.event_id, "customer:second-child", "child:2", "matched", "high", "exact", "{}", NOW.isoformat(), "event-hash", "{}"),
+        )
+        con.execute(
+            "INSERT INTO event_child_attribution_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("foton", other_payment.event_id, "customer:second-child", "child:2", "matched", "high", "exact", "{}", NOW.isoformat(), "payment-hash", "{}"),
         )
 
     context = build_bot_safe_crm_context(

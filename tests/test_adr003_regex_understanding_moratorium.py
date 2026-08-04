@@ -89,7 +89,6 @@ CHANNEL_REGEX_BUDGET = {
     "src/mango_mvp/channels/subscription_llm_parts/reliable_answerer.py": 11,
     "src/mango_mvp/channels/subscription_llm_parts/support.py": 3,
     "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py": 7,
-    "src/mango_mvp/channels/telegram_pilot_reporting.py": 7,
 }
 
 CHANNEL_MARKER_HELPER_BUDGET: dict[str, int] = {

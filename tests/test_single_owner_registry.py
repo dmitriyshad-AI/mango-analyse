@@ -12,7 +12,7 @@ CONCEPT_LIMITS = {
         "names": {"normalize_active_brand", "_normalize_active_brand", "_normalize_brand"},
         "limit": 4,
     },
-    "optional_text": {"names": {"optional_text", "_optional_text"}, "limit": 3},
+    "optional_text": {"names": {"optional_text", "_optional_text"}, "limit": 2},
     "require_timezone": {"names": {"require_timezone", "_require_timezone"}, "limit": 1},
 }
 
@@ -98,9 +98,8 @@ def test_live_inventory_keeps_dynamic_reexport_alive() -> None:
     injected = dict(provider, file="src/mango_mvp/channels/injected_duplicate.py", line=1)
     violations = _registry_violations([*rows, injected])
     assert violations == [
-        "optional_text: 4 > 3: "
+        "optional_text: 3 > 2: "
         "src/mango_mvp/channels/contracts.py:391, "
         f"src/mango_mvp/channels/subscription_llm_parts/provider.py:{provider['line']}, "
-        "src/mango_mvp/channels/telegram_pilot_store.py:914, "
         "src/mango_mvp/channels/injected_duplicate.py:1"
     ]

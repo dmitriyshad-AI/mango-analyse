@@ -192,22 +192,6 @@
     "target": "_POSTPAYMENT_CONTEXT_HANDOFF_RE"
   },
   {
-    "flags": "",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "(?<!\\d)(?:\\+?7|8)?[\\s(.-]*\\d{3}[\\s).-]*\\d{3}[\\s.-]*\\d{2}[\\s.-]*\\d{2}(?!\\d)",
-    "pattern_sha256": "06fc0831311b9abf4bd67d68f7412c71818b612a9c8d5f81699aef99c8bcf602",
-    "qualname": "<module>",
-    "target": "PHONE_RE"
-  },
-  {
-    "flags": "",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "\\b\\d{8,12}:[A-Za-z0-9_-]{25,}\\b",
-    "pattern_sha256": "05217a3902fc16858f23782b6341253a0cf3db7b1570bd13f9c1314e96a9db73",
-    "qualname": "<module>",
-    "target": "TOKEN_RE"
-  },
-  {
     "flags": "re.I | re.S",
     "path": "src/mango_mvp/channels/subscription_llm_parts/contracts.py",
     "pattern_preview": "безопасн\\w+\\s+вариант\\s*:\\s*[«\\\"](?P<text>.+?)[»\\\"]\\s*$",
@@ -1534,45 +1518,5 @@
     "pattern_sha256": "f41d100abc6de078cf062cca35473818a6884e92777fa7c4247c8d30a7972c27",
     "qualname": "<module>",
     "target": "_CLIENT_EMAIL_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "\\b(?:AMO|Tallanto|CRM|source_id|lead_id|contact_id|token|api[_-]?key)\\b",
-    "pattern_sha256": "cc328d69e23d993c88ef5fa8efb592027145af3fe9d749df396225106eb0681b",
-    "qualname": "<module>",
-    "target": "INTERNAL_MARKER_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
-    "pattern_sha256": "f444518958b91a6122e99f67a0cb8c10bf1c01f8e06400a49b111cb6175d8874",
-    "qualname": "<module>",
-    "target": "EMAIL_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "\\b\\d[\\d\\s\\u00a0]{1,9}\\s*(?:₽|руб|р\\.)|\\b\\d{1,3}\\s*%|\\b(?:до|по|с)\\s+\\d{1,2}\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декаб",
-    "pattern_sha256": "41f22f36fa957ce7169d141abab626743022aa4a1bbbf240062781f21d10decb",
-    "qualname": "<module>",
-    "target": "PRECISE_FACT_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "спасибо за обращение|ваш вопрос очень важен|оптимальн\\w+\\s+образовательн\\w+\\s+продукт|менеджер свяжется",
-    "pattern_sha256": "7a0f86ed055d9701abb8f5e7b3c85c839ae24d02963dca5434032eced9038ad2",
-    "qualname": "<module>",
-    "target": "TEMPLATE_RE"
-  },
-  {
-    "flags": "re.I",
-    "path": "src/mango_mvp/channels/telegram_pilot_reporting.py",
-    "pattern_preview": "уточн(?:ю|им)|передам|свяжется|подбер[её]м|проверит",
-    "pattern_sha256": "15782ada25c2db7dc413c5b92ef6bae3dabc7c40777475842dd512e490825b0b",
-    "qualname": "<module>",
-    "target": "GENERIC_RE"
   }
 ]

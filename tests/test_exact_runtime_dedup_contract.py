@@ -52,20 +52,6 @@ def test_pilot_context_int_or_zero_contract() -> None:
         int_or_zero(float("inf"))
 
 
-def test_telegram_store_timezone_check_is_alias_of_one_owner() -> None:
-    from datetime import datetime, timezone
-
-    from mango_mvp.channels import telegram_pilot_store
-    from mango_mvp.channels.contracts import require_timezone
-
-    assert telegram_pilot_store.require_timezone is require_timezone
-    require_timezone(datetime.now(timezone.utc), "created_at")
-    with pytest.raises(ValueError, match="created_at must be timezone-aware"):
-        require_timezone(datetime.now(), "created_at")
-    with pytest.raises(AttributeError):
-        require_timezone(None, "created_at")  # type: ignore[arg-type]
-
-
 def test_semantic_frame_wide_bool_parsers_are_aliases_of_one_owner() -> None:
     from mango_mvp.channels.subscription_llm_parts.contracts import semantic_frame_bool
     from mango_mvp.channels.subscription_llm_parts.policy_routing import _intent_actions_frame_bool

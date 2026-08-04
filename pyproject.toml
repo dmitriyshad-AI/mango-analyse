@@ -18,7 +18,6 @@ dependencies = [
   "google-auth>=2.35.0",
   "pypdf>=6.0.0",
   "PyYAML>=6.0.2",
-  "python-telegram-bot>=21.10,<22"
 ]
 
 [project.optional-dependencies]

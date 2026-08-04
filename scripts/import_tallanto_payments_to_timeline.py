@@ -1498,7 +1498,7 @@ def load_existing_money_class_context(
 
 def extract_module_rows(snapshot: Mapping[str, Any], module: str, *, aliases: Sequence[str]) -> tuple[Mapping[str, Any], ...]:
     rows: list[Mapping[str, Any]] = []
-    keys = (module, *aliases)
+    keys = tuple(dict.fromkeys((module, *aliases)))
     for key in keys:
         if key in snapshot:
             rows.extend(extract_rows(snapshot[key], expected_module=module))

@@ -802,6 +802,21 @@ def test_incremental_payment_reuses_existing_abonement_owner() -> None:
     assert records[0].payload["_contact_id_source"] == "abonement"
 
 
+def test_canonical_module_names_are_not_counted_twice_when_repeated_as_aliases() -> None:
+    records, stats, class_lookup = build_tallanto_records(
+        {
+            "most_finances": [{"name": "no-id"}],
+            "most_abonements": [{"name": "no-id"}],
+            "most_class": [{"name": "no-id"}],
+        },
+        source_path=None,
+    )
+
+    assert records == ()
+    assert (stats.payment_rows, stats.abonement_rows, stats.class_rows, stats.skipped) == (1, 1, 1, 2)
+    assert class_lookup == {}
+
+
 def test_existing_attendance_supplies_exact_abonement_class_relation(tmp_path: Path) -> None:
     timeline_db = staging_timeline_db(tmp_path)
     with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as store:

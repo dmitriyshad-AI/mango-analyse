@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
@@ -898,6 +898,15 @@ def append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def completed_import_source_names(imports: Iterable[Mapping[str, Any]]) -> list[str]:
+    return sorted({
+        str(item.get("source_system"))
+        for item in imports
+        if item.get("validation_ok") is True
+        and item.get("run_id")
+    })
+
+
 def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
     source_statuses = Counter(str(item.get("status") or ("skipped" if item.get("skipped_reason") else "ok")) for item in report.get("sources", ()))
     return {
@@ -909,6 +918,7 @@ def summarize_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
         "source_statuses": dict(source_statuses),
         "affected_customer_count": report.get("affected_customer_count"),
         "changed_customer_count": report.get("changed_customer_count"),
+        "completed_import_sources": completed_import_source_names(report.get("imports", ())),
         "phase_seconds": report.get("phase_seconds"),
         "safety": report.get("safety"),
     }

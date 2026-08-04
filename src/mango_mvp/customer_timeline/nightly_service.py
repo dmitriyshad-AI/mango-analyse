@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.derived_signals import backfill_sg_v1_signals
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
+    completed_import_source_names,
     run_nightly_incremental,
     summarize_report,
 )
@@ -456,6 +457,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "required": step.required,
                         "report_path": str(step_path),
                         "summary": {
+                            "completed_import_sources": step_report.get("completed_import_sources"),
                             "cursor_before": step_report.get("cursor_before"),
                             "cursor_after": step_report.get("cursor_after"),
                             "fetch": step_report.get("fetch"),
@@ -687,6 +689,14 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "summary": {
                             **step_summary,
                             "attribution_complete": bool(step_report.get("attribution_complete")),
+                            "completed_import_sources": completed_import_source_names(
+                                (step_report.get("import_reports") or {}).values()
+                            ),
+                            "polled_source_systems": sorted({
+                                str(item.get("source_system"))
+                                for item in (step_report.get("profiles") or {}).values()
+                                if isinstance(item, Mapping) and item.get("source_system")
+                            }),
                         },
                         "duration_seconds": round(time.monotonic() - step_started, 3),
                     }
@@ -2392,6 +2402,12 @@ def _cursor_is_fresh(cursor: Optional[Mapping[str, Any]], *, now: datetime) -> b
     return 0 <= age_hours <= SOURCE_PROOF_STALE_AFTER_HOURS
 
 
+def _step_completed_import_sources(ctx: "_SourceProofContext", step_name: str) -> set[str]:
+    step = ctx.steps_by_name.get(step_name) or {}
+    summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+    return {str(value) for value in summary.get("completed_import_sources") or ()}
+
+
 def _proof_amo_contacts_leads_events(ctx: "_SourceProofContext") -> Mapping[str, Any]:
     label = "amo_contacts_leads_events"
     status = _step_status(ctx, "amo_incremental_shadow")
@@ -2403,6 +2419,14 @@ def _proof_amo_contacts_leads_events(ctx: "_SourceProofContext") -> Mapping[str,
                       reason=f"amo_incremental_shadow step status={status}")
     contacts, contacts_ts = _count_row(ctx.source_counts, "amocrm_snapshot")
     events, events_ts = _count_row(ctx.source_counts, "amocrm_event")
+    if not {"amocrm_snapshot", "amocrm_event"}.issubset(
+        _step_completed_import_sources(ctx, "amo_incremental_shadow")
+    ):
+        return _proof(
+            label, ctx, status="unproven_current_run", records=contacts + events,
+            cursor_or_max_event_at=_max_iso(contacts_ts, events_ts),
+            reason="current AMO step has no completed snapshot+event imports",
+        )
     return _proof(
         label, ctx, status="ok", records=contacts + events,
         cursor_or_max_event_at=_max_iso(contacts_ts, events_ts),
@@ -2520,6 +2544,14 @@ def _proof_calls(ctx: "_SourceProofContext") -> Mapping[str, Any]:
             label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
             reason=f"mango_processed_sweep status={sweep_status}; calls_and_amo_incremental status={incremental_status}",
         )
+    if "mango_processed_summary" not in _step_completed_import_sources(
+        ctx, "calls_and_amo_incremental"
+    ):
+        return _proof(
+            label, ctx, status="unproven_current_run", records=records,
+            cursor_or_max_event_at=cursor_ts,
+            reason="current calls step has no completed timeline import",
+        )
     return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
                   reason="mango_processed_sweep and calls_and_amo_incremental both ok")
 
@@ -2554,6 +2586,14 @@ def _proof_email(ctx: "_SourceProofContext") -> Mapping[str, Any]:
             label, ctx, status="error", records=records, cursor_or_max_event_at=cursor_ts,
             reason=f"mail_link_enrich manifest metrics unavailable: status={enrich_metrics_status or 'unknown'}",
         )
+    if "mail_archive_stage2" not in _step_completed_import_sources(
+        ctx, "mail_archive_incremental"
+    ):
+        return _proof(
+            label, ctx, status="unproven_current_run", records=records,
+            cursor_or_max_event_at=cursor_ts,
+            reason="current email step has no completed archive import",
+        )
     return _proof(
         label, ctx, status="ok", records=records, cursor_or_max_event_at=cursor_ts,
         reason="mail_archive_incremental and mail_link_enrich both ok; archive+link-enrich metrics present",
@@ -2561,7 +2601,8 @@ def _proof_email(ctx: "_SourceProofContext") -> Mapping[str, Any]:
 
 
 def _proof_wappi_channel(ctx: "_SourceProofContext", *, label: str, source_system: str) -> Mapping[str, Any]:
-    status = _step_status(ctx, "wappi_history_incremental")
+    step = ctx.steps_by_name.get("wappi_history_incremental")
+    status = str(step.get("status")) if step is not None else None
     if status is None:
         return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
                       reason="step wappi_history_incremental did not run in this run")
@@ -2569,13 +2610,17 @@ def _proof_wappi_channel(ctx: "_SourceProofContext", *, label: str, source_syste
     if status != "ok":
         return _proof(label, ctx, status="error", records=records, cursor_or_max_event_at=event_ts,
                       reason=f"wappi_history_incremental step status={status}")
-    if records <= 0:
+    summary = step.get("summary") if isinstance(step.get("summary"), Mapping) else {}
+    polled = source_system in set(summary.get("polled_source_systems") or ())
+    imported = source_system in set(summary.get("completed_import_sources") or ())
+    if not (imported or polled):
         return _proof(
-            label, ctx, status="missing", records=records, cursor_or_max_event_at=event_ts,
-            reason=f"wappi_history_incremental ok, but timeline_events has zero {source_system} rows",
+            label, ctx, status="unproven_current_run", records=records,
+            cursor_or_max_event_at=event_ts,
+            reason=f"current Wappi step did not prove polling or import for {source_system}",
         )
     return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=event_ts,
-                  reason=f"wappi_history_incremental ok; timeline_events count for {source_system}")
+                  reason=f"current Wappi poll/import proven for {source_system}")
 
 
 def _proof_wappi_telegram(ctx: "_SourceProofContext") -> Mapping[str, Any]:

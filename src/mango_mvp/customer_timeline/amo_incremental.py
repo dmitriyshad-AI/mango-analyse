@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.ids import normalize_email, stable_digest
 from mango_mvp.customer_timeline.nightly_incremental import (
     IncrementalSourceConfig,
     NightlyIncrementalConfig,
+    completed_import_source_names,
     run_nightly_incremental,
 )
 from mango_mvp.customer_timeline.safety import guard_customer_timeline_writable_path
@@ -559,6 +560,11 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     cursor_after = load_cursor_snapshot(timeline_db, config.tenant_id)
     examples = sample_inserted_examples(timeline_db, config.tenant_id, limit=10)
     finished = datetime.now(timezone.utc)
+    completed_import_sources = sorted({
+        source
+        for current in (contacts_first, cards_first, events_first)
+        for source in completed_import_source_names(current.get("imports", ()))
+    })
     report = {
         "schema_version": AMO_INCREMENTAL_SCHEMA_VERSION,
         "validation_ok": validation_ok,
@@ -566,6 +572,7 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "duration_seconds": round((finished - started).total_seconds(), 3),
+        "completed_import_sources": completed_import_sources,
         "timeline_db": str(timeline_db),
         "source_db": str(config.source_db),
         "endpoints": {

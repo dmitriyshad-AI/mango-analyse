@@ -535,8 +535,18 @@ def test_nightly_service_runs_optional_mail_link_enrich_and_publishes_metrics(tm
     assert manifest["source_counts"] == []
 
 
-def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("completed_sources", "expected_proof"),
+    (
+        (("amocrm_snapshot", "amocrm_event"), "ok"),
+        (("amocrm_snapshot",), "unproven_current_run"),
+    ),
+)
+def test_nightly_service_wires_amo_import_proof_without_copying_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    completed_sources: tuple[str, ...],
+    expected_proof: str,
 ) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
@@ -547,6 +557,7 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
         return {
             "validation_ok": True,
             "complete": True,
+            "completed_import_sources": completed_sources,
             "cursor_before": {"amo_leads_updated_at": "2026-07-01T00:00:00+00:00"},
             "cursor_after": {"amo_leads_updated_at": "2026-07-02T00:00:00+00:00"},
             "fetch": {
@@ -571,6 +582,7 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
                 "out_root": str(tmp_path / "nightly_service"),
                 "publish_dir": str(tmp_path / "published"),
                 "tenant_id": "foton",
+                "required_manifest_sources": ["amo_contacts_leads_events"],
                 "steps": [
                     {
                         "name": "amo_incremental_shadow",
@@ -590,8 +602,9 @@ def test_nightly_service_runs_optional_amo_incremental_without_copying_db(
 
     report = run_nightly_service(service_config_from_json(config_path))
 
-    assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
+    assert report["required_sources_check"]["proofs"]["amo_contacts_leads_events"]["status"] == expected_proof
+    assert report["snapshot_manifest"]["latest_published"] is (expected_proof == "ok")
     assert "repeat_run_duplicates" not in report["steps"][0]["summary"]
     assert captured["config"].timeline_db == db_path
     assert captured["config"].copy_db is False
@@ -1346,6 +1359,29 @@ def test_required_tallanto_money_proof_requires_fresh_current_cursor() -> None:
     assert fresh["proofs"]["tallanto_payments_subscriptions"]["status"] == "ok"
 
 
+def test_required_email_proof_needs_current_archive_import() -> None:
+    steps = [
+        {"name": "mail_archive_incremental", "status": "ok", "summary": {}},
+        {"name": "mail_link_enrich", "status": "ok"},
+    ]
+    kwargs = {
+        "source_counts": [{
+            "source_system": "mail_archive_stage2",
+            "count": 1,
+            "max_event_at": NOW.isoformat(),
+        }],
+        "mail_link_enrich": {"status": "ok"},
+        "now": NOW,
+    }
+
+    stale = nightly_service_module.check_required_manifest_sources(steps, ["email"], **kwargs)
+    steps[0]["summary"] = {"completed_import_sources": ["mail_archive_stage2"]}
+    fresh = nightly_service_module.check_required_manifest_sources(steps, ["email"], **kwargs)
+
+    assert stale["proofs"]["email"]["status"] == "unproven_current_run"
+    assert fresh["proofs"]["email"]["status"] == "ok"
+
+
 def test_nightly_service_reports_tallanto_money_diagnostics_path(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / ".codex_local/staging/customer_timeline.sqlite"
     db_path.parent.mkdir(parents=True)
@@ -1408,6 +1444,7 @@ def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path:
         "out_root": str(tmp_path / "nightly_service"),
         "publish_dir": str(tmp_path / "published"),
         "tenant_id": "foton",
+        "required_manifest_sources": ["calls"],
         "steps": [
             {
                 "name": "mango_processed_sweep",
@@ -1451,9 +1488,12 @@ def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path:
     second = run_nightly_service(config)
 
     assert first["overall_status"] == "ok"
+    assert first["required_sources_check"]["proofs"]["calls"]["status"] == "ok"
+    assert first["snapshot_manifest"]["latest_published"] is True
     assert first["steps"][0]["summary"]["events_written"] == 1
     assert first["steps"][1]["summary"]["changed_customer_count"] == 1
     assert second["overall_status"] == "ok"
+    assert second["snapshot_manifest"]["latest_published"] is True
     assert second["steps"][0]["summary"]["events_written"] == 1
     assert second["steps"][1]["summary"]["changed_customer_count"] == 0
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
@@ -1473,6 +1513,77 @@ def test_nightly_service_sweeps_processed_mango_call_dbs_before_import(tmp_path:
         ).fetchone()
     assert row[0] == 1
     assert chunk_row[0] == 1
+
+
+def test_nightly_service_does_not_publish_calls_from_old_rows_without_current_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    old_at = datetime(2019, 1, 1, tzinfo=timezone.utc)
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:nightly-1",
+                event_type=TimelineEventType.MANGO_CALL,
+                event_at=old_at,
+                source_system="mango_processed_summary",
+                source_id="old-call",
+                direction=TimelineDirection.INBOUND,
+                created_at=old_at,
+            )
+        )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_mango_processed_sweep",
+        lambda *args, **kwargs: {"status": "ready", "events_written": 0, "dbs_scanned": 1},
+    )
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_nightly_incremental",
+        lambda config: {"gate_passed": True, "sources": [], "source_errors": []},
+    )
+    out_jsonl = tmp_path / "calls.jsonl"
+    config_path = tmp_path / "nightly.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timeline_db": str(db_path),
+                "allowed_root": str(tmp_path),
+                "out_root": str(tmp_path / "runs"),
+                "publish_dir": str(tmp_path / "published"),
+                "required_manifest_sources": ["calls"],
+                "steps": [
+                    {
+                        "name": "mango_processed_sweep",
+                        "kind": "mango_processed_sweep",
+                        "config": {"out_jsonl": str(out_jsonl)},
+                    },
+                    {
+                        "name": "calls_and_amo_incremental",
+                        "kind": "nightly_incremental",
+                        "config": {
+                            "journal_path": str(tmp_path / "journal.jsonl"),
+                            "sources": [{
+                                "name": "calls",
+                                "source_system": "mango_processed_summary",
+                                "path": str(out_jsonl),
+                                "source_ref": "test:calls",
+                                "normalizer": "mango_processed_summary",
+                            }],
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["required_sources_check"]["proofs"]["calls"]["status"] == "unproven_current_run"
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 def test_nightly_service_sweeps_explicit_ready_package_db_before_import(tmp_path: Path) -> None:
@@ -2313,6 +2424,7 @@ def test_nightly_service_resumes_from_last_completed_step(
         "allowed_root": str(tmp_path),
         "out_root": str(out_root),
         "publish_dir": str(tmp_path / "published"),
+        "required_manifest_sources": ["amo_contacts_leads_events"],
         "steps": [
             {
                 "name": "amo_incremental_shadow",
@@ -2366,7 +2478,10 @@ def test_nightly_service_resumes_from_last_completed_step(
         "status": "ok",
         "required": True,
         "report_path": str(prior_run_dir / "01_amo_incremental_shadow.json"),
-        "summary": {"repeat_run_duplicates": 0},
+        "summary": {
+            "completed_import_sources": ["amocrm_event", "amocrm_snapshot"],
+            "repeat_run_duplicates": 0,
+        },
         "duration_seconds": 1.2,
     }
     (prior_run_dir / "progress.json").write_text(
@@ -2399,7 +2514,9 @@ def test_nightly_service_resumes_from_last_completed_step(
     assert report["steps"][0] == prior_step_report
     assert report["steps"][1]["name"] == "local_jsonl"
     assert report["steps"][1]["status"] == "ok"
+    assert report["required_sources_check"]["proofs"]["amo_contacts_leads_events"]["status"] == "ok"
     assert report["overall_status"] == "ok"
+    assert report["snapshot_manifest"]["latest_published"] is True
     assert (prior_run_dir / "service_report.json").exists()
 
 
@@ -2471,30 +2588,23 @@ def test_nightly_service_fails_loud_when_required_manifest_source_is_missing(tmp
     assert report["snapshot_manifest"]["latest_published"] is False
 
 
+@pytest.mark.parametrize(
+    ("profile_sources", "expected_missing"),
+    (
+        (("wappi_telegram",), ["wappi_max"]),
+        (("wappi_telegram", "wappi_max"), []),
+    ),
+)
 def test_nightly_service_wappi_proof_is_independent_per_channel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile_sources: tuple[str, ...],
+    expected_missing: list[str],
 ) -> None:
     """B4 proof 1: wappi_history_incremental=ok must not vouch for both
-    Telegram and MAX -- each channel needs its own evidence in
-    timeline_events, so a channel with zero rows is reported missing even
-    though the shared step succeeded (the exact false-green this fixes)."""
+    Telegram and MAX; a successfully polled quiet channel is still current."""
     db_path = tmp_path / "customer_timeline.sqlite"
     seed_customer(db_path, tmp_path)
-    telegram_source = tmp_path / "wappi_telegram.jsonl"
-    write_jsonl(
-        telegram_source,
-        [
-            {
-                "source_id": "tg-event-1",
-                "customer_id": "customer:nightly-1",
-                "event_type": "telegram_message",
-                "event_at": "2026-07-03T03:00:00+00:00",
-                "updated_at": "2026-07-03T03:00:00+00:00",
-                "direction": "inbound",
-                "summary": "Здравствуйте, расскажите про лагерь.",
-            }
-        ],
-    )
     monkeypatch.setattr(
         nightly_service_module,
         "run_wappi_history_import",
@@ -2503,6 +2613,10 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
             "fetch_complete": True,
             "source_persistence_complete": True,
             "summary": {"records_built": 0},
+            "profiles": {
+                source: {"source_system": source}
+                for source in profile_sources
+            },
         },
     )
     config_payload = {
@@ -2521,24 +2635,6 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
                     "phase1_config": str(tmp_path / "phase1.json"),
                 },
             },
-            {
-                "name": "telegram_seed",
-                "kind": "nightly_incremental",
-                "required": True,
-                "config": {
-                    "journal_path": str(tmp_path / "nightly_service" / "telegram_journal.jsonl"),
-                    "safety_margin_seconds": 0,
-                    "sources": [
-                        {
-                            "name": "telegram_seed",
-                            "source_system": "wappi_telegram",
-                            "path": str(telegram_source),
-                            "source_ref": "test:wappi-telegram-seed",
-                            "normalizer": "jsonl",
-                        }
-                    ],
-                },
-            },
         ],
     }
     config_path = tmp_path / "wappi_proof_config.json"
@@ -2548,11 +2644,12 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
 
     proofs = report["required_sources_check"]["proofs"]
     assert proofs["wappi_telegram"]["status"] == "ok"
-    assert proofs["wappi_telegram"]["records_seen_or_written"] >= 1
-    assert proofs["wappi_max"]["status"] == "missing"
-    assert report["required_sources_check"]["missing"] == ["wappi_max"]
-    assert report["overall_status"] == "partial"
-    assert report["snapshot_manifest"]["latest_published"] is False
+    assert proofs["wappi_telegram"]["records_seen_or_written"] == 0
+    assert proofs["wappi_max"]["status"] == (
+        "unproven_current_run" if expected_missing else "ok"
+    )
+    assert report["required_sources_check"]["missing"] == expected_missing
+    assert report["snapshot_manifest"]["latest_published"] is (not expected_missing)
 
 
 def _seed_tallanto_attendance_cursor(db_path: Path, *, updated_at: datetime) -> None:

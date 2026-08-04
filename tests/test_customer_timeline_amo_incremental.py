@@ -223,6 +223,7 @@ def test_run_amo_incremental_imports_new_contact_before_linked_lead(tmp_path, mo
         )
     )
 
+    assert report["completed_import_sources"] == ["amocrm_event", "amocrm_snapshot"]
     assert report["fetch"]["amo_leads_updated_at"]["normalized"] == 1
     assert report["fetch"]["amo_leads_updated_at"]["skipped"]["unmatched"] == 1
     assert report["cursor_after"]["amo_leads_updated_at"] > original_lead_cursor

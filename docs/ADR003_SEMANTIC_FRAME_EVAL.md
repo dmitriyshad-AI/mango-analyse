@@ -114,15 +114,9 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_cl
 
 ## Gold Queue For Frame Mismatches
 
-Для ручного регрейда SemanticFrame добавлен локальный builder:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold_queue.py \
-  --transcripts <ON_ENRICHED_RUN>/dynamic_dialog_transcripts.jsonl \
-  --out-dir <GOLD_QUEUE_DIR>
-```
-
-Он не вызывает модель и не меняет поведение: читает enriched transcript, сравнивает `frame.must_handoff` с текущим route-handoff и P0-сигналом, затем пишет JSONL/CSV-очередь для ручного заполнения `expected_*` полей. По умолчанию в очередь попадают только расхождения; `--include-matches` нужен только для выборочного контроля совпадений.
+Историческая очередь ручного регрейда SemanticFrame была построена одноразовым
+инструментом 2026-07-01. Инструмент удалён после завершения калибровки; сохранённые
+агрегированные результаты ниже остаются историческим доказательством.
 
 Локальная очередь по full131 от 2026-07-01:
 
@@ -173,7 +167,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 - Gold: `product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl`.
 - Gold SHA256: `4c505bb23cddbdfb8a0d4324bd2822b253001dc46fc0e75b90ab5ba2d6fb5be3`.
 - Gold scope: 75 строк из full131 mismatch/manager-action очереди, без клиентских текстов; 73 сравнимые, 2 `unclear`.
-- Scorer: `scripts/report_adr003_frame_gold_calibration.py`.
+- Scorer: одноразовый локальный инструмент, удалённый после завершения калибровки.
 - Report: `audits/_inbox/adr003_frame_gold_calibration_20260701/`.
 - `must_handoff` accuracy: `0.6027` (44/73).
 - `too_cautious`: `29`.

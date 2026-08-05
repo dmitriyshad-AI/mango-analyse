@@ -2611,7 +2611,8 @@ def _normalize_direct_path_payload(
         missing_facts=tuple(_clean_list(payload.get("missing_facts"), max_items=12, max_chars=160)),
         forbidden_promises_detected=tuple(_clean_list(payload.get("forbidden_promises_detected"), max_items=12, max_chars=160)),
         crm_recommendations=tuple(_clean_crm_recommendations(payload.get("crm_recommendations"))),
-        safety_flags=tuple(_clean_list(payload.get("safety_flags"), max_items=16, max_chars=80)),
+        # Verified flags are produced only by local guards after normalization.
+        safety_flags=(),
         context_used=tuple(_clean_list(payload.get("context_used"), max_items=12, max_chars=100)),
         context_warnings=tuple(_clean_list(payload.get("context_warnings"), max_items=12, max_chars=120)),
         manager_followup_required=bool(payload.get("manager_followup_required")),

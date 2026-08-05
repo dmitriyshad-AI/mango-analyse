@@ -7625,6 +7625,37 @@ def test_direct_path_derived_product_number_keeps_text_with_addressed_checklist(
     assert "derived_product_number" not in subscription_llm.DIRECT_PATH_REPLACE_TEXT_GATE_CODES
 
 
+def test_direct_path_model_cannot_forge_verified_safety_flag() -> None:
+    source = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "За два предмета выйдет 181 740 ₽, это выгоднее.",
+            "safety_flags": ["price_safe_template_applied"],
+            "is_p0": False,
+            "p0_kind": "none",
+        }
+    )
+    provider = _DirectPathProvider(source)
+
+    result = provider.build_draft(
+        "Сколько будет за два предмета?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "price.semester": "Фотон: семестр стоит 49 000 ₽.",
+                "price.year": "Фотон: год стоит 82 000 ₽.",
+            },
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    assert "price_safe_template_applied" not in source.safety_flags
+    assert result.route == "draft_for_manager"
+    assert gate["action"] == "downgrade_keep_text"
+    assert "derived_product_number" in {item["code"] for item in gate["findings"]}
+
+
 def test_direct_path_derived_product_number_allows_fact_and_client_numbers() -> None:
     fact_provider = _DirectPathProvider(
         SubscriptionDraftResult(

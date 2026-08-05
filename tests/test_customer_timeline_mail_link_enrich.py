@@ -1033,13 +1033,21 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
     db_path = tmp_path / ".codex_local" / "staging" / "customer_timeline.sqlite"
     db_path.parent.mkdir(parents=True)
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
-        for index, customer_id in enumerate(("customer:child-a", "customer:child-b"), start=1):
+        for index, (customer_id, child_name, parent_name) in enumerate(
+            (
+                ("customer:child-a", "Аглая Ким", "Ирина Ким"),
+                ("customer:child-b", "Ратмир Ким", "Ирина Ким"),
+                ("customer:child-c", "Элина Ким", "Сергей Ким"),
+            ),
+            start=1,
+        ):
             store.upsert_customer(
                 CustomerIdentity(
                     tenant_id="foton",
                     customer_id=customer_id,
-                    identity_status=IdentityStatus.STRONG,
-                    display_name=f"Child {index}",
+                    identity_status=IdentityStatus.AMBIGUOUS,
+                    display_name=child_name,
+                    primary_phone="+79990000002",
                     primary_email="parent@example.com",
                 )
             )
@@ -1076,7 +1084,17 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
                     source_id=f"tallanto-{index}",
                     direction="system",
                     match_status="strong_unique",
-                        record={"payload": {"parent_fio": "Ирина Иванова", "primary_email": "parent@example.com"}},
+                    record={
+                        "payload": {
+                            "display_name": child_name,
+                            "first_name": child_name.split()[0],
+                            "last_name": "Ким",
+                            "student_type": f"Слушатель {index}",
+                            "parent_fio": parent_name,
+                            "primary_phone": "+79990000002",
+                            "primary_email": "parent@example.com",
+                        }
+                    },
                 )
             )
         store.upsert_identity_link(
@@ -1091,7 +1109,7 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
             )
         )
     sha = "b" * 64
-    source_file, _ = _write_archive(
+    source_file, archive_db = _write_archive(
         tmp_path,
         sha=sha,
         email="parent@example.com",
@@ -1116,6 +1134,53 @@ def test_mail_link_enrich_promotes_shared_tallanto_parent_email_to_family(tmp_pa
         event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
     assert event["customer_id"] is None
     assert event["metadata"]["family_id"].startswith("family:")
+
+    archive_db.unlink()
+    missing_archive = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "missing_archive",
+            apply=True,
+            reconsider_pending=True,
+        )
+    )
+    assert missing_archive["counts"]["planned.not_revalidated_archive_missing"] == 1
+    with sqlite3.connect(db_path) as con:
+        preserved = json.loads(
+            con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0]
+        )
+    assert preserved["metadata"]["family_id"] == event["metadata"]["family_id"]
+
+    _write_archive(
+        tmp_path,
+        sha=sha,
+        email="parent@example.com",
+        text="Здравствуйте, интересует обучение для детей.",
+    )
+
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:child-a",),
+            severity="high",
+        )
+    revalidated = run_mail_link_enrich(
+        MailLinkEnrichConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            out_dir=tmp_path / "revalidated",
+            apply=True,
+            reconsider_pending=True,
+        )
+    )
+    assert revalidated["target_events"] == 1
+    assert revalidated["counts"]["planned.weak_email"] == 1
+    with sqlite3.connect(db_path) as con:
+        event = json.loads(con.execute("SELECT record_json FROM timeline_events WHERE source_id=?", (sha,)).fetchone()[0])
+    assert event["metadata"]["family_id"] == ""
+    assert "family_attributed" not in event["metadata"]
 
 
 # --- D2 rule 4: an email shared by two *different* families is an evidenced
@@ -1187,6 +1252,38 @@ def test_mail_link_enrich_two_families_sharing_one_email_is_conflict_not_first_m
     # Never a first-match: no customer picked for either family.
     assert event["customer_id"] is None
     assert event["customer_id"] not in {"customer:family-a", "customer:family-b"}
+
+
+def test_mail_family_index_excludes_family_with_open_identity_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        for customer_id in ("customer:family-a", "customer:family-b"):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id="foton",
+                    customer_id=customer_id,
+                    identity_status=IdentityStatus.AMBIGUOUS,
+                )
+            )
+        store._con.executemany(
+            "INSERT INTO family_members_v1 "
+            "(tenant_id,family_id,customer_id,membership_status,confidence,reason,created_at,updated_at,record_hash,record_json) "
+            "VALUES ('foton','family:test',?,'confident','high','test',?,?,?,'{}')",
+            (
+                ("customer:family-a", NOW.isoformat(), NOW.isoformat(), "hash-a"),
+                ("customer:family-b", NOW.isoformat(), NOW.isoformat(), "hash-b"),
+            ),
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=("customer:family-a",),
+        )
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        family_ids = mail_link_enrich_module._load_persisted_family_ids(con, tenant_id="foton")
+    assert family_ids == {}
 
 
 def test_mail_link_enrich_breakdown_separates_exact_amo_from_exact_tallanto(tmp_path: Path) -> None:

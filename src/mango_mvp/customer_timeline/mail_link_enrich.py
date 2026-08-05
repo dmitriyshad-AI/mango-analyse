@@ -37,6 +37,7 @@ from mango_mvp.customer_timeline.safety import (
 )
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
+    open_family_identity_conflict_customer_ids,
     parse_datetime,
 )
 
@@ -286,6 +287,12 @@ def _load_target_events(
               AND match_status = 'strong_unique'
               AND customer_id IS NOT NULL AND customer_id != ''
             )
+            OR (
+              (? = 1 OR ? = 1)
+              AND match_status = 'ambiguous'
+              AND (customer_id IS NULL OR customer_id = '')
+              AND json_extract(record_json, '$.metadata.mail_link_enrich.outcome') = 'family_strong'
+            )
           )
         ORDER BY event_at, event_id
     """
@@ -295,6 +302,8 @@ def _load_target_events(
         int(reconsider_pending),
         int(reconsider_pending),
         int(revalidate_existing_strong),
+        int(revalidate_existing_strong),
+        int(reconsider_pending),
     ]
     if max_events is not None:
         sql += " LIMIT ?"
@@ -331,7 +340,13 @@ def _plan_event(
         )
         if raw_message:
             break
-    if not raw_message and str(row["match_status"]) == IdentityMatchClass.STRONG_UNIQUE.value:
+    existing_link_outcome = str(
+        ((payload.get("metadata") or {}).get("mail_link_enrich") or {}).get("outcome") or ""
+    )
+    if not raw_message and (
+        str(row["match_status"]) == IdentityMatchClass.STRONG_UNIQUE.value
+        or existing_link_outcome == "family_strong"
+    ):
         return LinkDecision(
             "not_revalidated_archive_missing",
             "not_revalidated_archive_missing",
@@ -1164,8 +1179,7 @@ def _resolve_identity_value(
     trusted_family_customer_ids = {
         str(row["customer_id"])
         for row in rows
-        if str(row["identity_status"] or "").lower() == "strong"
-        and str(row["source_system"]) in TRUSTED_EMAIL_IDENTITY_SOURCES
+        if str(row["source_system"]) in TRUSTED_EMAIL_IDENTITY_SOURCES
         and str(row["match_class"]) in {
             IdentityMatchClass.STRONG_UNIQUE.value,
             IdentityMatchClass.AMBIGUOUS.value,
@@ -1360,17 +1374,20 @@ def _load_persisted_family_ids(con: sqlite3.Connection, *, tenant_id: str) -> Ma
     ).fetchone()
     if exists is None:
         return {}
+    blocked = open_family_identity_conflict_customer_ids(con, tenant_id)
     return {
         str(row["customer_id"]): str(row["family_id"])
         for row in con.execute(
             """
             SELECT customer_id, family_id
             FROM family_members_v1
-            WHERE tenant_id = ? AND membership_status != 'conflict'
+            WHERE tenant_id = ? AND membership_status = 'confident' AND confidence = 'high'
             """,
             (tenant_id,),
         )
-        if str(row["customer_id"] or "") and str(row["family_id"] or "")
+        if str(row["customer_id"] or "") not in blocked
+        and str(row["customer_id"] or "")
+        and str(row["family_id"] or "")
     }
 
 
@@ -1633,6 +1650,7 @@ def _updated_event_from_decision(row: sqlite3.Row, decision: Mapping[str, Any]) 
         "candidate_customer_count": decision.get("candidate_customer_count"),
     }
     metadata["fresh_relink"] = True
+    metadata.pop("family_attributed", None)
     if decision["outcome"] == "strong":
         metadata["pending_attribution"] = False
         metadata.pop("pending_reason", None)

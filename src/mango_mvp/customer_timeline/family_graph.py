@@ -498,12 +498,20 @@ def _resolve_family_assignments(
     eligible = set(ids_by_customer) - unsafe
     parents = {customer_id: customer_id for customer_id in eligible}
     parent_keys_by_customer: dict[str, set[str]] = defaultdict(set)
+    first_names_by_customer: dict[str, set[str]] = defaultdict(set)
+    last_names_by_customer: dict[str, set[str]] = defaultdict(set)
+    student_types_by_customer: dict[str, set[str]] = defaultdict(set)
+    child_keys_by_customer: dict[str, set[str]] = defaultdict(set)
     current_contacts_by_customer: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    exact_contacts_by_customer: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for row in con.execute(
         """
         WITH ranked AS (
           SELECT customer_id, source_id,
                  json_extract(record_json, '$.record.payload.parent_fio') AS parent_fio,
+                 json_extract(record_json, '$.record.payload.first_name') AS first_name,
+                 json_extract(record_json, '$.record.payload.last_name') AS last_name,
+                 json_extract(record_json, '$.record.payload.student_type') AS student_type,
                  json_extract(record_json, '$.record.payload.primary_phone') AS primary_phone,
                  json_extract(record_json, '$.record.payload.phone_extra') AS phone_extra,
                  json_extract(record_json, '$.record.payload.primary_email') AS primary_email,
@@ -516,7 +524,8 @@ def _resolve_family_assignments(
             AND event_type = 'tallanto_student_snapshot'
             AND customer_id IS NOT NULL AND customer_id != '' AND superseded_by IS NULL
         )
-        SELECT customer_id, parent_fio, primary_phone, phone_extra, primary_email, email_extra
+        SELECT customer_id, source_id, parent_fio, first_name, last_name, student_type,
+               primary_phone, phone_extra, primary_email, email_extra
         FROM ranked WHERE row_number = 1
         """,
         (tenant_id,),
@@ -525,12 +534,33 @@ def _resolve_family_assignments(
         parent_key = _parent_identity_key(str(row["parent_fio"] or ""))
         if parent_key:
             parent_keys_by_customer[customer_id].add(parent_key)
+        source_id = str(row["source_id"] or "")
+        exact_card = exact_tallanto_owners.get(source_id) == customer_id
+        if exact_card:
+            first_name_tokens = normalized_name_tokens(str(row["first_name"] or ""))
+            first_name = " ".join(first_name_tokens)
+            last_name = " ".join(normalized_name_tokens(str(row["last_name"] or "")))
+            student_type = str(row["student_type"] or "").strip().casefold()
+            if first_name:
+                first_names_by_customer[customer_id].add(first_name)
+                given_name = first_name_tokens[0]
+                child_keys_by_customer[customer_id].update(
+                    child_name_keys({given_name}) or {given_name}
+                )
+            if last_name:
+                last_names_by_customer[customer_id].add(last_name)
+            if student_type:
+                student_types_by_customer[customer_id].add(student_type)
         for value in (row["primary_phone"], *str(row["phone_extra"] or "").split("|")):
             if normalized := normalize_phone(value):
                 current_contacts_by_customer[customer_id].add(("phone", normalized))
+                if exact_card:
+                    exact_contacts_by_customer[customer_id].add(("phone", normalized))
         for value in (row["primary_email"], *str(row["email_extra"] or "").split("|")):
             if normalized := normalize_email(value):
                 current_contacts_by_customer[customer_id].add(("email", normalized))
+                if exact_card:
+                    exact_contacts_by_customer[customer_id].add(("email", normalized))
 
     def find(customer_id: str) -> str:
         while parents[customer_id] != customer_id:
@@ -555,6 +585,61 @@ def _resolve_family_assignments(
             anchor = min(members)
             for member in members:
                 union(anchor, member)
+
+    by_shared_phone_email: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for customer_id, contacts in exact_contacts_by_customer.items():
+        phones = {value for kind, value in contacts if kind == "phone"}
+        emails = {value for kind, value in contacts if kind == "email"}
+        for phone in phones:
+            for email in emails:
+                by_shared_phone_email[(phone, email)].add(customer_id)
+    root_members: dict[str, set[str]] = defaultdict(set)
+    for customer_id in eligible:
+        root_members[find(customer_id)].add(customer_id)
+    attachment_cores: dict[str, set[str]] = defaultdict(set)
+    for members in by_shared_phone_email.values():
+        if not (2 <= len(members) <= 8 and members <= eligible):
+            continue
+        student_ids = set().union(*(ids_by_customer[member] for member in members))
+        if len(student_ids) != len(members) or any(len(ids_by_customer[member]) != 1 for member in members):
+            continue
+        roots = {find(member) for member in members}
+        cores = {root for root in roots if len(root_members[root]) >= 2}
+        singletons = {member for member in members if len(root_members[find(member)]) == 1}
+        if len(cores) != 1 or len(singletons) != 1:
+            continue
+        core = next(iter(cores))
+        if root_members[core] | singletons != members:
+            continue
+        first_names = [first_names_by_customer[member] for member in members]
+        last_names = [last_names_by_customer[member] for member in members]
+        student_types = [student_types_by_customer[member] for member in members]
+        if not all(len(values) == 1 for values in (*first_names, *last_names, *student_types)):
+            continue
+        if len(set().union(*last_names)) != 1 or len(set().union(*first_names)) != len(members):
+            continue
+        if len(set().union(*student_types)) != len(members):
+            continue
+        child_key_sets = [child_keys_by_customer[member] for member in sorted(members)]
+        if any(
+            left & right
+            for index, left in enumerate(child_key_sets)
+            for right in child_key_sets[index + 1 :]
+        ):
+            continue
+        attachment_cores[next(iter(singletons))].add(core)
+    singletons_by_core: dict[str, set[str]] = defaultdict(set)
+    for singleton, cores in attachment_cores.items():
+        if len(cores) == 1:
+            singletons_by_core[next(iter(cores))].add(singleton)
+    strict_contact_family_members = {
+        singleton
+        for core, singletons in singletons_by_core.items()
+        if len(root_members[core]) + len(singletons) <= 8
+        for singleton in singletons
+    }
+    for singleton in sorted(strict_contact_family_members):
+        union(singleton, next(iter(attachment_cores[singleton])))
 
     identity_roots: dict[tuple[str, str, str], set[str]] = defaultdict(set)
     for identity_key, members in by_parent_identity.items():
@@ -699,6 +784,8 @@ def _resolve_family_assignments(
                     if member in direct_amo_family_members
                     else "exact_amo_parent_name_and_phone_or_email"
                     if member in attached_amo_parents
+                    else "exact_tallanto_shared_contacts_family_core"
+                    if member in strict_contact_family_members
                     else "exact_tallanto_parent_name_and_phone_or_email"
                 )
                 if multi
@@ -749,8 +836,11 @@ def _reconcile_contact_conflicts(
     ):
         customer_id, student_id = str(row["customer_id"]), str(row["source_id"] or "")
         payload = (_json_loads(row["record_json"]).get("record") or {}).get("payload") or {}
-        display_name = str(payload.get("display_name") or "")
-        name_keys = frozenset(child_name_keys({display_name}) or set(normalized_name_tokens(display_name)))
+        first_name_tokens = normalized_name_tokens(
+            str(payload.get("first_name") or payload.get("display_name") or "")
+        )
+        given_name = first_name_tokens[0] if first_name_tokens else ""
+        name_keys = frozenset(child_name_keys({given_name}) or ({given_name} if given_name else set()))
         if name_keys:
             cards[customer_id].add((student_id, name_keys))
         for value in (payload.get("primary_phone"), *str(payload.get("phone_extra") or "").split("|")):
@@ -813,11 +903,16 @@ def _reconcile_contact_conflicts(
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
         if metadata.get("identity_repair") == "current_source_conflict":
             continue
-        refs = {str(raw) for raw in payload.get("entity_refs", ()) if str(raw).startswith("customer:")}
+        entity_refs = tuple(str(raw) for raw in payload.get("entity_refs", ()))
+        refs = {raw for raw in entity_refs if raw.startswith("customer:")}
         customer_ids = {ref[len("customer:"):] if ref.startswith("customer:customer:") else ref for ref in refs}
         reason = ""
         if str(row["conflict_type"]) == "shared_family_phone":
-            expected = {str(value) for value in metadata.get("tallanto_student_ids", ()) if value}
+            expected = {str(value) for value in metadata.get("tallanto_student_ids", ()) if value} or {
+                ref.split(":", 1)[1]
+                for ref in entity_refs
+                if ref.startswith(("tallanto_student:", "tallanto_student_id:"))
+            }
             current = {student_id for customer_id in customer_ids for student_id, _ in cards.get(customer_id, ())}
             family_id = confirmed_family(customer_ids)
             owners = phone_hash_owners.get(str(metadata.get("phone_hash") or ""), set())
@@ -825,6 +920,8 @@ def _reconcile_contact_conflicts(
                 reason = "confirmed_single_family"
         else:
             identifiers = metadata.get("identifiers")
+            if not isinstance(identifiers, list):
+                identifiers = [ref for ref in entity_refs if ref.startswith(("phone:", "email:"))]
             parsed: list[tuple[str, str]] = []
             if isinstance(identifiers, list):
                 for raw in identifiers:

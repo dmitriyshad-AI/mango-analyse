@@ -292,7 +292,7 @@ def test_family_graph_reconciles_shared_phone_after_current_tallanto_cards(tmp_p
     for customer_id, student_id, student_name in zip(
         customer_ids,
         student_ids,
-        ("Анна Иванова", "Борис Иванов"),
+        ("Аглая Ким", "Ратмир Ким"),
     ):
         _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
         _seed_tallanto_identity(
@@ -303,6 +303,8 @@ def test_family_graph_reconciles_shared_phone_after_current_tallanto_cards(tmp_p
             "parent@example.com",
             student_name=student_name,
             student_phone=phone,
+            first_name=student_name.split()[0],
+            last_name="Ким",
         )
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for customer_id, student_id, student_name in zip(
@@ -390,6 +392,96 @@ def test_family_graph_reconciles_shared_phone_after_current_tallanto_cards(tmp_p
     assert second["contact_conflict_reconciliation"]["reopened"] == 0
     assert second_status == "resolved"
     assert second_hash == first_hash
+
+
+def test_family_graph_groups_exact_siblings_with_different_parent_names(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    phone = "+79000000993"
+    for index, (customer_id, child_name, parent_name) in enumerate(
+        (
+            ("customer:kim-a", "Аглая Ким", "Ирина Ким"),
+            ("customer:kim-b", "Ратмир Ким", "Ирина Ким"),
+            ("customer:kim-c", "Элина Ким", "Сергей Ким"),
+        ),
+        start=1,
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            f"student-kim-{index}",
+            "family-kim@example.com",
+            parent_name,
+            student_name=child_name,
+            student_phone=phone,
+            first_name=f"{child_name.split()[0]} Ильинична",
+            last_name="Ким",
+            student_type=f"Слушатель {index}",
+        )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(
+                "email:family-kim@example.com",
+                f"phone:{phone}",
+                "customer:kim-a",
+                "customer:kim-b",
+                "customer:kim-c",
+            ),
+            severity="high",
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT family_id,membership_status,reason FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+        conflict_status = con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_id=?", (conflict.record_id,)
+        ).fetchone()[0]
+    assert len({row[0] for row in rows}) == 1
+    assert {row[1] for row in rows} == {"confident"}
+    assert [row[2] for row in rows].count("exact_tallanto_shared_contacts_family_core") == 1
+    assert conflict_status == "resolved"
+
+
+def test_family_graph_does_not_attach_diminutive_duplicate_to_family_core(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    phone = "+79000000991"
+    for index, (customer_id, child_name, parent_name) in enumerate(
+        (
+            ("customer:anna", "Анна Иванова", "Ирина Иванова"),
+            ("customer:boris", "Борис Иванов", "Ирина Иванова"),
+            ("customer:anya", "Аня Иванова", "Сергей Иванов"),
+        ),
+        start=1,
+    ):
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            f"student-duplicate-{index}",
+            "duplicate-family@example.com",
+            parent_name,
+            student_name=child_name,
+            student_phone=phone,
+            first_name=child_name.split()[0],
+            last_name="Иванова",
+            student_type=f"Слушатель {index}",
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT customer_id,family_id,reason FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+    assert len({row[1] for row in rows}) == 2
+    assert dict((row[0], row[2]) for row in rows)["customer:anya"] == "single_customer_family"
 
 
 @pytest.mark.parametrize(
@@ -877,11 +969,12 @@ def test_store_bootstrap_migrates_early_family_members_table(tmp_path: Path) -> 
 
 def test_family_graph_does_not_merge_same_surname_with_different_parents(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
-    for customer_id, student_id, parent_name in (
-        ("customer:left", "student-left", "Ирина Иванова"),
-        ("customer:right", "student-right", "Мария Иванова"),
+    phone = "+79000000994"
+    for customer_id, student_id, child_name, parent_name in (
+        ("customer:left", "student-left", "Анна Иванова", "Ирина Иванова"),
+        ("customer:right", "student-right", "Мария Иванова", "Ольга Петрова"),
     ):
-        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=f"+7900000000{len(customer_id)}")
+        _seed_customer(db_path, tmp_path, customer_id=customer_id, phone=phone)
         _seed_tallanto_identity(
             db_path,
             tmp_path,
@@ -889,6 +982,11 @@ def test_family_graph_does_not_merge_same_surname_with_different_parents(tmp_pat
             student_id,
             "shared@example.com",
             parent_name,
+            student_name=child_name,
+            student_phone=phone,
+            first_name=child_name.split()[0],
+            last_name="Иванова",
+            student_type=f"Слушатель {student_id}",
         )
 
     build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
@@ -2003,6 +2101,9 @@ def _seed_tallanto_identity(
     match_status: str = "strong_unique",
     student_name: str = "",
     student_phone: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    student_type: str = "",
 ) -> None:
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         for link_type, link_value in (("tallanto_student_id", student_id), ("email", parent_email)):
@@ -2039,6 +2140,9 @@ def _seed_tallanto_identity(
                         "primary_email": parent_email,
                         **({"primary_phone": student_phone} if student_phone else {}),
                         **({"display_name": student_name} if student_name else {}),
+                        **({"first_name": first_name} if first_name else {}),
+                        **({"last_name": last_name} if last_name else {}),
+                        **({"student_type": student_type} if student_type else {}),
                     }
                 },
             )

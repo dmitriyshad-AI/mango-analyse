@@ -3616,7 +3616,7 @@ def _build_direct_path_prompt(
         p0_kind_choices = "none|payment_dispute|refund|complaint|legal_threat"
         p0_model_classes_v2_enabled = _p0_model_classes_v2_enabled(context)
         if p0_model_classes_v2_enabled:
-            p0_kind_choices += "|cancellation_service_request|contract_dispute|paid_operation_context"
+            p0_kind_choices += "|child_safety|cancellation_service_request|contract_dispute|paid_operation_context"
         route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"'
         p0_instruction = (
             "Срочные обращения/P0: если клиент пишет про спорную оплату, списание/платёж, возврат, жалобу, "
@@ -3630,6 +3630,8 @@ def _build_direct_path_prompt(
                 "P0-классы v2: оценивай не только текущую реплику, но и последние реплики/память диалога. "
                 "Сам факт оплаты не делает обращение P0; сомнение трактуй как P0 только при конкретном "
                 "споре, вреде или уже наступившем неисполнении. "
+                "child_safety — ребёнку угрожали, его унижали, травили или оставили без присмотра; "
+                "это отдельный класс, не обычная complaint. "
                 "cancellation_service_request — клиент хочет выписать/снять/отказаться от записи или кружка, "
                 "отчислиться, перестать ходить, забрать ребёнка с программы. "
                 "contract_dispute — клиент спорит с договором, датой, ФИО, паспортом, подписью, документом "
@@ -3643,10 +3645,14 @@ def _build_direct_path_prompt(
                 "без жалобы, возврата и уже наступившего отсутствия доступа — НЕ P0.\n\n"
             )
         if _p0_model_led_enabled(context):
+            complaint_signals = (
+                "клиент недоволен действиями школы или сотрудника, пишет «жалоба», «безобразие» или «напишу везде какие вы» — "
+                if p0_model_classes_v2_enabled
+                else "клиент недоволен действиями школы или сотрудника, пишет «жалоба», «безобразие», «накричали/унизили/оскорбили ребёнка», «ребёнок один остался», «напишу везде какие вы» — "
+            )
             p0_instruction += (
                 "Для p0_kind=complaint отличай реальную жалобу от растерянности. Реальная жалоба/претензия: "
-                "клиент недоволен действиями школы или сотрудника, пишет «жалоба», «безобразие», "
-                "«накричали/унизили/оскорбили ребёнка», «ребёнок один остался», «напишу везде какие вы» — "
+                f"{complaint_signals}"
                 "тогда is_p0=true, p0_kind=\"complaint\", route=\"manager_only\". "
                 "Растерянность, уточнение порядка или тревога без претензии — «не понимаю», «как дальше», "
                 "«ребёнок в 6 классе», «сначала тест или группа», «вдруг не потянет» — это НЕ complaint: "

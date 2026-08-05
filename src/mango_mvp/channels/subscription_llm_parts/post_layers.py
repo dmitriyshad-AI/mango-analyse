@@ -3372,7 +3372,7 @@ def _authoritative_gate_findings(
     model_p0_complaint = bool(
         isinstance(model_p0_meta, Mapping)
         and model_p0_meta.get("is_p0")
-        and str(model_p0_meta.get("p0_kind") or "").strip() == "complaint"
+        and "complaint" in {str(model_p0_meta.get(key) or "").strip() for key in ("p0_kind", "legacy_p0_kind")}
     )
     suppressed_complaint = bool(result.metadata.get("p0_model_led_complaint_suppressed")) if isinstance(result.metadata, Mapping) else False
     suppressed_complaint = suppressed_complaint or bool(

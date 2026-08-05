@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 from collections import Counter
@@ -29,12 +30,17 @@ from mango_mvp.replay_exam.pseudonymizer import (
 )
 
 
-SCHEMA_VERSION = "p0_model_led_m1_eval_v1_2026_07_29"
+SCHEMA_VERSION = "p0_model_led_m1_eval_v2_2026_08_05"
 VALID_LABELS = {"p0", "benign", "ambiguous"}
 TRAFFIC_CORPUS_DENOMINATOR = 27_507
 EXPECTED_LABEL_COUNTS = {"p0": 298, "benign": 496, "ambiguous": 21}
 EXPECTED_SET_SHA256 = "00067d63473cbb6000311f1828e0845c638001ee4d61935ad45308dba7c24450"
+EXPECTED_CHILD_SAFETY_CASES = 39
 MAX_MODEL_FALSE_POSITIVES = 10
+EVALUATION_DATE, EVALUATION_PROFILE = "2026-08-05", "p0_m1_classifier_v2"
+EVALUATION_MODEL, EVALUATION_REASONING, EVALUATION_PARALLEL = "gpt-5.5", "high", 3
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EVALUATION_SYSTEM_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 SAFE_METADATA_VALUES = {
     "brand": {"foton", "unpk", "unknown"},
     "class": {"child_safety", "complaint", "legal", "none", "payment_dispute", "refund"},
@@ -78,19 +84,45 @@ def _case_id(text: str) -> str:
 
 
 def _git_head() -> str:
-    status = subprocess.run(
-        ("git", "status", "--porcelain", "--untracked-files=all"), cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True
-    )
+    git_env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(("git", *args), cwd=REPO_ROOT, check=True, capture_output=True, text=True, env=git_env)
+    top = Path(run("rev-parse", "--show-toplevel").stdout.strip()).resolve()
+    if top != REPO_ROOT:
+        raise RuntimeError(f"M1 evaluation must run from {REPO_ROOT}, got {top}")
+    status = run("status", "--porcelain", "--untracked-files=all")
     if status.stdout.strip():
         raise RuntimeError("M1 evaluation requires a clean git worktree")
-    completed = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        cwd=Path(__file__).resolve().parents[1],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout.strip()
+    return run("rev-parse", "HEAD").stdout.strip()
+
+
+def _clear_telegram_runtime_env() -> None:
+    for name in tuple(os.environ):
+        if name.startswith("TELEGRAM_"):
+            os.environ.pop(name, None)
+
+
+def _codex_runtime(codex_bin: Path, codex_home: Path, expected_version: str) -> tuple[str, dict[str, str], str]:
+    if not codex_bin.is_absolute() or not codex_home.is_absolute():
+        raise ValueError("codex binary and CODEX_HOME must be absolute paths")
+    binary = codex_bin.resolve(strict=True)
+    home = codex_home.resolve(strict=True)
+    if not binary.is_file() or not home.is_dir():
+        raise ValueError("codex binary must be a file and CODEX_HOME must be a directory")
+    env = {"HOME": str(home.parent), "CODEX_HOME": str(home), "PATH": EVALUATION_SYSTEM_PATH, "LANG": "en_US.UTF-8"}
+    completed = subprocess.run((str(binary), "--version"), check=True, capture_output=True, text=True, env=env)
+    version = " ".join(str(completed.stdout or completed.stderr or "").split())
+    if version != " ".join(str(expected_version or "").split()):
+        raise ValueError(f"unexpected codex version: {version}")
+    return str(binary), env, version
+
+
+def _validate_case_counts(cases: Sequence[Mapping[str, Any]]) -> None:
+    if Counter(str(case["label"]) for case in cases) != Counter(EXPECTED_LABEL_COUNTS):
+        raise ValueError(f"M1 set must have label counts {EXPECTED_LABEL_COUNTS}")
+    child_safety = sum("child_safety" in tuple(case.get("p0_classes") or ()) for case in cases)
+    if child_safety != EXPECTED_CHILD_SAFETY_CASES:
+        raise ValueError(f"M1 set must have {EXPECTED_CHILD_SAFETY_CASES} child_safety cases")
 
 
 def _safe_metadata_token(value: Any, *, default: str, field: str, line_no: int) -> str:
@@ -167,8 +199,11 @@ def evaluate_case(
     provider: SubscriptionLlmDraftProvider,
 ) -> dict[str, Any]:
     text = str(case["text"])
+    case_brand = str(case.get("brand") or "unknown").strip().casefold()
     context = {
-        "active_brand": str(case.get("brand") or "unknown"),
+        "active_brand": case_brand if case_brand in {"foton", "unpk"} else "foton",
+        "evaluation_date": EVALUATION_DATE,
+        DIRECT_PATH_PILOT_CONFIG_ENV: EVALUATION_PROFILE,
         DIRECT_PATH_MODEL_P0_ENV: "1",
         P0_MODEL_CLASSES_V2_ENV: "1",
         P0_MODEL_LED_ENV: "1",
@@ -211,6 +246,7 @@ def evaluate_case(
         "model_is_p0": bool(model.get("is_p0")),
         "model_effective_is_p0": bool(shadow.get("model_effective_is_p0")),
         "model_p0_kind": str(shadow.get("model_p0_kind") or "")[:80],
+        "model_draft_text": " ".join(str(result.draft_text or "").split())[:1200],
         "model_signal_route": signal_probe.route,
         "model_led_route": model_led_result.route,
         "legacy_route": legacy_result.route,
@@ -262,6 +298,14 @@ def summarize(rows: Sequence[Mapping[str, Any]], *, denominator: int) -> dict[st
         if row.get("source") == "traffic_hit" and not expected and regex:
             counters["regex_false_positive_traffic_hits"] += 1
         row_classes = tuple(row.get("p0_classes") or ()) or (str(row.get("class") or "none"),)
+        if expected and "child_safety" in row_classes:
+            counters["child_safety_total"] += 1
+            counters["child_safety_model_p0"] += int(model)
+            counters["child_safety_exact_kind"] += int(
+                model and str(row.get("model_p0_kind") or "") == "child_safety"
+            )
+        if expected and model and not str(row.get("model_p0_kind") or "").strip():
+            counters["model_p0_kind_missing_p0"] += 1
         for class_name in row_classes:
             class_counter = classes.setdefault(str(class_name), Counter())
             class_counter["total"] += 1
@@ -290,7 +334,19 @@ def diagnostic_quality_passed(summary: Mapping[str, Any], *, errors: int) -> boo
         and not counters.get("model_signal_p0_route_miss")
         and not counters.get("model_led_p0_autonomous_route")
         and not counters.get("replay_external_calls")
-        and not counters.get("replay_call_invalid") and counters.get("model_led_replay_one") and counters.get("legacy_replay_one")
+        and not counters.get("replay_call_invalid")
+        and int(counters.get("model_led_replay_one") or 0) > 0
+        and int(counters.get("legacy_replay_one") or 0) > 0
+        and int(counters.get("model_led_replay_preblocked") or 0)
+        + int(counters.get("model_led_replay_one") or 0)
+        == int(summary.get("rows") or 0)
+        and int(counters.get("legacy_replay_preblocked") or 0)
+        + int(counters.get("legacy_replay_one") or 0)
+        == int(summary.get("rows") or 0)
+        and int(counters.get("child_safety_total") or 0) == EXPECTED_CHILD_SAFETY_CASES
+        and int(counters.get("child_safety_model_p0") or 0) == EXPECTED_CHILD_SAFETY_CASES
+        and int(counters.get("child_safety_exact_kind") or 0) == EXPECTED_CHILD_SAFETY_CASES
+        and not counters.get("model_p0_kind_missing_p0")
         and counters.get("route_pair_rows") == summary.get("classification_denominator")
         and int(counters.get("model_fp") or 0) <= MAX_MODEL_FALSE_POSITIVES
     )
@@ -306,9 +362,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-call P0 model evaluation for M1")
     parser.add_argument("--set", dest="set_path", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--parallel", type=int, default=3)
-    parser.add_argument("--model", default="gpt-5.4")
-    parser.add_argument("--reasoning-effort", default="high")
+    parser.add_argument("--parallel", type=int, choices=(EVALUATION_PARALLEL,), default=EVALUATION_PARALLEL)
+    parser.add_argument("--model", choices=(EVALUATION_MODEL,), default=EVALUATION_MODEL)
+    parser.add_argument("--reasoning-effort", choices=(EVALUATION_REASONING,), default=EVALUATION_REASONING)
+    parser.add_argument("--expected-code-commit", required=True)
+    parser.add_argument("--codex-bin", type=Path, required=True)
+    parser.add_argument("--codex-home", type=Path, required=True)
+    parser.add_argument("--expected-codex-version", required=True)
     parser.add_argument("--timeout-sec", type=int, default=180)
     parser.add_argument("--traffic-denominator", type=int, choices=(TRAFFIC_CORPUS_DENOMINATOR,), default=TRAFFIC_CORPUS_DENOMINATOR)
     parser.add_argument("--validate-only", action="store_true")
@@ -317,18 +377,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    _clear_telegram_runtime_env()
     set_sha256 = _sha256(args.set_path)
     if set_sha256 != EXPECTED_SET_SHA256:
         raise ValueError(f"unexpected M1 set sha256: {set_sha256}")
     code_commit = _git_head()
+    if code_commit != str(args.expected_code_commit).strip():
+        raise ValueError(f"unexpected code commit: {code_commit}")
     cases = load_cases(args.set_path)
-    if Counter(str(case["label"]) for case in cases) != Counter(EXPECTED_LABEL_COUNTS):
-        raise ValueError(f"M1 set must have label counts {EXPECTED_LABEL_COUNTS}")
+    _validate_case_counts(cases)
+    codex_bin, model_env, codex_version = _codex_runtime(args.codex_bin, args.codex_home, args.expected_codex_version)
     if args.validate_only:
-        print(json.dumps({"valid": True, "cases": len(cases), "set_sha256": set_sha256, "code_commit": code_commit}))
+        print(json.dumps({"valid": True, "cases": len(cases), "set_sha256": set_sha256, "code_commit": code_commit, "model": args.model, "reasoning_effort": args.reasoning_effort, "evaluation_date": EVALUATION_DATE, "evaluation_profile": EVALUATION_PROFILE, "codex_bin": codex_bin, "codex_version": codex_version}))
         return 0
-    if not 1 <= args.parallel <= 6:
-        raise ValueError("--parallel must be 1..6")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     results_path = args.out_dir / "p0_model_results.jsonl"
     if results_path.exists():
@@ -336,11 +397,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def run(case: Mapping[str, Any]) -> dict[str, Any]:
         provider = SubscriptionLlmDraftProvider(
+            codex_bin=codex_bin,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
             timeout_sec=args.timeout_sec,
             max_attempts=1,
             codex_isolated=True,
+            base_env=model_env,
         )
         return evaluate_case(case, provider=provider)
 
@@ -368,8 +431,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "llm_calls_attempted": len(rows),
             "model": str(args.model),
             "reasoning_effort": str(args.reasoning_effort),
+            "evaluation_date": EVALUATION_DATE,
+            "evaluation_profile": EVALUATION_PROFILE,
             "set_sha256": set_sha256,
-            "evaluation_scope": "one_call_classification_and_paired_build_draft_replay",
+            "evaluation_scope": "one_call_classification_and_controlled_route_replay",
+            "telegram_runtime_env_cleared": True,
+            "codex_bin": codex_bin,
+            "codex_version": codex_version,
             "quality_passed": quality_passed,
             "activation_ready": False,
         }

@@ -1218,12 +1218,13 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
 _DIRECT_PATH_MODEL_P0_BASE_KINDS = frozenset({"payment_dispute", "refund", "complaint", "legal_threat"})
 
 _DIRECT_PATH_MODEL_P0_V2_KINDS = frozenset(
-    {"cancellation_service_request", "contract_dispute", "paid_operation_context"}
+    {"child_safety", "cancellation_service_request", "contract_dispute", "paid_operation_context"}
 )
 
 _DIRECT_PATH_MODEL_P0_KINDS = _DIRECT_PATH_MODEL_P0_BASE_KINDS | _DIRECT_PATH_MODEL_P0_V2_KINDS
 
 _DIRECT_PATH_MODEL_P0_LEGACY_KIND = {
+    "child_safety": "complaint",
     "cancellation_service_request": "refund",
     "paid_operation_context": "refund",
     "contract_dispute": "legal_threat",

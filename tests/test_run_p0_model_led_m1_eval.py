@@ -30,7 +30,7 @@ class _Provider:
         return self.result
 
 
-def test_evaluate_case_uses_one_model_call_and_does_not_return_text_or_pii() -> None:
+def test_evaluate_case_uses_one_model_call_and_does_not_return_input_or_pii() -> None:
     provider = _Provider()
     row = p0_eval.evaluate_case(
         {
@@ -51,6 +51,7 @@ def test_evaluate_case_uses_one_model_call_and_does_not_return_text_or_pii() -> 
     assert row["model_effective_is_p0"] is True
     assert row["model_contract_status"] == "valid"
     assert row["model_signal_route"] == "manager_only"
+    assert "model_draft_text" in row
     assert row["model_led_external_calls"] == row["legacy_external_calls"] == 0
     assert "parent@example.ru" not in serialized
     assert "999" not in serialized
@@ -283,16 +284,54 @@ def test_summary_counts_only_actual_regex_false_positive_traffic_hits() -> None:
     assert summary["counters"]["regex_fp"] == 1
 
 
+def test_summary_counts_exact_child_safety_kind() -> None:
+    summary = p0_eval.summarize(
+        [
+            {
+                "label": "p0",
+                "class": "child_safety",
+                "p0_classes": ["child_safety"],
+                "source": "paraphrase",
+                "model_is_p0": True,
+                "model_p0_kind": "child_safety",
+                "regex_is_p0": False,
+                "model_field_present": True,
+                "model_field_valid": True,
+            }
+        ],
+        denominator=p0_eval.TRAFFIC_CORPUS_DENOMINATOR,
+    )
+
+    assert summary["counters"]["child_safety_total"] == 1
+    assert summary["counters"]["child_safety_model_p0"] == 1
+    assert summary["counters"]["child_safety_exact_kind"] == 1
+
+
+def test_validate_case_counts_rejects_missing_child_safety_before_model() -> None:
+    cases = (
+        [{"label": "p0", "p0_classes": ("child_safety",)}] * 38
+        + [{"label": "p0", "p0_classes": ("complaint",)}] * 260
+        + [{"label": "benign", "p0_classes": ()}] * 496
+        + [{"label": "ambiguous", "p0_classes": ()}] * 21
+    )
+    with pytest.raises(ValueError, match="39 child_safety"):
+        p0_eval._validate_case_counts(cases)
+
+
 def test_diagnostic_quality_rejects_all_benign_and_all_p0_models() -> None:
     base = {
+        "rows": 815,
         "label_counts": p0_eval.EXPECTED_LABEL_COUNTS,
         "classification_denominator": 794,
         "counters": {
             "model_field_missing": 0,
             "model_field_invalid": 0,
-            "model_led_replay_one": 1,
-            "legacy_replay_one": 1,
+            "model_led_replay_one": 815,
+            "legacy_replay_one": 815,
             "route_pair_rows": 794,
+            "child_safety_total": 39,
+            "child_safety_model_p0": 39,
+            "child_safety_exact_kind": 39,
         },
     }
 
@@ -312,12 +351,39 @@ def test_diagnostic_quality_rejects_all_benign_and_all_p0_models() -> None:
     assert p0_eval.diagnostic_quality_passed(
         {**base, "counters": {**base["counters"], "replay_call_invalid": 1}}, errors=0
     ) is False
+    assert p0_eval.diagnostic_quality_passed(
+        {**base, "counters": {**base["counters"], "child_safety_exact_kind": 38}}, errors=0
+    ) is False
+    assert p0_eval.diagnostic_quality_passed(
+        {**base, "counters": {**base["counters"], "model_led_replay_one": 814}}, errors=0
+    ) is False
+    assert p0_eval.diagnostic_quality_passed(
+        {**base, "counters": {**base["counters"], "model_led_replay_one": 0, "model_led_replay_preblocked": 815}}, errors=0
+    ) is False
+    assert p0_eval.diagnostic_quality_passed(
+        {**base, "counters": {**base["counters"], "model_p0_kind_missing_p0": 1}}, errors=0
+    ) is False
 
 
 def test_parse_args_rejects_decorative_traffic_denominator(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         p0_eval.parse_args(
-            ["--set", str(tmp_path / "set.jsonl"), "--out-dir", str(tmp_path), "--traffic-denominator", "1"]
+            [
+                "--set",
+                str(tmp_path / "set.jsonl"),
+                "--out-dir",
+                str(tmp_path),
+                "--expected-code-commit",
+                "deadbeef",
+                "--codex-bin",
+                "/bin/echo",
+                "--codex-home",
+                str(tmp_path),
+                "--expected-codex-version",
+                "echo",
+                "--traffic-denominator",
+                "1",
+            ]
         )
 
 
@@ -327,18 +393,126 @@ def test_main_rejects_replaced_set_before_loading_or_llm(tmp_path: Path, monkeyp
     monkeypatch.setattr(p0_eval, "load_cases", lambda path: (_ for _ in ()).throw(AssertionError("must not load")))
 
     with pytest.raises(ValueError, match="unexpected M1 set sha256"):
-        p0_eval.main(["--set", str(replaced), "--out-dir", str(tmp_path / "out"), "--validate-only"])
+        p0_eval.main(
+            [
+                "--set",
+                str(replaced),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--expected-code-commit",
+                "deadbeef",
+                "--codex-bin",
+                "/bin/echo",
+                "--codex-home",
+                str(tmp_path),
+                "--expected-codex-version",
+                "echo",
+                "--validate-only",
+            ]
+        )
+
+
+def test_main_rejects_unexpected_code_commit_before_loading_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "set.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(p0_eval, "EXPECTED_SET_SHA256", p0_eval._sha256(path))
+    monkeypatch.setattr(p0_eval, "_git_head", lambda: "actual")
+    monkeypatch.setattr(p0_eval, "load_cases", lambda value: (_ for _ in ()).throw(AssertionError("must not load")))
+
+    with pytest.raises(ValueError, match="unexpected code commit: actual"):
+        p0_eval.main(
+            [
+                "--set",
+                str(path),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--expected-code-commit",
+                "expected",
+                "--codex-bin",
+                "/bin/echo",
+                "--codex-home",
+                str(tmp_path),
+                "--expected-codex-version",
+                "echo",
+                "--validate-only",
+            ]
+        )
 
 
 def test_git_head_rejects_dirty_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(args: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert kwargs["cwd"] == Path(p0_eval.__file__).resolve().parents[1]
-        stdout = " M src/example.py\n" if args[1] == "status" else "deadbeef\n"
+        assert kwargs["cwd"] == p0_eval.REPO_ROOT
+        assert not any(name.startswith("GIT_") for name in kwargs["env"])
+        stdout = str(p0_eval.REPO_ROOT) if args[1:] == ("rev-parse", "--show-toplevel") else " M src/example.py\n"
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(p0_eval.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="clean git worktree"):
         p0_eval._git_head()
+
+
+def test_git_head_ignores_foreign_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_DIR", "/tmp/foreign.git")
+    monkeypatch.setenv("GIT_WORK_TREE", "/tmp/foreign")
+    outputs = iter((str(p0_eval.REPO_ROOT), "", "deadbeef"))
+
+    def fake_run(args: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert not any(name.startswith("GIT_") for name in kwargs["env"])
+        return subprocess.CompletedProcess(args, 0, stdout=next(outputs), stderr="")
+
+    monkeypatch.setattr(p0_eval.subprocess, "run", fake_run)
+    assert p0_eval._git_head() == "deadbeef"
+
+
+def test_evaluator_clears_telegram_runtime_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_OUTPUT_VERIFIER", "1")
+    monkeypatch.setenv("UNRELATED_SETTING", "kept")
+
+    p0_eval._clear_telegram_runtime_env()
+
+    assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG" not in p0_eval.os.environ
+    assert "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER" not in p0_eval.os.environ
+    assert p0_eval.os.environ["UNRELATED_SETTING"] == "kept"
+
+
+def test_model_environment_does_not_inherit_home_path_endpoint_or_passthrough(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "codex"
+    binary.write_text("binary", encoding="utf-8")
+    codex_home = tmp_path / "profile" / ".codex"
+    codex_home.mkdir(parents=True)
+    monkeypatch.setenv("TASK_CONTAINER_ENV_PASSTHROUGH", "OPENAI_BASE_URL,FOREIGN_PROFILE")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://foreign.invalid")
+    monkeypatch.setenv("FOREIGN_PROFILE", "foreign")
+    monkeypatch.setenv("HOME", "/tmp/foreign-home")
+    monkeypatch.setenv("PATH", "/tmp/foreign-bin")
+    monkeypatch.setattr(
+        p0_eval.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="codex-cli 1.2.3\n", stderr=""),
+    )
+
+    resolved_bin, env, version = p0_eval._codex_runtime(binary, codex_home, "codex-cli 1.2.3")
+
+    assert "TASK_CONTAINER_ENV_PASSTHROUGH" not in env
+    assert "OPENAI_BASE_URL" not in env
+    assert "FOREIGN_PROFILE" not in env
+    assert resolved_bin == str(binary.resolve())
+    assert env["HOME"] == str(codex_home.parent.resolve())
+    assert env["CODEX_HOME"] == str(codex_home.resolve())
+    assert env["PATH"] == p0_eval.EVALUATION_SYSTEM_PATH
+    assert version == "codex-cli 1.2.3"
+    with pytest.raises(ValueError, match="unexpected codex version"):
+        p0_eval._codex_runtime(binary, codex_home, "codex-cli 9.9.9")
+    with pytest.raises(ValueError, match="absolute paths"):
+        p0_eval._codex_runtime(Path("codex"), codex_home, "codex-cli 1.2.3")
+    with pytest.raises(ValueError, match="absolute paths"):
+        p0_eval._codex_runtime(binary, Path("~/.codex"), "codex-cli 1.2.3")
 
 
 def test_load_cases_stops_before_llm_when_input_contains_person_name(tmp_path: Path) -> None:

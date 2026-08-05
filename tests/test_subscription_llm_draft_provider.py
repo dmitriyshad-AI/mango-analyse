@@ -5511,6 +5511,7 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
         subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        subscription_llm.P0_MODEL_LED_ENV: "1",
         "recent_messages": [
             "Клиент: Мы оплатили июльскую смену, но мест в нужной группе нет.",
             "Клиент: Что можно сделать?",
@@ -5526,6 +5527,15 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
         "Что можно сделать?",
         context=profile_context,
     )
+    old_complaint_instruction = (
+        "Для p0_kind=complaint отличай реальную жалобу от растерянности. Реальная жалоба/претензия: "
+        "клиент недоволен действиями школы или сотрудника, пишет «жалоба», «безобразие», "
+        "«накричали/унизили/оскорбили ребёнка», «ребёнок один остался», «напишу везде какие вы» — "
+        "тогда is_p0=true, p0_kind=\"complaint\", route=\"manager_only\". "
+        "Растерянность, уточнение порядка или тревога без претензии — «не понимаю», «как дальше», "
+        "«ребёнок в 6 классе», «сначала тест или группа», «вдруг не потянет» — это НЕ complaint: "
+        "ставь is_p0=false и отвечай полезно по фактам.\n\n"
+    )
 
     assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._p0_model_classes_v2_enabled(context) is False
@@ -5534,7 +5544,12 @@ def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled
     assert "cancellation_service_request" not in off_prompt
     assert "contract_dispute" not in off_prompt
     assert "paid_operation_context" not in off_prompt
-    assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat|' in on_prompt
+    assert "ребёнок один остался" in off_prompt
+    assert old_complaint_instruction in off_prompt
+    assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat|child_safety|' in on_prompt
+    assert "это отдельный класс, не обычная complaint" in on_prompt
+    assert "ребёнок один остался" not in on_prompt
+    assert old_complaint_instruction not in on_prompt
     assert "cancellation_service_request" in on_prompt
     assert "contract_dispute" in on_prompt
     assert "paid_operation_context" in on_prompt
@@ -6292,6 +6307,45 @@ def test_p0_model_led_model_complaint_routes_manager_before_gate() -> None:
     assert direct_p0["p0_kind"] == "complaint"
     assert direct_p0["source"] == "model_p0"
     assert direct_p0["model_reason"] == "клиент описывает реальную претензию к занятию"
+
+
+def test_p0_model_led_child_safety_is_preserved_as_its_own_class() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Давайте выберем группу и обсудим скидку.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "is_p0_present": True,
+                    "is_p0_valid": True,
+                    "risk_level": "high",
+                    "p0_kind": "child_safety",
+                    "model_reason": "риск для безопасности ребёнка",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Нужна помощь по ситуации на занятии.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+            subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "manager_only"
+    assert "скидк" not in result.draft_text.casefold()
+    assert result.metadata["direct_path_model_p0"]["p0_kind"] == "child_safety"
+    assert result.metadata["direct_path_model_p0"]["legacy_p0_kind"] == "complaint"
+    assert "direct_path_model_p0_child_safety" in result.safety_flags
+    assert "child_safety" in result.safety_flags
+    assert "hard_p0" in {item["code"] for item in result.metadata["authoritative_output_gate"]["findings"]}
 
 
 @pytest.mark.parametrize(

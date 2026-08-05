@@ -1,3 +1,5 @@
+> FAIL 2026-08-06 00:15 | ветка codex/m1-minimal-p0-exam-20260805 | codex | причина: superseded by 2026-08-05_TZ_M1_MINIMAL_P0_EXAM.md; старый SHA и Block B избыточны
+
 Ветка: detached de24341b8cb67a2eafcf77c389b2cb8440f9e9d2
 Зоны: src/mango_mvp/channels/, scripts/, tests/
 Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_p0_model_led_m1_eval.py --set "$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_honest_set_v2_982b35ab_20260729/p0_honest_set_v2_982b35ab.jsonl" --out-dir "$HOME/mango_m1_results/p0_model_led_de24341b_validate" --validate-only

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,11 +11,6 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 CUSTOMER_PROFILE_SQLITE_SCHEMA_VERSION = "customer_profile_sqlite_v1"
-
-
-def _phone_index_enabled() -> bool:
-    return os.getenv("PROFILE_PHONE_INDEX", "1") == "1"
-
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -83,8 +77,7 @@ class CustomerProfileSQLiteStore:
             );
             """
         )
-        if _phone_index_enabled():
-            self._ensure_phone_index()
+        self._ensure_phone_index()
         self._con.commit()
 
     def _ensure_phone_index(self) -> None:
@@ -129,27 +122,15 @@ class CustomerProfileSQLiteStore:
                     if profile.last_event_at
                     else None,
                 )
-                if _phone_index_enabled():
-                    self._ensure_phone_index()
-                    self._con.execute(
-                        """
-                        INSERT INTO customer_profiles (
-                          profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
-                          source_event_count, last_event_at, primary_phone_norm
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (*base_values, normalize_phone(profile.primary_phone) or ""),
-                    )
-                else:
-                    self._con.execute(
-                        """
-                        INSERT INTO customer_profiles (
-                          profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
-                          source_event_count, last_event_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        base_values,
-                    )
+                self._con.execute(
+                    """
+                    INSERT INTO customer_profiles (
+                      profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
+                      source_event_count, last_event_at, primary_phone_norm
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (*base_values, normalize_phone(profile.primary_phone) or ""),
+                )
             for field in fields:
                 self._con.execute(
                     """

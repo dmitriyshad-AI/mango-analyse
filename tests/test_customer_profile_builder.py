@@ -21,7 +21,7 @@ from mango_mvp.customer_profile.child_identity_dedup_llm import (
     child_resolver_output_json_schema,
     normalize_child_resolver_response,
 )
-from mango_mvp.customer_profile.contracts import ProfileFieldCandidate, apply_superseded_rules
+from mango_mvp.customer_profile.contracts import ProfileFieldCandidate, ProfileSnapshot, apply_superseded_rules
 from mango_mvp.customer_profile.store import CustomerProfileSQLiteStore
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.customer_timeline.contracts import (
@@ -1915,6 +1915,46 @@ def test_store_enforces_profile_field_foreign_key(tmp_path: Path) -> None:
             )
     finally:
         con.close()
+
+
+def test_profile_store_migrates_and_always_indexes_normalized_phone(tmp_path: Path) -> None:
+    profiles_db = tmp_path / "profiles.sqlite"
+    with sqlite3.connect(profiles_db) as con:
+        con.execute(
+            """
+            CREATE TABLE customer_profiles (
+              profile_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, primary_phone TEXT,
+              display_name TEXT, built_at TEXT NOT NULL, build_id TEXT NOT NULL,
+              source_event_count INTEGER NOT NULL, last_event_at TEXT
+            )
+            """
+        )
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        store.replace_profiles(
+            build_id="phone-index",
+            built_at=NOW,
+            timeline_db_path=tmp_path / "timeline.sqlite",
+            timeline_db_sha256="0" * 64,
+            profiles=(
+                ProfileSnapshot(
+                    profile_id="cust-indexed",
+                    tenant_id="foton",
+                    primary_phone="+7 999 123-45-67",
+                    source_event_count=1,
+                    last_event_at=NOW,
+                ),
+            ),
+            fields=(),
+        )
+    with sqlite3.connect(profiles_db) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(customer_profiles)")}
+        indexes = {row[1] for row in con.execute("PRAGMA index_list(customer_profiles)")}
+        phone = con.execute(
+            "SELECT primary_phone_norm FROM customer_profiles WHERE profile_id='cust-indexed'"
+        ).fetchone()[0]
+    assert "primary_phone_norm" in columns
+    assert "idx_customer_profiles_phone_norm" in indexes
+    assert phone == "+79991234567"
 
 
 def test_cli_field_preview_does_not_expose_raw_value() -> None:

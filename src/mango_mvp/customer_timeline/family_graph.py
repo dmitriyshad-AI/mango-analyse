@@ -1693,7 +1693,14 @@ def _event_tallanto_student_id(event: sqlite3.Row) -> str:
     ):
         return ""
     if str(event["event_type"]) == "tallanto_student_snapshot":
-        return str(event["source_id"] or "")
+        source_id = str(event["source_id"] or "")
+        customer_id = str(event["customer_id"] or "")
+        if (
+            source_id == f"tallanto:{customer_id}"
+            and str(event["source_ref"] or "") == f"master_contact:{customer_id}:tallanto"
+        ):
+            return ""
+        return source_id
     record = _json_loads(event["record_json"]).get("record") or {}
     if str(event["event_type"]) in {"tallanto_payment", "tallanto_abonement"}:
         return str(record.get("contact_id") or "")

@@ -1512,6 +1512,42 @@ def test_tallanto_payment_before_student_card_stays_in_explicit_quarantine(tmp_p
     assert row == ("ambiguous", "", "tallanto_student_id_not_in_family")
 
 
+def test_master_contact_tallanto_summary_is_not_a_student_identity(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    customer_id = "customer:master-summary"
+    _seed_customer(db_path, tmp_path, customer_id=customer_id, phone="+79000000092")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        customer_id,
+        "student-real",
+        "parent@example.com",
+        student_name="Анна Иванова",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        summary = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="tallanto_student_snapshot",
+            event_at=NOW,
+            source_system="tallanto_snapshot",
+            source_id=f"tallanto:{customer_id}",
+            source_ref=f"master_contact:{customer_id}:tallanto",
+            direction="system",
+            match_status="strong_unique",
+        )
+        store.upsert_event(summary)
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT status,child_key,reason FROM event_child_attribution_v1 WHERE event_id=?",
+            (summary.event_id,),
+        ).fetchone()
+    assert row == ("ambiguous", "", "missing_exact_tallanto_student_id")
+
+
 def test_family_root_preserves_distinct_roots_on_shared_amo_contact_id(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:child", phone="+79000000031")

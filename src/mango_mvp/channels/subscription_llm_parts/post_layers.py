@@ -690,7 +690,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "derived_product_number": "downgrade_keep_text",
     "derived_product_claim": "downgrade_keep_text",
     "individual_diagnosis": "downgrade_keep_text",
-    "irrelevant_to_question": "block",
+    "irrelevant_to_question": "annotate",
     "unsafe_future_commitment": "downgrade_keep_text",
     "invented_generalization": "annotate",
 }
@@ -761,7 +761,6 @@ BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 TIMELINE_MEMORY_IN_PROMPT_ENV = "TELEGRAM_TIMELINE_MEMORY_IN_PROMPT"
 BOT_SAFE_MEMORY_STEP_GUARD_ENV = "TELEGRAM_BOT_SAFE_MEMORY_STEP_GUARD"
 BOT_SAFE_MEMORY_STEP_GUARD_FLAG = "bot_safe_memory_unconfirmed_step_detected"
-BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT = "Уточню актуальный шаг с менеджером и вернусь с ответом."
 BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES = frozenset({"active", "needs_manager_review", "empty"})
 BOT_SAFE_MEMORY_REVIEW_NEXT_STEP_STATUSES = frozenset({"needs_manager_review", "empty"})
 BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
@@ -1732,22 +1731,6 @@ def _direct_path_finalize_metadata(
 
 
 _INTERNAL_CLIENT_PLACEHOLDER_RE = re.compile(r"\s*\[(?:\s*данные\s+у\s+менеджера\s*|\.{3}|…)\]\s*", re.I)
-_PROSE_MODEL_LED_META_FACT_RE = re.compile(
-    r"(?:^|(?<=[.!?])\s*)"
-    r"[^.!?\n]{0,120}?\b(?:у\s+меня|я|мы)?\s*(?:сейчас\s+)?(?:в\s+)?(?:фактах|данных|по\s+фактам|по\s+данным)"
-    r"[^.!?\n]{0,80}?\b(?:нет|не\s+вижу|не\s+наш[её]л|отсутств)"
-    r"[^.!?\n]*(?:[.!?]|$)",
-    re.I,
-)
-_PROSE_MODEL_LED_SEND_ACTION_RE = re.compile(
-    r"(?:^|(?<=[.!?])\s*)"
-    r"[^.!?\n]{0,80}?\b(?:прикрепляю|присылаю|пришлю|отправляю|отправлю|скину|дам)\b"
-    r"[^.!?\n]{0,120}?\b(?:фрагмент|ссылк\w*|инструкц\w*|материал\w*|форм[ауеы]?)\b"
-    r"[^.!?\n]*(?:[.!?]|$)",
-    re.I,
-)
-
-
 def _sanitize_internal_client_placeholders(text: str) -> tuple[str, bool]:
     raw = str(text or "")
     if not raw:
@@ -1756,24 +1739,6 @@ def _sanitize_internal_client_placeholders(text: str) -> tuple[str, bool]:
     if not removed:
         return raw, False
     return _normalize_output_sanitizer_text(value), True
-
-
-def _sanitize_prose_model_led_unsafe_phrases(text: str) -> tuple[str, tuple[str, ...]]:
-    value = str(text or "")
-    reasons: list[str] = []
-    value, meta_removed = _PROSE_MODEL_LED_META_FACT_RE.subn(
-        " Эту деталь нужно проверить у менеджера.",
-        value,
-    )
-    if meta_removed:
-        reasons.append("meta_fact_phrase")
-    value, send_rewritten = _PROSE_MODEL_LED_SEND_ACTION_RE.subn(
-        " Материал или ссылку должен отправить менеджер после проверки подходящего варианта.",
-        value,
-    )
-    if send_rewritten:
-        reasons.append("unsupported_send_action")
-    return _normalize_output_sanitizer_text(value), tuple(reasons)
 
 
 def _prose_model_led_protected_result(result: SubscriptionDraftResult) -> bool:
@@ -1795,35 +1760,6 @@ def _prose_model_led_protected_result(result: SubscriptionDraftResult) -> bool:
     return bool(metadata.get("final_p0_text_override") or metadata.get("forced_route_high_risk"))
 
 
-def _prose_live_status_rephrase(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> str:
-    known = known_context_fields(context)
-    details: list[str] = []
-    if known.get("grade"):
-        details.append(f"{known['grade']} класс")
-    if known.get("subject"):
-        details.append(str(known["subject"]))
-    suffix = f" по вашему запросу ({', '.join(details)})" if details else ""
-    text = str(client_message or "").casefold().replace("ё", "е")
-    target = "смене или группе" if has_any_marker(text, ("лагер", "лвш", "смен", "менделеево")) else "группе"
-    return (
-        f"Заранее место не подтверждаю{suffix}: его нужно сверить по конкретной {target}. "
-        "Отмечу это менеджеру, чтобы он проверил наличие перед оформлением."
-    )
-
-
-def _prose_model_led_repeat_fallback(
-    text: str,
-    *,
-    result: SubscriptionDraftResult,
-    client_message: str,
-    context: Optional[Mapping[str, Any]],
-) -> str:
-    normalized = str(text or "").casefold().replace("ё", "е")
-    if has_any_marker(normalized, ("мест", "налич", "брон", "заброни", "оформить место", "проверить места")):
-        return _prose_live_status_rephrase(context, client_message=client_message)
-    return _strict_antirepeat_fallback_text(context, result=result, client_message=client_message)
-
-
 def apply_prose_model_led_quality_guard(
     result: SubscriptionDraftResult,
     *,
@@ -1840,22 +1776,10 @@ def apply_prose_model_led_quality_guard(
     protected = _prose_model_led_protected_result(result)
     repeated = False
     if not protected:
-        cleaned, unsafe_reasons = _sanitize_prose_model_led_unsafe_phrases(cleaned)
-        reasons.extend(unsafe_reasons)
         previous = _humanity_previous_bot_texts(context)
-        trimmed = _trim_repeated_cosmetic_opening(cleaned, previous)
-        if trimmed != cleaned:
-            cleaned = trimmed
-            reasons.append("repeated_cosmetic_opening")
         repeated = bool(previous and is_near_repeat(cleaned, previous[-6:], threshold=0.88))
         if repeated:
-            cleaned = _prose_model_led_repeat_fallback(
-                cleaned,
-                result=result,
-                client_message=client_message,
-                context=context,
-            )
-            reasons.append("near_repeat_rephrased")
+            reasons.append("near_repeat_detected")
     if cleaned == text and not reasons:
         return result
     flags = [*result.safety_flags]
@@ -1870,7 +1794,7 @@ def apply_prose_model_led_quality_guard(
         "near_repeat": repeated,
         "reasons": list(dict.fromkeys(reasons)),
     }
-    if placeholder_removed or repeated:
+    if placeholder_removed:
         metadata = _metadata_with_guarded_original_text(metadata, text, guard="prose_model_led")
     return replace(
         result,
@@ -4217,29 +4141,10 @@ def apply_bot_safe_memory_step_guard(
             "claims": list(claims),
             "source": "deterministic_output_guard",
         }
-        if soft_claims and not hard_claims:
-            rewritten_text = _rewrite_bot_safe_memory_soft_step_frame(result.draft_text)
-            if rewritten_text and rewritten_text != result.draft_text:
-                return replace(
-                    result,
-                    draft_text=rewritten_text,
-                    forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
-                    safety_flags=tuple(dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG])),
-                    manager_checklist=tuple(
-                        dict.fromkeys(
-                            [
-                                *result.manager_checklist,
-                                "Не называть уточняющий вопрос «следующим шагом» без active next_step.",
-                            ]
-                        )
-                    ),
-                    metadata=metadata,
-                )
         route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
         return replace(
             result,
             route=route,
-            draft_text=BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT,
             forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
             safety_flags=tuple(
                 dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG, "manager_approval_required", "no_auto_send"])
@@ -4258,9 +4163,7 @@ def apply_bot_safe_memory_step_guard(
         return result
 
 
-UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG = "unconfirmed_contact_data_claim_rewritten"
-
-UNCONFIRMED_CONTACT_DATA_SAFE_TEXT = "Повторно указывать не обязательно — менеджер сверит по системе."
+UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG = "unconfirmed_contact_data_claim_detected"
 
 CONTACT_DATA_EVIDENCE_RE = re.compile(
     r"(?:\+?\d[\d\s().-]{6,}\d|[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
@@ -4295,7 +4198,7 @@ UNCONFIRMED_CONTACT_DATA_CLAIM_RE = re.compile(
     re.I,
 )
 
-NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_rewritten"
+NO_MEMORY_STEP_FRAME_GUARD_FLAG = "no_memory_step_frame_detected"
 
 NO_MEMORY_STEP_FRAME_RE = re.compile(
     r"(?P<sentence>[^.?!\n]{0,120}(?:"
@@ -4318,18 +4221,16 @@ def apply_unconfirmed_contact_data_claim_guard(
     if not claims or _contact_data_claim_has_evidence(client_message=client_message, context=context):
         return result
 
-    rewritten = _rewrite_unconfirmed_contact_data_claims(result.draft_text)
-    if not rewritten or rewritten == result.draft_text:
-        return result
     metadata = dict(result.metadata)
     metadata["unconfirmed_contact_data_claim_guard"] = {
         "applied": True,
         "claims": list(claims),
         "source": "deterministic_output_guard",
     }
+    route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
     return replace(
         result,
-        draft_text=rewritten,
+        route=route,
         forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, UNCONFIRMED_CONTACT_DATA_CLAIM_FLAG])),
         manager_checklist=tuple(
@@ -4351,12 +4252,6 @@ def find_unconfirmed_contact_data_claims(draft_text: str) -> tuple[str, ...]:
             for match in UNCONFIRMED_CONTACT_DATA_CLAIM_RE.finditer(str(draft_text or ""))
             if match.group("sentence").strip()
         )
-    )
-
-
-def _rewrite_unconfirmed_contact_data_claims(draft_text: str) -> str:
-    return " ".join(
-        UNCONFIRMED_CONTACT_DATA_CLAIM_RE.sub(UNCONFIRMED_CONTACT_DATA_SAFE_TEXT, str(draft_text or "")).split()
     )
 
 
@@ -4414,9 +4309,6 @@ def apply_no_memory_step_frame_guard(
     claims = find_no_memory_step_frame_claims(result.draft_text)
     if not claims:
         return result
-    rewritten = _rewrite_no_memory_step_frame(result.draft_text)
-    if not rewritten or rewritten == result.draft_text:
-        return result
     metadata = dict(result.metadata)
     metadata["no_memory_step_frame_guard"] = {
         "applied": True,
@@ -4426,7 +4318,6 @@ def apply_no_memory_step_frame_guard(
     }
     return replace(
         result,
-        draft_text=rewritten,
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, NO_MEMORY_STEP_FRAME_GUARD_FLAG])),
         manager_checklist=tuple(
             dict.fromkeys([*result.manager_checklist, "Не называть уточняющий вопрос «следующим шагом» без active next_step."])
@@ -4443,33 +4334,6 @@ def find_no_memory_step_frame_claims(draft_text: str) -> tuple[str, ...]:
             if match.group("sentence").strip()
         )
     )
-
-
-def _rewrite_no_memory_step_frame(draft_text: str) -> str:
-    def replacement(match: re.Match[str]) -> str:
-        body = " ".join(match.group("body").split()).strip(" .?!:;—-")
-        normalized = body.casefold().replace("ё", "е")
-        sentence_normalized = match.group("sentence").casefold().replace("ё", "е")
-        details: list[str] = []
-        if "класс" in normalized or "клас" in normalized:
-            details.append("класс ученика")
-        if "предмет" in normalized or any(subject in normalized for subject in ("математ", "физик", "информат", "хими")):
-            details.append("предмет")
-        if "формат" in normalized or "очно" in normalized or "онлайн" in normalized:
-            details.append("формат")
-        if "уров" in normalized:
-            details.append("уровень подготовки")
-        if (
-            "следующ" in sentence_normalized
-            or "дальше нужно" in sentence_normalized
-            or "дальше по плану" in sentence_normalized
-        ):
-            target = ", ".join(dict.fromkeys(details)) or body or "недостающие детали"
-            return f"Уточните, пожалуйста, {target}, чтобы я не ошибся с подбором."
-        target = body or "уточнения деталей"
-        return f"Предлагаю начать с {target}."
-
-    return " ".join(NO_MEMORY_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
 
 
 def find_bot_safe_memory_disputed_step_claims(
@@ -4533,29 +4397,6 @@ def _bot_safe_memory_safe_payment_link_step_claim(claim: str) -> bool:
     if "оплат" not in normalized or "ссыл" not in normalized:
         return False
     return not re.search(r"\b(?:верн\w*|возврат\w*|деньг\w*|компенс\w*|руб(?:\.|л)|₽|\d{3,})\b", normalized)
-
-
-def _rewrite_bot_safe_memory_soft_step_frame(draft_text: str) -> str:
-    def replacement(match: re.Match[str]) -> str:
-        claim = " ".join(match.group(0).split()).casefold()
-        details = _safe_next_step_detail_labels(claim)
-        target = ", ".join(dict.fromkeys(details)) or "недостающие детали"
-        return f"Уточните, пожалуйста, {target}, чтобы я не ошиблась с подбором."
-
-    return " ".join(BOT_SAFE_MEMORY_SOFT_NEXT_STEP_FRAME_RE.sub(replacement, str(draft_text or "")).split())
-
-
-def _safe_next_step_detail_labels(normalized_text: str) -> list[str]:
-    labels: list[str] = []
-    if "класс" in normalized_text or "клас" in normalized_text:
-        labels.append("класс ученика")
-    if "предмет" in normalized_text or any(subject in normalized_text for subject in ("математ", "физик", "информат", "хими")):
-        labels.append("предмет")
-    if "формат" in normalized_text or "очно" in normalized_text or "онлайн" in normalized_text:
-        labels.append("формат")
-    if "уров" in normalized_text:
-        labels.append("уровень подготовки")
-    return labels
 
 
 def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) -> bool:

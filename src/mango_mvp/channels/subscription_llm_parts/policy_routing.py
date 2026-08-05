@@ -2627,11 +2627,9 @@ def apply_known_context_redundant_question_guard(
         "asked_known_data_again_fields": list(repeated),
     }
     route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
-    repair_text = _known_context_repair_text(result, client_message=client_message, context=context, repeated=repeated)
     guarded = replace(
         result,
         route=route,
-        draft_text=repair_text,
         safety_flags=flags,
         manager_checklist=checklist,
         context_warnings=tuple(dict.fromkeys([*result.context_warnings, "asked_known_data_again"])),
@@ -2648,14 +2646,14 @@ def apply_known_context_redundant_question_guard(
         reason="known_context_redundant_question_guard",
         source=reading.source if reading is not None else "",
         confidence=reading.frame_confidence if reading is not None else 0.0,
-        changed_fields=("route", "draft_text"),
+        changed_fields=("route",) if route != result.route else (),
         conflicts=("reask_known_slots",),
         metadata=semantic_reading_transition_metadata(
             stage="redundant_guard",
             draft_before=result.draft_text,
             draft_after=guarded.draft_text,
-            text_replacement=True,
-            legacy_decision="repair_reask_known_slots",
+            text_replacement=False,
+            legacy_decision="annotate_reask_known_slots",
             frame_decision=reading.requested_action if reading is not None else "",
             chosen="legacy_more_conservative",
             extra={"repeated_fields": list(repeated)},

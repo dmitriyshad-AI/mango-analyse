@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -321,6 +322,43 @@ def test_direct_path_payload_does_not_store_empty_semantic_frame_with_source_onl
 
     assert "semantic_frame" not in result.metadata
     assert "semantic_frame_shadow" not in result.metadata
+
+
+def test_direct_path_runner_preserves_inline_semantic_frame_requested_by_live_prompt() -> None:
+    payload = {
+        "route": "draft_for_manager",
+        "draft_text": "Подготовлю информацию для менеджера.",
+        "is_p0": False,
+        "p0_kind": "none",
+        "semantic_frame": {
+            "intent": "schedule",
+            "risk_class": "safe",
+            "requested_action": "answer_question",
+            "answerability": "answer_self",
+            "must_handoff": False,
+            "confidence": 0.9,
+        },
+    }
+
+    def runner(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provider = SubscriptionLlmDraftProvider(runner=runner, cache_dir=None)
+    prompt = _build_direct_path_prompt(
+        "Когда проходят занятия?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        },
+    )
+
+    result = provider._direct_path_draft_runner(prompt)
+
+    assert "SemanticFrame:" in prompt
+    assert result.metadata["semantic_frame"]["intent"] == "schedule"
 
 
 class _SemanticFrameFakeProvider(SubscriptionLlmDraftProvider):

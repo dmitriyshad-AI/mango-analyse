@@ -67,7 +67,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
-    TONE_CLOSE_FRAME_VETO_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
@@ -87,10 +86,8 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_template_fact_text,
     _direct_path_template_from_fact,
     _direct_path_valid_until_ok,
-    _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
-    _intent_model_led_enabled,
     _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _presale_prompt_child_name_value,
@@ -144,8 +141,6 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
 from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     finalize_reading_trace_metadata,
-    reading_apply_class_enabled,
-    reading_class_enabled,
 )
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
@@ -220,11 +215,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _build_direct_path_prompt,
     _direct_path_metadata,
     _direct_path_merge_metadata,
-    apply_assumed_scope_guard,
     apply_direct_path_scope_overclaim_guard,
-    apply_direct_keyword_fallback_reask_layer,
-    _direct_path_route_rubric_should_regenerate,
-    _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
     _semantic_frame_shadow_enabled,
     _semantic_frame_posthoc_shadow_enabled,
@@ -411,13 +402,7 @@ from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     _unpk_moscow_address_template_from_kb,
     _unstated_subject_safe_text,
     _verified_informational_answer,
-    apply_autonomy_matrix_guard,
-    apply_conversation_intent_plan_guard,
-    apply_known_context_redundant_question_guard,
-    apply_live_status_read_plan_trace,
     apply_payment_confirmation_guard,
-    apply_reask_read_trace,
-    apply_roles_read_trace,
     apply_subscription_policy_guards,
     apply_taxonomy_topic_guard,
     apply_unstated_subject_guard,
@@ -622,7 +607,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     apply_night_hours_note,
     apply_output_sanitizer,
     apply_semantic_output_verifier,
-    apply_tone_close_detect_layer,
     apply_tone_sell_prompt_observer,
     apply_unconfirmed_contact_data_claim_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -642,32 +626,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
 )
 
 _Runner = Callable[..., subprocess.CompletedProcess[str]]
-
-
-def _direct_path_autonomy_matrix_topic_result(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    if not isinstance(context, Mapping):
-        return result
-    plan = context.get("conversation_intent_plan")
-    if not isinstance(plan, Mapping):
-        return result
-    topic = str(plan.get("topic_id") or "").strip()
-    if not topic or topic == result.topic_id:
-        return result
-    metadata = dict(result.metadata)
-    metadata["direct_path_autonomy_topic_from"] = result.topic_id
-    metadata["direct_path_autonomy_topic"] = topic
-    direct = metadata.get("direct_path")
-    if isinstance(direct, Mapping):
-        direct_meta = dict(direct)
-        direct_meta["autonomy_topic_from"] = result.topic_id
-        direct_meta["autonomy_topic"] = topic
-        metadata["direct_path"] = direct_meta
-    flags = tuple(dict.fromkeys((*result.safety_flags, "direct_path_autonomy_topic_from_plan")))
-    return replace(result, topic_id=topic, safety_flags=flags, metadata=metadata)
 
 
 class SubscriptionLlmDraftProvider:
@@ -720,19 +678,13 @@ class SubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         direct_result = self._build_direct_path_draft(client_message, context=context)
-        if _deal_action_decision_enabled(context):
-            direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
-            direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
-        dealt = apply_deal_action_decision_layer(
+        direct_result = apply_deal_action_decision_layer(
             direct_result,
             client_message=client_message,
             context=context,
         )
-        reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
-        closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
-        closed = _apply_tone_close_frame_veto(reasked, closed, context=context)
         scrubbed = scrub_direct_path_p0_text(
-            closed,
+            direct_result,
             context=context,
             client_message=client_message,
         )
@@ -748,10 +700,8 @@ class SubscriptionLlmDraftProvider:
         manager_gated = apply_semantic_frame_manager_action_gate(reconciled_shadowed, context=context)
         self_answer_shadowed = apply_semantic_frame_self_answer_shadow(manager_gated, context=context)
         decision_shadowed = apply_semantic_frame_decision_shadow(self_answer_shadowed, context=context)
-        reask_traced = apply_reask_read_trace(decision_shadowed, client_message=client_message, context=context)
-        roles_traced = apply_roles_read_trace(reask_traced, context=context)
-        before_final_gate_route = roles_traced.route
-        protected = roles_traced
+        before_final_gate_route = decision_shadowed.route
+        protected = decision_shadowed
         if _pilot_profile_default_on_flag_enabled(context, PAYMENT_SUBJECT_GUARDS_ENV):
             protected = apply_payment_confirmation_guard(protected, client_message=client_message, context=context)
             protected = apply_unstated_subject_guard(protected, client_message=client_message, context=context)
@@ -856,20 +806,6 @@ class SubscriptionLlmDraftProvider:
             result = safe_fallback_draft(reason="direct_path_error", metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]})
         else:
             result = _direct_path_prepare_model_result(result)
-            if _direct_path_route_rubric_should_regenerate(
-                result,
-                context=context,
-                facts=facts,
-                model_called=True,
-                fact_pack=fact_pack,
-            ):
-                direct_meta["rubric_reason"] = "missing_justification"
-                regen_prompt = _build_direct_path_route_rubric_regen_prompt(prompt, result)
-                try:
-                    result = _direct_path_prepare_model_result(self._direct_path_draft_runner(regen_prompt))
-                    direct_meta["rubric_regenerated"] = True
-                except Exception as exc:  # noqa: BLE001
-                    direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
             result = _direct_path_merge_metadata(result, direct_meta)
             result = _apply_direct_path_p0_shadow(
                 result,
@@ -881,35 +817,11 @@ class SubscriptionLlmDraftProvider:
                 client_message=client_message,
                 context=context,
             )
-            result = scrub_direct_path_p0_text(
-                result,
-                context=context,
-                client_message=client_message,
-            )
-            conversation_plan_guard_enabled = (
-                (_intent_model_led_enabled(context) and _direct_path_model_intent_meta(result))
-                or reading_class_enabled(context, "intent_actions")
-                or reading_apply_class_enabled(context, "route_templates/autonomy_matrix")
-                or reading_apply_class_enabled(context, "live_status_read/conversation_intent_plan")
-            )
-            if conversation_plan_guard_enabled:
-                result = apply_conversation_intent_plan_guard(
-                    result,
-                    client_message=client_message,
-                    context=context,
-                )
-            else:
-                result = apply_live_status_read_plan_trace(
-                    result,
-                    client_message=client_message,
-                    context=context,
-                )
             result = apply_reliable_answerer_output_guard(
                 result,
                 client_message=client_message,
                 context=context,
             )
-            result = apply_assumed_scope_guard(result, context=context)
             result = apply_direct_path_scope_overclaim_guard(
                 result,
                 context=context,
@@ -923,21 +835,7 @@ class SubscriptionLlmDraftProvider:
             verifier_fn=self._semantic_output_verifier_runner_for_context(context),
             regen_fn=self._semantic_output_regen_runner,
         )
-        semantic_checked = apply_bot_safe_memory_step_guard(semantic_checked, context=context)
-        semantic_checked = apply_unconfirmed_contact_data_claim_guard(
-            semantic_checked,
-            client_message=client_message,
-            context=context,
-        )
-        semantic_checked = apply_no_memory_step_frame_guard(semantic_checked, context=context)
-        before_gate_route = semantic_checked.route
-        gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
-        return _direct_path_finalize_metadata(
-            gated,
-            before_gate_route=before_gate_route,
-            client_message=client_message,
-            context=context,
-        )
+        return semantic_checked
 
 
 
@@ -1207,7 +1105,7 @@ class SubscriptionLlmDraftProvider:
         result = _normalize_direct_path_payload(
             payload,
             raw_response=raw,
-            include_semantic_frame_shadow='"semantic_frame"' in prompt_text and "SemanticFrame SHADOW" in prompt_text,
+            include_semantic_frame_shadow='"semantic_frame"' in prompt_text,
             include_dialog_summary='"dialog_summary"' in prompt_text and "ПРЕДЫДУЩАЯ СВОДКА" in prompt_text,
         )
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
@@ -1661,12 +1559,6 @@ def _apply_direct_path_p0_shadow(
     return replace(result, metadata=metadata)
 
 
-def _direct_path_model_intent_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
-    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    meta = metadata.get("direct_path_model_intent")
-    return meta if isinstance(meta, Mapping) else {}
-
-
 def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_message: str, context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     if not _direct_path_model_p0_enabled(context):
         return {}
@@ -1927,75 +1819,6 @@ def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
         _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
         or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
         or _semantic_frame_value(frame, "requested_action") in _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS
-    )
-
-
-def _tone_close_frame_veto_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    explicit = _explicit_truthy_setting(
-        context,
-        TONE_CLOSE_FRAME_VETO_ENV,
-        aliases=("tone_close_frame_veto", "tone_close_frame_veto_enabled"),
-    )
-    return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, TONE_CLOSE_FRAME_VETO_ENV)
-
-
-def _apply_tone_close_frame_veto(
-    before_close: SubscriptionDraftResult,
-    after_close: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-) -> SubscriptionDraftResult:
-    if not _tone_close_frame_veto_enabled(context):
-        return after_close
-    close_detect = after_close.metadata.get("close_detect") if isinstance(after_close.metadata, Mapping) else {}
-    if not isinstance(close_detect, Mapping) or str(close_detect.get("status") or "").strip() != "fired":
-        return after_close
-    frame = _semantic_frame_from_result(before_close) or _semantic_frame_from_result(after_close)
-    frame_confidence = _clamp_float(frame.get("confidence", 0.0)) if frame else 0.0
-    open_question_value = frame.get("open_question_unanswered") if frame else None
-    open_question_valid = isinstance(open_question_value, bool)
-    open_question = open_question_value is True
-    frame_unavailable = _semantic_frame_shadow_enabled(context) and (
-        not frame or not open_question_valid or frame_confidence < 0.6
-    )
-    hot_lead = bool(frame) and _semantic_frame_close_veto_candidate(frame)
-    if not (open_question or frame_unavailable or hot_lead):
-        return after_close
-
-    if open_question:
-        reason = "semantic_frame_open_question_veto"
-    elif frame_unavailable:
-        reason = "semantic_frame_unavailable_close_veto"
-    else:
-        reason = "semantic_frame_hot_lead_close_veto"
-
-    trace = {
-        "enabled": True,
-        "status": "applied",
-        "reason": reason,
-        "close_status_before_veto": str(close_detect.get("status") or "").strip(),
-        "close_step": str(close_detect.get("step") or "").strip(),
-        "route_before_close": before_close.route,
-        "route_after_close": after_close.route,
-        "frame": {
-            "confidence": frame_confidence,
-            "deal_stage": _semantic_frame_value(frame, "deal_stage"),
-            "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
-            "requested_action": _semantic_frame_value(frame, "requested_action"),
-            "answerability": _semantic_frame_value(frame, "answerability"),
-            "open_question_unanswered": open_question,
-            "open_question_unanswered_valid": open_question_valid,
-        },
-    }
-    metadata = dict(before_close.metadata)
-    direct = dict(metadata.get("direct_path") or {})
-    metadata["tone_close_frame_veto"] = trace
-    direct["tone_close_frame_veto"] = trace
-    metadata["direct_path"] = direct
-    return replace(
-        before_close,
-        safety_flags=tuple(dict.fromkeys([*before_close.safety_flags, "tone_close_frame_veto"])),
-        metadata=metadata,
     )
 
 

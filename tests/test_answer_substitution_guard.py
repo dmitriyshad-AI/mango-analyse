@@ -137,7 +137,7 @@ def test_final_gate_catches_mutation_after_earlier_provider_gate(monkeypatch: py
     def inject_foreign_brand(result: SubscriptionDraftResult, *, context=None) -> SubscriptionDraftResult:
         return replace(result, route="bot_answer_self_for_pilot", draft_text="У УНПК МФТИ условия такие же.")
 
-    monkeypatch.setattr(provider_module, "apply_roles_read_trace", inject_foreign_brand)
+    monkeypatch.setattr(provider_module, "apply_semantic_frame_decision_shadow", inject_foreign_brand)
 
     result = _LateMutationProvider().build_draft("Что входит в курс?", context={"active_brand": "foton"})
 

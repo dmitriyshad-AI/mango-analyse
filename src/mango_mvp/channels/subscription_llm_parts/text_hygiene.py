@@ -157,10 +157,6 @@ def scrub_direct_path_p0_text(
 ) -> SubscriptionDraftResult:
     if not _direct_p0_text_hygiene_enabled(context):
         return result
-    if _is_benign_presale_refund_question(client_message) and not _manager_high_risk_signal(result):
-        if _direct_path_p0_text_needs_scrub(result.draft_text):
-            return _direct_path_presale_refund_text(result)
-        return result
     if not _direct_path_p0_text_hygiene_applies(result, context=context, client_message=client_message):
         return result
 
@@ -172,20 +168,25 @@ def scrub_direct_path_p0_text(
         legacy_kind=legacy_kind,
         chosen_kind=kind,
     )
-    if (
-        not _direct_path_p0_text_needs_scrub(result.draft_text)
-        and not _direct_path_p0_text_kind_mismatch_needs_scrub(result.draft_text, kind)
-        and not semantic_guard.get("force_scrub")
-    ):
+    text_needs_scrub = _direct_path_p0_text_needs_scrub(result.draft_text)
+    kind_mismatch_needs_scrub = _direct_path_p0_text_kind_mismatch_needs_scrub(result.draft_text, kind)
+    if not text_needs_scrub and not kind_mismatch_needs_scrub and not semantic_guard.get("force_scrub"):
         return result
 
     safe_text = _direct_path_p0_safe_text(kind, context=context)
-    force_manager_route = bool(
-        semantic_guard.get("force_scrub")
-        and kind != "forward_payment"
-        and result.route == "bot_answer_self_for_pilot"
-    )
     metadata = dict(result.metadata)
+    action_decision = metadata.get("action_decision")
+    p0_latched = isinstance(action_decision, Mapping) and action_decision.get("p0_latched") is True
+    force_manager_route = bool(
+        result.route == "bot_answer_self_for_pilot"
+        and (
+            p0_latched
+            or (
+                kind in _P0_HYGIENE_KINDS
+                and (text_needs_scrub or kind_mismatch_needs_scrub or semantic_guard.get("force_scrub"))
+            )
+        )
+    )
     hygiene_metadata = {
         "applied": True,
         "kind": kind or "p0",
@@ -766,32 +767,4 @@ def _direct_path_p0_safe_text(kind: str, *, context: Optional[Mapping[str, Any]]
     return (
         "Возможность возврата, сумму и порядок действий должен подтвердить менеджер. "
         "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
-    )
-
-
-def _direct_path_presale_refund_text(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
-    metadata = dict(result.metadata)
-    metadata["direct_presale_policy_text_hygiene"] = {
-        "applied": True,
-        "kind": "presale_policy",
-        "original_text_removed": True,
-    }
-    flags = tuple(dict.fromkeys([*result.safety_flags, "direct_presale_policy_text_hygiene"]))
-    checklist = tuple(
-        dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "Presale text hygiene: сохранить вопрос до оплаты как не-P0 и убрать ложную привязку к записи/оплате.",
-            ]
-        )
-    )
-    return replace(
-        result,
-        draft_text=(
-            "До оплаты можно спокойно уточнить условия заранее. Если передумаете до записи и оплаты, "
-            "порядок оформления менеджер подтвердит по выбранному курсу и договору."
-        ),
-        safety_flags=flags,
-        manager_checklist=checklist,
-        metadata=metadata,
     )

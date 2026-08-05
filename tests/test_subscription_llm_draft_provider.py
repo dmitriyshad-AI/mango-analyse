@@ -1940,7 +1940,7 @@ def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step
     assert "телефон" not in closed.draft_text.casefold()
 
 
-def test_direct_path_applies_tone_close_detect_to_self_route_product_facts() -> None:
+def test_direct_path_keeps_model_answer_on_polite_close() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -1971,18 +1971,12 @@ def test_direct_path_applies_tone_close_detect_to_self_route_product_facts() -> 
         },
     }
 
-    closed = provider.build_draft("Поняла, спасибо.", context=context)
+    result = provider.build_draft("Поняла, спасибо.", context=context)
 
     assert provider.calls == 1
-    assert closed.route == "bot_answer_self_for_pilot"
-    assert closed.metadata["close_detect"]["status"] == "fired"
-    assert closed.metadata["close_detect"]["step"] == "return"
-    lowered = closed.draft_text.casefold()
-    assert "телефон" not in lowered
-    assert "позвоним" not in lowered
-    assert "ноутбук" not in lowered
-    assert "сигнализац" not in lowered
-    assert "медсестр" not in lowered
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "close_detect" not in result.metadata
+    assert result.draft_text.startswith("На ИТ-направлении ноутбук")
 
 
 def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_question() -> None:
@@ -2018,7 +2012,7 @@ def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_questi
     assert "close_detect" not in result.metadata
 
 
-def test_direct_path_tone_close_detect_preserves_cautious_handoff() -> None:
+def test_direct_path_preserves_cautious_handoff_without_tone_rewrite() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="draft_for_manager",
@@ -2035,8 +2029,7 @@ def test_direct_path_tone_close_detect_preserves_cautious_handoff() -> None:
 
     assert provider.calls == 1
     assert closed.route == "draft_for_manager"
-    assert closed.metadata["close_detect"]["status"] == "suppressed_handoff"
-    assert closed.metadata["close_detect"]["step"] == ""
+    assert "close_detect" not in closed.metadata
     assert closed.draft_text == "Передам менеджеру, чтобы уточнить детали."
     assert {"manager_approval_required", "no_auto_send"} <= set(closed.safety_flags)
     assert "tone_close_detect" not in closed.safety_flags
@@ -3876,8 +3869,7 @@ def test_direct_path_bot_safe_memory_step_guard_runs_without_semantic_verifier(t
 
     assert provider.calls == 1
     assert result.route == "draft_for_manager"
-    assert "Уточню актуальный шаг с менеджером" in result.draft_text
-    assert "забронировано" not in result.draft_text
+    assert result.draft_text == "Да, место уже забронировано, заявка подтверждена."
     assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
     assert result.metadata["bot_safe_memory_step_guard"]["applied"] is True
     assert result.metadata["authoritative_output_gate"]["checked"] is True
@@ -3928,7 +3920,7 @@ def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path
     assert "bot_safe_memory_step_guard" not in result.metadata
 
 
-def test_direct_path_rewrites_unconfirmed_contact_data_claim(tmp_path: Path) -> None:
+def test_direct_path_marks_unconfirmed_contact_data_claim_without_rewriting(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -3949,9 +3941,9 @@ def test_direct_path_rewrites_unconfirmed_contact_data_claim(tmp_path: Path) -> 
     )
 
     assert provider.calls == 1
-    assert result.route == "bot_answer_self_for_pilot"
-    assert result.draft_text == "Повторно указывать не обязательно — менеджер сверит по системе."
-    assert "unconfirmed_contact_data_claim_rewritten" in result.safety_flags
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Телефон повторно присылать не нужно, он уже есть в диалоге."
+    assert "unconfirmed_contact_data_claim_detected" in result.safety_flags
 
 
 def test_direct_path_keeps_contact_claim_when_client_sent_phone(tmp_path: Path) -> None:
@@ -3976,10 +3968,10 @@ def test_direct_path_keeps_contact_claim_when_client_sent_phone(tmp_path: Path) 
 
     assert provider.calls == 1
     assert result.draft_text == "Телефон повторно присылать не нужно, он уже есть в диалоге."
-    assert "unconfirmed_contact_data_claim_rewritten" not in result.safety_flags
+    assert "unconfirmed_contact_data_claim_detected" not in result.safety_flags
 
 
-def test_direct_path_rewrites_no_memory_better_start_frame(tmp_path: Path) -> None:
+def test_direct_path_marks_no_memory_better_start_frame_without_rewriting(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -3999,12 +3991,11 @@ def test_direct_path_rewrites_no_memory_better_start_frame(tmp_path: Path) -> No
     )
 
     assert provider.calls == 1
-    assert "лучше начать" not in result.draft_text.casefold()
-    assert "Предлагаю начать с класса ученика" in result.draft_text
-    assert "no_memory_step_frame_rewritten" in result.safety_flags
+    assert result.draft_text == "Лучше начать с класса ученика, чтобы подобрать группу."
+    assert "no_memory_step_frame_detected" in result.safety_flags
 
 
-def test_direct_path_rewrites_no_memory_next_step_synonym_frame(tmp_path: Path) -> None:
+def test_direct_path_marks_no_memory_next_step_synonym_without_rewriting(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -4027,16 +4018,12 @@ def test_direct_path_rewrites_no_memory_next_step_synonym_frame(tmp_path: Path) 
     )
 
     assert provider.calls == 1
-    assert result.route == "bot_answer_self_for_pilot"
-    assert "дальше нужно" not in result.draft_text.casefold()
-    assert "Уточните, пожалуйста" in result.draft_text
-    assert "класс ученика" in result.draft_text
-    assert "предмет" in result.draft_text
-    assert "формат" in result.draft_text
-    assert "уровень подготовки" in result.draft_text
-    assert "no_memory_step_frame_rewritten" in result.safety_flags
-    assert "manager_approval_required" in result.safety_flags
-    assert "no_auto_send" in result.safety_flags
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == (
+        "Дальше нужно подобрать онлайн-группу по уровню для 7 класса по математике. "
+        "Онлайн-занятия в Фотоне проходят на SohoLMS."
+    )
+    assert "no_memory_step_frame_detected" in result.safety_flags
 
 
 def test_direct_path_keeps_no_memory_neutral_wait_frame(tmp_path: Path) -> None:
@@ -4060,7 +4047,7 @@ def test_direct_path_keeps_no_memory_neutral_wait_frame(tmp_path: Path) -> None:
 
     assert provider.calls == 1
     assert result.draft_text == "Дальше нужно дождаться ответа менеджера, чтобы не ошибиться."
-    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+    assert "no_memory_step_frame_detected" not in result.safety_flags
 
 
 def test_direct_path_does_not_rewrite_no_memory_payment_frame_as_step_question(tmp_path: Path) -> None:
@@ -4083,11 +4070,11 @@ def test_direct_path_does_not_rewrite_no_memory_payment_frame_as_step_question(t
     )
 
     assert provider.calls == 1
-    assert "no_memory_step_frame_rewritten" not in result.safety_flags
+    assert "no_memory_step_frame_detected" not in result.safety_flags
     assert "Уточните, пожалуйста, оплатить курс" not in result.draft_text
 
 
-def test_direct_path_memory_step_guard_rewrites_synonym_frame_for_review_status(tmp_path: Path) -> None:
+def test_direct_path_memory_step_guard_marks_synonym_frame_without_rewriting(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -4130,12 +4117,11 @@ def test_direct_path_memory_step_guard_rewrites_synonym_frame_for_review_status(
     )
 
     assert provider.calls == 1
-    assert result.route == "bot_answer_self_for_pilot"
-    assert "следующий шаг" not in result.draft_text.casefold()
-    assert "Уточните, пожалуйста" in result.draft_text
-    assert "класс ученика" in result.draft_text
-    assert "предмет" in result.draft_text
-    assert "формат" in result.draft_text
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == (
+        "Следующий шаг — понять класс ребёнка, чтобы подобрать подходящую онлайн-группу "
+        "по 4 предметам. Подскажите, пожалуйста, в каком классе ребёнок?"
+    )
     assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
     assert "manager_approval_required" in result.safety_flags
     assert "no_auto_send" in result.safety_flags
@@ -4158,7 +4144,7 @@ def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
     def late_soft_step(result: SubscriptionDraftResult, *, client_message: str, context: Mapping[str, object] | None = None) -> SubscriptionDraftResult:
         return replace(result, draft_text=result.draft_text + " Следующий шаг — уточнить класс ученика.")
 
-    monkeypatch.setattr(subscription_provider, "apply_tone_close_detect_layer", late_soft_step)
+    monkeypatch.setattr(subscription_provider, "scrub_direct_path_p0_text", late_soft_step)
 
     result = provider.build_draft(
         "Что дальше?",
@@ -4190,9 +4176,8 @@ def test_direct_path_final_bot_safe_memory_guard_catches_post_layer_soft_step(
     )
 
     assert provider.calls == 1
-    assert result.route == "bot_answer_self_for_pilot"
-    assert "следующий шаг" not in result.draft_text.casefold()
-    assert "Уточните, пожалуйста, класс ученика" in result.draft_text
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Подскажите, пожалуйста, класс ученика. Следующий шаг — уточнить класс ученика."
     assert "bot_safe_memory_unconfirmed_step_detected" in result.safety_flags
 
 
@@ -4231,7 +4216,7 @@ def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
     assert "action_decision" not in result.metadata
 
 
-def test_direct_path_deal_action_autonomy_uses_intent_topic() -> None:
+def test_direct_path_deal_action_does_not_rewrite_model_topic() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -4266,11 +4251,10 @@ def test_direct_path_deal_action_autonomy_uses_intent_topic() -> None:
     )
 
     decision = result.metadata["action_decision"]
-    assert result.topic_id == "theme:001_pricing"
+    assert result.topic_id == "service:S2_unclear"
     assert result.route == "bot_answer_self_for_pilot"
-    assert "direct_path_autonomy_topic_from_plan" in result.safety_flags
-    assert "autonomy_default_cautious_topic_not_allowed" not in result.safety_flags
-    assert result.metadata["direct_path_autonomy_topic_from"] == "service:S2_unclear"
+    assert "direct_path_autonomy_topic_from_plan" not in result.safety_flags
+    assert "direct_path_autonomy_topic_from" not in result.metadata
     assert decision["action"] == "answer_only"
     assert decision["requires_manager_approval"] is False
 
@@ -5896,7 +5880,7 @@ def test_intent_model_led_is_ignored_when_flag_off() -> None:
     assert "intent_model_led" not in guarded.metadata
 
 
-def test_direct_path_provider_uses_single_model_intent_signal_for_plan_guard() -> None:
+def test_direct_path_provider_does_not_reapply_legacy_intent_plan() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -5933,8 +5917,9 @@ def test_direct_path_provider_uses_single_model_intent_signal_for_plan_guard() -
 
     assert provider.calls == 1
     assert result.route == "bot_answer_self_for_pilot"
+    assert result.topic_id == "theme:013_schedule"
     assert "conversation_intent_plan_live_availability" not in result.safety_flags
-    assert result.metadata["intent_model_led"]["applied_primary_intent"] == "address"
+    assert "intent_model_led" not in result.metadata
 
 
 def test_p0_model_led_filters_confusion_complaint_without_touching_off() -> None:
@@ -6993,7 +6978,7 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
     assert "можно\nнаписать «менеджер свяжется» без срока, но нельзя" not in on_prompt
 
 
-def test_route_rubric_regenerates_unjustified_deferral_once() -> None:
+def test_route_rubric_preserves_first_model_decision_without_second_call() -> None:
     provider = _DirectPathSequenceProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру."),
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Годовой курс стоит 59 000 ₽."),
@@ -7010,14 +6995,11 @@ def test_route_rubric_regenerates_unjustified_deferral_once() -> None:
     )
 
     direct = result.metadata["direct_path"]
-    assert provider.calls == 2
-    assert result.route == "bot_answer_self_for_pilot"
-    assert "Предыдущий JSON-ответ модели" in provider.prompts[1]
-    assert '"route": "draft_for_manager"' in provider.prompts[1]
-    assert "missing_facts пуст" in provider.prompts[1]
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Передам менеджеру."
     assert direct["rubric_enabled"] is True
-    assert direct["rubric_regenerated"] is True
-    assert direct["rubric_reason"] == "missing_justification"
+    assert direct["rubric_regenerated"] is False
     assert direct["direct_path_regenerated"] is False
 
 
@@ -7091,7 +7073,7 @@ def test_route_rubric_no_regen_matrix_and_no_code_route_promotion(tmp_path: Path
     assert preblock_result.metadata["direct_path"]["model_called"] is False
 
 
-def test_route_rubric_regen_error_keeps_first_result() -> None:
+def test_route_rubric_does_not_consume_unused_second_result() -> None:
     first = SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
     provider = _DirectPathSequenceProvider(first, RuntimeError("temporary outage"))
 
@@ -7106,16 +7088,14 @@ def test_route_rubric_regen_error_keeps_first_result() -> None:
     )
 
     direct = result.metadata["direct_path"]
-    assert provider.calls == 2
+    assert provider.calls == 1
     assert result.route == "draft_for_manager"
     assert result.draft_text == first.draft_text
     assert direct["rubric_regenerated"] is False
-    assert str(direct["rubric_reason"]).startswith("regen_failed:temporary outage")
 
 
-def test_route_rubric_regenerated_self_still_passes_authoritative_gate() -> None:
+def test_single_model_result_still_passes_authoritative_gate() -> None:
     provider = _DirectPathSequenceProvider(
-        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру."),
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Можно оплатить за 2-3 месяца."),
     )
 
@@ -7133,11 +7113,11 @@ def test_route_rubric_regenerated_self_still_passes_authoritative_gate() -> None
     )
 
     gate = result.metadata["authoritative_output_gate"]
-    assert provider.calls == 2
+    assert provider.calls == 1
     assert result.route == "manager_only"
     assert gate["action"] == "block"
     assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
-    assert result.metadata["direct_path"]["rubric_regenerated"] is True
+    assert result.metadata["direct_path"]["rubric_regenerated"] is False
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
 
 
@@ -8323,33 +8303,22 @@ def test_prose_model_led_removes_internal_placeholders_from_client_text() -> Non
     assert guarded.metadata["prose_model_led"]["placeholder_removed"] is True
 
 
-def test_prose_model_led_removes_meta_fact_phrase_before_client_output() -> None:
+def test_prose_model_led_does_not_rewrite_model_meaning() -> None:
     result = SubscriptionDraftResult(
         route="draft_for_manager",
-        draft_text="Точной ссылки на тест у меня сейчас в фактах нет, поэтому её нужно проверить. Менеджер подскажет форму.",
+        draft_text=(
+            "Точной ссылки на тест у меня сейчас в фактах нет, поэтому её нужно проверить. "
+            "Прикрепляю фрагмент и инструкцию по записи."
+        ),
     )
 
     guarded = apply_prose_model_led_quality_guard(result, context={PROSE_MODEL_LED_ENV: "1"})
 
-    assert "в фактах нет" not in guarded.draft_text.casefold()
-    assert "Эту деталь нужно проверить у менеджера" in guarded.draft_text
-    assert "prose_model_led:meta_fact_phrase" in guarded.safety_flags
+    assert guarded.draft_text == result.draft_text
+    assert guarded.safety_flags == result.safety_flags
 
 
-def test_prose_model_led_rewrites_unsupported_send_action() -> None:
-    result = SubscriptionDraftResult(
-        route="draft_for_manager",
-        draft_text="По онлайн-формату можно посмотреть фрагмент занятия. Прикрепляю фрагмент и инструкцию по записи.",
-    )
-
-    guarded = apply_prose_model_led_quality_guard(result, context={PROSE_MODEL_LED_ENV: "1"})
-
-    assert "Прикрепляю" not in guarded.draft_text
-    assert "должен отправить менеджер" in guarded.draft_text
-    assert "prose_model_led:unsupported_send_action" in guarded.safety_flags
-
-
-def test_prose_model_led_rephrases_repeated_availability_handoff() -> None:
+def test_prose_model_led_marks_repeated_availability_without_rewriting() -> None:
     previous = "По местам не буду обещать без проверки по вашему запросу (8 класс, математика). Передам менеджеру, чтобы он проверил наличие по конкретной группе."
     result = SubscriptionDraftResult(route="draft_for_manager", draft_text=previous)
     context = {
@@ -8360,10 +8329,8 @@ def test_prose_model_led_rephrases_repeated_availability_handoff() -> None:
 
     guarded = apply_prose_model_led_quality_guard(result, client_message="А места есть?", context=context)
 
-    assert guarded.draft_text != previous
-    assert "По местам не буду обещать без проверки" not in guarded.draft_text
-    assert "Заранее место не подтверждаю" in guarded.draft_text
-    assert "prose_model_led:near_repeat_rephrased" in guarded.safety_flags
+    assert guarded.draft_text == previous
+    assert "prose_model_led:near_repeat_detected" in guarded.safety_flags
 
 
 def test_prose_model_led_does_not_rewrite_p0_safe_templates() -> None:

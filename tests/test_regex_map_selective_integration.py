@@ -130,18 +130,8 @@ def test_direct_prompt_requests_strict_open_question_boolean() -> None:
     assert "строгий JSON boolean" in prompt
 
 
-def test_raw_open_question_preserves_substantive_answer() -> None:
-    result = _RawPayloadProvider(_frame_payload(True)).build_draft(
-        "Спасибо",
-        context=_direct_context(),
-    )
-
-    assert result.draft_text.startswith("По вашему вопросу")
-    assert result.metadata["tone_close_frame_veto"]["reason"] == "semantic_frame_open_question_veto"
-
-
-@pytest.mark.parametrize("semantic_frame", (None, {}, {"open_question_unanswered": "true"}))
-def test_missing_or_invalid_frame_cannot_erase_content(semantic_frame: object) -> None:
+@pytest.mark.parametrize("semantic_frame", (None, {}, {"open_question_unanswered": "true"}, {"open_question_unanswered": True}))
+def test_old_tone_flags_cannot_rewrite_model_answer(semantic_frame: object) -> None:
     payload = _frame_payload(False)
     if semantic_frame is None:
         del payload["semantic_frame"]
@@ -151,7 +141,9 @@ def test_missing_or_invalid_frame_cannot_erase_content(semantic_frame: object) -
     result = _RawPayloadProvider(payload).build_draft("Спасибо", context=_direct_context())
 
     assert result.draft_text.startswith("По вашему вопросу")
-    assert result.metadata["tone_close_frame_veto"]["reason"] == "semantic_frame_unavailable_close_veto"
+    assert result.topic_id == "service:S5_general_consultation"
+    assert "close_detect" not in result.metadata
+    assert "tone_close_frame_veto" not in result.metadata
 
 
 def test_model_metadata_cannot_spoof_internal_contract() -> None:
@@ -185,30 +177,11 @@ def test_tone_close_never_promotes_manager_routes(route: str) -> None:
 
     assert result.route == route
     assert result.draft_text.startswith("По вашему вопросу")
-    assert result.metadata["close_detect"]["status"] == "suppressed_handoff"
+    assert "close_detect" not in result.metadata
     assert {"manager_approval_required", "no_auto_send", "draft_only"} <= set(result.safety_flags)
 
 
-def test_manager_route_preserves_pending_signal_without_rewriting_draft() -> None:
-    context = _direct_context()
-    context["dialogue_memory_view"] = {
-        "handoff_state": "suggested",
-        "pending_manager_actions": ["manager_handoff"],
-    }
-
-    result = _RawPayloadProvider(_frame_payload(False, route="draft_for_manager")).build_draft(
-        "Спасибо, жду ответа менеджера",
-        context=context,
-    )
-
-    assert result.route == "draft_for_manager"
-    assert result.draft_text.startswith("По вашему вопросу")
-    assert result.metadata["close_detect"]["status"] == "suppressed_pending"
-    assert result.metadata["close_detect"]["step"] == "pending"
-    assert {"manager_approval_required", "no_auto_send", "draft_only"} <= set(result.safety_flags)
-
-
-def test_existing_hot_lead_frame_veto_survives_selective_port() -> None:
+def test_hot_lead_frame_does_not_invoke_second_semantic_editor() -> None:
     payload = _frame_payload(False)
     payload["semantic_frame"].update(
         {
@@ -221,7 +194,8 @@ def test_existing_hot_lead_frame_veto_survives_selective_port() -> None:
     result = _RawPayloadProvider(payload).build_draft("Ок, беру", context=_direct_context())
 
     assert result.draft_text.startswith("По вашему вопросу")
-    assert result.metadata["tone_close_frame_veto"]["reason"] == "semantic_frame_hot_lead_close_veto"
+    assert "close_detect" not in result.metadata
+    assert "tone_close_frame_veto" not in result.metadata
 
 
 def _write_fact_snapshot(tmp_path: Path) -> Path:
@@ -715,7 +689,7 @@ def test_explicit_llm_retrieve_off_restores_legacy_without_snapshot(tmp_path: Pa
     assert "99 999" in provider.draft_prompt
 
 
-def test_semantic_verifier_blocks_irrelevant_fact_from_retriever(tmp_path: Path) -> None:
+def test_semantic_verifier_annotates_irrelevant_fact_without_overriding_model(tmp_path: Path) -> None:
     provider = _ModelRetrieverProvider(
         {
             "needed_facts": [_needed_fact("location"), _needed_fact("price")],
@@ -748,10 +722,10 @@ def test_semantic_verifier_blocks_irrelevant_fact_from_retriever(tmp_path: Path)
 
     assert verifier_calls == 1
     assert provider.regen_calls == 0
-    assert result.route == "manager_only"
-    assert "74 500" not in result.draft_text
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "74 500" in result.draft_text
     assert "irrelevant_to_question" in result.metadata["semantic_output_verifier"]["finding_codes"]
-    assert "authoritative_gate:irrelevant_to_question" in result.safety_flags
+    assert "authoritative_gate:irrelevant_to_question" not in result.safety_flags
 
 
 @pytest.mark.parametrize("model_driven", (True, False))

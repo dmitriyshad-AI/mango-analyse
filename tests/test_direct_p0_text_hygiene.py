@@ -1013,7 +1013,7 @@ def test_direct_p0_text_hygiene_contract_dispute_zero_collects_detail_request() 
     assert result.metadata["direct_p0_text_hygiene"]["kind"] == "legal_threat"
 
 
-def test_direct_p0_text_hygiene_final_hook_scrubs_post_gate_refund_manager_only() -> None:
+def test_direct_p0_text_hygiene_routes_latched_refund_without_autonomy_matrix() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="bot_answer_self_for_pilot",
@@ -1042,8 +1042,9 @@ def test_direct_p0_text_hygiene_final_hook_scrubs_post_gate_refund_manager_only(
 
     lowered = result.draft_text.casefold()
     assert result.route == "manager_only"
-    assert "autonomy_blocked_high_risk" in result.safety_flags
+    assert "autonomy_blocked_high_risk" not in result.safety_flags
     assert "direct_p0_text_hygiene" in result.safety_flags
+    assert "correct_route_wrong_p0_text" in result.safety_flags
     assert "возвращается остаток" not in lowered
     assert "следующему шагу" not in lowered
     assert "условия подходят" not in lowered
@@ -1098,7 +1099,7 @@ def test_direct_p0_text_hygiene_keeps_benign_no_record_or_payment_clarification(
     assert scrubbed is result
 
 
-def test_direct_p0_text_hygiene_replaces_false_postpayment_handoff_on_presale_refund() -> None:
+def test_direct_p0_text_hygiene_does_not_rewrite_presale_refund_policy() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text=(
@@ -1113,13 +1114,4 @@ def test_direct_p0_text_hygiene_replaces_false_postpayment_handoff_on_presale_re
         client_message="А если передумаю ещё ДО оплаты — это ничем не грозит?",
     )
 
-    lowered = scrubbed.draft_text.casefold()
-    assert scrubbed is not result
-    assert "данным записи и оплаты" not in lowered
-    assert "точную сумму" not in lowered
-    assert "до оплаты" in lowered
-    assert "выбранному курсу" in lowered
-    assert "direct_presale_policy_text_hygiene" in scrubbed.safety_flags
-    risk_words = ("p0", "refund", "payment", "legal", "complaint", "high_risk")
-    assert all(not any(word in flag.casefold() for word in risk_words) for flag in scrubbed.safety_flags)
-    assert scrubbed.metadata["direct_presale_policy_text_hygiene"]["kind"] == "presale_policy"
+    assert scrubbed is result

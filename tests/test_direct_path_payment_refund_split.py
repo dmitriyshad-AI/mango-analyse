@@ -179,9 +179,17 @@ def test_presale_refund_benign_exception_stays_self_answer() -> None:
     )
 
     assert scrubbed.route == "bot_answer_self_for_pilot"
-    assert scrubbed.draft_text != PAYMENT_LINK_SAFE_TEXT
-    assert "До оплаты можно спокойно уточнить условия заранее" in scrubbed.draft_text
-    assert scrubbed.metadata["direct_presale_policy_text_hygiene"]["kind"] == "presale_policy"
+    assert scrubbed.draft_text == result.draft_text
+    assert "direct_presale_policy_text_hygiene" not in scrubbed.metadata
+
+    gated = subscription_llm.apply_authoritative_output_gate(
+        scrubbed,
+        client_message="Перед оплатой хочу понять условия возврата, это не жалоба.",
+        context={},
+    )
+
+    assert gated.route == "manager_only"
+    assert "authoritative_gate:p0_promise" in gated.safety_flags
 
 
 def test_payment_keyword_no_longer_creates_dispute_without_floor_code() -> None:

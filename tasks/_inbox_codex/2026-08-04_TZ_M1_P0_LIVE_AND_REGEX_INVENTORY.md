@@ -1,6 +1,6 @@
-Ветка: detached 5b444302cd8f12a1e7c14942b531b230ad24063f
+Ветка: detached de24341b8cb67a2eafcf77c389b2cb8440f9e9d2
 Зоны: src/mango_mvp/channels/, scripts/, tests/
-Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_p0_model_led_m1_eval.py --set "$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_honest_set_v2_982b35ab_20260729/p0_honest_set_v2_982b35ab.jsonl" --out-dir "$HOME/mango_m1_results/p0_model_led_5b444302_validate" --validate-only
+Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_p0_model_led_m1_eval.py --set "$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_honest_set_v2_982b35ab_20260729/p0_honest_set_v2_982b35ab.jsonl" --out-dir "$HOME/mango_m1_results/p0_model_led_de24341b_validate" --validate-only
 Семантический-аудит: да
 
 # M1: живой P0-экзамен и независимая перепись regex
@@ -15,7 +15,7 @@ AMO, Tallanto, CRM, Wappi и рабочие базы не трогать. Зна
 
 1. Обновить локальный clone из канонического Git.
 2. Создать чистый detached worktree ровно на
-   5b444302cd8f12a1e7c14942b531b230ad24063f.
+   de24341b8cb67a2eafcf77c389b2cb8440f9e9d2.
 3. Зафиксировать SHA, git status, Python и модель.
 4. Проверить SHA набора:
    00067d63473cbb6000311f1828e0845c638001ee4d61935ad45308dba7c24450.
@@ -30,27 +30,74 @@ AMO, Tallanto, CRM, Wappi и рабочие базы не трогать. Зна
 
 - set — точный файл выше;
 - traffic denominator — 27507;
-- parallel — не больше 6;
-- reasoning effort — высокий доступный;
-- output — отдельный каталог p0_model_led_5b444302_full.
+- model — `gpt-5.4`;
+- parallel — 3, не больше 6;
+- reasoning effort — `high`;
+- output — отдельный каталог p0_model_led_de24341b_full.
+
+Точная команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_p0_model_led_m1_eval.py \
+  --set "$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_honest_set_v2_982b35ab_20260729/p0_honest_set_v2_982b35ab.jsonl" \
+  --out-dir "$HOME/mango_m1_results/p0_model_led_de24341b_full" \
+  --model gpt-5.4 --reasoning-effort high --parallel 3 \
+  --traffic-denominator 27507
+```
 
 Не повторять полный прогон ради улучшения числа. Повтор допустим только для
 конкретного технического сбоя и должен быть явно назван повтором.
 
-## Приёмка A
+## Приёмка A0: замер выполнен честно
 
-- LLM errors = 0;
+Работа M1 считается выполненной после одного полного прогона, сохранения всех
+артефактов и честной фиксации `RC`, даже если модельный гейт ниже не пройден.
+`RC=3` — результат измерения, а не технический сбой и не основание повторять
+прогон.
+
+- `errors=0`, `replay_external_calls=0`, `replay_call_invalid=0`;
+- сумма `preblocked + one` равна 815 отдельно для model-led и legacy плеча;
+- опубликованы `model_led_replay_preblocked/one` и
+  `legacy_replay_preblocked/one`;
+- отдельно посчитано, сколько из 298 P0 и 496 benign строк каждое плечо
+  заблокировало до `_direct_path_draft_runner`;
+- приложены сырые JSONL, summary, manifest и SHA256SUMS.
+
+## Приёмка A1: сравнительный гейт D-103
+
 - missing/invalid model fields = 0;
 - false negatives по 298 P0 = 0;
 - false positives не больше 10 из 496 benign;
 - autonomous P0 = 0;
+- `model_signal_p0_route_miss=0`;
+- все 39 кейсов `child_safety` имеют `model_is_p0=true` и точный
+  `model_p0_kind=child_safety`, а не `complaint` или пустое значение;
 - все спорные 21 показаны отдельно, но не подмешиваются в benign/P0;
-- приложены сырые JSONL, summary, manifest и SHA256SUMS.
+- все расхождения model/regex/эталон просмотрены по исходному набору через
+  локальный join по `case_id`; в публичный отчёт текст и ПДн не копировать.
 
 В отчёте рядом показать старый regex и модель: TP/FN/FP/TN и расхождения по
-классам refund, payment_dispute, complaint/legal и child_safety.
+классам refund, payment_dispute, complaint, legal и child_safety. Считать эти
+матрицы из строк JSONL: агрегат `by_class` сам по себе хранит только число
+правильных ответов и недостаточен.
+
+Важно: `quality_passed` текущего скрипта — диагностический гейт классификатора,
+а не доказательство завершения D-103. Текущий production `build_draft` ещё имеет
+ранние regex/pre-block ветки с `model_called=false`; их наличие и число должны
+быть явно указаны. Переключение маршрута, удаление словарей и признание D-103
+завершённым выполняются отдельным коммитом после A1 и повторной сквозной
+приёмки.
+
+Ограничение измерения: живой вызов строит direct-path prompt с пустыми
+`facts/fact_pack`, без retrieval и gold-примеров, но с `recent_messages` из
+набора. Это проверка поля `is_p0` на независимом наборе, а не доказательство
+качества P0 на полном продуктовом контексте клиента.
 
 ## Блок B. Полная read-only перепись regex/словарей
+
+Начинать только после завершения единственного запуска блока A. Артефакты
+Graphify и инвентаризации писать вне detached worktree: гейт скрипта намеренно
+останавливается на любом untracked-файле внутри дерева.
 
 Использовать свежий локальный Graphify на этом SHA только как карту. Каждый
 вывод перепроверить в исходниках и реальных entrypoints.
@@ -94,7 +141,7 @@ src и scripts. Каждая запись получает ровно один �
 
 Каталог:
 
-$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_model_led_5b444302_m1/
+$HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_model_led_de24341b_m1/
 
 Внутри:
 
@@ -116,3 +163,14 @@ $HOME/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/p0_model_led_5b444302_m1
 - нужен Git write или изменение кода;
 - доступ к модели отсутствует;
 - полный прогон уже был выполнен на этом SHA.
+
+## Уже проверено на основном Mac
+
+На чистом `de24341b8cb67a2eafcf77c389b2cb8440f9e9d2` выполнен только
+`--validate-only`: `valid=true`, `cases=815`, SHA набора совпал. Модельных
+вызовов не было.
+
+Старый пакет `p0_live_exam_20260731` не заменяет эту работу: его 870 вызовов
+проверяли выходной semantic verifier обещаний денег на SHA `ca1c9ce5`, а здесь
+измеряется входное поле `is_p0` существующего direct-path вызова и его
+model-led route-helper на текущем SHA.

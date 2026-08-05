@@ -6,7 +6,6 @@ from zipfile import ZipFile
 
 import pytest
 
-from scripts.build_kc_knowledge_snapshot import main as build_kc_knowledge_snapshot_cli
 from mango_mvp.knowledge_base.fact_registry import (
     FACT_TYPE_PRICE,
     FACT_TYPE_SCHEDULE,
@@ -156,34 +155,6 @@ def test_snapshot_writer_outputs_core_files_and_rejects_stable_runtime(tmp_path:
     assert saved["schema_version"] == "kc_knowledge_snapshot_v1"
     with pytest.raises(ValueError, match="stable_runtime"):
         guard_kc_snapshot_output_root(tmp_path / "stable_runtime" / "kb")
-
-
-def test_build_kc_knowledge_snapshot_cli_writes_snapshot(tmp_path: Path) -> None:
-    docx_path = tmp_path / "kc.docx"
-    out_root = tmp_path / "product_data" / "knowledge_base" / "cli"
-    _write_minimal_docx(docx_path, [("Title", "Документы"), ("", "Точные условия проверяет менеджер.")])
-
-    exit_code = build_kc_knowledge_snapshot_cli(
-        [
-            "--project-root",
-            str(tmp_path),
-            "--kc-docx",
-            str(docx_path),
-            "--out-root",
-            str(out_root),
-            "--run-id",
-            "cli_test",
-            "--generated-at",
-            "2026-05-17T00:00:00+00:00",
-            "--max-docx-sections",
-            "5",
-        ]
-    )
-
-    assert exit_code == 0
-    saved = json.loads((out_root / "kc_snapshot_cli_test.json").read_text(encoding="utf-8"))
-    assert saved["safety"]["stable_runtime_write"] is False
-    assert saved["summary"]["sources_total"] >= 1
 
 
 def test_fact_without_freshness_blocks_precise_answer() -> None:

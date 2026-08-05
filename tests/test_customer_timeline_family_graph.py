@@ -711,6 +711,11 @@ def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_
         "parent@example.com",
         match_status=match_status,
     )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "DELETE FROM identity_links WHERE customer_id='customer:risky' "
+            "AND link_type='tallanto_student_id'"
+        )
     _seed_customer(db_path, tmp_path, customer_id="customer:safe", phone="+79000000022")
     _seed_tallanto_identity(db_path, tmp_path, "customer:safe", "student-safe", "parent@example.com")
 
@@ -724,6 +729,82 @@ def test_family_root_rejects_non_strong_tallanto_snapshot(tmp_path: Path, match_
     assert len({row[1] for row in rows}) == 2
     assert by_customer["customer:risky"][2:] == ("conflict", "tallanto_student_id_conflict")
     assert by_customer["customer:safe"][2:] == ("singleton", "single_customer_family")
+
+
+def test_family_graph_accepts_late_exact_link_for_inferred_card_and_event(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    customer_id = "customer:late-exact"
+    student_id = "student-late-exact"
+    _seed_customer(db_path, tmp_path, customer_id=customer_id, phone="+79000000023")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        customer_id,
+        student_id,
+        "parent@example.com",
+        match_status="inferred",
+        student_name="Анна Иванова",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        payment = TimelineEvent(
+            tenant_id="foton",
+            customer_id=customer_id,
+            event_type="tallanto_payment",
+            event_at=NOW,
+            source_system="tallanto_payment",
+            source_id="payment-late-exact",
+            direction="system",
+            match_status="inferred",
+            record={"contact_id": student_id},
+        )
+        store.upsert_event(payment)
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        member = con.execute(
+            "SELECT membership_status,reason FROM family_members_v1 WHERE customer_id=?",
+            (customer_id,),
+        ).fetchone()
+        attribution = con.execute(
+            "SELECT status,reason,child_key FROM event_child_attribution_v1 WHERE event_id=?",
+            (payment.event_id,),
+        ).fetchone()
+    assert member == ("singleton", "single_customer_family")
+    assert attribution[0:2] == ("matched", "exact_tallanto_identity")
+    assert attribution[2]
+
+
+def test_family_graph_rejects_inferred_card_when_exact_id_belongs_to_other_customer(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:other", phone="+79000000024")
+    _seed_customer(db_path, tmp_path, customer_id="customer:risky", phone="+79000000025")
+    _seed_tallanto_identity(
+        db_path,
+        tmp_path,
+        "customer:risky",
+        "student-other-owner",
+        "parent@example.com",
+        match_status="inferred",
+        student_name="Анна Иванова",
+    )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE identity_links SET customer_id='customer:other' "
+            "WHERE link_type='tallanto_student_id' AND link_value='student-other-owner'"
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT membership_status FROM family_members_v1 WHERE customer_id='customer:risky'"
+        ).fetchone() == ("conflict",)
+        assert con.execute(
+            "SELECT reason FROM event_child_attribution_v1 event_attr "
+            "JOIN timeline_events event ON event.event_id=event_attr.event_id "
+            "WHERE event.customer_id='customer:risky' AND event.source_system='tallanto_snapshot'"
+        ).fetchone() == ("tallanto_student_id_not_in_family",)
 
 
 def test_family_root_partial_run_marks_global_tallanto_conflict(tmp_path: Path) -> None:

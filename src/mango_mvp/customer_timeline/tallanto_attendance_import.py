@@ -27,6 +27,7 @@ from mango_mvp.customer_timeline.store import (
     BLOCKING_FAMILY_CONFLICT_TYPES,
     CustomerTimelineSQLiteStore,
     authoritative_exact_identity_rows,
+    authoritative_tallanto_student_owners,
     customer_timeline_readonly_uri,
 )
 from mango_mvp.deal_aware.stage1_snapshot import read_writeoff_xlsx
@@ -92,7 +93,7 @@ def run_tallanto_attendance_api_increment(
     client: Any | None = None,
     now: datetime | None = None,
 ) -> Mapping[str, Any]:
-    """Import reliable Tallanto attendance and hold the cursor while identities remain unresolved."""
+    """Import attendance; retry explicit identity conflicts without holding the global cursor."""
     root = Path(config.allowed_root).expanduser().resolve(strict=False)
     db = guard_customer_timeline_output_path(Path(config.timeline_db), root)
     if config.apply and (is_customer_timeline_prod_path(db) or not _is_staging_db(db)):
@@ -105,6 +106,9 @@ def run_tallanto_attendance_api_increment(
         db,
         tenant_id=config.tenant_id,
         initial_since=config.initial_since,
+    )
+    open_identity_conflicts, retry_class_ids, retry_metadata_invalid = _load_open_attendance_identity_conflicts(
+        db, tenant_id=config.tenant_id
     )
     upper_bound = _fetch_relationship_upper_bound(api) or cursor_before
     if upper_bound < cursor_before:
@@ -139,14 +143,21 @@ def run_tallanto_attendance_api_increment(
     class_by_id = {_required_id(item, "most_class"): item for item in overlap_classes}
 
     overlap_relations: list[dict[str, Any]] = []
-    for class_id in sorted(class_by_id):
+    class_ids = sorted(set(class_by_id) | retry_class_ids)
+    for index in range(0, len(class_ids), 100):
+        chunk = class_ids[index : index + 100]
+        class_query = "most_class_contacts_c.most_class_id IN (" + ",".join(
+            f"'{_api_quote(value)}'" for value in chunk
+        ) + ")"
         overlap_relations.extend(
             _fetch_complete_entry_list(
                 api,
                 module="ClassContactsRelationship",
                 select_fields=_RELATIONSHIP_FIELDS,
-                field_values={"most_class_id": class_id},
-                query=f"most_class_contacts_c.date_modified <= '{_api_datetime(upper_bound)}'",
+                query=(
+                    f"{class_query} AND most_class_contacts_c.date_modified <= "
+                    f"'{_api_datetime(upper_bound)}'"
+                ),
                 order_by="date_modified ASC, id ASC",
                 monotonic_fields=("date_modified", "id"),
             )
@@ -160,6 +171,13 @@ def run_tallanto_attendance_api_increment(
             previous.get("date_modified")
         ):
             relationships[relationship_id] = item
+    missing_retry_relationships: set[str] = set()
+    for relationship_id in sorted(set(open_identity_conflicts) - set(relationships)):
+        relationship = _fetch_relationship_by_id(api, relationship_id)
+        if relationship is None:
+            missing_retry_relationships.add(relationship_id)
+        else:
+            relationships[relationship_id] = relationship
 
     missing_class_ids = {
         _required_text(item.get("most_class_id"), "most_class_id")
@@ -191,13 +209,34 @@ def run_tallanto_attendance_api_increment(
     events: list[TimelineEvent] = []
     unresolved: list[dict[str, Any]] = []
     resolved_identity_conflicts: list[dict[str, Any]] = []
-    open_identity_conflicts = _load_open_attendance_identity_conflicts(db, tenant_id=config.tenant_id)
+    for relationship_id in sorted(missing_retry_relationships):
+        for reason, contact_id in open_identity_conflicts[relationship_id]:
+            resolved_identity_conflicts.append(
+                {
+                    "reason": reason,
+                    "relationship_id": relationship_id,
+                    "contact_id": contact_id,
+                    "most_class_id": "",
+                    "resolution_reason": "source_record_missing",
+                }
+            )
     for relationship_id, relationship in sorted(relationships.items()):
         contact_id = _required_text(relationship.get("contact_id"), "contact_id")
         class_id = _required_text(relationship.get("most_class_id"), "most_class_id")
         amo_contact_id = _scalar_text(contact_rows.get(contact_id, {}).get("amo_id"))
         tallanto_customer = tallanto_customers.get(contact_id)
         amo_customer = amo_customers.get(amo_contact_id) if amo_contact_id else None
+        for reason, previous_contact_id in open_identity_conflicts.get(relationship_id, ()):
+            if previous_contact_id != contact_id:
+                stale = _unresolved_relationship(
+                    reason,
+                    relationship,
+                    amo_contact_id=amo_contact_id,
+                    tallanto_customer=tallanto_customer,
+                    amo_customer=amo_customer,
+                )
+                stale["contact_id"] = previous_contact_id
+                resolved_identity_conflicts.append(stale)
         if tallanto_customer and amo_customer and tallanto_customer != amo_customer:
             tallanto_family = customer_families.get(tallanto_customer)
             same_family = bool(tallanto_family and tallanto_family == customer_families.get(amo_customer))
@@ -255,15 +294,18 @@ def run_tallanto_attendance_api_increment(
                 )
             )
             continue
-        for reason in open_identity_conflicts.get((relationship_id, contact_id), ()):
+        for reason, previous_contact_id in open_identity_conflicts.get(relationship_id, ()):
             resolved_identity_conflicts.append(
-                _unresolved_relationship(
-                    reason,
-                    relationship,
-                    amo_contact_id=amo_contact_id,
-                    tallanto_customer=tallanto_customer,
-                    amo_customer=amo_customer,
-                )
+                {
+                    **_unresolved_relationship(
+                        reason,
+                        relationship,
+                        amo_contact_id=amo_contact_id,
+                        tallanto_customer=tallanto_customer,
+                        amo_customer=amo_customer,
+                    ),
+                    "contact_id": previous_contact_id,
+                }
             )
         class_row = class_by_id.get(class_id)
         if class_row is None:
@@ -284,6 +326,9 @@ def run_tallanto_attendance_api_increment(
     counters["relationships_changed"] = len(changed)
     counters["relationships_from_class_overlap"] = len(overlap_relations)
     counters["relationships_unique"] = len(relationships)
+    counters["identity_retry_relationships"] = len(open_identity_conflicts)
+    counters["identity_retry_source_missing"] = len(missing_retry_relationships)
+    counters["identity_retry_metadata_invalid"] = retry_metadata_invalid
     counters["events_resolved"] = len(events)
     current_conflicted_tallanto_ids = {
         str(item["contact_id"]) for item in unresolved if item["reason"] == "identity_conflict"
@@ -311,16 +356,22 @@ def run_tallanto_attendance_api_increment(
             conflicting_existing_events = tuple((str(row[0]), str(row[1])) for row in rows)
     counters["existing_events_before"] = existing_event_count
     counters["existing_events_identity_conflict"] = len(conflicting_existing_events)
-    # Without a durable retry queue, advancing past an unmatched relationship
-    # would lose it permanently once the identity appears later.
+    # Open conflicts are retried by class above, so an explicit identity conflict
+    # no longer freezes the global relationship cursor.
     blocking_reasons = (
-        "identity_conflict",
         "identity_infrastructure_gap",
         "identity_unmatched_expected",
     )
     blocking_unresolved_count = sum(counters[reason] for reason in blocking_reasons)
     validation_errors = [reason for reason in blocking_reasons if counters[reason]]
-    if not events and not existing_event_count and not validation_errors:
+    if retry_metadata_invalid:
+        validation_errors.append("identity_retry_metadata_invalid")
+    if (
+        not relationships
+        and not missing_retry_relationships
+        and not existing_event_count
+        and not validation_errors
+    ):
         validation_errors.append("no_attendance_events")
     unresolved_count = len(unresolved)
     run_status = "partial" if validation_errors else "completed"
@@ -394,9 +445,8 @@ def run_tallanto_attendance_api_increment(
                             actor=config.actor,
                             ingestion_run_id=run.run_id,
                         )
-                    # Keep the relationship cursor on unresolved identities, but do not
-                    # rescan every old class: those relationships remain covered by the
-                    # held relationship window on the next run.
+                    # Expected/missing input keeps the cursor back. Explicit identity
+                    # conflicts advance because their class IDs are retried above.
                     store.upsert_ingestion_cursor(
                         config.tenant_id,
                         API_SOURCE_SYSTEM,
@@ -441,6 +491,7 @@ def run_tallanto_attendance_api_increment(
             "identity_infrastructure_gap": counters["identity_infrastructure_gap"],
             "identity_unmatched_expected": counters["identity_unmatched_expected"],
             "blocking_count": blocking_unresolved_count,
+            "identity_conflict_has_durable_retry": True,
             "expected_unmatched_blocks_freshness": True,
             "input_fully_processed": True,
         },
@@ -703,9 +754,14 @@ def _load_confident_customer_families(db: Path, *, tenant_id: str) -> dict[str, 
 
 def _load_open_attendance_identity_conflicts(
     db: Path, *, tenant_id: str
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    result: dict[tuple[str, str], list[str]] = defaultdict(list)
-    conflict_types = tuple(f"{API_SOURCE_SYSTEM}_{reason}" for reason in _UNRESOLVED_SEVERITY_BY_REASON)
+) -> tuple[dict[str, tuple[tuple[str, str], ...]], set[str], int]:
+    result: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    class_ids: set[str] = set()
+    invalid = 0
+    conflict_types = (
+        *(f"{API_SOURCE_SYSTEM}_{reason}" for reason in _UNRESOLVED_SEVERITY_BY_REASON),
+        f"{API_SOURCE_SYSTEM}_identity_unmatched",
+    )
     placeholders = ",".join("?" for _ in conflict_types)
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
         rows = con.execute(
@@ -720,10 +776,14 @@ def _load_open_attendance_identity_conflicts(
             continue
         relationship_id = _scalar_text(metadata.get("relationship_id"))
         contact_id = _scalar_text(metadata.get("contact_id"))
+        class_id = _scalar_text(metadata.get("most_class_id"))
         reason = str(conflict_type).removeprefix(f"{API_SOURCE_SYSTEM}_")
-        if relationship_id and contact_id:
-            result[(relationship_id, contact_id)].append(reason)
-    return {key: tuple(dict.fromkeys(reasons)) for key, reasons in result.items()}
+        if relationship_id and contact_id and class_id:
+            result[relationship_id].append((reason, contact_id))
+            class_ids.add(class_id)
+        else:
+            invalid += 1
+    return ({key: tuple(dict.fromkeys(items)) for key, items in result.items()}, class_ids, invalid)
 
 
 def _load_family_amo_contacts(db: Path, *, tenant_id: str) -> set[tuple[str, str]]:
@@ -757,6 +817,33 @@ def _fetch_relationship_upper_bound(client: Any) -> datetime | None:
     if not isinstance(first, Mapping):
         raise ValueError("Tallanto get_entry_list returned a non-object row")
     return _parse_tallanto_datetime(first.get("date_modified"))
+
+
+def _fetch_relationship_by_id(client: Any, relationship_id: str) -> dict[str, Any] | None:
+    try:
+        payload = client.get_entry_by_id(
+            module="ClassContactsRelationship",
+            entry_id=relationship_id,
+            select_fields=_RELATIONSHIP_FIELDS,
+        )
+    except Exception as exc:
+        if getattr(exc, "category", None) == "not_found":
+            return None
+        raise
+    if not isinstance(payload, Mapping):
+        raise ValueError("Tallanto relationship lookup returned a non-object")
+    candidates = payload.get("entry_list")
+    if isinstance(candidates, Mapping):
+        row = dict(candidates)
+    elif isinstance(candidates, list) and len(candidates) == 1 and isinstance(candidates[0], Mapping):
+        row = dict(candidates[0])
+    elif payload.get("id"):
+        row = dict(payload)
+    else:
+        raise ValueError("Tallanto relationship lookup misses one exact record")
+    if _required_id(row, "ClassContactsRelationship") != relationship_id:
+        raise ValueError("Tallanto relationship lookup returned an unexpected id")
+    return row
 
 
 def _fetch_complete_entry_list(
@@ -1130,34 +1217,11 @@ def _load_tallanto_customers(
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
-        exact_conflict_types = ("tallanto_identity_ambiguous", "tallanto_identity_conflict")
-        conflict_rows = con.execute(
-            "SELECT DISTINCT lower(conflict.conflict_type), conflict.record_json, CAST(ref.value AS TEXT) "
-            "FROM timeline_conflicts AS conflict, json_each(conflict.record_json, '$.entity_refs') AS ref "
-            "WHERE conflict.tenant_id=? AND conflict.status IN ('open','active') "
-            "AND lower(conflict.conflict_type) IN (?,?) "
-            "AND (CAST(ref.value AS TEXT) LIKE 'tallanto_student_id:%' "
-            "OR CAST(ref.value AS TEXT) LIKE 'tallanto_student:%' "
-            "OR CAST(ref.value AS TEXT) LIKE 'tallanto:student:%')",
-            (tenant_id, *exact_conflict_types),
-        ).fetchall()
-        exact_blocked: set[str] = set()
-        for conflict_type, raw, entity_ref in conflict_rows:
-            try:
-                metadata = json.loads(str(raw or "{}")).get("metadata") or {}
-                raw_count = metadata.get("candidate_customer_count")
-                candidate_count = None if isinstance(raw_count, bool) else int(raw_count)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                candidate_count = None
-            if conflict_type == "tallanto_identity_conflict" or candidate_count != 1:
-                exact_blocked.add(str(entity_ref).split(":")[-1])
+        exact_owners = authoritative_tallanto_student_owners(con, tenant_id)
+        exact_blocked = {value for value, owner in exact_owners.items() if owner is None}
         if blocked_exact_ids is not None:
             blocked_exact_ids.update(exact_blocked)
-        exact = {
-            str(row["link_value"]): str(row["customer_id"])
-            for row in authoritative_exact_identity_rows(con, tenant_id, link_types=("tallanto_student_id",))
-            if int(row["owner_count"]) == 1 and str(row["link_value"]) not in exact_blocked
-        }
+        exact = {value: owner for value, owner in exact_owners.items() if owner is not None}
         if not include_history:
             return exact
         candidates = {key: {value} for key, value in exact.items()}

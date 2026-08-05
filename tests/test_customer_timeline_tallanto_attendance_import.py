@@ -527,6 +527,7 @@ def test_attendance_api_preserves_visit_no_show_and_unfinished_semantics(
     assert report["status"] == "completed"
     assert report["cursor_after"] != report["cursor_before"]
     assert client.http_methods == {"GET"}
+    assert sum("most_class_contacts_c.most_class_id IN" in query for query in client.queries) == 1
     with sqlite3.connect(db) as con:
         raw, summary = con.execute(
             "SELECT record_json,summary FROM timeline_events WHERE source_system='tallanto_attendance_api'"
@@ -586,7 +587,7 @@ def test_attendance_api_unfinished_update_removes_previous_active_fact(tmp_path:
     assert __import__("json").loads(rows[0][0])["record"]["fact_active"] is False
 
 
-def test_attendance_api_preserves_tallanto_amo_identity_conflict_without_advancing_cursor(tmp_path: Path) -> None:
+def test_attendance_api_preserves_tallanto_amo_identity_conflict_with_durable_retry(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)
     _seed_customer(db, tmp_path, "customer:tallanto")
@@ -621,20 +622,20 @@ def test_attendance_api_preserves_tallanto_amo_identity_conflict_without_advanci
 
     assert report["counts"]["identity_conflict"] == 1
     assert report["counts"]["events_resolved"] == 0
-    assert report["status"] == "partial"
-    assert report["validation_ok"] is False
-    assert report["validation_errors"] == ["identity_conflict"]
+    assert report["status"] == "completed"
+    assert report["validation_ok"] is True
+    assert report["validation_errors"] == []
     with sqlite3.connect(db) as con:
         cursor = con.execute(
             "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
             "WHERE source_system='tallanto_attendance_api'"
         ).fetchone()
         assert cursor is not None
-        assert cursor[0] == report["cursor_before"]
+        assert cursor[0] == report["cursor_after"]
         assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
         assert con.execute(
             "SELECT status FROM ingestion_runs WHERE source_system='tallanto_attendance_api'"
-        ).fetchone()[0] == "partial"
+        ).fetchone()[0] == "completed"
         assert con.execute(
             "SELECT conflict_type,status FROM timeline_conflicts"
         ).fetchone() == ("tallanto_attendance_api_identity_conflict", "open")
@@ -721,7 +722,7 @@ def test_attendance_api_quarantines_event_when_exact_owner_becomes_conflicting(t
         ).fetchone()
 
     metadata = json.loads(event["record_json"])["metadata"]
-    assert second["status"] == "partial"
+    assert second["status"] == "completed"
     assert second["counts"]["existing_events_identity_conflict"] == 1
     assert second["counts"]["existing_event_quarantined"] == 1
     assert event["customer_id"] is None
@@ -740,8 +741,8 @@ def test_attendance_api_quarantines_event_when_exact_owner_becomes_conflicting(t
     (
         ("shared_family_phone", None, True),
         ("tallanto_identity_ambiguous", 1, True),
-        ("tallanto_identity_ambiguous", True, False),
-        ("tallanto_identity_ambiguous", 4, False),
+        ("tallanto_identity_ambiguous", True, True),
+        ("tallanto_identity_ambiguous", 4, True),
         ("tallanto_identity_conflict", None, False),
     ),
 )
@@ -787,11 +788,145 @@ def test_attendance_api_uses_exact_student_owner_without_ignoring_real_ambiguity
         assert report["counts"]["events_resolved"] == 1
         assert event_count == 1
     else:
-        assert report["status"] == "partial"
+        assert report["status"] == "completed"
         assert report["counts"]["identity_conflict"] == 1
-        assert report["cursor_after"] == report["cursor_before"]
+        assert report["cursor_after"] != report["cursor_before"]
+        assert report["unresolved_breakdown"]["blocking_count"] == 0
         assert event_count == 0
         assert api_conflict == ("tallanto_attendance_api_identity_conflict", "high")
+
+
+def test_attendance_api_closes_durable_retry_when_source_record_disappears(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_customer(db, tmp_path, "customer:tallanto")
+    _seed_customer(db, tmp_path, "customer:amo")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:tallanto",
+            link_type=IdentityLinkType.TALLANTO_STUDENT_ID, link_value="101",
+            source_system="tallanto_snapshot", source_ref="tallanto:101",
+        ))
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:amo",
+            link_type=IdentityLinkType.AMO_CONTACT_ID, link_value="amo-101",
+            source_system="amo", source_ref="amo:amo-101",
+        ))
+    first = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    class MissingRetryApi(FakeAttendanceApi):
+        def request(self, *, module, http_method, query_items, **kwargs):
+            order_by = dict(query_items).get("order_by", "")
+            if module == "ClassContactsRelationship" and not order_by.startswith("date_modified DESC"):
+                return {"entry_list": [], "result_count": 0, "total_count": 0}
+            return super().request(
+                module=module, http_method=http_method, query_items=query_items, **kwargs
+            )
+
+        def get_entry_by_id(self, *, module, entry_id, **kwargs):
+            if module == "ClassContactsRelationship":
+                error = RuntimeError("synthetic not found")
+                error.category = "not_found"
+                raise error
+            return super().get_entry_by_id(module=module, entry_id=entry_id, **kwargs)
+
+    second = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=MissingRetryApi(status="visit"),
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert first["cursor_after"] != first["cursor_before"]
+    assert second["validation_errors"] == []
+    assert second["counts"]["identity_retry_source_missing"] == 1
+    assert second["status"] == "completed"
+    assert second["class_overlap_after"] != second["class_overlap_before"]
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_attendance_api_identity_conflict'"
+        ).fetchone() == ("resolved",)
+
+
+def test_attendance_api_does_not_close_retry_when_direct_lookup_finds_record(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_customer(db, tmp_path, "customer:tallanto")
+    _seed_customer(db, tmp_path, "customer:amo")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:tallanto",
+            link_type=IdentityLinkType.TALLANTO_STUDENT_ID, link_value="101",
+            source_system="tallanto_snapshot", source_ref="tallanto:101",
+        ))
+        store.upsert_identity_link(IdentityLink(
+            tenant_id="foton", customer_id="customer:amo",
+            link_type=IdentityLinkType.AMO_CONTACT_ID, link_value="amo-101",
+            source_system="amo", source_ref="amo:amo-101",
+        ))
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_attendance_api_identity_conflict",
+            entity_refs=("tallanto:class-contact:rel-1", "tallanto:contact:101"),
+            severity="high",
+            metadata={"relationship_id": "rel-1", "contact_id": "101", "most_class_id": "class-1"},
+        )
+
+    class DirectLookupApi(FakeAttendanceApi):
+        def request(self, *, module, http_method, query_items, **kwargs):
+            order_by = dict(query_items).get("order_by", "")
+            if module == "ClassContactsRelationship" and not order_by.startswith("date_modified DESC"):
+                return {"entry_list": [], "result_count": 0, "total_count": 0}
+            return super().request(
+                module=module, http_method=http_method, query_items=query_items, **kwargs
+            )
+
+        def get_entry_by_id(self, *, module, entry_id, **kwargs):
+            if module == "ClassContactsRelationship":
+                return {
+                    "id": entry_id, "most_class_id": "class-1", "contact_id": "101",
+                    "most_class_contacts_status": "visit", "most_class_abonements": "abon-1",
+                    "date_modified": "2026-07-23 10:00:00", "date_entry": "2026-07-22 09:00:00",
+                }
+            return super().get_entry_by_id(module=module, entry_id=entry_id, **kwargs)
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=DirectLookupApi(status="visit"),
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["identity_retry_source_missing"] == 0
+    assert report["counts"]["identity_conflict"] == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_attendance_api_identity_conflict'"
+        ).fetchone() == ("open",)
+
+
+def test_attendance_api_holds_cursor_for_malformed_durable_retry_metadata(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_attendance_api_identity_conflict",
+            entity_refs=("tallanto:class-contact:rel-old", "tallanto:contact:101"),
+            severity="high",
+            metadata={"relationship_id": "rel-old", "contact_id": "101"},
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["validation_errors"] == ["identity_retry_metadata_invalid"]
+    assert report["counts"]["identity_retry_metadata_invalid"] == 1
+    assert report["cursor_after"] == report["cursor_before"]
 
 
 def test_attendance_api_rejects_two_exact_tallanto_owners(tmp_path: Path) -> None:
@@ -817,11 +952,39 @@ def test_attendance_api_rejects_two_exact_tallanto_owners(tmp_path: Path) -> Non
         now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert report["status"] == "partial"
+    assert report["status"] == "completed"
+    assert report["counts"]["identity_conflict"] == 1
+    assert report["unresolved_breakdown"]["blocking_count"] == 0
     assert report["counts"]["events_resolved"] == 0
     with sqlite3.connect(db) as con:
         assert con.execute(
             "SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()[0] == 0
+
+
+def test_attendance_api_blocks_ambiguous_student_id_without_exact_owner(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=("tallanto_student_id:101",),
+            severity="high",
+            metadata={"candidate_customer_count": 3},
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["identity_conflict"] == 1
+    assert report["counts"]["events_resolved"] == 0
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
         ).fetchone()[0] == 0
 
 
@@ -981,6 +1144,37 @@ def test_attendance_api_resolves_prior_conflict_from_direct_family_amo_link(tmp_
         ).fetchone()[0] == "resolved"
 
 
+def test_attendance_api_retries_and_closes_legacy_unmatched_conflict(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_attendance_api_identity_unmatched",
+            entity_refs=("tallanto:class-contact:rel-1", "tallanto:contact:101"),
+            severity="low",
+            metadata={
+                "reason": "identity_unmatched",
+                "relationship_id": "rel-1",
+                "contact_id": "101",
+                "most_class_id": "class-1",
+            },
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True), client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["counts"]["events_resolved"] == 1
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT status FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_attendance_api_identity_unmatched'"
+        ).fetchone() == ("resolved",)
+
+
 def test_attendance_api_fails_loud_on_incomplete_pagination(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)
@@ -1083,8 +1277,8 @@ def test_attendance_api_marks_technical_time_when_class_date_is_missing(tmp_path
 
 
 # --- D4: expected unmatched / identity conflict / infrastructure error are
-# three distinct, never-silenced buckets; all block freshness until there is
-# a durable retry queue. ---
+# distinct, never-silenced buckets. Only an explicit conflict has a durable
+# class-based retry queue, so the other two still hold freshness. ---
 
 
 def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(tmp_path: Path) -> None:
@@ -1109,6 +1303,7 @@ def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(t
         "identity_infrastructure_gap": 0,
         "identity_unmatched_expected": 1,
         "blocking_count": 1,
+        "identity_conflict_has_durable_retry": True,
         "expected_unmatched_blocks_freshness": True,
         "input_fully_processed": True,
     }
@@ -1364,10 +1559,12 @@ class FakeAttendanceApi:
         self.incomplete = incomplete
         self.class_date_missing = class_date_missing
         self.http_methods: set[str] = set()
+        self.queries: list[str] = []
 
     def request(self, *, module, http_method, query_items, **_kwargs):
         self.http_methods.add(http_method)
         query = dict(query_items).get("query", "")
+        self.queries.append(query)
         order_by = dict(query_items).get("order_by", "")
         relationship = {
             "id": "rel-1",

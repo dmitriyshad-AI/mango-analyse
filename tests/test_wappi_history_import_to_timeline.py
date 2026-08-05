@@ -620,13 +620,15 @@ def test_wappi_apply_keeps_unknown_widget_contact_pending_without_blocking_other
     )
 
     assert report["validation_ok"] is True
-    assert report["publish_ready"] is False
+    assert report["publish_ready"] is True
+    assert report["source_accounting_complete"] is True
     assert report["mode"] == "apply"
     assert report["summary"]["write_applied"] is True
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["messages_newly_saved"] == 1
     assert report["summary"]["messages_present_in_timeline"] == 1
     assert report["summary"]["pending_attribution"] == 1
+    assert report["summary"]["records_quarantined"] == 1
     assert report["summary"]["amo_widget_missing_personal_chats"] == 1
     assert report["limit_hits"] == []
     with sqlite3.connect(db_path) as con:
@@ -733,6 +735,10 @@ def test_wappi_old_unmatched_event_relinks_without_network_message(
 
     assert report["mode"] == "apply"
     assert report["summary"]["local_unmatched_relink_records"] == 1
+    assert report["summary"]["source_records_received"] == 0
+    assert report["summary"]["source_records_accounted"] == 0
+    assert report["summary"]["local_relink_records_accounted"] == 1
+    assert report["local_accounting_complete"] is True
     with sqlite3.connect(db_path) as con:
         assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 1
         assert con.execute("SELECT customer_id FROM timeline_events").fetchone()[0] == customer_id
@@ -866,7 +872,8 @@ def test_wappi_apply_quarantines_widget_conflict_without_blocking_batch(
     assert report["mode"] == "apply"
     assert report["summary"]["blocked_chat_relink_conflicts"] == 1
     assert report["validation_ok"] is True
-    assert report["publish_ready"] is False
+    assert report["publish_ready"] is True
+    assert report["source_accounting_complete"] is True
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["messages_newly_saved"] == 1
     assert report["summary"]["messages_present_in_timeline"] == 2
@@ -1013,7 +1020,8 @@ def test_wappi_apply_keeps_unresolved_widget_chat_pending_when_linkage_is_option
 
     assert report["mode"] == "apply"
     assert report["validation_ok"] is True
-    assert report["publish_ready"] is False
+    assert report["publish_ready"] is True
+    assert report["source_accounting_complete"] is True
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["pending_attribution"] == 1
     assert report["summary"]["writes_applied"] > 0
@@ -1083,7 +1091,8 @@ def test_wappi_apply_never_calls_pending_attribution_complete_without_widget(tmp
 
     assert report["mode"] == "apply"
     assert report["validation_ok"] is True
-    assert report["publish_ready"] is False
+    assert report["publish_ready"] is True
+    assert report["source_accounting_complete"] is True
     assert report["summary"]["attribution_complete"] is False
     assert report["summary"]["pending_attribution"] == 1
     assert report["summary"]["messages_newly_saved"] == 1
@@ -2913,6 +2922,9 @@ def test_wappi_unresolved_rerun_keeps_existing_exact_event_without_conflict(
     assert first["summary"]["linked_by_amo_widget"] == 1
     assert second["summary"]["blocked_customer_relink_conflicts"] == 0
     assert second["summary"]["unresolved_kept_existing"] == 1
+    assert second["summary"]["source_records_received"] == 1
+    assert second["summary"]["source_records_linked"] == 1
+    assert second["summary"]["source_records_quarantined"] == 0
     assert third["summary"]["blocked_customer_relink_conflicts"] == 0
     assert third["summary"]["unresolved_kept_existing"] == 1
     with sqlite3.connect(db_path) as con:

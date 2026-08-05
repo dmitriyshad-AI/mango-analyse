@@ -14,7 +14,11 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from mango_mvp.customer_profile.builder import child_name_keys, normalized_name_tokens
 from mango_mvp.customer_profile.contracts import has_explicit_brand_conflict
 from mango_mvp.customer_timeline.ids import normalize_email, normalize_key, stable_digest, stable_prefixed_id
-from mango_mvp.customer_timeline.store import customer_timeline_readonly_uri, guard_customer_timeline_sqlite_path
+from mango_mvp.customer_timeline.store import (
+    authoritative_tallanto_student_owners,
+    customer_timeline_readonly_uri,
+    guard_customer_timeline_sqlite_path,
+)
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -134,11 +138,13 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
         # can split a family or erase rows outside the selection, so apply always rebuilds all.
         selected_customer_ids = () if config.apply else config.customer_ids
         customers = _load_customers(con, tenant_id=tenant_id, customer_ids=selected_customer_ids)
+        exact_tallanto_owners = authoritative_tallanto_student_owners(con, tenant_id)
         assignments = _resolve_family_assignments(
             con,
             tenant_id=tenant_id,
             customer_ids=tuple(customers),
             generated_at=generated_at,
+            exact_tallanto_owners=exact_tallanto_owners,
         )
         conflict_reconciliation = _reconcile_contact_conflicts(con, tenant_id, assignments, generated_at, config.apply)
         shared_customers = _shared_family_phone_customers(con, tenant_id=tenant_id)
@@ -162,25 +168,31 @@ def build_family_graph(config: FamilyGraphConfig) -> Mapping[str, Any]:
         persisted_groups = _load_persisted_family_groups(con, tenant_id=tenant_id) if preserve_child_graph else {}
         tallanto_snapshot_customers: set[str] = set()
         for row in con.execute(
-            "SELECT customer_id,source_id,source_ref,event_at,record_json FROM timeline_events "
+            "SELECT customer_id,source_id,source_ref,event_at,record_json,match_status FROM timeline_events "
             "WHERE tenant_id=? AND source_system='tallanto_snapshot' "
-            "AND event_type='tallanto_student_snapshot' AND match_status IN ('strong_unique','manual') "
+            "AND event_type='tallanto_student_snapshot' "
             "AND superseded_by IS NULL AND customer_id IS NOT NULL",
             (tenant_id,),
         ):
+            student_id = str(row["source_id"] or "")
+            customer_id = str(row["customer_id"])
+            if student_id in exact_tallanto_owners:
+                if exact_tallanto_owners[student_id] != customer_id:
+                    continue
+            elif str(row["match_status"] or "") not in {"strong_unique", "manual"}:
+                continue
             event_record = _json_loads(row["record_json"]).get("record") or {}
             payload = event_record.get("payload") or {}
             name = str(payload.get("display_name") or "").strip()
-            if not name or str(row["customer_id"]) not in contexts:
+            if not name or customer_id not in contexts:
                 continue
-            customer_id = str(row["customer_id"])
             tallanto_snapshot_customers.add(customer_id)
             evidence_by_customer[customer_id].append(
                 ChildEvidence(
                     source_system="tallanto_snapshot",
                     source_ref=str(row["source_ref"] or ""),
                     event_at=str(row["event_at"] or ""),
-                    tallanto_student_id=str(row["source_id"] or ""),
+                    tallanto_student_id=student_id,
                     name=name,
                     grade=str(payload.get("student_type") or ""),
                     subject=str(payload.get("subjects") or ""),
@@ -388,6 +400,7 @@ def _resolve_family_assignments(
     tenant_id: str,
     customer_ids: Sequence[str],
     generated_at: str,
+    exact_tallanto_owners: Mapping[str, Optional[str]],
 ) -> dict[str, FamilyAssignment]:
     customers = set(customer_ids)
     existing_rows = (
@@ -446,7 +459,10 @@ def _resolve_family_assignments(
         if customer_id not in customers:
             continue
         ids_by_customer[customer_id].add(student_id)
-        if str(row["match_class"] or "") not in {"strong_unique", "manual"}:
+        if student_id in exact_tallanto_owners:
+            if exact_tallanto_owners[student_id] != customer_id:
+                unsafe.add(customer_id)
+        elif str(row["match_class"] or "") not in {"strong_unique", "manual"}:
             unsafe.add(customer_id)
     for owners in customers_by_id.values():
         if len(owners) != 1:
@@ -725,7 +741,7 @@ def _reconcile_contact_conflicts(
         "SELECT event.customer_id,event.source_id,event.record_json FROM timeline_events event JOIN identity_links exact "
         "ON exact.tenant_id=event.tenant_id AND exact.customer_id=event.customer_id AND exact.link_type='tallanto_student_id' "
         "AND exact.link_value=event.source_id AND exact.match_class IN ('strong_unique','manual') WHERE event.tenant_id=? "
-        "AND event.source_system='tallanto_snapshot' AND event.event_type='tallanto_student_snapshot' AND event.match_status IN ('strong_unique','manual') "
+        "AND event.source_system='tallanto_snapshot' AND event.event_type='tallanto_student_snapshot' "
         "AND event.superseded_by IS NULL AND NOT EXISTS (SELECT 1 FROM identity_links other WHERE other.tenant_id=exact.tenant_id "
         "AND other.link_type=exact.link_type AND other.link_value=exact.link_value AND other.customer_id!=exact.customer_id "
         "AND other.match_class IN ('strong_unique','manual'))",
@@ -1687,10 +1703,7 @@ def _exact_tallanto_child_group(
 
 
 def _event_tallanto_student_id(event: sqlite3.Row) -> str:
-    if (
-        str(event["event_type"] or "") not in TALLANTO_CHILD_EVENT_TYPES
-        or str(event["match_status"] or "") not in {"strong_unique", "manual"}
-    ):
+    if str(event["event_type"] or "") not in TALLANTO_CHILD_EVENT_TYPES:
         return ""
     if str(event["event_type"]) == "tallanto_student_snapshot":
         source_id = str(event["source_id"] or "")

@@ -2131,6 +2131,7 @@ def run_wappi_history_import(
         checkpoint=checkpoint_state,
         next_checkpoint=next_checkpoint,
     )
+    network_records_pre_guard = len(records)
     network_source_ids = {
         str(record.payload.get("timeline_source_id") or "")
         for record in records
@@ -2142,7 +2143,22 @@ def run_wappi_history_import(
         chat_resolutions=resolver.chat_resolutions,
         exclude_source_ids=network_source_ids,
     )
+    local_source_ids = {
+        str(record.payload.get("timeline_source_id") or "")
+        for record in local_relink_records
+        if str(record.payload.get("timeline_source_id") or "")
+    }
     records = (*records, *local_relink_records)
+    expected_source_ids = {
+        source_system: {
+            str(record.payload.get("timeline_source_id") or "")
+            for record in records
+            if record.source_system == source_system
+            and str(record.payload.get("timeline_source_id") or "")
+        }
+        for source_system in SOURCE_SYSTEM_BY_CHANNEL.values()
+    }
+    records_pre_guard = len(records)
     existing_source_ids = load_existing_wappi_source_ids(
         config.timeline_db,
         tenant_id=config.tenant_id,
@@ -2164,11 +2180,19 @@ def run_wappi_history_import(
     duplicate_count = 0
     blocked_customer_relink_conflicts = 0
     unresolved_kept_existing = 0
-    pending_existing_source_ids: dict[str, set[str]] = defaultdict(set)
+    outcome_source_ids = {
+        scope: {outcome: set() for outcome in ("linked", "quarantine", "junk")}
+        for scope in ("network", "local")
+    }
+    outcome_reason_counts = {
+        scope: {outcome: Counter() for outcome in ("linked", "quarantine", "junk")}
+        for scope in ("network", "local")
+    }
     conflicting_existing_events: list[tuple[str, str, str, str]] = []
     guarded_records: list[TimelineSourceRecord] = []
     for record in records:
         source_id = str(record.payload.get("timeline_source_id") or "")
+        scope = "network" if source_id in network_source_ids else "local"
         if source_id in existing_source_ids:
             duplicate_count += 1
             profile_id = str(record.payload.get("profile_id") or "")
@@ -2186,7 +2210,8 @@ def run_wappi_history_import(
         ):
             unresolved_kept_existing += 1
             blocked_customer_relink_conflicts += 1
-            pending_existing_source_ids[record.source_system].add(source_id)
+            outcome_source_ids[scope]["quarantine"].add(source_id)
+            outcome_reason_counts[scope]["quarantine"]["preserved_existing_pending"] += 1
             continue
         candidate_customers = {
             str(item)
@@ -2219,6 +2244,14 @@ def run_wappi_history_import(
             # A missing/provisional answer is not a rival identity. Keep the
             # previously proven event byte-for-byte and do not spam conflicts.
             unresolved_kept_existing += 1
+            if existing_customer not in provisional_customer_ids and existing_authority != "pending_attribution":
+                outcome = "linked"
+                reason = "preserved_existing_attribution"
+            else:
+                outcome = "quarantine"
+                reason = "preserved_existing_pending"
+            outcome_source_ids[scope][outcome].add(source_id)
+            outcome_reason_counts[scope][outcome][reason] += 1
             continue
         elif existing_customer and proposed_customer != existing_customer:
             blocked_customer_relink_conflicts += 1
@@ -2259,6 +2292,35 @@ def run_wappi_history_import(
             continue
         guarded_records.append(record)
     records = tuple(guarded_records)
+    for record in records:
+        payload = record.payload
+        source_id = str(payload.get("timeline_source_id") or "")
+        scope = "network" if source_id in network_source_ids else "local"
+        reason = str(payload.get("resolution_reason") or payload.get("resolution_status") or "unknown")
+        if reason == "timeline_identity_non_personal_chat":
+            outcome = "junk"
+        elif (
+            payload.get("resolution_status") == "resolved"
+            and payload.get("resolved_customer_id")
+            and payload.get("identity_authority") != "wappi_provisional"
+        ):
+            outcome = "linked"
+        else:
+            outcome = "quarantine"
+        outcome_source_ids[scope][outcome].add(source_id)
+        outcome_reason_counts[scope][outcome][reason] += 1
+    outcome_counts = {
+        scope: {outcome: len(source_ids) for outcome, source_ids in outcomes.items()}
+        for scope, outcomes in outcome_source_ids.items()
+    }
+    source_records_accounted = sum(outcome_counts["network"].values())
+    local_records_accounted = sum(outcome_counts["local"].values())
+    source_accounting_complete = (
+        source_records_accounted == len(network_source_ids) == network_records_pre_guard
+    )
+    local_accounting_complete = (
+        local_records_accounted == len(local_source_ids) == len(local_relink_records)
+    )
     profile_id_counts = Counter(profile.profile_id for profile in profiles)
     profile_report_keys = {
         (profile.source_system, profile.profile_id): (
@@ -2292,9 +2354,7 @@ def run_wappi_history_import(
     ]
     limit_hits.extend(widget_setup_errors)
     attribution_warnings: list[str] = []
-    pending_attribution_count = sum(
-        stats.pending_attribution for stats in fetch_stats_by_profile.values()
-    )
+    pending_attribution_count = outcome_counts["network"]["quarantine"]
     if pending_attribution_count:
         attribution_warnings.append("wappi_identity:pending_attribution")
     if not config.require_widget_linkage and widget_link_report and not widget_link_report.get("complete"):
@@ -2481,7 +2541,7 @@ def run_wappi_history_import(
         "write_tallanto": False,
         "blocked_live_actions": blocked_live_actions(),
     }
-    attribution_complete = not attribution_warnings
+    attribution_complete = pending_attribution_count == 0
     validation_ok = (
         not errors
         and not limit_hits
@@ -2499,14 +2559,7 @@ def run_wappi_history_import(
         if full_audit_profiles == 0
         else "mixed"
     )
-    records_reliably_linked = sum(
-        stats.linked_by_pair
-        + stats.linked_by_timeline
-        + stats.linked_by_amo_auto
-        + stats.linked_by_amo_widget
-        + stats.linked_by_amo_talk
-        for stats in fetch_stats_by_profile.values()
-    )
+    records_reliably_linked = outcome_counts["network"]["linked"]
     messages_newly_saved = 0
     if store_summary_before is not None and store_summary_after is not None:
         messages_newly_saved = max(
@@ -2520,26 +2573,20 @@ def run_wappi_history_import(
                 config.timeline_db,
                 tenant_id=config.tenant_id,
                 source_systems={source_system},
-                source_ids=[str(record.payload.get("timeline_source_id") or "") for record in group],
+                source_ids=tuple(source_ids),
             )
         )
-        for source_system, group in grouped.items()
+        for source_system, source_ids in expected_source_ids.items()
     )
-    messages_present_in_timeline += sum(
-        len(load_existing_wappi_source_ids(
-            config.timeline_db,
-            tenant_id=config.tenant_id,
-            source_systems={source_system},
-            source_ids=tuple(source_ids),
-        ))
-        for source_system, source_ids in pending_existing_source_ids.items()
-    )
-    messages_expected_in_timeline = len(records) + sum(
-        len(source_ids) for source_ids in pending_existing_source_ids.values()
-    )
+    messages_expected_in_timeline = sum(len(source_ids) for source_ids in expected_source_ids.values())
     messages_missing_from_timeline = max(0, messages_expected_in_timeline - messages_present_in_timeline)
     source_persistence_complete = apply_effective and messages_missing_from_timeline == 0
-    publish_ready = validation_ok and attribution_complete and source_persistence_complete
+    publish_ready = (
+        validation_ok
+        and source_accounting_complete
+        and local_accounting_complete
+        and source_persistence_complete
+    )
     if next_checkpoint is not None and source_persistence_complete:
         # A checkpoint may only advance after every current source_id is visible.
         current_timeline_state = wappi_timeline_state(
@@ -2611,6 +2658,8 @@ def run_wappi_history_import(
             "full_audit_interval_days": WAPPI_INCREMENTAL_FULL_AUDIT_DAYS,
         },
         "fetch_complete": validation_ok,
+        "source_accounting_complete": source_accounting_complete,
+        "local_accounting_complete": local_accounting_complete,
         "source_persistence_complete": source_persistence_complete,
         "attribution_complete": attribution_complete,
         "publish_ready": publish_ready,
@@ -2641,6 +2690,17 @@ def run_wappi_history_import(
             "tenant_id": config.tenant_id,
             "profiles": len(profiles),
             "records_built": len(records),
+            "records_pre_guard": records_pre_guard,
+            "records_accounted": source_records_accounted + local_records_accounted,
+            "source_records_received": network_records_pre_guard,
+            "source_records_unique": len(network_source_ids),
+            "source_records_accounted": source_records_accounted,
+            "source_records_linked": outcome_counts["network"]["linked"],
+            "source_records_quarantined": outcome_counts["network"]["quarantine"],
+            "source_records_junk": outcome_counts["network"]["junk"],
+            "records_quarantined": outcome_counts["network"]["quarantine"],
+            "records_junk": outcome_counts["network"]["junk"],
+            "local_relink_records_accounted": local_records_accounted,
             "messages_newly_saved": messages_newly_saved,
             "messages_present_in_timeline": messages_present_in_timeline,
             "messages_expected_in_timeline": messages_expected_in_timeline,
@@ -2695,17 +2755,24 @@ def run_wappi_history_import(
             "duplicate_source_ids_before_import": duplicate_count,
             "blocked_customer_relink_conflicts": blocked_customer_relink_conflicts,
             "unresolved_kept_existing": unresolved_kept_existing,
+            "preserved_existing_linked": sum(
+                reasons["linked"].get("preserved_existing_attribution", 0)
+                for reasons in outcome_reason_counts.values()
+            ),
+            "preserved_existing_quarantine": sum(
+                reasons["quarantine"].get("preserved_existing_pending", 0)
+                for reasons in outcome_reason_counts.values()
+            ),
             "provisional_customer_upgrades": len(provisional_upgrades),
             "exact_authority_overrides": exact_authority_overrides,
             "local_unmatched_relink_records": len(local_relink_records),
             "blocked_chat_relink_conflicts": int(
                 records_by_resolution_reason.get("existing_wappi_chat_customer_conflict", 0)
             ),
-            "pending_reason_counts": {
-                key: value
-                for key, value in sorted(records_by_resolution_reason.items())
-                if key not in {"resolved", "pending_attribution"}
-            },
+            "resolved_reason_counts": dict(sorted(outcome_reason_counts["network"]["linked"].items())),
+            "pending_reason_counts": dict(sorted(outcome_reason_counts["network"]["quarantine"].items())),
+            "junk_reason_counts": dict(sorted(outcome_reason_counts["network"]["junk"].items())),
+            "local_relink_outcome_counts": outcome_counts["local"],
             "transport": "DefaultDenyTransport",
             "send_messenger": False,
             "limit_hits": limit_hits,

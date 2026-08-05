@@ -150,6 +150,62 @@ def authoritative_exact_identity_rows(
     )
 
 
+def blocking_tallanto_identity_values(con: sqlite3.Connection, tenant_id: str) -> frozenset[str]:
+    """Tallanto student IDs whose exact owner is genuinely unresolved."""
+    exact_unique = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT link_value FROM identity_links WHERE tenant_id=? "
+            "AND link_type='tallanto_student_id' AND match_class IN ('strong_unique','manual') "
+            "AND customer_id IS NOT NULL AND customer_id!='' GROUP BY link_value "
+            "HAVING COUNT(DISTINCT customer_id)=1",
+            (normalize_key(tenant_id, "tenant_id"),),
+        )
+    }
+    rows = con.execute(
+        "SELECT lower(conflict_type),record_json FROM timeline_conflicts "
+        "WHERE tenant_id=? AND status IN ('open','active') "
+        "AND lower(conflict_type) IN ('tallanto_identity_ambiguous','tallanto_identity_conflict')",
+        (normalize_key(tenant_id, "tenant_id"),),
+    )
+    blocked: set[str] = set()
+    for conflict_type, raw in rows:
+        record = json_loads(raw)
+        raw_count = (record.get("metadata") or {}).get("candidate_customer_count")
+        try:
+            candidate_count = None if isinstance(raw_count, bool) else int(raw_count)
+        except (TypeError, ValueError):
+            candidate_count = None
+        for ref in record.get("entity_refs") or ():
+            canonical = _canonical_identity_conflict_ref(ref)
+            if canonical.startswith("tallanto_student_id:"):
+                value = canonical.split(":", 1)[1]
+                # Contact/name ambiguity is weaker than one exact student owner.
+                # A direct exact-ID conflict remains blocking regardless.
+                if conflict_type == "tallanto_identity_conflict" or (
+                    candidate_count != 1 and value not in exact_unique
+                ):
+                    blocked.add(value)
+    return frozenset(blocked)
+
+
+def authoritative_tallanto_student_owners(
+    con: sqlite3.Connection,
+    tenant_id: str,
+) -> dict[str, Optional[str]]:
+    """Exact Tallanto student owners; None means duplicate or direct ID conflict."""
+    blocked = blocking_tallanto_identity_values(con, tenant_id)
+    owners: dict[str, Optional[str]] = {value: None for value in blocked}
+    for row in authoritative_exact_identity_rows(con, tenant_id, link_types=("tallanto_student_id",)):
+        value = str(row["link_value"])
+        owners[value] = (
+            str(row["customer_id"])
+            if int(row["owner_count"]) == 1 and value not in blocked
+            else None
+        )
+    return owners
+
+
 def open_family_identity_conflict_customer_ids(
     con: sqlite3.Connection,
     tenant_id: str,

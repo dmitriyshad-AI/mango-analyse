@@ -690,6 +690,8 @@ def test_nightly_service_runs_wappi_then_refreshes_family_graph(
             "validation_ok": True,
             "fetch_complete": True,
             "source_persistence_complete": True,
+            "attribution_complete": True,
+            "publish_ready": True,
             "summary": {"records_built": 3},
         }
 
@@ -822,8 +824,15 @@ def test_nightly_service_does_not_publish_when_wappi_identity_is_incomplete(
     assert report["snapshot_manifest"]["latest_published"] is False
 
 
-def test_nightly_service_accepts_complete_wappi_read_with_quarantined_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("attribution_complete", "publish_ready"),
+    ((False, False), (True, False)),
+)
+def test_nightly_service_blocks_incomplete_wappi_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attribution_complete: bool,
+    publish_ready: bool,
 ) -> None:
     staging = tmp_path / ".codex_local" / "staging"
     staging.mkdir(parents=True)
@@ -836,7 +845,8 @@ def test_nightly_service_accepts_complete_wappi_read_with_quarantined_identity(
             "validation_ok": True,
             "fetch_complete": True,
             "source_persistence_complete": True,
-            "attribution_complete": False,
+            "attribution_complete": attribution_complete,
+            "publish_ready": publish_ready,
             "summary": {"pending_attribution": 1},
         },
     )
@@ -866,10 +876,45 @@ def test_nightly_service_accepts_complete_wappi_read_with_quarantined_identity(
 
     report = run_nightly_service(service_config_from_json(config_path))
 
-    assert report["steps"][0]["status"] == "ok"
-    assert report["steps"][0]["summary"]["attribution_complete"] is False
-    assert report["overall_status"] == "ok"
-    assert report["data_quality_status"] == "pass_with_notes"
+    assert report["steps"][0]["status"] == "failed"
+    assert report["steps"][0]["summary"]["attribution_complete"] is attribution_complete
+    assert report["steps"][0]["summary"]["publish_ready"] is publish_ready
+    assert report["overall_status"] == "partial"
+    assert report["data_quality_status"] == "blocked"
+    assert report["snapshot_manifest"]["latest_published"] is False
+
+
+def test_nightly_service_optional_wappi_failure_still_blocks_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / ".codex_local" / "staging"
+    staging.mkdir(parents=True)
+    db_path = staging / "customer_timeline.sqlite"
+    seed_customer(db_path, staging)
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_wappi_history_import",
+        lambda _config: {"publish_ready": False, "attribution_complete": False},
+    )
+    config_path = staging / "service.json"
+    config_path.write_text(json.dumps({
+        "timeline_db": str(db_path),
+        "allowed_root": str(staging),
+        "out_root": str(staging / "runs"),
+        "publish_dir": str(staging / "published"),
+        "steps": [{
+            "name": "wappi_history_incremental",
+            "kind": "wappi_history",
+            "required": False,
+            "config": {"env_file": str(tmp_path / "wappi.env"), "phase1_config": str(tmp_path / "phase1.json")},
+        }],
+    }), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == "partial"
+    assert report["failed_required_steps"] == ["wappi_history_incremental"]
+    assert report["snapshot_manifest"]["latest_published"] is False
 
 
 def test_nightly_service_amo_incremental_failure_is_optional(
@@ -2612,6 +2657,8 @@ def test_nightly_service_wappi_proof_is_independent_per_channel(
             "validation_ok": True,
             "fetch_complete": True,
             "source_persistence_complete": True,
+            "attribution_complete": True,
+            "publish_ready": True,
             "summary": {"records_built": 0},
             "profiles": {
                 source: {"source_system": source}

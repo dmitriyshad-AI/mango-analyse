@@ -1962,6 +1962,184 @@ def test_event_owner_change_retires_old_customer_dependencies(tmp_path: Path) ->
     store.close()
 
 
+def test_event_owner_change_releases_cross_customer_supersession_without_full_fts_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000021")
+    second_customer = identity(phone="+79000000022")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    canonical = event(first_customer, source_id="canonical-owner")
+    duplicate = event(first_customer, source_id="duplicate-owner", summary="уникальныйдубль")
+    old_chunk = replace(chunk(duplicate), text="уникальныйконтекстдубля")
+    store.upsert_event(canonical)
+    store.upsert_event(duplicate)
+    store.upsert_bot_context_chunk(old_chunk)
+    store.mark_timeline_events_superseded(
+        "foton", canonical_event_id=canonical.event_id, duplicate_event_ids=(duplicate.event_id,)
+    )
+    monkeypatch.setattr(store, "_rebuild_fts_indexes", lambda: pytest.fail("full FTS rebuild"))
+
+    store.upsert_event(replace(duplicate, customer_id=second_customer.customer_id))
+
+    moved = store._con.execute(
+        "SELECT customer_id,superseded_by FROM timeline_events WHERE event_id=?", (duplicate.event_id,)
+    ).fetchone()
+    retired_chunk = store._con.execute(
+        "SELECT event_id,superseded_by FROM bot_context_chunks WHERE chunk_id=?", (old_chunk.chunk_id,)
+    ).fetchone()
+    assert tuple(moved) == (second_customer.customer_id, None)
+    assert retired_chunk["event_id"] is None and retired_chunk["superseded_by"]
+    assert store.search_timeline("foton", "уникальныйдубль", customer_id=second_customer.customer_id)["items"]
+    assert store.search_timeline("foton", "уникальныйдубль", customer_id=first_customer.customer_id)["items"] == []
+    assert store.search_timeline("foton", "уникальныйконтекстдубля")["items"] == []
+    store.close()
+
+
+def test_canonical_owner_change_reactivates_only_same_owner_duplicates(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000031")
+    second_customer = identity(phone="+79000000032")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    canonical = event(first_customer, source_id="canonical-moves")
+    duplicate = event(first_customer, source_id="duplicate-stays", summary="возвращенныйдубль")
+    duplicate_chunk = replace(chunk(duplicate), text="возвращенныйконтекст")
+    foreign_chunk = replace(
+        chunk(duplicate),
+        chunk_id=None,
+        customer_id=second_customer.customer_id,
+        source_ref="foreign-owner-context",
+        text="чужойконтекст",
+    )
+    store.upsert_event(canonical)
+    store.upsert_event(duplicate)
+    store.upsert_bot_context_chunk(duplicate_chunk)
+    store.upsert_bot_context_chunk(foreign_chunk)
+    store.mark_timeline_events_superseded(
+        "foton", canonical_event_id=canonical.event_id, duplicate_event_ids=(duplicate.event_id,)
+    )
+
+    store.upsert_event(replace(canonical, customer_id=second_customer.customer_id))
+
+    restored = store._con.execute(
+        "SELECT superseded_by FROM timeline_events WHERE event_id=?", (duplicate.event_id,)
+    ).fetchone()
+    restored_chunk = store._con.execute(
+        "SELECT superseded_by FROM bot_context_chunks WHERE chunk_id=?", (duplicate_chunk.chunk_id,)
+    ).fetchone()
+    foreign_row = store._con.execute(
+        "SELECT superseded_by FROM bot_context_chunks WHERE chunk_id=?", (foreign_chunk.chunk_id,)
+    ).fetchone()
+    assert restored["superseded_by"] is None
+    assert restored_chunk["superseded_by"] is None
+    assert foreign_row["superseded_by"] == canonical.event_id
+    assert store.search_timeline("foton", "возвращенныйдубль", customer_id=first_customer.customer_id)["items"]
+    assert store.search_timeline("foton", "возвращенныйконтекст", customer_id=first_customer.customer_id)["items"]
+    assert store.search_timeline("foton", "чужойконтекст")["items"] == []
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 1
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 0
+    store.close()
+
+
+def test_canonical_owner_change_keeps_one_active_replacement_per_old_customer(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_customer = identity(phone="+79000000034")
+    second_customer = identity(phone="+79000000035")
+    store.upsert_customer(first_customer)
+    store.upsert_customer(second_customer)
+    canonical = event(first_customer, source_id="multi-canonical")
+    duplicates = tuple(
+        replace(
+            event(first_customer, source_id=f"multi-duplicate-{index}"),
+            event_at=NOW + timedelta(minutes=index),
+        )
+        for index in (1, 2)
+    )
+    chunks = tuple(replace(chunk(item), text="мультидубль") for item in duplicates)
+    store.upsert_event(canonical)
+    for item in duplicates:
+        store.upsert_event(item)
+    for item in chunks:
+        store.upsert_bot_context_chunk(item)
+    store.mark_timeline_events_superseded(
+        "foton",
+        canonical_event_id=canonical.event_id,
+        duplicate_event_ids=tuple(item.event_id for item in duplicates),
+    )
+
+    store.upsert_event(replace(canonical, customer_id=second_customer.customer_id))
+
+    event_rows = store._con.execute(
+        "SELECT event_id,superseded_by FROM timeline_events WHERE event_id IN (?,?) ORDER BY event_id",
+        tuple(item.event_id for item in duplicates),
+    ).fetchall()
+    chunk_rows = store._con.execute(
+        "SELECT chunk_id,superseded_by FROM bot_context_chunks WHERE chunk_id IN (?,?) ORDER BY chunk_id",
+        tuple(item.chunk_id for item in chunks),
+    ).fetchall()
+    assert sum(row["superseded_by"] is None for row in event_rows) == 1
+    replacement_id = next(str(row["event_id"]) for row in event_rows if row["superseded_by"] is None)
+    assert {row["superseded_by"] for row in event_rows if row["event_id"] != replacement_id} == {replacement_id}
+    assert sum(row["superseded_by"] is None for row in chunk_rows) == 1
+    assert len(store.search_timeline("foton", "мультидубль", customer_id=first_customer.customer_id)["items"]) == 1
+    store.close()
+
+
+def test_shared_family_phone_does_not_change_valid_supersession(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    first_child = replace(identity(phone="+79000000041"), customer_id="customer:first-child")
+    second_child = replace(identity(phone="+79000000041"), customer_id="customer:second-child")
+    store.upsert_customer(first_child)
+    store.upsert_customer(second_child)
+    canonical = event(first_child, source_id="family-canonical")
+    duplicate = event(first_child, source_id="family-duplicate")
+    store.upsert_event(canonical)
+    store.upsert_event(duplicate)
+    store.mark_timeline_events_superseded(
+        "foton", canonical_event_id=canonical.event_id, duplicate_event_ids=(duplicate.event_id,)
+    )
+
+    store.upsert_event(replace(canonical, summary="Обновлённый текст без смены владельца."))
+
+    row = store._con.execute(
+        "SELECT superseded_by FROM timeline_events WHERE event_id=?", (duplicate.event_id,)
+    ).fetchone()
+    assert row["superseded_by"] == canonical.event_id
+    assert store._con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 2
+    store.close()
+
+
+def test_identity_quarantine_never_reactivates_hidden_duplicate(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    customer = identity(phone="+79000000051")
+    store.upsert_customer(customer)
+    canonical = event(customer, source_id="quarantined-canonical")
+    duplicate = event(customer, source_id="quarantined-duplicate", summary="скрытыйкарантинныйдубль")
+    store.upsert_event(canonical)
+    store.upsert_event(duplicate)
+    store.mark_timeline_events_superseded(
+        "foton", canonical_event_id=canonical.event_id, duplicate_event_ids=(duplicate.event_id,)
+    )
+
+    store.quarantine_timeline_events_identity_conflict(
+        "foton",
+        source_system=canonical.source_system,
+        source_id=canonical.source_id,
+        reason="identity_conflict",
+    )
+    assert store.reconcile_event_dependency_owners("foton", actor="test") == 0
+    store.upsert_event(replace(canonical, customer_id=None, summary="Повторный карантинный импорт."))
+
+    hidden = store._con.execute(
+        "SELECT superseded_by FROM timeline_events WHERE event_id=?", (duplicate.event_id,)
+    ).fetchone()
+    assert hidden["superseded_by"] == canonical.event_id
+    assert store.search_timeline("foton", "скрытыйкарантинныйдубль")["items"] == []
+    store.close()
+
+
 def test_identity_conflict_quarantine_detaches_event_and_all_customer_memory(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
     customer = identity(phone="+79000000011")

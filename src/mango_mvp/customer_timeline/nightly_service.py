@@ -657,8 +657,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         raise ValueError(f"enabled step {step.name} requires config")
                     step_report = run_wappi_history_import(step.wappi_history_config)
                 except Exception as exc:
-                    if step.required:
-                        failed_required_steps.append(step.name)
+                    failed_required_steps.append(step.name)
                     report["steps"].append(
                         failed_step_report(
                             index=index,
@@ -672,11 +671,8 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                 step_path = run_dir / f"{index:02d}_{step.name}.json"
                 write_json(step_path, step_report)
                 step_summary = step_report.get("summary") or {}
-                status = "ok" if (
-                    step_report.get("fetch_complete") is True
-                    and step_report.get("source_persistence_complete") is True
-                ) else "failed"
-                if status == "failed" and step.required:
+                status = "ok" if step_report.get("publish_ready") is True else "failed"
+                if status == "failed":
                     failed_required_steps.append(step.name)
                 report["steps"].append(
                     {
@@ -689,6 +685,7 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                         "summary": {
                             **step_summary,
                             "attribution_complete": bool(step_report.get("attribution_complete")),
+                            "publish_ready": bool(step_report.get("publish_ready")),
                             "completed_import_sources": completed_import_source_names(
                                 (step_report.get("import_reports") or {}).values()
                             ),

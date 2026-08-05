@@ -19,6 +19,7 @@
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`; SHA через `git rev-parse main` | Чистый канонический код: все донорские ветки разобраны; отсюда готовится следующий рефакторинг и будущий cutover. | После перевода служб на проверенный `main` в основной папке. |
 | `/Users/dmitrijfabarisov/Projects/Mango_global_code_cut_wave10_20260805` | `3a406391`, `codex/global-code-cut-wave10` | Завершённая уборка старого AMO CRM writeback-контура; коммит уже в `main`, live/runtime не используется. | Можно удалить после отдельного подтверждения владельца; незабранных изменений нет. |
 | `/Users/dmitrijfabarisov/Projects/Mango_p0_model_led_finish_20260805` | `codex/p0-model-led-finish`; SHA через `git rev-parse HEAD` | Завершение model-led P0 и удаления смысловых regex/матрицы из Wappi draft-only пути. | После M1 PASS, слияния проверенного результата в `main` и сверки audit pack. |
+| `/Users/dmitrijfabarisov/Projects/Mango_timeline_owner_relink_fix_20260805` | `codex/timeline-owner-relink-fix`; SHA через `git rev-parse HEAD` | Корневой фикс смены владельца Timeline-события и честного Wappi publish gate. | После тестов, audit pack, слияния в `main` и отдельного подтверждения владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback старого Wappi runtime. | После M1 PASS, безопасного редеплоя и отдельного решения владельца. |
 
 ## Runtime

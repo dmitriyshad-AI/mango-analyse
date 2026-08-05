@@ -285,6 +285,10 @@ def run_tallanto_attendance_api_increment(
     counters["relationships_from_class_overlap"] = len(overlap_relations)
     counters["relationships_unique"] = len(relationships)
     counters["events_resolved"] = len(events)
+    current_conflicted_tallanto_ids = {
+        str(item["contact_id"]) for item in unresolved if item["reason"] == "identity_conflict"
+    }
+    conflicting_existing_events: tuple[tuple[str, str], ...] = ()
     with sqlite3.connect(customer_timeline_readonly_uri(db), uri=True) as con:
         existing_event_count = int(
             con.execute(
@@ -292,7 +296,21 @@ def run_tallanto_attendance_api_increment(
                 (config.tenant_id, API_SOURCE_SYSTEM),
             ).fetchone()[0]
         )
+        if current_conflicted_tallanto_ids:
+            placeholders = ",".join("?" for _ in current_conflicted_tallanto_ids)
+            rows = con.execute(
+                "SELECT source_system,source_id FROM timeline_events WHERE tenant_id=? "
+                "AND source_system=? AND customer_id IS NOT NULL AND superseded_by IS NULL "
+                f"AND json_extract(record_json,'$.record.tallanto_student_id') IN ({placeholders})",
+                (
+                    config.tenant_id,
+                    API_SOURCE_SYSTEM,
+                    *sorted(current_conflicted_tallanto_ids),
+                ),
+            ).fetchall()
+            conflicting_existing_events = tuple((str(row[0]), str(row[1])) for row in rows)
     counters["existing_events_before"] = existing_event_count
+    counters["existing_events_identity_conflict"] = len(conflicting_existing_events)
     # Without a durable retry queue, advancing past an unmatched relationship
     # would lose it permanently once the identity appears later.
     blocking_reasons = (
@@ -329,6 +347,15 @@ def run_tallanto_attendance_api_increment(
             )
             try:
                 with store.bulk_write():
+                    for source_system, source_id in conflicting_existing_events:
+                        counters.update(store.quarantine_timeline_events_identity_conflict(
+                            config.tenant_id,
+                            source_system=source_system,
+                            source_id=source_id,
+                            reason="tallanto_identity_conflict",
+                            actor=config.actor,
+                            ingestion_run_id=run.run_id,
+                        ))
                     for event in events:
                         result = store.upsert_event(event, actor=config.actor, ingestion_run_id=run.run_id)
                         counters[result.status] += 1

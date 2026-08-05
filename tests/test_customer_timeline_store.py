@@ -1962,6 +1962,150 @@ def test_event_owner_change_retires_old_customer_dependencies(tmp_path: Path) ->
     store.close()
 
 
+def test_identity_conflict_quarantine_detaches_event_and_all_customer_memory(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    customer = identity(phone="+79000000011")
+    original = event(customer, source_id="identity-conflict")
+    same_source_other_type = replace(
+        original,
+        event_id=None,
+        event_type=TimelineEventType.EMAIL_MESSAGE,
+    )
+    old_signal = signal(original)
+    old_chunk = chunk(original)
+    summary = BotContextChunk(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        source_ref=f"bot-safe:{customer.customer_id}",
+        source_system="customer_timeline_bot_safe_summary",
+        chunk_type="bot_safe_summary",
+        text="Последнее занятие подтверждено.",
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        metadata={"brand_context_authorized": True},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(original)
+    store.upsert_event(same_source_other_type)
+    store.upsert_signal(old_signal)
+    store.upsert_bot_context_chunk(old_chunk)
+    store.upsert_bot_context_chunk(summary)
+
+    first = store.quarantine_timeline_events_identity_conflict(
+        "foton",
+        source_system="mango",
+        source_id="identity-conflict",
+        reason="identity_conflict",
+        actor="test",
+    )
+    first_hash = store._con.execute(
+        "SELECT record_hash FROM timeline_events WHERE event_id=?", (original.event_id,)
+    ).fetchone()[0]
+    second = store.quarantine_timeline_events_identity_conflict(
+        "foton",
+        source_system="mango",
+        source_id="identity-conflict",
+        reason="identity_conflict",
+        actor="test",
+    )
+
+    event_row = store._con.execute(
+        "SELECT customer_id,opportunity_id,match_status,confidence,record_json,record_hash "
+        "FROM timeline_events WHERE event_id=?",
+        (original.event_id,),
+    ).fetchone()
+    signal_row = store._con.execute(
+        "SELECT event_id,status FROM derived_signals WHERE signal_id=?", (old_signal.signal_id,)
+    ).fetchone()
+    chunk_row = store._con.execute(
+        "SELECT event_id,superseded_by FROM bot_context_chunks WHERE chunk_id=?", (old_chunk.chunk_id,)
+    ).fetchone()
+    summary_row = store._con.execute(
+        "SELECT allowed_for_bot,requires_manager_review,superseded_by,record_json "
+        "FROM bot_context_chunks WHERE chunk_id=?",
+        (summary.chunk_id,),
+    ).fetchone()
+    summary_audit = store._con.execute(
+        "SELECT before_hash,after_hash FROM audit_log WHERE action='bot_context_chunk_retired' "
+        "AND entity_id=? ORDER BY created_at DESC LIMIT 1",
+        (summary.chunk_id,),
+    ).fetchone()
+    metadata = json.loads(event_row["record_json"])["metadata"]
+    assert first == {
+        "existing_event_quarantined": 2,
+        "bot_context_chunks_revoked": 1,
+        "bot_safe_summaries_revoked": 1,
+    }
+    assert second == {
+        "existing_event_quarantined": 0,
+        "bot_context_chunks_revoked": 0,
+        "bot_safe_summaries_revoked": 0,
+    }
+    assert event_row["customer_id"] is None
+    assert event_row["opportunity_id"] is None
+    assert event_row["match_status"] == "ambiguous"
+    assert float(event_row["confidence"]) == 0.0
+    assert metadata["pending_attribution"] is True
+    assert metadata["allowed_for_bot"] is False
+    assert metadata["previous_customer_id"] == customer.customer_id
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM timeline_events WHERE source_system='mango' AND source_id='identity-conflict' "
+        "AND customer_id IS NULL AND match_status='ambiguous'"
+    ).fetchone()[0] == 2
+    assert event_row["record_hash"] == first_hash
+    assert signal_row["event_id"] is None and signal_row["status"] == "stale"
+    assert chunk_row["event_id"] is None and chunk_row["superseded_by"]
+    assert summary_row["allowed_for_bot"] == 0
+    assert summary_row["requires_manager_review"] == 1
+    assert summary_row["superseded_by"]
+    assert json.loads(summary_row["record_json"])["metadata"]["retired_reason"] == "identity_conflict"
+    assert summary_audit["before_hash"] != summary_audit["after_hash"]
+    store.close()
+
+
+def test_identity_conflict_quarantine_retires_summary_without_source_event(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
+    customer = identity(phone="+79000000012")
+    summary = BotContextChunk(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        source_ref=f"bot-safe:{customer.customer_id}",
+        source_system="customer_timeline_bot_safe_summary",
+        chunk_type="bot_safe_summary",
+        text="Старая сводка.",
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_bot_context_chunk(summary)
+
+    result = store.quarantine_timeline_events_identity_conflict(
+        "foton",
+        source_system="wappi_telegram",
+        source_id="missing-event",
+        reason="identity_conflict",
+        previous_customer_id=customer.customer_id,
+    )
+
+    row = store._con.execute(
+        "SELECT allowed_for_bot,requires_manager_review,superseded_by,record_json "
+        "FROM bot_context_chunks WHERE chunk_id=?",
+        (summary.chunk_id,),
+    ).fetchone()
+    assert result == {
+        "existing_event_quarantined": 0,
+        "bot_context_chunks_revoked": 0,
+        "bot_safe_summaries_revoked": 1,
+    }
+    assert row["allowed_for_bot"] == 0
+    assert row["requires_manager_review"] == 1
+    assert row["superseded_by"]
+    assert json.loads(row["record_json"])["metadata"]["retired_reason"] == "identity_conflict"
+    store.close()
+
+
 def test_event_owner_change_retires_signal_when_secondary_source_event_moves(tmp_path: Path) -> None:
     store = CustomerTimelineSQLiteStore(tmp_path / "timeline.sqlite", allowed_root=tmp_path)
     first_customer = identity(phone="+79000000021")

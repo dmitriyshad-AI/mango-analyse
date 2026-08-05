@@ -640,6 +640,101 @@ def test_attendance_api_preserves_tallanto_amo_identity_conflict_without_advanci
         ).fetchone() == ("tallanto_attendance_api_identity_conflict", "open")
 
 
+def test_attendance_api_quarantines_event_when_exact_owner_becomes_conflicting(tmp_path: Path) -> None:
+    from mango_mvp.customer_timeline.manager_dossier import _chronology_rows
+
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    _seed_tallanto_customer(db, tmp_path)
+    first = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc),
+    )
+    assert first["counts"]["created"] == 1
+    _seed_customer(db, tmp_path, "customer:unseen")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:unseen",
+                link_type=IdentityLinkType.TALLANTO_STUDENT_ID,
+                link_value="202",
+                source_system="tallanto_snapshot",
+                source_ref="tallanto:202",
+            )
+        )
+        store.upsert_event(
+            TimelineEvent(
+                tenant_id="foton",
+                customer_id="customer:unseen",
+                event_type=TimelineEventType.TALLANTO_ATTENDANCE,
+                event_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+                source_system="tallanto_attendance_api",
+                source_id="unseen-relationship",
+                direction=TimelineDirection.SYSTEM,
+                match_status="strong_unique",
+                confidence=1.0,
+                record={"tallanto_student_id": "202", "writeoff_confirmed": True},
+            )
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_conflict",
+            entity_refs=("customer:student", "tallanto_student_id:101"),
+            severity="high",
+        )
+        store.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_conflict",
+            entity_refs=("customer:unseen", "tallanto_student_id:202"),
+            severity="high",
+        )
+
+    second = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        event = con.execute(
+            "SELECT customer_id,match_status,confidence,record_json,record_hash FROM timeline_events "
+            "WHERE source_system='tallanto_attendance_api' "
+            "AND json_extract(record_json,'$.record.tallanto_student_id')='101'"
+        ).fetchone()
+        unseen_owner = con.execute(
+            "SELECT customer_id FROM timeline_events WHERE source_id='unseen-relationship'"
+        ).fetchone()[0]
+        second_hash = str(event["record_hash"])
+        chronology = _chronology_rows(con, tenant_id="foton", customer_id="customer:student", limit=20)
+
+    third = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit"),
+        now=datetime(2026, 7, 26, 12, 0, tzinfo=timezone.utc),
+    )
+    with sqlite3.connect(db) as con:
+        repeated = con.execute(
+            "SELECT COUNT(*),MAX(CASE WHEN json_extract(record_json,'$.record.tallanto_student_id')='101' "
+            "THEN record_hash END) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
+        ).fetchone()
+
+    metadata = json.loads(event["record_json"])["metadata"]
+    assert second["status"] == "partial"
+    assert second["counts"]["existing_events_identity_conflict"] == 1
+    assert second["counts"]["existing_event_quarantined"] == 1
+    assert event["customer_id"] is None
+    assert event["match_status"] == "ambiguous"
+    assert float(event["confidence"]) == 0.0
+    assert metadata["pending_attribution"] is True
+    assert not any(row.section == "Хронология" for row in chronology)
+    assert unseen_owner == "customer:unseen"
+    assert third["counts"]["existing_events_identity_conflict"] == 0
+    assert third["counts"].get("existing_event_quarantined", 0) == 0
+    assert repeated == (2, second_hash)
+
+
 @pytest.mark.parametrize(
     ("conflict_type", "candidate_count", "expected_resolved"),
     (

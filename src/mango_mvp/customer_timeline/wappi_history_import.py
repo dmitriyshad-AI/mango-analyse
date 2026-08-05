@@ -59,7 +59,6 @@ from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
-    json_dumps,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AMO_WAPPI_ENV_FILE,
@@ -1893,118 +1892,16 @@ def quarantine_conflicting_wappi_events(
     actor: str,
 ) -> Mapping[str, int]:
     counts: Counter[str] = Counter()
-    conflicted_customers: set[str] = set()
     for source_system, source_id, reason, customer_id in sorted(set(conflicts)):
-        conflicted_customers.add(customer_id)
-        row = store._con.execute(
-            """
-            SELECT event_id, record_json, record_hash
-            FROM timeline_events
-            WHERE tenant_id = ? AND source_system = ? AND source_id = ?
-              AND superseded_by IS NULL
-            """,
-            (tenant_id, source_system, source_id),
-        ).fetchone()
-        if row is None:
-            continue
-        payload = json.loads(str(row["record_json"] or "{}"))
-        metadata = dict(payload.get("metadata") or {})
-        metadata.update(
-            {
-                "allowed_for_bot": False,
-                "requires_manager_review": True,
-                "pending_attribution": True,
-                "brand_context_authorized": False,
-                "resolution_reason": reason,
-            }
-        )
-        payload["metadata"] = metadata
-        payload.update(
-            {
-                "customer_id": None,
-                "opportunity_id": None,
-                "match_status": IdentityMatchClass.AMBIGUOUS.value,
-                "confidence": 0.0,
-            }
-        )
-        safe_payload = scrub_timeline_persisted_json(payload)
-        after_hash = stable_digest(safe_payload)
-        if after_hash != str(row["record_hash"]):
-            store._con.execute(
-                "UPDATE timeline_events SET customer_id=NULL, opportunity_id=NULL, "
-                "match_status=?, confidence=0, record_json=?, record_hash=? WHERE event_id=?",
-                (IdentityMatchClass.AMBIGUOUS.value, json_dumps(safe_payload), after_hash, row["event_id"]),
-            )
-            store._delete_superseded_from_fts((str(row["event_id"]),))
-            store._append_audit_log(
-                tenant_id=tenant_id,
-                action="wappi_identity_conflict_quarantined",
-                entity_type="timeline_event",
-                entity_id=str(row["event_id"]),
-                actor=actor,
-                ingestion_run_id=None,
-                before_hash=str(row["record_hash"]),
-                after_hash=after_hash,
-                metadata={"reason": reason, "source_system": source_system},
-                now=store._now(),
-            )
-            counts["existing_event_quarantined"] += 1
-        counts["bot_context_chunks_revoked"] += store.revoke_bot_context_chunks_for_event(
+        counts.update(store.quarantine_timeline_events_identity_conflict(
             tenant_id,
-            event_id=str(row["event_id"]),
             source_system=source_system,
-            reason="wappi_identity_conflict",
+            source_id=source_id,
+            reason=reason,
+            derived_reason="wappi_identity_conflict",
+            previous_customer_id=customer_id,
             actor=actor,
-        )
-    for customer_id in sorted(conflicted_customers):
-        rows = store._con.execute(
-            """
-            SELECT chunk_id, record_json, record_hash
-            FROM bot_context_chunks
-            WHERE tenant_id = ? AND customer_id = ? AND chunk_type = 'bot_safe_summary'
-              AND superseded_by IS NULL
-            """,
-            (tenant_id, customer_id),
-        ).fetchall()
-        retired_ids: list[str] = []
-        for row in rows:
-            payload = json.loads(str(row["record_json"] or "{}"))
-            metadata = dict(payload.get("metadata") or {})
-            metadata["retired_reason"] = "wappi_identity_conflict"
-            payload.update(
-                {
-                    "allowed_for_bot": False,
-                    "requires_manager_review": True,
-                    "metadata": metadata,
-                }
-            )
-            safe_payload = scrub_timeline_persisted_json(payload)
-            after_hash = stable_digest(safe_payload)
-            store._con.execute(
-                """
-                UPDATE bot_context_chunks
-                SET allowed_for_bot = 0, requires_manager_review = 1,
-                    superseded_by = ?, record_json = ?, record_hash = ?
-                WHERE chunk_id = ?
-                """,
-                (str(row["chunk_id"]), json_dumps(safe_payload), after_hash, row["chunk_id"]),
-            )
-            store._append_audit_log(
-                tenant_id=tenant_id,
-                action="bot_safe_summary_revoked_for_wappi_conflict",
-                entity_type="bot_context_chunk",
-                entity_id=str(row["chunk_id"]),
-                actor=actor,
-                ingestion_run_id=None,
-                before_hash=str(row["record_hash"]),
-                after_hash=after_hash,
-                metadata={"customer_id": customer_id},
-                now=store._now(),
-            )
-            retired_ids.append(str(row["chunk_id"]))
-        if retired_ids:
-            store._delete_bot_context_fts_for_chunk_ids(retired_ids)
-            counts["bot_safe_summaries_revoked"] += len(retired_ids)
+        ))
     return dict(counts)
 
 

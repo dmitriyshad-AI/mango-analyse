@@ -17,6 +17,7 @@ from mango_mvp.customer_timeline.contracts import (
     DerivedSignal,
     EventArtifact,
     IdentityLink,
+    IdentityMatchClass,
     TimelineEvent,
     UNIQUE_IDENTITY_LINK_TYPES,
 )
@@ -1794,6 +1795,7 @@ class CustomerTimelineSQLiteStore:
         chunk_id: str,
         *,
         reason: str,
+        mark_manager_review: bool = False,
         actor: str = "system",
         ingestion_run_id: Optional[str] = None,
     ) -> CustomerTimelineStoreWriteResult:
@@ -1801,7 +1803,7 @@ class CustomerTimelineSQLiteStore:
         self._ensure_writable()
         chunk = require_text(chunk_id, "chunk_id")
         existing = self._fetch_one(
-            "SELECT tenant_id,record_hash,superseded_by FROM bot_context_chunks WHERE chunk_id=?",
+            "SELECT tenant_id,record_hash,superseded_by,record_json FROM bot_context_chunks WHERE chunk_id=?",
             (chunk,),
         )
         if existing is None or existing["superseded_by"]:
@@ -1810,10 +1812,24 @@ class CustomerTimelineSQLiteStore:
                 str(existing["record_hash"]) if existing is not None else stable_digest({"missing": chunk}),
             )
         marker = f"retired:{normalize_key(reason, 'retirement reason')}"
-        self._con.execute(
-            "UPDATE bot_context_chunks SET superseded_by=? WHERE chunk_id=?",
-            (marker, chunk),
-        )
+        after_hash = str(existing["record_hash"])
+        if mark_manager_review:
+            payload = json.loads(str(existing["record_json"] or "{}"))
+            metadata = dict(payload.get("metadata") or {})
+            metadata["retired_reason"] = normalize_key(reason, "retirement reason")
+            payload.update({"allowed_for_bot": False, "requires_manager_review": True, "metadata": metadata})
+            safe_payload = scrub_timeline_persisted_json(payload)
+            after_hash = stable_digest(safe_payload)
+            self._con.execute(
+                "UPDATE bot_context_chunks SET allowed_for_bot=0,requires_manager_review=1,superseded_by=?,"
+                "record_json=?,record_hash=? WHERE chunk_id=?",
+                (marker, json_dumps(safe_payload), after_hash, chunk),
+            )
+        else:
+            self._con.execute(
+                "UPDATE bot_context_chunks SET superseded_by=? WHERE chunk_id=?",
+                (marker, chunk),
+            )
         self._delete_bot_context_fts_for_chunk_ids((chunk,))
         audit = self._append_audit_log(
             tenant_id=str(existing["tenant_id"]),
@@ -1823,14 +1839,146 @@ class CustomerTimelineSQLiteStore:
             actor=actor,
             ingestion_run_id=ingestion_run_id,
             before_hash=str(existing["record_hash"]),
-            after_hash=str(existing["record_hash"]),
+            after_hash=after_hash,
             metadata={"reason": reason, "superseded_by": marker},
             now=self._now(),
         )
         self._commit()
         return CustomerTimelineStoreWriteResult(
-            "bot_context_chunk", chunk, False, "updated", str(existing["record_hash"]), audit.audit_id
+            "bot_context_chunk", chunk, False, "updated", after_hash, audit.audit_id
         )
+
+    def quarantine_timeline_events_identity_conflict(
+        self,
+        tenant_id: str,
+        *,
+        source_system: str,
+        source_id: str,
+        reason: str,
+        derived_reason: Optional[str] = None,
+        previous_customer_id: Optional[str] = None,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> Mapping[str, int]:
+        """Detach active source events whose exact owner became ambiguous."""
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        source = normalize_key(source_system, "source_system")
+        source_record_id = require_text(source_id, "source_id")
+        normalized_reason = normalize_key(reason, "reason")
+        normalized_derived_reason = normalize_key(derived_reason or reason, "derived_reason")
+        rows = self._con.execute(
+            "SELECT event_id,customer_id,opportunity_id,record_json,record_hash FROM timeline_events "
+            "WHERE tenant_id=? AND source_system=? AND source_id=? AND superseded_by IS NULL",
+            (tenant, source, source_record_id),
+        ).fetchall()
+        affected_customers = {
+            value
+            for value in (
+                optional_text(previous_customer_id),
+                *(optional_text(row["customer_id"]) for row in rows),
+            )
+            if value is not None
+        }
+        summary_ids = {
+            str(summary[0])
+            for customer_id in affected_customers
+            for summary in self._con.execute(
+                "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? AND customer_id=? "
+                "AND chunk_type='bot_safe_summary' AND superseded_by IS NULL",
+                (tenant, customer_id),
+            )
+        }
+        event_chunk_ids: set[str] = set()
+        quarantined = 0
+        for row in rows:
+            event_id = str(row["event_id"])
+            old_customer_id = optional_text(row["customer_id"])
+            old_opportunity_id = optional_text(row["opportunity_id"])
+            payload = json.loads(str(row["record_json"] or "{}"))
+            metadata = dict(payload.get("metadata") or {})
+            metadata.update(
+                {
+                    "allowed_for_bot": False,
+                    "requires_manager_review": True,
+                    "pending_attribution": True,
+                    "brand_context_authorized": False,
+                    "resolution_reason": normalized_reason,
+                }
+            )
+            if old_customer_id is not None:
+                metadata["previous_customer_id"] = old_customer_id
+            if old_opportunity_id is not None:
+                metadata["previous_opportunity_id"] = old_opportunity_id
+            payload.update(
+                {
+                    "customer_id": None,
+                    "opportunity_id": None,
+                    "match_status": IdentityMatchClass.AMBIGUOUS.value,
+                    "confidence": 0.0,
+                    "metadata": metadata,
+                }
+            )
+            safe_payload = scrub_timeline_persisted_json(payload)
+            after_hash = stable_digest(safe_payload)
+            if after_hash == str(row["record_hash"]) and old_customer_id is None:
+                continue
+            event_chunk_ids.update(
+                str(chunk[0])
+                for chunk in self._con.execute(
+                    "SELECT chunk_id FROM bot_context_chunks WHERE tenant_id=? AND event_id=? "
+                    "AND superseded_by IS NULL",
+                    (tenant, event_id),
+                )
+            )
+            self._retire_dependencies(
+                tenant,
+                event_id,
+                reference_column="event_id",
+                keep_customer_id=None,
+                reason=normalized_derived_reason,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                source_record_hash=str(row["record_hash"]),
+            )
+            self._con.execute(
+                "UPDATE timeline_events SET customer_id=NULL,opportunity_id=NULL,match_status=?,confidence=0,"
+                "record_json=?,record_hash=? WHERE event_id=?",
+                (IdentityMatchClass.AMBIGUOUS.value, json_dumps(safe_payload), after_hash, event_id),
+            )
+            self._delete_superseded_from_fts((event_id,))
+            self._append_audit_log(
+                tenant_id=tenant,
+                action="timeline_event_identity_conflict_quarantined",
+                entity_type="timeline_event",
+                entity_id=event_id,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+                before_hash=str(row["record_hash"]),
+                after_hash=after_hash,
+                metadata={
+                    "reason": normalized_reason,
+                    "source_system": source,
+                    "previous_customer_id": old_customer_id,
+                },
+                now=self._now(),
+            )
+            quarantined += 1
+
+        for chunk_id in summary_ids:
+            self.retire_bot_context_chunk(
+                chunk_id,
+                reason=normalized_derived_reason,
+                mark_manager_review=True,
+                actor=actor,
+                ingestion_run_id=ingestion_run_id,
+            )
+        self._commit()
+        return {
+            "existing_event_quarantined": quarantined,
+            "bot_context_chunks_revoked": len(event_chunk_ids),
+            "bot_safe_summaries_revoked": len(summary_ids),
+        }
 
     def mark_timeline_events_superseded(
         self,

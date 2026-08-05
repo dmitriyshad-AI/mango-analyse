@@ -14,8 +14,6 @@ from mango_mvp.customer_timeline.context_provider import (
     evaluate_timeline_promotion,
     get_customer_context_for_phone,
 )
-from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS, build_preview_row
-from mango_mvp.deal_aware.deal_writeback import build_dry_run_row, validate_field_catalog
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
@@ -114,39 +112,6 @@ def test_coverage_report_counts_missing_deal_aware_phones(tmp_path: Path) -> Non
     assert json.loads((out / "summary.json").read_text(encoding="utf-8"))["coverage_ratio"] == 0.5
 
 
-def test_deal_aware_preview_can_include_timeline_context_under_flag() -> None:
-    payload = {field: f"{field}: безопасный текст" for field in DEAL_AI_FIELDS}
-    base = build_preview_row(
-        index=1,
-        candidate={"selected_deal_id": "123", "phones": "+79000000000"},
-        payload=payload,
-        tallanto_context={"match_status": "exact_phone_single"},
-        row_findings=[],
-        quality_passed=True,
-    )
-    enriched = build_preview_row(
-        index=1,
-        candidate={"selected_deal_id": "123", "phones": "+79000000000"},
-        payload=payload,
-        tallanto_context={"match_status": "exact_phone_single"},
-        row_findings=[],
-        quality_passed=True,
-        timeline_context={
-            "source": "customer_timeline",
-            "found": True,
-            "fallback_used": False,
-            "summary": "Timeline: найдено событий 1.",
-            "timeline": {"items": [{"event_type": "mango_call"}]},
-            "warnings": [],
-        },
-    )
-
-    assert "customer_timeline_source" not in base
-    assert enriched["customer_timeline_source"] == "customer_timeline"
-    assert enriched["customer_timeline_found"] == "Да"
-    assert enriched["customer_timeline_event_count"] == "1"
-
-
 def test_timeline_primary_read_enabled_after_coverage_gate() -> None:
     promotion = evaluate_timeline_promotion(
         {
@@ -179,38 +144,3 @@ def test_timeline_live_write_context_requires_verified_coverage() -> None:
     assert promotion["stages"]["timeline_live_write_context_allowed"] is False
     with pytest.raises(ValueError, match="not allowed"):
         assert_timeline_stage_allowed("timeline_live_write_context_allowed", promotion)
-
-
-def test_live_writeback_does_not_require_customer_timeline() -> None:
-    row = {field: f"{field}: безопасный текст" for field in DEAL_AI_FIELDS}
-    row.update(
-        {
-            "review_id": "deal-stage5-00001",
-            "selected_deal_id": "123",
-            "stage5_decision": "allow_stage6_dry_run",
-            "AI-приоритет сделки": "warm",
-            "AI-дата следующего касания": "2026-05-16",
-            "AI-дата обновления сделки": "2026-05-15T10:00:00+00:00",
-        }
-    )
-    field_catalog = [
-        {
-            "id": 1000 + index,
-            "name": field,
-            "type": "date_time" if field == "AI-дата обновления сделки" else "textarea",
-            "is_api_only": False,
-        }
-        for index, field in enumerate(DEAL_AI_FIELDS)
-    ]
-
-    report_row, findings = build_dry_run_row(
-        row,
-        row_index=1,
-        field_catalog=field_catalog,
-        field_guard=validate_field_catalog(field_catalog),
-        analysis_date="2026-05-15",
-    )
-
-    assert report_row["stage6_status"] == "dry_run"
-    assert "customer_timeline" not in report_row["updated_fields"]
-    assert findings == []

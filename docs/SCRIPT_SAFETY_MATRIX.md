@@ -96,7 +96,6 @@
 | `run_pilot_sales_moment_llm_review.py` | insights | `NETWORK_READ_ONLY` | Может обращаться к LLM API, пишет review artifacts. | Малые batch, без CRM writes. |
 | `smoke_test_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto API. | Безопасно при credentials. |
 | `summarize_merge_usage.py` | ops | `SAFE_READ_ONLY` | Summaries/statistics. | Безопасно. |
-| `write_amo_ready_contacts.py` | crm | `CRM_LIVE_GUARDED` | По умолчанию dry-run report; live contact write только с confirmation. | Live: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. |
 | `write_recent_actionable_deals.py` | crm | `CRM_LIVE_GUARDED` | По умолчанию dry-run report; live deal writeback только с confirmation. | Live: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. |
 
 ## Canonical recommendations
@@ -114,8 +113,6 @@
 
 ### AMO writeback
 
-- Для контактов: `write_amo_ready_contacts.py` теперь по умолчанию делает dry-run
-  отчет.
 - Для сделок: `write_recent_actionable_deals.py` теперь по умолчанию делает
   dry-run отчет.
 - Live-запись в amoCRM требует оба параметра:

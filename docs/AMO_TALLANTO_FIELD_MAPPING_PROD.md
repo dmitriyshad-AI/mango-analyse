@@ -151,7 +151,6 @@ Schema discovery выполняется read-only через `scripts/export_tal
 
 | Area | File |
 |---|---|
-| Contact writeback CLI | `scripts/write_amo_ready_contacts.py` |
 | Deal writeback CLI | `scripts/write_recent_actionable_deals.py` |
 | HTTP deal writeback gate | `src/mango_mvp/amocrm_runtime/routers/deals.py` |
 | amoCRM field update helpers | `src/mango_mvp/amocrm_runtime/amo_integration.py` |

@@ -11,7 +11,6 @@ from mango_mvp.customer_timeline import (
     approved_context_pack,
     calls_two_processes,
     canonical_readonly_import,
-    crm_export_package,
     ingestion,
     mail_stage2_ingest,
 )
@@ -37,7 +36,6 @@ def test_timeline_sha_helpers_reexport_one_canonical_implementation() -> None:
     assert approved_context_pack.file_sha256 is file_sha256
     assert canonical_readonly_import.file_sha256 is file_sha256
     assert calls_two_processes.sha256_file is file_sha256
-    assert crm_export_package._sha256_file is file_sha256
 
 
 def test_safe_copy_prod_snapshot_copies_only_stable_sqlite_file(tmp_path: Path) -> None:

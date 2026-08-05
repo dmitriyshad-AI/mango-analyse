@@ -17,6 +17,7 @@
 |---|---|---|---|
 | `/Users/dmitrijfabarisov/Projects/Mango analyse` | `e917db33`, `claude/timeline-final-20260803` | Канонический путь данных и процессов calls A/B и Customer Timeline nightly. Все 15 уникальных коммитов разобраны: полезное уже в `main`, остаток отклонён; ветка не содержит очереди на слияние. Дерево чистое. | Только после отдельного cutover служб на проверенный `main` и проверки PID/HEAD/env; после этого ветку можно удалить. |
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`; SHA через `git rev-parse main` | Чистый канонический код: все донорские ветки разобраны; отсюда готовится следующий рефакторинг и будущий cutover. | После перевода служб на проверенный `main` в основной папке. |
+| `/Users/dmitrijfabarisov/Projects/Mango_global_code_cut_wave10_20260805` | `codex/global-code-cut-wave10`; SHA через `git rev-parse HEAD` | Уборка доказанно мёртвого старого AMO CRM writeback-контура; live/runtime не используется. | После вливания проверенного коммита в `main` и сверки отсутствия незабранных изменений. |
 | `/Users/dmitrijfabarisov/Projects/Mango_rollback_wappi_ca1779bc` | detached `ca1779bc` | Проверенный rollback старого Wappi runtime. | После M1 PASS, безопасного редеплоя и отдельного решения владельца. |
 
 ## Runtime

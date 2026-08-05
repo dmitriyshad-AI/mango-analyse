@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from mango_mvp.crm_card_aggregator import build_crm_card_projection
 from mango_mvp.customer_timeline import (
     CustomerIdentity,
     CustomerTimelineReadApi,
@@ -422,19 +421,16 @@ def test_later_imperative_request_does_not_close_documents_step() -> None:
     assert result.closing_event_id == ""
 
 
-def test_read_api_profile_and_crm_card_use_resolved_cross_channel_step(tmp_path: Path) -> None:
+def test_read_api_profile_uses_resolved_cross_channel_step(tmp_path: Path) -> None:
     db_path, customer_id = seed_next_step_db(tmp_path, with_conflict=False)
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
         profile = api.customer_profile(TENANT, customer_id, event_limit=10, bot_context_limit=1)
 
-    card = build_crm_card_projection(
-        profile,
-        manager_facts={"AMO contact IDs": "123", "selected_deal_id": "456"},
-    )
-
     assert profile["next_step_resolution"]["status"] == "closed"
     assert profile["next_step_resolution"]["closing_channel"] == "почта"
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Шаг закрыт: документы/материалы отправлены (от 21.06.2026, почта)"
+    assert profile["next_step_resolution"]["display_text"] == (
+        "Шаг закрыт: документы/материалы отправлены (от 21.06.2026, почта)"
+    )
 
 
 def test_read_api_profile_blocks_closure_when_ambiguous_identity_is_open(tmp_path: Path) -> None:
@@ -442,15 +438,10 @@ def test_read_api_profile_blocks_closure_when_ambiguous_identity_is_open(tmp_pat
     with CustomerTimelineReadApi.open(CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=tmp_path)) as api:
         profile = api.customer_profile(TENANT, customer_id, event_limit=10, bot_context_limit=1)
 
-    card = build_crm_card_projection(
-        profile,
-        manager_facts={"AMO contact IDs": "123", "selected_deal_id": "456"},
-    )
-
     assert profile["readiness"]["open_conflicts"] == 1
     assert profile["next_step_resolution"]["status"] == "needs_manager_review"
     assert profile["next_step_resolution"]["reason_code"] == "ambiguous_identity_open"
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Уточнить у менеджера: открыт конфликт идентичности"
+    assert profile["next_step_resolution"]["display_text"] == "Уточнить у менеджера: открыт конфликт идентичности"
 
 
 def seed_next_step_db(tmp_path: Path, *, with_conflict: bool) -> tuple[Path, str]:

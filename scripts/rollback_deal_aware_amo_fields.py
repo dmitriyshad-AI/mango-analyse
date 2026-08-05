@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
+
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+ENV_FILES = (
+    ROOT / "stable_runtime" / "amocrm_runtime" / ".env.private",
+    ROOT / "prod_runtime_transfer" / ".env.private",
+)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(SRC) not in sys.path:
@@ -23,6 +30,25 @@ from mango_mvp.deal_aware.amo_rollback import (  # noqa: E402
     run_rollback,
     write_rollback_outputs,
 )
+
+
+def _load_env_files() -> None:
+    for path in ENV_FILES:
+        load_dotenv(path, override=False)
+    os.environ.setdefault(
+        "DATABASE_URL",
+        f"sqlite:///{(ROOT / 'stable_runtime' / 'amocrm_runtime' / 'amo_runtime.db').resolve()}",
+    )
+
+
+def _preflight_runtime_db(session: Any) -> tuple[bool, str]:
+    try:
+        from sqlalchemy import text
+
+        session.execute(text("SELECT 1"))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -83,8 +109,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     snapshot_rows = _filter_snapshot_rows(load_snapshot_rows(snapshot_path), contact_id=args.contact, lead_id=args.lead)
     resume_keys = load_successful_rollback_keys(resume_path)
-
-    from scripts.write_amo_ready_contacts import _load_env_files, _preflight_runtime_db  # noqa: PLC0415
 
     _load_env_files()
     from mango_mvp.amocrm_runtime.amo_integration import (  # noqa: PLC0415

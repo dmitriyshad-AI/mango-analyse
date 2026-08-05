@@ -72,25 +72,18 @@
 | `normalize_tallanto_contacts.py` | crm | `SAFE_REPORT_WRITES` | Нормализует contacts export. | Безопасно. |
 | `prefill_asr_from_dbs.py` | processing | `PROCESSING_MUTATES_DB` | Может префиллить ASR из DB. | Только processing-диалог. |
 | `prepare_asr_only_date_window.py` | processing | `PROCESSING_MUTATES_DB` | Готовит ASR-only batch. | Только processing-диалог. |
-| `prepare_contact_history_batch.py` | processing | `PROCESSING_MUTATES_DB` | Готовит batch/history. | Только processing-диалог. |
 | `prepare_date_window_subset.py` | processing | `PROCESSING_MUTATES_DB` | Готовит subset. | Только processing-диалог. |
 | `prepare_dual_asr_new_llm_wave.py` | processing | `PROCESSING_MUTATES_DB` | Готовит ASR/LLM wave. | Только processing-диалог. |
 | `prepare_gigaam_useful_subset.py` | processing | `PROCESSING_MUTATES_DB` | Готовит ASR subset. | Только processing-диалог. |
-| `prepare_history_gap_wave.py` | processing | `PROCESSING_MUTATES_DB` | Готовит history gap wave. | Только processing-диалог. |
 | `prepare_llm_wave_from_recommendations.py` | processing | `PROCESSING_MUTATES_DB` | Готовит LLM wave. | Только processing-диалог. |
 | `prepare_manual_tail_analyze_fallback.py` | processing | `PROCESSING_MUTATES_DB` | Готовит manual R+A fallback. | Только processing-диалог. |
-| `prepare_message_archive_history_full_cycle.py` | processing | `PROCESSING_MUTATES_DB` | Full-cycle archive/history. | Только processing-диалог. |
-| `prepare_message_archive_wave.py` | processing | `PROCESSING_MUTATES_DB` | Message archive wave. | Только processing-диалог. |
-| `prepare_message_archives_history_full_cycle.py` | processing | `PROCESSING_MUTATES_DB` | Full-cycle archive/history. | Только processing-диалог. |
 | `prepare_overnight_full_asr_priority.py` | processing | `PROCESSING_MUTATES_DB` | Overnight ASR priority. | Только processing-диалог. |
-| `prepare_phone_history_batch.py` | processing | `PROCESSING_MUTATES_DB` | Phone history batch. | Только processing-диалог. |
 | `prepare_priority_history_wave.py` | processing | `PROCESSING_MUTATES_DB` | Priority history wave. | Только processing-диалог. |
 | `prepare_remaining_asr_batch.py` | processing | `PROCESSING_MUTATES_DB` | Remaining ASR batch. | Только processing-диалог. |
 | `prepare_resolve_analyze_missing_batch.py` | processing | `PROCESSING_MUTATES_DB` | Missing R+A batch. | Только processing-диалог. |
 | `prepare_untranscribed_merge_batches.py` | processing | `PROCESSING_MUTATES_DB` | Merge batches. | Только processing-диалог. |
 | `project_audit.py` | ops | `SAFE_REPORT_WRITES` | Пишет audit report. | Безопасно, output документировать. |
 | `promote_ai_review_to_amo_ready.py` | crm | `SAFE_REPORT_WRITES` | Готовит AMO-ready export, не live write. | Проверять перед writeback. |
-| `repair_and_move_message_archives.py` | processing | `PROCESSING_MUTATES_DB` | Repair/move archive files. | Только processing-диалог. |
 | `requeue_secondary_backfill.py` | processing | `PROCESSING_MUTATES_DB` | Requeue/backfill. | Только processing-диалог. |
 | `run_analyze_ab_test.py` | processing | `PROCESSING_MUTATES_DB` | Analyze A/B workflow. | Только processing-диалог. |
 | `run_pilot_sales_moment_llm_review.py` | insights | `NETWORK_READ_ONLY` | Может обращаться к LLM API, пишет review artifacts. | Малые batch, без CRM writes. |
@@ -124,6 +117,5 @@
 ### Processing
 
 Все `prepare_*`, `finalize_*`, `prefill_asr_from_dbs.py`,
-`run_analyze_ab_test.py`, `repair_and_move_message_archives.py` и похожие
-скрипты считаются отдельным контуром обработки. Их не запускать и не менять без
-отдельного согласования.
+`run_analyze_ab_test.py` и похожие скрипты считаются отдельным контуром
+обработки. Их не запускать и не менять без отдельного согласования.

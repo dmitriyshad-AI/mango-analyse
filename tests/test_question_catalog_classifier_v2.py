@@ -6,6 +6,7 @@ import pytest
 
 from mango_mvp.question_catalog.classifier import (
     classify_question,
+    load_taxonomy,
     load_valid_theme_and_service_ids,
     validate_against_taxonomy,
 )
@@ -39,6 +40,15 @@ def test_refine_broad_fallback_subclass_removed() -> None:
 
 
 def test_classify_question_returns_valid_theme_or_service() -> None:
+    themes = list(load_taxonomy()["themes"])
+    rop_fields = {
+        "rop_decision", "rop_approved_phrasing", "rop_mandatory_data",
+        "rop_forbids_extra", "rop_handoff_target", "rop_comment",
+    }
+    assert len(themes) == 32
+    assert all(theme.get("rop_decision") and rop_fields <= theme.keys() for theme in themes)
+    by_id = {theme["theme_id"]: theme for theme in themes}
+    assert by_id["theme:008_tax_deduction"]["default_bot_permission"] == "draft_for_manager"
     valid_ids = load_valid_theme_and_service_ids()
     cases = {
         "Сколько стоит?": "theme:001_pricing",

@@ -464,8 +464,8 @@ def _resolve_family_assignments(
                 unsafe.add(customer_id)
         elif str(row["match_class"] or "") not in {"strong_unique", "manual"}:
             unsafe.add(customer_id)
-    for owners in customers_by_id.values():
-        if len(owners) != 1:
+    for student_id, owners in customers_by_id.items():
+        if len(owners) != 1 and exact_tallanto_owners.get(student_id) is None:
             unsafe.update(customers & owners)
     for row in con.execute(
         "SELECT record_json FROM timeline_conflicts "

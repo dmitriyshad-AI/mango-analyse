@@ -867,6 +867,79 @@ def test_family_graph_accepts_late_exact_link_for_inferred_card_and_event(tmp_pa
     assert attribution[2]
 
 
+def test_family_graph_keeps_canonical_owner_safe_from_stale_ambiguous_holder(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    family_customers = ("customer:canonical-a", "customer:canonical-b")
+    for index, customer_id in enumerate(family_customers, start=1):
+        _seed_customer(
+            db_path,
+            tmp_path,
+            customer_id=customer_id,
+            phone=f"+7900000003{index}",
+        )
+        _seed_tallanto_identity(
+            db_path,
+            tmp_path,
+            customer_id,
+            f"student-canonical-{index}",
+            "canonical-family@example.com",
+            student_name=("Анна Иванова", "Борис Иванов")[index - 1],
+        )
+    _seed_customer(
+        db_path,
+        tmp_path,
+        customer_id="customer:stale-holder",
+        phone="+79000000039",
+    )
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id="customer:stale-holder",
+                link_type="tallanto_student_id",
+                link_value="student-canonical-1",
+                source_system="tallanto_snapshot",
+                source_ref="historical:ambiguous-holder",
+                match_class=IdentityMatchClass.AMBIGUOUS,
+                confidence=0.5,
+            )
+        )
+        conflict = store.record_conflict(
+            "foton",
+            conflict_type="ambiguous_identity",
+            entity_refs=(
+                "email:canonical-family@example.com",
+                *family_customers,
+            ),
+            metadata={"identifiers": ["email:canonical-family@example.com"]},
+        )
+
+    build_family_graph(FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True))
+
+    with sqlite3.connect(db_path) as con:
+        members = con.execute(
+            "SELECT customer_id,family_id,membership_status FROM family_members_v1 ORDER BY customer_id"
+        ).fetchall()
+        event_owners = con.execute(
+            "SELECT source_id,customer_id FROM timeline_events "
+            "WHERE event_type='tallanto_student_snapshot' ORDER BY source_id"
+        ).fetchall()
+        conflict_status = con.execute(
+            "SELECT status FROM timeline_conflicts WHERE conflict_id=?",
+            (conflict.record_id,),
+        ).fetchone()[0]
+    by_customer = {row[0]: row[1:] for row in members}
+    assert by_customer[family_customers[0]][0] == by_customer[family_customers[1]][0]
+    assert by_customer[family_customers[0]][1] == "confident"
+    assert by_customer[family_customers[1]][1] == "confident"
+    assert by_customer["customer:stale-holder"][1] == "conflict"
+    assert event_owners == [
+        ("student-canonical-1", family_customers[0]),
+        ("student-canonical-2", family_customers[1]),
+    ]
+    assert conflict_status == "resolved"
+
+
 def test_family_graph_rejects_inferred_card_when_exact_id_belongs_to_other_customer(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     _seed_customer(db_path, tmp_path, customer_id="customer:other", phone="+79000000024")

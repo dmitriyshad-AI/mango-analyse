@@ -3,7 +3,7 @@ from __future__ import annotations
 from mango_mvp.channels import output_verification_floor as floor
 from mango_mvp.channels import pilot_profile_runtime
 from mango_mvp.channels import subscription_llm_parts as facade
-from mango_mvp.channels.subscription_llm_parts import policy_routing, post_layers, provider, support
+from mango_mvp.channels.subscription_llm_parts import policy_routing, post_layers, support
 
 
 def test_floor_manifest_has_one_physical_owner() -> None:
@@ -15,7 +15,6 @@ def test_floor_manifest_has_one_physical_owner() -> None:
 
 
 def test_live_consumers_import_the_floor_directly() -> None:
-    assert provider.dialogue_contract_p0_pre_gate is floor.p0_pre_gate
     assert post_layers.dialogue_contract_p0_pre_gate is floor.p0_pre_gate
     assert post_layers.verify_dialogue_contract_output is floor.verify_output
     assert post_layers.has_meta_leak is floor.has_meta_leak

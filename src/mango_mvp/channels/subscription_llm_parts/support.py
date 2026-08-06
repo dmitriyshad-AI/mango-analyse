@@ -504,48 +504,6 @@ def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> boo
     return bool(explicit) if explicit is not None else _pilot_profile_default_on_flag_enabled(context, PROSE_MODEL_LED_ENV)
 
 
-_P0_MODEL_LED_NON_COMPLAINT_HARD_CODES = frozenset({"refund", "legal", "payment_dispute"})
-
-
-_P0_MODEL_LED_COMPLAINT_BACKSTOP_RE = re.compile(
-    r"(?iu)"
-    r"(?:"
-    r"\bжалоб\w*"
-    r"|безобрази\w*"
-    r"|отвратительн\w*"
-    r"|накричал\w*\s+на\s+реб[её]нк\w*"
-    r"|(?:унизил\w*|оскорбил\w*|высмеял\w*|издевал\w*)\s+.*?реб[её]нк\w*"
-    r"|реб[её]нок\s+один\s+остал\w*"
-    r"|после\s+заняти\w*.*?оставил\w*\s+одн\w*"
-    r"|реб[её]нк\w*.*?никто\s+не\s+встретил\w*"
-    r"|никто\s+не\s+встретил\w*.*?реб[её]нк\w*"
-    r"|никто\s+не\s+подош[её]л"
-    r"|напишу\s+везде\s+какие\s+вы"
-    r")"
-)
-
-
-def _p0_model_led_complaint_backstop(client_message: str) -> bool:
-    return bool(_P0_MODEL_LED_COMPLAINT_BACKSTOP_RE.search(str(client_message or "")))
-
-
-def _p0_model_led_filter_high_risk_codes(
-    codes: Sequence[str],
-    *,
-    client_message: str,
-    context: Optional[Mapping[str, Any]] = None,
-) -> tuple[str, ...]:
-    unique_codes = tuple(dict.fromkeys(str(code) for code in codes if str(code).strip()))
-    if not _p0_model_led_enabled(context):
-        return unique_codes
-    if any(code in _P0_MODEL_LED_NON_COMPLAINT_HARD_CODES for code in unique_codes):
-        return unique_codes
-    filtered = tuple(code for code in unique_codes if code != "complaint")
-    if _p0_model_led_complaint_backstop(client_message):
-        filtered = (*filtered, "complaint")
-    return tuple(dict.fromkeys(filtered))
-
-
 def _direct_default_manager_enabled() -> bool:
     return _truthy_value(os.getenv(DIRECT_DEFAULT_MANAGER_ENV))
 

@@ -35,11 +35,13 @@ SLOTS_REASK_ENV = "TELEGRAM_SLOTS_REASK"
 SLOTS_GSF_KNOWN_MERGE_ENV = "TELEGRAM_SLOTS_GSF_KNOWN_MERGE"
 DIALOG_SUMMARY_ROLLING_ENV = "TELEGRAM_DIALOG_SUMMARY_ROLLING"
 P0_LATCH_AUTORELEASE_V2_ENV = "TELEGRAM_P0_LATCH_AUTORELEASE_V2"
+P0_MODEL_LED_ENV = "TELEGRAM_P0_MODEL_LED"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
     DIALOG_SUMMARY_ROLLING_ENV,
     P0_LATCH_AUTORELEASE_V2_ENV,
+    P0_MODEL_LED_ENV,
 )
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
@@ -425,27 +427,38 @@ def build_dialogue_memory(
     if not open_question.text:
         if isinstance(previous, DialogueMemory) and previous.open_question.text and not previous.open_question.answered:
             open_question = previous.open_question
-    previous_held = previous.held_state if isinstance(previous, DialogueMemory) else HeldState()
-    current_roles = tag_message_roles(current_text, context=previous_held.tagger_context())
-    current_risk_flags = _detect_risk_flags(current_text)
-    held_p0_required = bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
-    held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
+    model_led = _memory_profile_flag_enabled(P0_MODEL_LED_ENV, context)
     previous_latch = previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch()
+    previous_held = previous.held_state if isinstance(previous, DialogueMemory) else HeldState()
+    if previous_held.p0_latched and not previous_latch.active:
+        previous_held = replace(previous_held, p0_latched=False, p0_codes=())
+    current_roles = tag_message_roles(current_text, context=previous_held.tagger_context())
+    current_risk_flags = () if model_led else _detect_risk_flags(current_text)
+    held_p0_required = (
+        previous_latch.active
+        if model_led
+        else bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
+    )
+    held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
     p0_latch = _next_p0_latch(
         previous_latch,
         current_message=current_text,
         current_risk_flags=current_risk_flags,
         context=context,
         session_id=session_id,
-        turns=turns,
+        turns=() if model_led else turns,
     )
     latch_released = _p0_latch_released(previous_latch, p0_latch)
     if latch_released:
         held_state = replace(held_state, p0_latched=False, p0_codes=())
     risks = (
-        current_risk_flags
-        if latch_released or _previous_autonomous_p0_latch_released(previous_latch)
-        else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+        ()
+        if model_led
+        else (
+            current_risk_flags
+            if latch_released or _previous_autonomous_p0_latch_released(previous_latch)
+            else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+        )
     )
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
@@ -523,7 +536,9 @@ def update_dialogue_memory_after_answer(
     if answer:
         turns = (*turns, DialogueTurn("bot", answer))[-MAX_TURNS:]
     route_history = tuple(dict.fromkeys([*current.route_history, str(route or "").strip()]))[-8:]
-    safety_risks = _risk_flags_from_safety(safety_flags)
+    model_led = _memory_profile_flag_enabled(P0_MODEL_LED_ENV, context)
+    model_p0_confirmed = any(str(flag or "").startswith("direct_path_model_p0_") for flag in safety_flags)
+    safety_risks = _risk_flags_from_safety(safety_flags) if model_p0_confirmed or not model_led else ()
     risks = tuple(dict.fromkeys([*current.risk_flags, *safety_risks]))
     latch_context = {
         **(dict(context) if isinstance(context, Mapping) else {}),
@@ -540,7 +555,7 @@ def update_dialogue_memory_after_answer(
         current_risk_flags=safety_risks,
         context=latch_context,
         session_id=current.session_id,
-        turns=current.turns,
+        turns=() if model_led else current.turns,
     )
     latch_released = _p0_latch_released(current.p0_latch, p0_latch)
     if latch_released:

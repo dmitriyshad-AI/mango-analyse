@@ -19,6 +19,7 @@ from mango_mvp.channels.subscription_llm_parts.semantic_reading import (
     append_reading_trace_record,
     semantic_reading_trace_record,
 )
+from mango_mvp.channels.subscription_llm_parts.support import _p0_model_led_enabled
 
 
 _P0_HYGIENE_KINDS = frozenset(
@@ -250,7 +251,8 @@ def _direct_path_p0_text_hygiene_applies(
     context: Optional[Mapping[str, Any]],
     client_message: str,
 ) -> bool:
-    if _is_benign_presale_refund_question(client_message) and not _manager_high_risk_signal(result):
+    model_led = _p0_model_led_enabled(context)
+    if not model_led and _is_benign_presale_refund_question(client_message) and not _manager_high_risk_signal(result):
         return False
     kind = _direct_path_p0_hygiene_kind(result, context=context, client_message=client_message)
     if kind == "forward_payment":
@@ -270,7 +272,7 @@ def _direct_path_p0_text_hygiene_applies(
         }
     ):
         return True
-    if str(result.route or "") == "manager_only" and _ROUTE_REFUND_RE.search(str(client_message or "")):
+    if not model_led and str(result.route or "") == "manager_only" and _ROUTE_REFUND_RE.search(str(client_message or "")):
         return True
     if isinstance(context, Mapping):
         memory = context.get("dialogue_memory_view")
@@ -339,9 +341,10 @@ def _direct_path_p0_hygiene_kind_legacy(
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     for key in ("direct_path_model_p0",):
         value = metadata.get(key)
-        if isinstance(value, Mapping) and bool(value.get("is_p0")):
-            return _payment_fix_adjusted_kind(
-                _normalize_p0_hygiene_kind(value.get("p0_kind")),
+        if isinstance(value, Mapping) and bool(value.get("is_p0")) and bool(value.get("route_applied")):
+            kind = _normalize_p0_hygiene_kind(value.get("p0_kind"))
+            return kind if _p0_model_led_enabled(context) else _payment_fix_adjusted_kind(
+                kind,
                 raw_kind=value.get("p0_kind"),
                 context=context,
                 client_message=client_message,
@@ -349,13 +352,16 @@ def _direct_path_p0_hygiene_kind_legacy(
     direct = metadata.get("direct_path")
     if isinstance(direct, Mapping):
         value = direct.get("model_p0")
-        if isinstance(value, Mapping) and bool(value.get("is_p0")):
-            return _payment_fix_adjusted_kind(
-                _normalize_p0_hygiene_kind(value.get("p0_kind")),
+        if isinstance(value, Mapping) and bool(value.get("is_p0")) and bool(value.get("route_applied")):
+            kind = _normalize_p0_hygiene_kind(value.get("p0_kind"))
+            return kind if _p0_model_led_enabled(context) else _payment_fix_adjusted_kind(
+                kind,
                 raw_kind=value.get("p0_kind"),
                 context=context,
                 client_message=client_message,
             )
+    if _p0_model_led_enabled(context):
+        return _context_p0_latch_kind(context)
     flags = {str(flag or "").strip().casefold() for flag in result.safety_flags}
     for kind in ("payment_dispute", "refund", "complaint", "legal_threat", "legal"):
         if kind in flags or f"direct_path_model_p0_{kind}" in flags:
@@ -366,7 +372,7 @@ def _direct_path_p0_hygiene_kind_legacy(
         frame = _semantic_frame_from_result_metadata(result)
         if _semantic_frame_paid_service_issue(frame):
             return "payment_dispute"
-        if _context_p0_latch_has_payment_dispute(context):
+        if _context_p0_latch_kind(context) == "payment_dispute":
             return "payment_dispute"
     text = str(client_message or "").casefold().replace("ё", "е")
     if re.search(r"\b(?:списал|платеж|платежн|чек|квитанц|оплата\s+прошла|деньги\s+списал)\b", text):
@@ -673,15 +679,15 @@ def _semantic_frame_requires_neutral_p0_text(frame: Mapping[str, Any]) -> bool:
     return risk == "p0" and action == "handoff_manager" and must_handoff is True and answerability == "manager_only"
 
 
-def _context_p0_latch_has_payment_dispute(context: Optional[Mapping[str, Any]]) -> bool:
+def _context_p0_latch_kind(context: Optional[Mapping[str, Any]]) -> str:
     if not isinstance(context, Mapping):
-        return False
+        return ""
     memory = context.get("dialogue_memory_view")
     if not isinstance(memory, Mapping):
-        return False
+        return ""
     latch = memory.get("p0_latch")
     if not isinstance(latch, Mapping) or not bool(latch.get("active")):
-        return False
+        return ""
     raw_codes = latch.get("codes")
     if isinstance(raw_codes, str):
         codes = {raw_codes}
@@ -689,9 +695,13 @@ def _context_p0_latch_has_payment_dispute(context: Optional[Mapping[str, Any]]) 
         codes = {str(code or "") for code in raw_codes}
     else:
         codes = set()
-    normalized = {code.strip().casefold() for code in codes}
-    normalized.add(str(latch.get("primary_risk") or "").strip().casefold())
-    return "payment_dispute" in normalized
+    normalized = [str(latch.get("primary_risk") or "").strip().casefold()]
+    normalized.extend(code.strip().casefold() for code in codes)
+    for kind in normalized:
+        mapped = _P0_HYGIENE_LEGACY_KIND.get(kind, kind)
+        if mapped in _P0_HYGIENE_KINDS:
+            return mapped
+    return ""
 
 
 def _conversation_plan_is_tax(plan: Mapping[str, Any]) -> bool:

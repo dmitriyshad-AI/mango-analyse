@@ -1000,9 +1000,6 @@ def verify_output(
         findings.extend(_general_advice_estimate_findings(text, client_message=client_message))
     if not any(finding.code == "estimate_individual_child_advice" for finding in findings):
         findings.extend(_individual_child_diagnosis_findings(text, client_message=client_message))
-    safety = classify_answer_safety(client_message=client_message, context=context, route="bot_answer_self")
-    if safety.p0_required and not p0_pre_gate(client_message, context=context):
-        findings.append(VerificationFinding("p0_semantic_risk", "семантический P0 требует менеджера"))
     return findings
 
 

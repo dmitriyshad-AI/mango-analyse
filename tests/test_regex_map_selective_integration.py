@@ -239,10 +239,14 @@ class _ModelRetrieverProvider(SubscriptionLlmDraftProvider):
         retriever_payload: Mapping[str, object] | Exception,
         *,
         draft_text: str = "Отвечаю по выбранным подтверждённым данным.",
+        is_p0: bool = False,
+        p0_kind: str = "",
     ) -> None:
         super().__init__()
         self.retriever_payload = retriever_payload
         self.generated_draft_text = draft_text
+        self.is_p0 = is_p0
+        self.p0_kind = p0_kind
         self.retriever_calls = 0
         self.draft_calls = 0
         self.regen_calls = 0
@@ -264,7 +268,8 @@ class _ModelRetrieverProvider(SubscriptionLlmDraftProvider):
                 "route": "bot_answer_self_for_pilot",
                 "draft_text": self.generated_draft_text,
                 "topic_id": "theme:001_programs",
-                "is_p0": False,
+                "is_p0": self.is_p0,
+                "p0_kind": self.p0_kind,
             }
         )
 
@@ -817,16 +822,25 @@ def test_invalid_semantic_relevance_payload_keeps_deterministic_fallback(
     )
 
 
-def test_p0_preblock_skips_retriever_and_keeps_manager_route(tmp_path: Path) -> None:
-    provider = _ModelRetrieverProvider(AssertionError("P0 must stop before retrieval"))
+def test_model_p0_reaches_model_and_keeps_manager_route(tmp_path: Path) -> None:
+    provider = _ModelRetrieverProvider(
+        {
+            "needed_facts": [_needed_fact("price")],
+            "exact_ids": ["foton.price.online"],
+            "adjacent_ids": [],
+        },
+        is_p0=True,
+        p0_kind="payment_dispute",
+    )
     result = provider.build_draft(
         "Хочу оспорить оплату и вернуть деньги.",
         context=_model_retriever_context(_write_fact_snapshot(tmp_path)),
     )
 
-    assert provider.retriever_calls == 0
-    assert provider.draft_calls == 0
+    assert provider.retriever_calls == 1
+    assert provider.draft_calls == 1
     assert result.route == "manager_only"
+    assert result.metadata["direct_path_model_p0"]["route_applied"] is True
     assert {"manager_approval_required", "no_auto_send"} <= set(result.safety_flags)
 
 

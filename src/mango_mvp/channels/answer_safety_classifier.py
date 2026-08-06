@@ -55,6 +55,7 @@ def classify_answer_safety(
     route: str = "",
     safety_flags: Sequence[str] = (),
     include_recent_client_messages: bool = True,
+    include_text_signals: bool = True,
 ) -> AnswerSafetyDecision:
     """Single source for P0/high-risk classification.
 
@@ -64,10 +65,10 @@ def classify_answer_safety(
     recreated when the current message is harmless.
     """
 
-    current = str(client_message or "")
+    current = str(client_message or "") if include_text_signals else ""
     current_codes = codes_from_current_message(current)
     texts = [current]
-    if include_recent_client_messages and isinstance(context, Mapping):
+    if include_text_signals and include_recent_client_messages and isinstance(context, Mapping):
         recent = context.get("recent_messages")
         if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
             for item in recent[-3:]:
@@ -78,7 +79,7 @@ def classify_answer_safety(
     haystack = "\n".join(texts)
     normalized = _normalize(haystack)
     current_norm = _normalize(current)
-    haystack_codes = codes_from_text(haystack)
+    haystack_codes = codes_from_text(haystack) if include_text_signals else ()
     # A message can *look* like a benign presale question in isolation (e.g. "как
     # оформить возврат?" matches the process-question frame) while the recent
     # conversation already shows a post-payment signal (e.g. a prior client turn
@@ -86,7 +87,7 @@ def classify_answer_safety(
     # that structural payment-provenance check (REFUND_POST_PAYMENT markers via
     # _refund_frame), so the single-message reading must not override it: only
     # treat the current message as benign presale when the haystack agrees.
-    haystack_benign_refund = is_benign_hypothetical_refund(haystack)
+    haystack_benign_refund = include_text_signals and is_benign_hypothetical_refund(haystack)
     current_benign_refund = is_benign_hypothetical_refund(current_norm) and haystack_benign_refund
     evidence: dict[str, str] = {}
     codes: list[str] = []
@@ -110,7 +111,7 @@ def classify_answer_safety(
         codes.append("payment_dispute")
         evidence["payment_dispute"] = _first_match(PAYMENT_DISPUTE_RE, haystack)
 
-    plan = _conversation_plan(context)
+    plan = _conversation_plan(context) if include_text_signals else {}
     plan_primary = str(plan.get("primary_intent") or "").strip()
     plan_risks = _text_list(plan.get("risk_signals"))
     plan_route_bias = str(plan.get("route_bias") or "").strip()
@@ -148,7 +149,7 @@ def classify_answer_safety(
         codes.append("payment_dispute")
         evidence.setdefault("safety_flags", "direct_path_model_p0_payment_dispute")
 
-    topic = str(topic_id or "").strip()
+    topic = str(topic_id or "").strip() if include_text_signals else ""
     if topic == "theme:009_refund":
         codes.append("refund")
         evidence.setdefault("topic_id", topic)
@@ -173,7 +174,7 @@ def classify_answer_safety(
         evidence.pop("topic_id", None)
         evidence.pop("safety_flags", None)
 
-    latch_codes = _p0_latch_codes(context, current_text=current_norm)
+    latch_codes = _p0_latch_codes(context, current_text=current_norm, allow_text_release=include_text_signals)
     if latch_codes:
         codes.extend(latch_codes)
         evidence["p0_latch"] = ",".join(latch_codes)
@@ -216,7 +217,12 @@ def _conversation_plan(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return plan if isinstance(plan, Mapping) else {}
 
 
-def _p0_latch_codes(context: Mapping[str, Any] | None, *, current_text: str = "") -> tuple[str, ...]:
+def _p0_latch_codes(
+    context: Mapping[str, Any] | None,
+    *,
+    current_text: str = "",
+    allow_text_release: bool = True,
+) -> tuple[str, ...]:
     if not isinstance(context, Mapping):
         return ()
     latch = None
@@ -238,7 +244,9 @@ def _p0_latch_codes(context: Mapping[str, Any] | None, *, current_text: str = ""
         "payment_dispute": "payment_dispute",
         "p0": "payment_dispute",
     }
-    suppress_presale_refund_latch = _suppress_presale_refund_latch(context, latch, current_text=current_text)
+    suppress_presale_refund_latch = allow_text_release and _suppress_presale_refund_latch(
+        context, latch, current_text=current_text
+    )
     had_hard_p0_claim = bool(latch.get("had_hard_p0_claim"))
     result = [
         mapping.get(str(code), str(code))

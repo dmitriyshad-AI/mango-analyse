@@ -5995,66 +5995,6 @@ def test_p0_model_led_confusion_is_not_direct_preblock() -> None:
     assert result.metadata["direct_path"]["preblocked"] is False
 
 
-@pytest.mark.parametrize(
-    "message",
-    (
-        "Жалоба: преподаватель оскорбил ребенка на занятии.",
-        "Это безобразие, как накричали на ребёнка.",
-        "Ребёнок один остался, никто не подошёл.",
-        "Напишу везде какие вы, если не решите ситуацию.",
-    ),
-)
-def test_p0_model_led_literal_complaints_stay_direct_preblock(message: str) -> None:
-    provider = _DirectPathProvider(
-        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
-    )
-
-    result = provider.build_draft(
-        message,
-        context={
-            "active_brand": "foton",
-            DIRECT_PATH_ENV: "1",
-            subscription_llm.P0_MODEL_LED_ENV: "1",
-        },
-    )
-
-    assert provider.calls == 0
-    assert result.route == "manager_only"
-    assert result.metadata["direct_path"]["preblocked"] is True
-    assert result.metadata["direct_path"]["reason_evidence"]["p0_kind"] == "complaint"
-    assert "complaint_apology_guarded" in result.safety_flags
-
-
-@pytest.mark.parametrize(
-    ("message", "expected_code"),
-    (
-        ("С карты списали дважды, верните деньги.", "payment_dispute"),
-        ("Верните деньги обратно.", "refund"),
-        ("Если не решите, пойду в суд.", "legal"),
-    ),
-)
-def test_p0_model_led_keeps_refund_legal_payment_preblock(message: str, expected_code: str) -> None:
-    provider = _DirectPathProvider(
-        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
-    )
-
-    result = provider.build_draft(
-        message,
-        context={
-            "active_brand": "foton",
-            DIRECT_PATH_ENV: "1",
-            subscription_llm.P0_MODEL_LED_ENV: "1",
-        },
-    )
-
-    assert provider.calls == 0
-    assert result.route == "manager_only"
-    assert result.metadata["direct_path"]["preblocked"] is True
-    assert expected_code in result.metadata["direct_path"]["reason_evidence"]["p0_kind"]
-    assert "manager_approval_required" in result.safety_flags
-    assert "no_auto_send" in result.safety_flags
-
-
 def test_answerability_shadow_prompt_is_absent_without_pilot_profile() -> None:
     context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
 
@@ -6262,7 +6202,6 @@ def test_direct_path_model_p0_payment_dispute_routes_before_gate_and_replaces_sa
     assert "payment_dispute" in result.safety_flags
     assert direct_p0["p0_kind"] == "payment_dispute"
     assert direct_p0["model_reason"] == "спорная ситуация с оплатой"
-    assert direct_p0["floor_reason"] == ""
     assert gate["route_before"] == "manager_only"
     assert gate["action"] == "block"
     assert "hard_p0" in {item["code"] for item in gate["findings"]}
@@ -6541,7 +6480,7 @@ def test_direct_path_model_p0_benign_messages_stay_autonomous() -> None:
         assert "authoritative_gate:hard_p0" not in result.safety_flags
 
 
-def test_direct_path_p0_shadow_records_both_verdicts_without_changing_output() -> None:
+def test_direct_path_p0_shadow_records_model_contract_without_changing_output() -> None:
     source = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text="Да, подскажу по подтверждённым условиям.",
@@ -6575,12 +6514,6 @@ def test_direct_path_p0_shadow_records_both_verdicts_without_changing_output() -
         "model_is_p0": False,
         "model_effective_is_p0": False,
         "model_p0_kind": "",
-        "regex_is_p0": False,
-        "regex_codes": [],
-        "legacy_floor_is_p0": False,
-        "legacy_floor_reason": "",
-        "regex_vs_model": "match_benign",
-        "legacy_floor_vs_model": "match_benign",
     }
 
 
@@ -6611,9 +6544,7 @@ def test_direct_path_p0_shadow_negative_control_is_on_build_draft_path(monkeypat
     assert (baseline.route, baseline.draft_text) == (changed.route, changed.draft_text)
 
 
-def test_direct_path_p0_shadow_does_not_store_client_text_or_pii(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(subscription_provider, "hard_codes_from_text", lambda text: ())
-    monkeypatch.setattr(subscription_provider, "dialogue_contract_p0_pre_gate", lambda text, context=None: None)
+def test_direct_path_p0_shadow_does_not_store_client_text_or_pii() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
         draft_text="Подскажу.",
@@ -6653,7 +6584,6 @@ def test_direct_path_payload_remembers_missing_physical_is_p0_field() -> None:
     assert shadow["model_field_present"] is False
     assert shadow["model_field_valid"] is False
     assert shadow["model_contract_status"] == "missing"
-    assert shadow["regex_vs_model"] == "model_missing"
 
 
 def test_direct_path_payload_cannot_spoof_top_level_is_p0_through_metadata() -> None:

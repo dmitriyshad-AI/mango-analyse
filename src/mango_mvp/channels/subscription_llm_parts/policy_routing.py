@@ -16,7 +16,7 @@ from mango_mvp.channels.output_verification_floor import (
     parse_contract as parse_dialogue_contract,
     verify_output as verify_dialogue_contract_output,
 )
-from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
+from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.tone_block import apply_warm_frame
 from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
@@ -59,9 +59,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _intent_model_led_enabled,
     _normalize_fact_match_text,
     _pilot_profile_default_on_flag_enabled,
-    _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
-    _p0_model_led_filter_high_risk_codes,
     _prose_model_led_enabled,
     _presale_prompt_child_name_value,
     _template_from_kb_enabled,
@@ -1134,21 +1132,7 @@ def apply_autonomy_matrix_guard(
             metadata=metadata,
         )
 
-    direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
-    complaint_topic_only = bool(
-        result.topic_id == "theme:019b_negative_feedback"
-        or str(direct_path.get("autonomy_topic") or "") == "theme:019b_negative_feedback"
-        or str(direct_path.get("autonomy_topic_from") or "") == "theme:019b_negative_feedback"
-    )
     high_risk_blocks_autonomy = bool(markers or is_high_risk_result(result))
-    if (
-        high_risk_blocks_autonomy
-        and _p0_model_led_enabled(context)
-        and not markers
-        and complaint_topic_only
-        and not _p0_model_led_complaint_backstop(client_message)
-    ):
-        high_risk_blocks_autonomy = False
 
     if high_risk_blocks_autonomy and not metadata.get("presale_refund_policy_manager_check"):
         flags.extend(("autonomy_blocked_high_risk", "high_risk_manager_only"))
@@ -3200,16 +3184,23 @@ def detect_high_risk_input_markers(client_message: str, *, context: Optional[Map
         topic_id="",
         route="",
         safety_flags=(),
+        include_text_signals=not _p0_model_led_enabled(context),
     )
     codes = tuple(code for code in decision.risk_codes if code in HARD_P0_CODES)
-    return _p0_model_led_filter_high_risk_codes(codes, client_message=client_message, context=context)
+    if _p0_model_led_enabled(context) and "p0_latch" not in (decision.evidence or {}):
+        return ()
+    return codes
 
 def _conversation_plan_semantic_non_p0(
     context: Optional[Mapping[str, Any]],
     *,
     client_message: str = "",
 ) -> bool:
-    return classify_answer_safety(client_message=client_message, context=context).semantic_non_p0
+    return classify_answer_safety(
+        client_message=client_message,
+        context=context,
+        include_text_signals=not _p0_model_led_enabled(context),
+    ).semantic_non_p0
 
 def _strip_false_p0_flags(flags: Sequence[str]) -> list[str]:
     p0_markers = (

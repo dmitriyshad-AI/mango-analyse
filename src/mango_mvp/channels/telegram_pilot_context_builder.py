@@ -10,7 +10,12 @@ from mango_mvp.channels.contracts import ChannelMessage
 from mango_mvp.channels.answer_contract import build_answer_contract
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
-from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
+from mango_mvp.channels.dialogue_memory import (
+    P0_MODEL_LED_ENV,
+    DialogueMemory,
+    _memory_profile_flag_enabled,
+    build_dialogue_memory,
+)
 from mango_mvp.channels.fact_retrieval import key_matches, select_confirmed_facts as select_recall_confirmed_facts
 from mango_mvp.channels.fact_scope_spec import (
     FACT_COMPATIBLE_NEIGHBOR_SCOPES,
@@ -137,6 +142,7 @@ def build_telegram_pilot_context(
 
     current_message = message.text if isinstance(message, ChannelMessage) else str(message or "")
     merged_policy = merge_theme_and_rop_policy(theme=theme, rop_policy=rop_policy)
+    p0_model_led = _memory_profile_flag_enabled(P0_MODEL_LED_ENV, merged_policy)
     snapshot, snapshot_warnings = _load_snapshot(kc_snapshot=kc_snapshot, snapshot_path=snapshot_path)
     memory = build_dialogue_memory(
         current_message=current_message,
@@ -144,7 +150,7 @@ def build_telegram_pilot_context(
         recent_messages=recent_messages,
         known_slots=known_slots or {},
         resolved_children=resolved_children,
-        context={"current_message_id": str(current_message_id or "")},
+        context={"current_message_id": str(current_message_id or ""), P0_MODEL_LED_ENV: p0_model_led},
         previous_memory=dialogue_memory,
         session_id=session_id,
     )
@@ -175,6 +181,7 @@ def build_telegram_pilot_context(
         client_message=current_message,
         context={"conversation_intent_plan": intent_view, "dialogue_memory_view": memory_view, "recent_messages": recent_messages},
         topic_id=intent_plan.topic_id,
+        include_text_signals=not p0_model_led,
     )
     policy_for_snapshot = dict(merged_policy)
     policy_for_snapshot.setdefault("topic_id", intent_plan.topic_id)

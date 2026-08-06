@@ -117,6 +117,7 @@ UNDERSTANDING_ENV_DECLARATIONS = (
     ),
     ("src/mango_mvp/channels/output_verification_floor.py", "NUMBER_GATE_SCOPE_AWARE_ENV", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"),
     ("src/mango_mvp/channels/dialogue_memory.py", "MEMORY_CHILD_IDENTITY_MODEL_ENV", "TELEGRAM_CHILD_IDENTITY_MODEL"),
+    ("src/mango_mvp/channels/dialogue_memory.py", "P0_MODEL_LED_ENV", "TELEGRAM_P0_MODEL_LED"),
     ("src/mango_mvp/channels/dialogue_memory.py", "P0_LATCH_AUTORELEASE_V2_ENV", "TELEGRAM_P0_LATCH_AUTORELEASE_V2"),
     ("src/mango_mvp/channels/fact_venue_scope.py", "FACT_VENUE_SCOPE_ENV", "TELEGRAM_FACT_VENUE_SCOPE"),
     ("src/mango_mvp/channels/semantic_roles.py", "INTENT_STATE_REPAIR_ENV", "TELEGRAM_INTENT_STATE_REPAIR"),
@@ -778,8 +779,8 @@ def test_adr003_direct_path_text_patterns_snapshot_is_frozen() -> None:
 def test_adr003_direct_path_text_pattern_inventory_has_stable_coordinates_and_ids() -> None:
     rows = json.loads(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
-    assert len(rows) == 809
-    assert len({row["row_id"] for row in rows}) == 809
+    assert len(rows) == 807
+    assert len({row["row_id"] for row in rows}) == 807
     assert {row["node_kind"] for row in rows} == {
         "marker_helper_call",
         "regex_call",
@@ -815,7 +816,7 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
     source = payload["source"]
     assert source["base_repo_head"] == "ca1c9ce534b9f64b8d0c775df5753694cfbb101f"
     assert source["integrated_patch_heads"] == ["df4aee4395069e86db725d69a686c037a34a375d"]
-    assert source["snapshot_rows"] == len(snapshot_rows) == 809
+    assert source["snapshot_rows"] == len(snapshot_rows) == 807
     assert source["snapshot_sha256"] == hashlib.sha256(DIRECT_PATH_PATTERN_SNAPSHOT_PATH.read_bytes()).hexdigest()
     assert source["node_kind_counts"] == {
         kind: sum(row["node_kind"] == kind for row in snapshot_rows)
@@ -842,13 +843,13 @@ def test_adr003_understanding_map_bucket_2_and_3_match_canonical_snapshot() -> N
         row["node_kind"] == "marker_helper_call" for row in snapshot_rows
     )
     membership_rows = _literal_left_membership_snapshot(UNDERSTANDING_MAP_PATH.parents[1])
-    assert source["literal_left_membership_total"] == len(membership_rows) == 306
+    assert source["literal_left_membership_total"] == len(membership_rows) == 308
     assert source["literal_left_membership_in_canonical_text_scope"] == sum(
         row["in_canonical_text_scope"] for row in membership_rows
-    ) == 149
+    ) == 148
     assert source["literal_left_membership_outside_canonical_text_scope"] == sum(
         not row["in_canonical_text_scope"] for row in membership_rows
-    ) == 157
+    ) == 160
 
     assert set(mapped) <= set(snapshot_by_id)
     assert {row["bucket"] for row in mapped.values()} == {"2_verification", "3_format_hygiene"}

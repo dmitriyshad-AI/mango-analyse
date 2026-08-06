@@ -10,10 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from mango_mvp.channels.output_verification_floor import (
-    p0_pre_gate as dialogue_contract_p0_pre_gate,
-)
-from mango_mvp.channels.p0_recall_spec import hard_codes_from_text
 from mango_mvp.channels.tone_block import (
     TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
@@ -88,7 +84,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_valid_until_ok,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
-    _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
@@ -542,7 +537,6 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _direct_path_prepare_model_result,
     _flexible_name_pattern,
     _format_choice_is_disjunctive_question,
-    _hard_p0_in_client_text,
     _has_diagnosis_hedge_and_transfer,
     _has_manager_contact_promise,
     _humanity_p0_required,
@@ -1515,20 +1509,6 @@ def _direct_path_p0_shadow_metadata(
     model_contract_status = "missing" if not model_field_present else "valid" if model_field_valid else "invalid"
     model_is_p0 = bool(meta.get("is_p0")) if model_field_valid else False
     model_effective_is_p0 = model_is_p0
-    regex_codes = tuple(hard_codes_from_text(client_message))
-    floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
-    if floor_reason and _p0_model_led_enabled(context):
-        _, floor_kind = _direct_path_p0_text(floor_reason, context)
-        if floor_kind == "complaint" and not _p0_model_led_complaint_backstop(client_message):
-            floor_reason = ""
-
-    def comparison(legacy_is_p0: bool) -> str:
-        if not model_field_present:
-            return "model_missing"
-        if legacy_is_p0 == model_is_p0:
-            return "match_p0" if model_is_p0 else "match_benign"
-        return "model_only" if model_is_p0 else "legacy_only"
-
     return {
         "schema_version": "p0_model_shadow_v1_2026_07_29",
         "model_field_present": model_field_present,
@@ -1537,12 +1517,6 @@ def _direct_path_p0_shadow_metadata(
         "model_is_p0": model_is_p0,
         "model_effective_is_p0": model_effective_is_p0,
         "model_p0_kind": kind,
-        "regex_is_p0": bool(regex_codes),
-        "regex_codes": list(regex_codes),
-        "legacy_floor_is_p0": bool(floor_reason),
-        "legacy_floor_reason": floor_reason,
-        "regex_vs_model": comparison(bool(regex_codes)),
-        "legacy_floor_vs_model": comparison(bool(floor_reason)),
     }
 
 
@@ -1576,8 +1550,7 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
     if contract_status == "missing" or contract_status == "invalid":
         return {"contract_error": contract_status}
     model_is_p0 = bool(shadow.get("model_effective_is_p0"))
-    floor_reason = str(shadow.get("legacy_floor_reason") or "")
-    if not model_is_p0 and not floor_reason:
+    if not model_is_p0:
         return {}
     if not kind:
         kind = "complaint"
@@ -1586,8 +1559,7 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
         "p0_kind": kind,
         "risk_level": "high",
         "model_reason": str(meta.get("model_reason") or "").strip()[:240],
-        "floor_reason": floor_reason,
-        "source": "model_p0" if model_is_p0 else "p0_pre_gate",
+        "source": "model_p0",
     }
 
 
@@ -1624,11 +1596,11 @@ def _apply_direct_path_model_p0_route(
     direct = dict(metadata.get("direct_path") or {})
     direct["model_p0"] = {
         "is_p0": True,
+        "route_applied": True,
         "p0_kind": kind,
         "legacy_p0_kind": legacy_kind if legacy_kind != kind else "",
         "risk_level": "high",
         "model_reason": str(signal.get("model_reason") or ""),
-        "floor_reason": str(signal.get("floor_reason") or ""),
         "source": str(signal.get("source") or "model_p0"),
     }
     metadata["direct_path_model_p0"] = dict(direct["model_p0"])

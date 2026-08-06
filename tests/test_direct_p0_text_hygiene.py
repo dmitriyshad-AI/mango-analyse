@@ -129,6 +129,7 @@ def test_direct_p0_text_hygiene_provider_level_scrubs_refund_sales_tail() -> Non
             metadata={
                 "direct_path_model_p0": {
                     "is_p0": True,
+                    "route_applied": True,
                     "risk_level": "high",
                     "p0_kind": "refund",
                     "model_reason": "клиент спрашивает про возврат",
@@ -234,6 +235,7 @@ def _paid_operation_context_result() -> SubscriptionDraftResult:
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "paid_operation_context",
                 "model_reason": "оплатный контекст без уточнения класса",
@@ -260,69 +262,16 @@ def _semantic_frame(**overrides: object) -> dict[str, object]:
     return frame
 
 
-def test_text_hygiene_payment_fix_matrix_preserves_off_behavior_and_fixes_payment_without_refund() -> None:
+def test_model_p0_kind_is_not_reclassified_from_client_text() -> None:
     result = _paid_operation_context_result()
-    profile = _profile_context()
-
-    off = scrub_direct_path_p0_text(
-        result,
-        context={**profile, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "0"},
-        client_message="Оплату ещё не вносил, доступ не появился.",
-    )
-    profile_on = scrub_direct_path_p0_text(
-        result,
-        context=profile,
-        client_message="Оплату ещё не вносил, доступ не появился.",
-    )
-    on = scrub_direct_path_p0_text(
-        result,
-        context={**profile, subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
-        client_message="Оплату ещё не вносил, доступ не появился.",
-    )
-    no_profile = scrub_direct_path_p0_text(
-        result,
-        context={subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
-        client_message="Оплату ещё не вносил, доступ не появился.",
-    )
-
-    assert "возможность возврата" in off.draft_text.casefold()
-    assert off.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
-    assert "возврат" not in profile_on.draft_text.casefold()
-    assert "по оплате нужно сверить данные" in profile_on.draft_text.casefold()
-    assert profile_on.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
-    assert "возврат" not in on.draft_text.casefold()
-    assert "по оплате нужно сверить данные" in on.draft_text.casefold()
-    assert on.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
-    assert no_profile is result
-
-
-def test_text_hygiene_payment_fix_keeps_real_refund_as_refund() -> None:
-    result = _paid_operation_context_result()
-
-    for message in ("Хочу вернуть деньги.", "Отдайте оплату обратно."):
-        scrubbed = scrub_direct_path_p0_text(
-            result,
-            context={**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
-            client_message=message,
-        )
-
+    for message in (
+        "Оплату ещё не вносил, доступ не появился.",
+        "Хочу вернуть деньги.",
+        "Оплатил, чек прислать?",
+    ):
+        scrubbed = scrub_direct_path_p0_text(result, context=_profile_context(), client_message=message)
         assert "возможность возврата" in scrubbed.draft_text.casefold()
         assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "refund"
-
-
-def test_text_hygiene_payment_fix_keeps_receipt_question_out_of_refund_template() -> None:
-    result = _paid_operation_context_result()
-
-    scrubbed = scrub_direct_path_p0_text(
-        result,
-        context={**_profile_context(), subscription_llm.TEXT_HYGIENE_PAYMENT_FIX_ENV: "1"},
-        client_message="Оплатил, чек прислать?",
-    )
-
-    lowered = scrubbed.draft_text.casefold()
-    assert "возврат" not in lowered
-    assert "по оплате нужно сверить данные" in lowered
-    assert scrubbed.metadata["direct_p0_text_hygiene"]["kind"] == "payment_dispute"
 
 
 def test_correct_route_wrong_p0_text_semantic_frame_tax_overrides_refund_template() -> None:
@@ -334,6 +283,7 @@ def test_correct_route_wrong_p0_text_semantic_frame_tax_overrides_refund_templat
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -387,6 +337,7 @@ def test_correct_route_wrong_p0_text_semantic_frame_paid_access_overrides_refund
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -432,6 +383,7 @@ def test_text_hygiene_payment_fix_paid_service_issue_uses_payment_dispute_templa
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -494,6 +446,7 @@ def test_text_hygiene_payment_fix_real_refund_after_access_problem_stays_refund(
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -529,6 +482,7 @@ def test_semantic_frame_p0_manager_only_gets_neutral_text_without_advice_or_deta
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "complaint",
             },
@@ -606,6 +560,7 @@ def test_semantic_frame_text_meaning_keeps_real_refund_as_refund() -> None:
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -640,6 +595,7 @@ def test_semantic_frame_text_meaning_payment_dispute_beats_stale_tax_plan() -> N
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -682,6 +638,7 @@ def test_semantic_frame_text_meaning_requires_strict_tax_plan() -> None:
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -722,6 +679,7 @@ def test_semantic_frame_text_meaning_trace_marks_route_change() -> None:
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -756,6 +714,7 @@ def test_semantic_frame_text_meaning_low_confidence_keeps_legacy_fail_closed() -
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -804,6 +763,7 @@ def test_semantic_frame_text_meaning_requires_inline_source_and_schema(source: s
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -846,6 +806,7 @@ def test_semantic_frame_text_meaning_applies_at_high_confidence_threshold() -> N
         metadata={
             "direct_path_model_p0": {
                 "is_p0": True,
+                "route_applied": True,
                 "risk_level": "high",
                 "p0_kind": "refund",
             },
@@ -885,6 +846,7 @@ def test_direct_p0_text_hygiene_payment_dispute_keeps_route_and_removes_sales_te
             metadata={
                 "direct_path_model_p0": {
                     "is_p0": True,
+                    "route_applied": True,
                     "risk_level": "high",
                     "p0_kind": "payment_dispute",
                     "model_reason": "спорная оплата",
@@ -983,6 +945,7 @@ def test_direct_p0_text_hygiene_contract_dispute_zero_collects_detail_request() 
             metadata={
                 "direct_path_model_p0": {
                     "is_p0": True,
+                    "route_applied": True,
                     "risk_level": "high",
                     "p0_kind": "contract_dispute",
                     "model_reason": "клиент спорит с договором",

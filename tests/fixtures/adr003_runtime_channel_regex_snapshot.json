@@ -128,14 +128,6 @@
     "pattern_preview": "(?:\\+7|8|7)?[\\s\\-()]?\\d{3}[\\s\\-()]?\\d{3}[\\s\\-]?\\d{2}[\\s\\-]?\\d{2}"
   },
   {
-    "path": "src/mango_mvp/channels/subscription_llm_parts/support.py",
-    "qualname": "<module>",
-    "target": "_P0_MODEL_LED_COMPLAINT_BACKSTOP_RE",
-    "pattern_sha256": "a3055727d93b8dac33472986ba1bb628d4f4e3cd8ee0d318a056140ff6a84dc8",
-    "flags": "",
-    "pattern_preview": "(?iu)(?:\\bжалоб\\w*|безобрази\\w*|отвратительн\\w*|накричал\\w*\\s+на\\s+реб[её]нк\\w*|(?:унизил\\w*|оскорбил\\w*|высмеял\\w*|издевал\\w*)\\s+.*?реб[её]нк\\w*|реб[её]нок\\s+о"
-  },
-  {
     "path": "src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py",
     "qualname": "<module>",
     "target": "_PRESALE_REFUND_CONTEXT_RE",

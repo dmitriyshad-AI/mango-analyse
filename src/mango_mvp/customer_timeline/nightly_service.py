@@ -26,6 +26,11 @@ from mango_mvp.customer_timeline.nightly_incremental import (
     summarize_report,
 )
 from mango_mvp.customer_timeline.mail_link_enrich import MailLinkEnrichConfig, run_mail_link_enrich
+from mango_mvp.customer_timeline.stage4b_bot_opening import (
+    STAGE4B_BOT_OPENING_SCHEMA_VERSION,
+    Stage4BBotOpeningConfig,
+    run_stage4b_bot_opening,
+)
 from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
 from mango_mvp.customer_timeline.bot_safe_summary import BotSafeSummaryBuildConfig, build_bot_safe_summaries
 from mango_mvp.customer_timeline.family_graph import FamilyGraphConfig, build_family_graph
@@ -79,7 +84,7 @@ NIGHTLY_SERVICE_SCHEMA_VERSION = "customer_timeline_nightly_service_v1"
 # before required_manifest_sources existed) fails validation instead of
 # silently passing, and ensure_nightly_config() rebuilds it. Bump this
 # whenever a field validate_nightly_config() now requires is added.
-NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v9"
+NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION = "customer_timeline_nightly_service_config_v11"
 DEFAULT_TALLANTO_CARDS_MAX_PAGES = 500
 
 # B3: safe default total wall-clock budget for one full nightly run. Enforced
@@ -119,6 +124,7 @@ class NightlyServiceStep:
     wappi_history_config: Optional[WappiHistoryImportConfig] = None
     family_graph_config: Optional[FamilyGraphConfig] = None
     derived_signals_config: Optional[Mapping[str, Any]] = None
+    stage4b_config: Optional[Stage4BBotOpeningConfig] = None
     bot_safe_rebuild_config: Optional[BotSafeSummaryBuildConfig] = None
     reason: Optional[str] = None
 
@@ -774,6 +780,30 @@ def run_nightly_service(config: NightlyServiceConfig) -> Mapping[str, Any]:
                     "duration_seconds": round(time.monotonic() - step_started, 3),
                 })
                 continue
+            if step.kind == "stage4b_bot_opening":
+                try:
+                    if step.stage4b_config is None:
+                        raise ValueError(f"enabled step {step.name} requires config")
+                    step_report = run_stage4b_bot_opening(step.stage4b_config)
+                except Exception as exc:
+                    if step.required:
+                        failed_required_steps.append(step.name)
+                    report["steps"].append(failed_step_report(
+                        index=index, step=step, reason=f"step_exception:{type(exc).__name__}",
+                        duration_seconds=round(time.monotonic() - step_started, 3), error=exc,
+                    ))
+                    continue
+                step_path = run_dir / f"{index:02d}_{step.name}.json"
+                write_json(step_path, step_report)
+                status = "ok" if stage4b_report_ok(step_report) else "failed"
+                if status == "failed" and step.required:
+                    failed_required_steps.append(step.name)
+                report["steps"].append({
+                    "index": index, "name": step.name, "kind": step.kind,
+                    "status": status, "required": step.required, "report_path": str(step_path),
+                    "summary": step_report, "duration_seconds": round(time.monotonic() - step_started, 3),
+                })
+                continue
             if step.kind == "bot_safe_rebuild":
                 try:
                     if step.bot_safe_rebuild_config is None:
@@ -979,10 +1009,14 @@ def service_config_from_json(path: Path) -> NightlyServiceConfig:
     if not isinstance(payload, Mapping):
         raise ValueError("nightly service config must be a JSON object")
     required_sources = tuple(str(item) for item in payload.get("required_manifest_sources") or ())
-    if set(REQUIRED_MANIFEST_SOURCE_STEP_MAP).issubset(required_sources) and (
+    if payload.get("config_schema_version") is not None and (
         payload.get("config_schema_version") != NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION
     ):
         raise ValueError("full nightly service config schema is stale")
+    if set(required_sources) == set(REQUIRED_MANIFEST_SOURCE_STEP_MAP):
+        chain_reason = validate_mutating_nightly_chain(payload)
+        if chain_reason:
+            raise ValueError(chain_reason)
     timeline_db = Path(str(payload["timeline_db"]))
     allowed_root = Path(str(payload.get("allowed_root") or timeline_db.parent))
     out_root = Path(str(payload["out_root"]))
@@ -1049,6 +1083,7 @@ def service_step_from_json(
     wappi_history_config = None
     family_graph_config = None
     derived_signals_config = None
+    stage4b_config = None
     bot_safe_rebuild_config = None
     if kind == "nightly_incremental":
         config_payload = payload.get("config")
@@ -1210,6 +1245,18 @@ def service_step_from_json(
         if not isinstance(raw_config, Mapping):
             raise ValueError(f"step {name} requires config")
         derived_signals_config = dict(raw_config)
+    elif kind == "stage4b_bot_opening":
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, Mapping):
+            raise ValueError(f"step {name} requires config")
+        stage4b_config = Stage4BBotOpeningConfig(
+            timeline_db_path=Path(str(raw_config.get("timeline_db") or timeline_db)),
+            allowed_root=Path(str(raw_config.get("allowed_root") or allowed_root)),
+            out_dir=Path(str(raw_config.get("out_dir") or Path(allowed_root) / "stage4b_bot_opening")),
+            tenant_id=str(raw_config.get("tenant_id") or tenant_id),
+            apply=bool(raw_config.get("apply", True)),
+            defer_full_db_check=bool(raw_config.get("defer_full_db_check", False)),
+        )
     elif kind == "bot_safe_rebuild":
         raw_config = payload.get("config")
         if not isinstance(raw_config, Mapping):
@@ -1240,6 +1287,7 @@ def service_step_from_json(
         wappi_history_config=wappi_history_config,
         family_graph_config=family_graph_config,
         derived_signals_config=derived_signals_config,
+        stage4b_config=stage4b_config,
         bot_safe_rebuild_config=bot_safe_rebuild_config,
         reason=reason,
     )
@@ -1335,6 +1383,10 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
                 guard_customer_timeline_output_path(
                     Path(str(step.derived_signals_config.get("timeline_db") or timeline_db)), allowed_root,
                 )
+            if step.stage4b_config is not None:
+                guard_customer_timeline_output_path(step.stage4b_config.timeline_db_path, allowed_root)
+                guard_customer_timeline_output_path(step.stage4b_config.allowed_root, allowed_root)
+                guard_customer_timeline_output_path(step.stage4b_config.out_dir, allowed_root)
             if step.bot_safe_rebuild_config is not None:
                 guard_customer_timeline_output_path(step.bot_safe_rebuild_config.timeline_db, allowed_root)
                 guard_customer_timeline_output_path(step.bot_safe_rebuild_config.allowed_root, allowed_root)
@@ -1345,6 +1397,35 @@ def validated_service_paths(config: NightlyServiceConfig) -> tuple[Path, Path, P
         for source in step.config.sources:
             guard_customer_timeline_output_path(source.path, allowed_root)
     return timeline_db, allowed_root, out_root, publish_dir
+
+
+def stage4b_report_ok(report: Mapping[str, Any]) -> bool:
+    if report.get("schema_version") != STAGE4B_BOT_OPENING_SCHEMA_VERSION or report.get("mode") != "apply":
+        return False
+    if report.get("status") in {"FAIL", "failed", "partial"} or report.get("quality_passed") is False:
+        return False
+    apply_report = report.get("apply")
+    if not isinstance(apply_report, Mapping) or apply_report.get("dry_run") is True:
+        return False
+    checks = report.get("final_checks")
+    if not isinstance(checks, Mapping):
+        return False
+    required_zero_checks = (
+        "foreign_key_check_rows",
+        "candidate_review_violations_after",
+        "opened_disallowed_identity_after",
+        "opened_mango_processed_non_strong_after",
+        "opened_mango_processed_non_contentful_after",
+        "opened_unknown_brand_non_call_after",
+    )
+    if not set(required_zero_checks).issubset(checks):
+        return False
+    if checks.get("quick_check") not in {"ok", "deferred_to_nightly_service"}:
+        return False
+    return all(
+        int(checks.get(key) or 0) == 0
+        for key in required_zero_checks
+    )
 
 
 def amo_incremental_report_ok(report: Mapping[str, Any]) -> bool:
@@ -2167,8 +2248,51 @@ REQUIRED_MANIFEST_SOURCE_STEP_MAP: Mapping[str, tuple[str, ...]] = {
     "wappi_telegram": ("wappi_history_incremental",),
     "wappi_max": ("wappi_history_incremental",),
     "family_child_graph": ("family_graph_refresh",),
+    "mail_bot_visibility": ("stage4b_bot_opening",),
     "bot_safe_chunks_and_dossier": ("bot_safe_rebuild",),
 }
+
+REQUIRED_MUTATING_NIGHTLY_CHAIN = (
+    ("wappi_history_incremental", "wappi_history"),
+    ("family_graph_refresh", "family_graph"),
+    ("derived_signals_refresh", "derived_signals"),
+    ("stage4b_bot_opening", "stage4b_bot_opening"),
+    ("bot_safe_rebuild", "bot_safe_rebuild"),
+)
+
+
+def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
+    raw_steps = payload.get("steps")
+    if not isinstance(raw_steps, list):
+        return "nightly config must contain a steps list"
+    declared_db = Path(str(payload.get("timeline_db") or "")).expanduser().resolve(strict=False)
+    positions: list[int] = []
+    for name, expected_kind in REQUIRED_MUTATING_NIGHTLY_CHAIN:
+        matches = [
+            (index, step)
+            for index, step in enumerate(raw_steps)
+            if isinstance(step, Mapping) and step.get("name") == name
+        ]
+        if len(matches) != 1:
+            return f"nightly config requires exactly one {name} step"
+        position, step = matches[0]
+        config = step.get("config")
+        if step.get("enabled") is not True or step.get("required") is not True:
+            return f"nightly config {name} must be enabled and required"
+        if step.get("kind") != expected_kind:
+            return f"nightly config {name} kind must be {expected_kind}"
+        if not isinstance(config, Mapping):
+            return f"nightly config {name} requires config"
+        if config.get("apply") is not True:
+            return f"nightly config {name} apply must be true"
+        step_db = Path(str(config.get("timeline_db") or "")).expanduser().resolve(strict=False)
+        if step_db != declared_db:
+            return f"nightly config {name} timeline_db must match declared staging DB"
+        positions.append(position)
+    if positions != sorted(positions):
+        names = " -> ".join(name for name, _kind in REQUIRED_MUTATING_NIGHTLY_CHAIN)
+        return f"nightly config required step order must be {names}"
+    return ""
 
 
 def _fingerprint_value(value: Any) -> Any:
@@ -2684,6 +2808,21 @@ def _proof_bot_safe_chunks_and_dossier(ctx: "_SourceProofContext") -> Mapping[st
                   reason="bot_safe_rebuild ok; customers_with_summary from step summary")
 
 
+def _proof_mail_bot_visibility(ctx: "_SourceProofContext") -> Mapping[str, Any]:
+    label = "mail_bot_visibility"
+    step = ctx.steps_by_name.get("stage4b_bot_opening")
+    summary = step.get("summary") if step and isinstance(step.get("summary"), Mapping) else {}
+    if step is None:
+        return _proof(label, ctx, status="missing", records=0, cursor_or_max_event_at=None,
+                      reason="step stage4b_bot_opening did not run in this run")
+    if str(step.get("status")) != "ok" or not stage4b_report_ok(summary):
+        return _proof(label, ctx, status="error", records=0, cursor_or_max_event_at=None,
+                      reason=f"stage4b_bot_opening step status={step.get('status')}")
+    records = int((summary.get("plan") or {}).get("candidate_chunks") or 0)
+    return _proof(label, ctx, status="ok", records=records, cursor_or_max_event_at=None,
+                  reason="stage4b_bot_opening apply report passed every final check")
+
+
 SOURCE_PROOF_BUILDERS: Mapping[str, Callable[["_SourceProofContext"], Mapping[str, Any]]] = {
     "amo_contacts_leads_events": _proof_amo_contacts_leads_events,
     "tallanto_cards": _proof_tallanto_cards,
@@ -2694,6 +2833,7 @@ SOURCE_PROOF_BUILDERS: Mapping[str, Callable[["_SourceProofContext"], Mapping[st
     "wappi_telegram": _proof_wappi_telegram,
     "wappi_max": _proof_wappi_max,
     "family_child_graph": _proof_family_child_graph,
+    "mail_bot_visibility": _proof_mail_bot_visibility,
     "bot_safe_chunks_and_dossier": _proof_bot_safe_chunks_and_dossier,
 }
 

@@ -129,6 +129,8 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
             """
             CREATE TABLE a2v3_mail_event_facts (
               event_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
               client_safe INTEGER NOT NULL,
               bot_visible INTEGER NOT NULL,
               client_safe_reason TEXT NOT NULL,
@@ -137,8 +139,8 @@ def test_reader_smoke_blocks_mail_allowed_when_a2_facts_require_review(tmp_path:
             """
         )
         con.execute(
-            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 0, ?, ?)",
-            (event_id, "has_manager_note", json.dumps(["manager_action_required", "has_manager_note"], ensure_ascii=False)),
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, 'foton', ?, 0, 0, ?, ?)",
+            (event_id, staging_customer, "has_manager_note", json.dumps(["manager_action_required", "has_manager_note"], ensure_ascii=False)),
         )
         con.commit()
 
@@ -189,6 +191,8 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
             """
             CREATE TABLE a2v3_mail_event_facts (
               event_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
               client_safe INTEGER NOT NULL,
               bot_visible INTEGER NOT NULL,
               client_safe_reason TEXT NOT NULL,
@@ -197,9 +201,10 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
             """
         )
         con.execute(
-            "INSERT INTO a2v3_mail_event_facts VALUES (?, 0, 1, ?, ?)",
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, 'foton', ?, 0, 1, ?, ?)",
             (
                 event_id,
+                staging_customer,
                 "sensitive_money",
                 json.dumps(["sensitive_money", "manager_action_required"], ensure_ascii=False),
             ),
@@ -215,6 +220,20 @@ def test_reader_smoke_allows_variant_b_money_but_blocks_secret_mail_tags(tmp_pat
     assert money_gate["violations"] == {}
 
     with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET customer_id='customer:other' WHERE event_id=?",
+            (event_id,),
+        )
+        con.commit()
+    foreign_report, foreign_ok = reader_smoke.smoke(cfg, snapshot_db=staging)
+    assert foreign_ok is False
+    assert foreign_report["mail_allowed_safety_gate"]["violations"]["allowed_mail_without_a2_fact"] == 1
+
+    with sqlite3.connect(staging) as con:
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET customer_id=? WHERE event_id=?",
+            (staging_customer, event_id),
+        )
         event_id = con.execute("SELECT event_id FROM timeline_events LIMIT 1").fetchone()[0]
         con.execute(
             "UPDATE a2v3_mail_event_facts SET sensitivity_tags_json = ? WHERE event_id = ?",

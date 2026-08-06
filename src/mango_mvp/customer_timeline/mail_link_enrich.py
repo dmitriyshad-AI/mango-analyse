@@ -1772,7 +1772,7 @@ def _upsert_fact_for_decision(con: sqlite3.Connection, event: TimelineEvent, dec
     ).fetchone():
         return
     existing = con.execute(
-        "SELECT message_sha256 FROM a2v3_mail_event_facts WHERE message_sha256 = ?",
+        "SELECT customer_id, bot_visible, bot_gate_reason FROM a2v3_mail_event_facts WHERE message_sha256 = ?",
         (event.source_id,),
     ).fetchone()
     row = {
@@ -1809,12 +1809,19 @@ def _upsert_fact_for_decision(con: sqlite3.Connection, event: TimelineEvent, dec
         "created_at": event.created_at.isoformat(),
     }
     if existing:
+        same_customer = bool(existing["customer_id"] and event.customer_id) and (
+            str(existing["customer_id"]) == str(event.customer_id)
+        )
+        row["bot_visible"] = int(existing["bot_visible"] or 0) if same_customer else 0
+        row["bot_gate_reason"] = (
+            existing["bot_gate_reason"] if same_customer else "identity_changed_requires_a2_revalidation"
+        )
         con.execute(
             """
             UPDATE a2v3_mail_event_facts
             SET event_id=:event_id, customer_id=:customer_id, email_brand=:email_brand,
                 customer_brand=:customer_brand, customer_brand_source=:customer_brand_source,
-                customer_brand_reason=:customer_brand_reason, bot_visible=0,
+                customer_brand_reason=:customer_brand_reason, bot_visible=:bot_visible,
                 bot_gate_reason=:bot_gate_reason, identity_outcome=:identity_outcome,
                 identity_reason=:identity_reason
             WHERE message_sha256=:message_sha256

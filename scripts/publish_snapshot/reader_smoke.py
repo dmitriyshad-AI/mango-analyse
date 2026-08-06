@@ -99,7 +99,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    LEFT JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    LEFT JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND f.event_id IS NULL
@@ -111,7 +114,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND f.client_safe_reason IN ({primary_reason_placeholders})
@@ -124,7 +130,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     """
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND f.bot_visible = 0
@@ -136,7 +145,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND EXISTS (
@@ -153,7 +165,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND f.client_safe = 0
@@ -167,7 +182,10 @@ def mail_allowed_safety_gate(db_path: Path) -> dict[str, object]:
                     f"""
                     SELECT COUNT(*)
                     FROM bot_context_chunks AS b
-                    JOIN a2v3_mail_event_facts AS f ON f.event_id = b.event_id
+                    JOIN a2v3_mail_event_facts AS f
+                      ON f.event_id = b.event_id
+                     AND f.tenant_id = b.tenant_id
+                     AND f.customer_id = b.customer_id
                     WHERE b.source_system = 'mail_archive_stage2'
                       AND b.allowed_for_bot = 1
                       AND f.bot_visible = 1

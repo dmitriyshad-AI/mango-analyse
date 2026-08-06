@@ -228,6 +228,16 @@ def valid_nightly_payload(staging_root: Path) -> dict:
                 },
             },
             {
+                "name": "stage4b_bot_opening",
+                "kind": "stage4b_bot_opening",
+                "enabled": True,
+                "required": True,
+                "config": {
+                    "timeline_db": str(staging_root / "customer_timeline_staging.sqlite"),
+                    "apply": True,
+                },
+            },
+            {
                 "name": "bot_safe_rebuild",
                 "kind": "bot_safe_rebuild",
                 "enabled": True,
@@ -924,6 +934,11 @@ def test_builder_creates_calls_step_without_optional_base_config(tmp_path) -> No
         str(mail_data_root / CANONICAL_MAIL_IDENTITY_DB)
     ]
     assert ".codex_local/staging" not in " ".join(mail_link_enrich["config"]["tallanto_identity_dbs"])
+    stage4b = steps["stage4b_bot_opening"]
+    assert stage4b["required"] is True
+    assert stage4b["config"]["defer_full_db_check"] is True
+    assert list(steps).index("derived_signals_refresh") < list(steps).index("stage4b_bot_opening")
+    assert list(steps).index("stage4b_bot_opening") < list(steps).index("bot_safe_rebuild")
 
 
 def test_builder_accepts_base_calls_step_without_optional_amo_sources(tmp_path) -> None:

@@ -1106,6 +1106,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
                     "Иван просил прислать расписание. "
                     "Понедельник, 9 февраля 2026, 20:31 +03:00 от Тестовая Персона <synthetic@example.invalid>. "
                     "Запасной адрес test @ example.invalid. "
+                    "Адрес: Москва, улица Лесная, дом 5. "
                     "Телефон 8 (800) 550 25 88. "
                     "Ссылка https://pay.example.invalid/?fn=7381440901&rnm=0009513397027963."
                 ),
@@ -1133,6 +1134,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
     assert "8 (800) 550 25 88" not in raw
     assert "synthetic@example.invalid" not in raw
     assert "test @ example.invalid" not in raw
+    assert "улица Лесная" not in raw
     assert "Тестовой Персоне" not in raw
     assert "Тестовая Персона" not in raw
     assert "Иван" not in raw
@@ -1142,6 +1144,7 @@ def test_bot_safe_crm_context_sanitizes_e4b_mail_contacts(tmp_path: Path, monkey
     assert "[контактные данные у менеджера]" in raw
     assert "[ссылка скрыта]" in raw
     assert "[персона у менеджера]" in raw
+    assert "[адрес у менеджера]" in raw
     assert scan_bot_safe_context_pii(raw) == ()
 
 
@@ -1671,6 +1674,73 @@ def test_scan_bot_safe_context_pii_detects_person_name_and_address() -> None:
     assert scan_bot_safe_context_pii("Имя ученика: Иван Петров") == ("person_name",)
     assert scan_bot_safe_context_pii("Иван просил расписание") == ("person_name",)
     assert scan_bot_safe_context_pii("Адрес: улица Ленина, дом 5") == ("address",)
+
+
+def test_address_sanitizer_keeps_business_text_after_sentence_boundary() -> None:
+    sanitized = _sanitize_channel_history_text_for_bot(
+        "Адрес: улица Лесная, д. 5, кв. 7. Клиент просит перенести занятие."
+    )
+
+    assert sanitized == "[адрес у менеджера]. Клиент просит перенести занятие."
+    assert scan_bot_safe_context_pii(sanitized) == ()
+
+
+def test_address_sanitizer_covers_structural_address_markers_without_losing_tail() -> None:
+    cases = (
+        ("Доставка: г. Тестоград, Синтетическая 5. Нужна консультация по математике.", "Нужна консультация"),
+        ("Получатель находится в микрорайоне Проверочный, корпус 12, офис 34. Обсудить курс.", "Обсудить курс"),
+        ("Место встречи — наб. Макетная 7. Нужна утренняя группа.", "Нужна утренняя группа"),
+        ("Отправить документы: индекс 000000, Тестоград, Синтетическая 5. Нужен договор.", "Нужен договор"),
+        ("Курьеру: БЦ Макет, этаж 3, офис 214. Курс уже оплачен.", "Курс уже оплачен"),
+        ("Доставка в посёлок Тестовый, квартал Макетный, строение 9. Перезвон не требуется.", "Перезвон не требуется"),
+    )
+    for text, business_tail in cases:
+        sanitized = _sanitize_channel_history_text_for_bot(text)
+
+        assert "[адрес у менеджера]" in sanitized
+        assert business_tail in sanitized
+        assert scan_bot_safe_context_pii(sanitized) == ()
+
+
+def test_address_sanitizer_does_not_treat_business_words_as_addresses() -> None:
+    values = (
+        "Офис подтвердил оплату. Клиент ждёт договор.",
+        "Индекс удовлетворенности вырос. Нужен следующий звонок.",
+        "Квартал завершился ростом выручки. Клиент ждёт договор.",
+    )
+    for value in values:
+        assert _sanitize_channel_history_text_for_bot(value) == value
+
+
+def test_address_sanitizer_stops_at_lowercase_sentence_and_covers_region() -> None:
+    lowercase_tail = _sanitize_channel_history_text_for_bot(
+        "Адрес: улица Лесная, д. 5. клиент просит перенести занятие."
+    )
+    region = _sanitize_channel_history_text_for_bot(
+        "Тестовая область, Проверочный район, улица Макетная, дом 5. Нужен договор."
+    )
+
+    assert lowercase_tail == "[адрес у менеджера]. клиент просит перенести занятие."
+    assert region == "[адрес у менеджера]. Нужен договор."
+    assert scan_bot_safe_context_pii(region) == ()
+
+
+def test_address_sanitizer_covers_real_region_abbreviations_and_keeps_same_sentence_tail() -> None:
+    cases = (
+        "Адрес: Тестовая обл. село Макетное, Центральная 5. клиент ждёт договор.",
+        "Адрес: Тестовая обл село Макетное, Центральная 5. клиент ждёт договор.",
+        "Адрес: Тестовый р-он, Центральная 5. клиент ждёт договор.",
+    )
+    for value in cases:
+        sanitized = _sanitize_channel_history_text_for_bot(value)
+        assert sanitized == "[адрес у менеджера]. клиент ждёт договор."
+        assert scan_bot_safe_context_pii(sanitized) == ()
+
+    same_sentence = _sanitize_channel_history_text_for_bot(
+        "Встреча: проспект Макетный 10, затем обсудить договор и оплату."
+    )
+    assert same_sentence == "Встреча: [адрес у менеджера], затем обсудить договор и оплату."
+    assert scan_bot_safe_context_pii(same_sentence) == ()
 
 
 def test_role_context_does_not_treat_normal_words_as_person_names() -> None:

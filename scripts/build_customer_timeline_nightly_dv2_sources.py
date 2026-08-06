@@ -706,6 +706,22 @@ def build_service_config(
     )
     steps.append(
         {
+            "name": "stage4b_bot_opening",
+            "kind": "stage4b_bot_opening",
+            "enabled": True,
+            "required": True,
+            "config": {
+                "timeline_db": str(timeline_db),
+                "allowed_root": str(allowed_root),
+                "out_dir": str(out_root / "stage4b_bot_opening"),
+                "tenant_id": "foton",
+                "apply": True,
+                "defer_full_db_check": True,
+            },
+        }
+    )
+    steps.append(
+        {
             "name": "bot_safe_rebuild",
             "kind": "bot_safe_rebuild",
             "enabled": True,

@@ -85,6 +85,7 @@ class Stage4BBotOpeningConfig:
     tenant_id: str = "foton"
     apply: bool = True
     allow_test_paths: bool = False
+    defer_full_db_check: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timeline_db_path", Path(self.timeline_db_path).expanduser())
@@ -146,7 +147,11 @@ def run_stage4b_bot_opening(config: Stage4BBotOpeningConfig) -> Mapping[str, Any
         report["after"] = after
         opened_chunk_ids = _opened_chunk_ids(con, tenant_id=config.tenant_id)
         report["final_checks"] = {
-            "quick_check": con.execute("PRAGMA quick_check").fetchone()[0],
+            "quick_check": (
+                "deferred_to_nightly_service"
+                if config.defer_full_db_check
+                else con.execute("PRAGMA quick_check").fetchone()[0]
+            ),
             "foreign_key_check_rows": len(con.execute("PRAGMA foreign_key_check").fetchall()),
             "candidate_review_violations_after": len(openable_chunk_ids - opened_chunk_ids),
             "opened_disallowed_identity_after": len(opened_chunk_ids - openable_chunk_ids),
@@ -856,7 +861,10 @@ def _prepare_client_unsafe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id:
         INSERT OR IGNORE INTO {_CLIENT_UNSAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
         SELECT c.chunk_id
         FROM bot_context_chunks c
-        JOIN a2v3_mail_event_facts f ON f.event_id = c.event_id
+        JOIN a2v3_mail_event_facts f
+          ON f.event_id = c.event_id
+         AND f.tenant_id = c.tenant_id
+         AND f.customer_id = c.customer_id
         WHERE c.tenant_id = ?
           AND c.source_system = ?
           AND COALESCE(c.superseded_by, '') = ''
@@ -898,7 +906,10 @@ def _prepare_client_safe_mail_chunk_ids(con: sqlite3.Connection, *, tenant_id: s
         INSERT OR IGNORE INTO {_CLIENT_SAFE_MAIL_CHUNKS_TEMP_TABLE}(chunk_id)
         SELECT c.chunk_id
         FROM bot_context_chunks c
-        JOIN a2v3_mail_event_facts f ON f.event_id = c.event_id
+        JOIN a2v3_mail_event_facts f
+          ON f.event_id = c.event_id
+         AND f.tenant_id = c.tenant_id
+         AND f.customer_id = c.customer_id
         WHERE c.tenant_id = ?
           AND c.source_system = ?
           AND COALESCE(c.superseded_by, '') = ''

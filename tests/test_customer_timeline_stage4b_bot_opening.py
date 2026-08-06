@@ -51,6 +51,8 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
             CREATE TABLE a2v3_mail_event_facts (
               message_sha256 TEXT PRIMARY KEY,
               event_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
               client_safe INTEGER NOT NULL,
               client_safe_reason TEXT NOT NULL DEFAULT 'no_sensitive_signals',
               sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
@@ -61,11 +63,12 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
         store._con.execute(  # noqa: SLF001
             """
             INSERT INTO a2v3_mail_event_facts(
-              message_sha256, event_id, client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
+              message_sha256, event_id, tenant_id, customer_id,
+              client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("open", open_event.event_id, 1, "no_sensitive_signals", "[]", 1),
+            ("open", open_event.event_id, "foton", customer.customer_id, 1, "no_sensitive_signals", "[]", 1),
         )
         store._con.execute(  # noqa: SLF001 - test fixture creates historical empty text.
             "UPDATE bot_context_chunks SET record_json = json_set(record_json, '$.text', '') WHERE event_id = ?",
@@ -93,7 +96,6 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert first["final_checks"]["candidate_review_violations_after"] == 0
     assert second["plan"]["already_open"] == 1
     assert second["apply"]["chunks_updated"] == 0
-
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = {
@@ -118,6 +120,51 @@ def test_stage4b_opens_only_linked_non_empty_mail_chunks_and_is_idempotent(tmp_p
     assert rows[hidden_event.event_id]["allowed_for_bot"] == 0
     assert rows[hidden_event.event_id]["requires_manager_review"] == 1
 
+
+def test_stage4b_never_reuses_a2_permission_after_customer_transfer(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
+        old = CustomerIdentity(
+            tenant_id="foton", identity_status="strong", customer_id="customer:old",
+            created_at=NOW, updated_at=NOW,
+        )
+        new = CustomerIdentity(
+            tenant_id="foton", identity_status="strong", customer_id="customer:new",
+            created_at=NOW, updated_at=NOW,
+        )
+        store.upsert_customer(old)
+        store.upsert_customer(new)
+        event = _mail_event(new, "transferred", "Письмо нового владельца.")
+        store.upsert_event(event)
+        store.upsert_bot_context_chunk(_mail_chunk(event, text=event.summary or ""))
+        store._con.executescript(  # noqa: SLF001
+            """
+            CREATE TABLE a2v3_mail_event_facts (
+              message_sha256 TEXT PRIMARY KEY, event_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL, customer_id TEXT,
+              client_safe INTEGER NOT NULL, client_safe_reason TEXT NOT NULL,
+              sensitivity_tags_json TEXT NOT NULL DEFAULT '[]', bot_visible INTEGER NOT NULL
+            );
+            """
+        )
+        store._con.execute(  # noqa: SLF001
+            "INSERT INTO a2v3_mail_event_facts VALUES (?, ?, ?, ?, 1, ?, '[]', 1)",
+            ("transferred", event.event_id, "foton", old.customer_id, "no_sensitive_signals"),
+        )
+        store._con.commit()  # noqa: SLF001
+
+    report = run_stage4b_bot_opening(Stage4BBotOpeningConfig(
+        timeline_db_path=db_path, allowed_root=tmp_path, out_dir=tmp_path / "out",
+        apply=True, allow_test_paths=True,
+    ))
+
+    assert report["client_safe_mail_chunks_indexed"] == 0
+    assert report["plan"]["candidate_chunks"] == 0
+    assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT allowed_for_bot FROM bot_context_chunks WHERE event_id=?", (event.event_id,)
+        ).fetchone()[0] == 0
 
 def test_stage4b_opens_only_strong_linked_channel_chunks_without_open_conflict(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
@@ -702,6 +749,8 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
             CREATE TABLE a2v3_mail_event_facts (
               message_sha256 TEXT PRIMARY KEY,
               event_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
               client_safe INTEGER NOT NULL,
               client_safe_reason TEXT NOT NULL DEFAULT 'no_sensitive_signals',
               sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
@@ -712,15 +761,16 @@ def test_stage4b_keeps_a2_client_unsafe_mail_manager_only(tmp_path: Path) -> Non
         store._con.executemany(  # noqa: SLF001
             """
             INSERT INTO a2v3_mail_event_facts(
-              message_sha256, event_id, client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
+              message_sha256, event_id, tenant_id, customer_id,
+              client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("unsafe", unsafe_event.event_id, 0, "sensitive_credentials", '["sensitive_credentials"]', 1),
-                ("safe", safe_event.event_id, 1, "no_sensitive_signals", "[]", 1),
-                ("money", money_event.event_id, 0, "sensitive_money", '["sensitive_money"]', 1),
-                ("medical", medical_event.event_id, 0, "sensitive_money", '["sensitive_money", "sensitive_medical"]', 1),
+                ("unsafe", unsafe_event.event_id, "foton", customer.customer_id, 0, "sensitive_credentials", '["sensitive_credentials"]', 1),
+                ("safe", safe_event.event_id, "foton", customer.customer_id, 1, "no_sensitive_signals", "[]", 1),
+                ("money", money_event.event_id, "foton", customer.customer_id, 0, "sensitive_money", '["sensitive_money"]', 1),
+                ("medical", medical_event.event_id, "foton", customer.customer_id, 0, "sensitive_money", '["sensitive_money", "sensitive_medical"]', 1),
             ],
         )
         store._con.commit()  # noqa: SLF001
@@ -778,6 +828,8 @@ def test_stage4b_does_not_open_mail_without_a2_bot_visible_flag(tmp_path: Path) 
             CREATE TABLE a2v3_mail_event_facts (
               message_sha256 TEXT PRIMARY KEY,
               event_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
               client_safe INTEGER NOT NULL,
               client_safe_reason TEXT NOT NULL DEFAULT 'no_sensitive_signals',
               sensitivity_tags_json TEXT NOT NULL DEFAULT '[]',
@@ -788,11 +840,12 @@ def test_stage4b_does_not_open_mail_without_a2_bot_visible_flag(tmp_path: Path) 
         store._con.execute(  # noqa: SLF001
             """
             INSERT INTO a2v3_mail_event_facts(
-              message_sha256, event_id, client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
+              message_sha256, event_id, tenant_id, customer_id,
+              client_safe, client_safe_reason, sensitivity_tags_json, bot_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("hiddenbot", hidden_event.event_id, 1, "no_sensitive_signals", "[]", 0),
+            ("hiddenbot", hidden_event.event_id, "foton", customer.customer_id, 1, "no_sensitive_signals", "[]", 0),
         )
         store._con.execute(  # noqa: SLF001 - simulate a previous bad opening that must be retracted.
             """
@@ -813,9 +866,11 @@ def test_stage4b_does_not_open_mail_without_a2_bot_visible_flag(tmp_path: Path) 
             out_dir=tmp_path / "out",
             apply=True,
             allow_test_paths=True,
+            defer_full_db_check=True,
         )
     )
 
+    assert report["final_checks"]["quick_check"] == "deferred_to_nightly_service"
     assert report["client_safe_mail_chunks_indexed"] == 0
     assert report["plan"]["candidate_chunks"] == 0
     assert report["plan"]["skipped"]["mail_chunks_not_allowed_by_output_gate"] == 1

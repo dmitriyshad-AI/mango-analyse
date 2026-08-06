@@ -9,7 +9,7 @@ import pytest
 
 import mango_mvp.customer_timeline.mail_link_enrich as mail_link_enrich_module
 import scripts.run_mail_link_enrich as mail_link_enrich_runner
-from mango_mvp.customer_timeline.a2_mail_ingest import A2V3_MAIL_SOURCE_SYSTEM
+from mango_mvp.customer_timeline.a2_mail_ingest import A2V3_MAIL_SOURCE_SYSTEM, _ensure_a2v3_event_facts_table
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     IdentityLink,
@@ -568,6 +568,7 @@ def test_mail_link_enrich_apply_rerun_on_same_input_is_idempotent(tmp_path: Path
     unchanged DB must not flip customer_id/match_status or create new chunks."""
     db_path = tmp_path / "customer_timeline.sqlite"
     _seed_customer_with_links(db_path, tmp_path)
+    _ensure_a2v3_event_facts_table(db_path)
     sha = "e" * 64
     source_file, _ = _write_archive(
         tmp_path,
@@ -589,6 +590,11 @@ def test_mail_link_enrich_apply_rerun_on_same_input_is_idempotent(tmp_path: Path
             ).fetchone()
         )
         chunks_after_first = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET bot_visible=1, bot_gate_reason='owner_approved' WHERE message_sha256=?",
+            (sha,),
+        )
 
     second = run_mail_link_enrich(
         MailLinkEnrichConfig(
@@ -607,12 +613,50 @@ def test_mail_link_enrich_apply_rerun_on_same_input_is_idempotent(tmp_path: Path
             ).fetchone()
         )
         chunks_after_second = con.execute("SELECT COUNT(*) FROM bot_context_chunks").fetchone()[0]
+        fact_after_second = tuple(con.execute(
+            "SELECT bot_visible, bot_gate_reason FROM a2v3_mail_event_facts WHERE message_sha256=?",
+            (sha,),
+        ).fetchone())
 
     assert second["target_events"] == 1
     assert after_second == after_first
     assert chunks_after_second == chunks_after_first
+    assert fact_after_second == (1, "owner_approved")
     assert second["safety"]["allowed_for_bot_changed"] is False
     assert second["safety"]["mail_stage2_allowed_for_bot_changed"] is False
+
+
+def test_mail_link_enrich_resets_permission_when_exact_owner_changes(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    _ensure_a2v3_event_facts_table(db_path)
+    sha = "7" * 64
+    def event(customer_id: str) -> TimelineEvent:
+        return TimelineEvent(
+            tenant_id="foton", customer_id=customer_id, event_type="email_message",
+            event_at=NOW, source_system=A2V3_MAIL_SOURCE_SYSTEM, source_id=sha,
+            source_ref="mail:test", direction=TimelineDirection.INBOUND,
+            match_status="strong_unique", summary="Письмо", metadata={"brand": "foton"}, created_at=NOW,
+        )
+
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        mail_link_enrich_module._upsert_fact_for_decision(  # noqa: SLF001
+            con, event("customer:old"), {"outcome": "strong", "reason": "exact"},
+        )
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET bot_visible=1, bot_gate_reason='owner_approved' "
+            "WHERE message_sha256=?",
+            (sha,),
+        )
+        mail_link_enrich_module._upsert_fact_for_decision(  # noqa: SLF001
+            con, event("customer:new"), {"outcome": "strong", "reason": "exact"},
+        )
+        con.commit()
+        fact = con.execute(
+            "SELECT customer_id,bot_visible,bot_gate_reason FROM a2v3_mail_event_facts WHERE message_sha256=?",
+            (sha,),
+        ).fetchone()
+    assert tuple(fact) == ("customer:new", 0, "identity_changed_requires_a2_revalidation")
 
 
 @pytest.mark.parametrize("match_class", ("inferred", "manual"))
@@ -1738,6 +1782,7 @@ def test_mail_link_enrich_rechecks_old_strong_link_without_enrich_metadata(tmp_p
 def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     _seed_customer_with_links(db_path, tmp_path, email_source_system="tallanto_snapshot")
+    _ensure_a2v3_event_facts_table(db_path)
     sha = "0" * 64
     source_file, _ = _write_archive(
         tmp_path,
@@ -1755,6 +1800,11 @@ def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path
         )
     )
     assert first["apply"]["counts"]["created_chunks"] == 1
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "UPDATE a2v3_mail_event_facts SET bot_visible=1, bot_gate_reason='owner_approved' WHERE message_sha256=?",
+            (sha,),
+        )
     with CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path) as store:
         store.upsert_identity_link(
             IdentityLink(
@@ -1800,8 +1850,13 @@ def test_mail_link_enrich_revokes_link_after_identity_becomes_ambiguous(tmp_path
             """,
             (sha,),
         ).fetchone()[0]
+        fact = con.execute(
+            "SELECT bot_visible, bot_gate_reason FROM a2v3_mail_event_facts WHERE message_sha256=?",
+            (sha,),
+        ).fetchone()
     assert event == (None, "unmatched")
     assert active_chunks == 0
+    assert fact == (0, "identity_changed_requires_a2_revalidation")
 
 
 def test_mail_link_enrich_does_not_lower_existing_strong_when_archive_is_missing(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ from mango_mvp.customer_timeline.nightly_service import (
     run_nightly_service,
     run_tallanto_money_api_step,
     service_config_from_json,
+    stage4b_report_ok,
 )
 
 
@@ -73,6 +74,82 @@ def test_bot_safe_proof_rejects_zero_summaries() -> None:
 
     assert proof["status"] == "empty"
     assert proof["records_seen_or_written"] == 0
+
+
+def test_stage4b_report_gate_requires_every_final_check() -> None:
+    checks = {
+        "quick_check": "deferred_to_nightly_service",
+        "foreign_key_check_rows": 0,
+        "candidate_review_violations_after": 0,
+        "opened_disallowed_identity_after": 0,
+        "opened_mango_processed_non_strong_after": 0,
+        "opened_mango_processed_non_contentful_after": 0,
+        "opened_unknown_brand_non_call_after": 0,
+    }
+
+    report = {
+        "schema_version": nightly_service_module.STAGE4B_BOT_OPENING_SCHEMA_VERSION,
+        "mode": "apply",
+        "apply": {"chunks_updated": 0},
+        "final_checks": checks,
+    }
+    assert stage4b_report_ok(report) is True
+    assert stage4b_report_ok({**report, "status": "FAIL"}) is False
+    assert stage4b_report_ok({**report, "quality_passed": False}) is False
+    assert stage4b_report_ok({**report, "final_checks": {**checks, "opened_disallowed_identity_after": 1}}) is False
+    assert stage4b_report_ok({**report, "final_checks": {"quick_check": "ok"}}) is False
+
+
+@pytest.mark.parametrize(("violations", "expected_status"), ((0, "ok"), (1, "partial")))
+def test_nightly_service_stage4b_controls_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    violations: int,
+    expected_status: str,
+) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer(db_path, tmp_path)
+    checks = {
+        "quick_check": "deferred_to_nightly_service",
+        "foreign_key_check_rows": 0,
+        "candidate_review_violations_after": 0,
+        "opened_disallowed_identity_after": violations,
+        "opened_mango_processed_non_strong_after": 0,
+        "opened_mango_processed_non_contentful_after": 0,
+        "opened_unknown_brand_non_call_after": 0,
+    }
+    seen = []
+    monkeypatch.setattr(
+        nightly_service_module,
+        "run_stage4b_bot_opening",
+        lambda config: seen.append(config) or {
+            "schema_version": nightly_service_module.STAGE4B_BOT_OPENING_SCHEMA_VERSION,
+            "mode": "apply",
+            "apply": {"chunks_updated": 0},
+            "final_checks": checks,
+            "plan": {"candidate_chunks": 0},
+        },
+    )
+    config_path = tmp_path / "service.json"
+    config_path.write_text(json.dumps({
+        "timeline_db": str(db_path),
+        "allowed_root": str(tmp_path),
+        "out_root": str(tmp_path / "runs"),
+        "publish_dir": str(tmp_path / "published"),
+        "steps": [{
+            "name": "stage4b_bot_opening", "kind": "stage4b_bot_opening", "required": True,
+            "config": {
+                "timeline_db": str(db_path), "allowed_root": str(tmp_path),
+                "out_dir": str(tmp_path / "stage4b"), "apply": True, "defer_full_db_check": True,
+            },
+        }],
+    }), encoding="utf-8")
+
+    report = run_nightly_service(service_config_from_json(config_path))
+
+    assert report["overall_status"] == expected_status
+    assert report["snapshot_manifest"]["latest_published"] is (violations == 0)
+    assert seen[0].defer_full_db_check is True
 
 
 def test_family_graph_proof_rejects_zero_child_links() -> None:

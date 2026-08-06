@@ -29,6 +29,8 @@ from mango_mvp.customer_timeline.nightly_service import (  # noqa: E402
     DEFAULT_TOTAL_RUNTIME_BUDGET_SECONDS,
     NIGHTLY_SERVICE_CONFIG_SCHEMA_VERSION,
     REQUIRED_MANIFEST_SOURCE_STEP_MAP,
+    REQUIRED_MUTATING_NIGHTLY_CHAIN,
+    validate_mutating_nightly_chain,
 )
 
 FOTON_DAILY = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/_daily")
@@ -56,12 +58,6 @@ PROD_TIMELINE_DB = Path(
 )
 PROD_SNAPSHOT_STALE_HOURS = 7 * 24
 TASK_SUCCESS_STALE_HOURS = 30
-REQUIRED_MUTATING_NIGHTLY_CHAIN = (
-    ("wappi_history_incremental", "wappi_history"),
-    ("family_graph_refresh", "family_graph"),
-    ("derived_signals_refresh", "derived_signals"),
-    ("bot_safe_rebuild", "bot_safe_rebuild"),
-)
 REQUIRED_NIGHTLY_STEPS = {
     "mango_processed_sweep",
     "calls_and_amo_incremental",
@@ -73,6 +69,7 @@ REQUIRED_NIGHTLY_STEPS = {
     "tallanto_attendance_api_incremental",
     "family_graph_refresh",
     "derived_signals_refresh",
+    "stage4b_bot_opening",
     "bot_safe_rebuild",
 }
 REQUIRED_CALL_SOURCES = {"mango_processed_summary": "mango_processed_summary"}
@@ -304,40 +301,6 @@ def validate_nightly_config(path: Path | None = None) -> str:
     required_columns = {"analysis_status", "analysis_json"}
     if not required_columns <= columns:
         return "required mango_calls_ready.sqlite package DB misses analyzed call columns"
-    return ""
-
-
-def validate_mutating_nightly_chain(payload: Mapping[str, Any]) -> str:
-    raw_steps = payload.get("steps")
-    if not isinstance(raw_steps, list):
-        return "nightly config must contain a steps list"
-    declared_db = Path(str(payload.get("timeline_db") or "")).expanduser().resolve(strict=False)
-    positions: list[int] = []
-    for name, expected_kind in REQUIRED_MUTATING_NIGHTLY_CHAIN:
-        matches = [
-            (index, step)
-            for index, step in enumerate(raw_steps)
-            if isinstance(step, Mapping) and step.get("name") == name
-        ]
-        if len(matches) != 1:
-            return f"nightly config requires exactly one {name} step"
-        position, step = matches[0]
-        if step.get("enabled") is not True or step.get("required") is not True:
-            return f"nightly config {name} must be enabled and required"
-        if step.get("kind") != expected_kind:
-            return f"nightly config {name} kind must be {expected_kind}"
-        config = step.get("config")
-        if not isinstance(config, Mapping):
-            return f"nightly config {name} requires config"
-        if config.get("apply") is not True:
-            return f"nightly config {name} apply must be true"
-        step_db = Path(str(config.get("timeline_db") or "")).expanduser().resolve(strict=False)
-        if step_db != declared_db:
-            return f"nightly config {name} timeline_db must match declared staging DB"
-        positions.append(position)
-    if positions != sorted(positions):
-        names = " -> ".join(name for name, _kind in REQUIRED_MUTATING_NIGHTLY_CHAIN)
-        return f"nightly config required step order must be {names}"
     return ""
 
 

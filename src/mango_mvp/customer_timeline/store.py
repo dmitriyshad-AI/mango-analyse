@@ -49,6 +49,7 @@ BRAND_AUTH_EVENT_SOURCES = (
     "wappi_telegram",
 )
 BRAND_AUTH_SELF_SOURCES = ("customer_timeline_bot_safe_summary",)
+TALLANTO_D110_PROFILE_RESOLUTION_KEY = "tallanto_d110_profile_resolution"
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -1265,6 +1266,7 @@ class CustomerTimelineSQLiteStore:
             },
             actor=actor,
             ingestion_run_id=ingestion_run_id,
+            persistent_metadata_keys=(TALLANTO_D110_PROFILE_RESOLUTION_KEY,),
         )
 
     def upsert_identity_link(
@@ -3392,15 +3394,21 @@ class CustomerTimelineSQLiteStore:
         actor: str,
         ingestion_run_id: Optional[str],
         commit: bool = True,
+        persistent_metadata_keys: Sequence[str] = (),
     ) -> CustomerTimelineStoreWriteResult:
         key = require_text(key_value, key_column)
-        safe_payload = scrub_timeline_persisted_json(payload)
-        payload_json = json_dumps(safe_payload)
-        record_hash = stable_digest(safe_payload)
         existing = self._fetch_one(
             f"SELECT record_hash, record_json FROM {table} WHERE {key_column} = ?",
             (key,),
         )
+        if existing is not None and persistent_metadata_keys:
+            previous_metadata = json_loads(existing["record_json"]).get("metadata") or {}
+            metadata = dict(payload.get("metadata") or {})
+            metadata.update({key: previous_metadata[key] for key in persistent_metadata_keys if key not in metadata and key in previous_metadata})
+            payload = {**payload, "metadata": metadata}
+        safe_payload = scrub_timeline_persisted_json(payload)
+        payload_json = json_dumps(safe_payload)
+        record_hash = stable_digest(safe_payload)
         if existing is not None and existing["record_hash"] == record_hash:
             return CustomerTimelineStoreWriteResult(record_type, key, False, "duplicate", record_hash)
         before_hash = existing["record_hash"] if existing is not None else None

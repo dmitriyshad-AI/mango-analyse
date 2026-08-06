@@ -790,6 +790,56 @@ def test_bot_safe_family_projection_blocks_needs_review_child_and_old_chunks(tmp
     assert "онлайн-курс" not in context["summary"]
 
 
+def test_bot_safe_family_projection_ignores_excluded_child_evidence(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:test", customer_id, "child:excluded", "Не ребёнок", "[]", "[]", "[]",
+                "unknown", " Excluded ", "low", "suspicious_child_name", "[]", 1,
+                NOW.isoformat(), "excluded-hash", "{}",
+            ),
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["timeline_context"]["family_dossier"]["child_scope"] == "single"
+    assert context["timeline_context"]["family_dossier"].get("context_blocked") is not True
+    assert "онлайн-курс" in context["summary"]
+
+
+def test_bot_safe_family_projection_blocks_excluded_only_evidence(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    _seed_family_rows(db_path, customer_id=customer_id)
+    with sqlite3.connect(db_path) as con:
+        con.execute("DELETE FROM family_links_v1")
+        con.execute(
+            "INSERT INTO family_links_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "foton", "family:test", customer_id, "child:excluded", "Не ребёнок", "[]", "[]", "[]",
+                "unknown", "excluded", "low", "suspicious_child_name", "[]", 1,
+                NOW.isoformat(), "excluded-only-hash", "{}",
+            ),
+        )
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", amo_lead_id="5001", amo_contact_id="7001"),
+    )
+
+    assert context["timeline_context"]["family_dossier"]["context_blocked"] is True
+    assert "онлайн-курс" not in context["summary"]
+
+
 def test_bot_safe_family_projection_never_reuses_persisted_family_free_text(tmp_path: Path) -> None:
     db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
     _seed_family_rows(db_path, customer_id=customer_id)

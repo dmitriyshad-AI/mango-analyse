@@ -1009,23 +1009,22 @@ def _build_bot_safe_family_projection(
         ):
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
         placeholders = ",".join("?" for _ in members)
-        rows = con.execute(
+        raw_rows = con.execute(
             f"SELECT customer_id, child_key, grades_json, subjects_json, brand, status, confidence "
             f"FROM family_links_v1 WHERE tenant_id=? AND customer_id IN ({placeholders}) "
             "ORDER BY customer_id, child_key",
             (tenant_id, *members),
         ).fetchall()
+        rows = [row for row in raw_rows if _normalize_tag(row["status"]) != "excluded"]
+        if raw_rows and not rows:
+            return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
         if any(
             _normalize_tag(row["status"]) != "confident"
             or _normalize_tag(row["confidence"]) not in {"high", "medium"}
             for row in rows
         ):
             return {"child_scope": "blocked", "needs_clarification": True, "context_blocked": True}
-        candidate_children = [
-            row for row in rows
-            if _normalize_tag(row["status"]) == "confident"
-            and _normalize_tag(row["confidence"]) in {"high", "medium"}
-        ]
+        candidate_children = rows
         children = [row for row in candidate_children if _normalize_brand(row["brand"]) == active_brand]
         selected = children[0] if len(candidate_children) == 1 and len(children) == 1 else None
         scope = "single" if selected is not None else "needs_clarification"

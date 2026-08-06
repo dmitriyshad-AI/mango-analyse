@@ -1337,9 +1337,8 @@ def _child_groups_for_customer(context: CustomerContext, evidence_items: Sequenc
             name_key = f"{name_key}|{item.tallanto_student_id}"
         group = groups.setdefault(name_key, ChildGroup(name_key=name_key))
         group.names.add(item.name.strip())
-        if item.grade.strip():
-            group.grades.add(item.grade.strip())
-        for subject in _split_subjects(item.subject):
+        group.grades.update(_split_traits(item.grade))
+        for subject in _split_traits(item.subject):
             group.subjects.add(subject)
         group.brands[_normalize_brand(item.brand)] += 1
         group.evidence.append(item)
@@ -2192,7 +2191,7 @@ def _is_nullish_child_name(value: str) -> bool:
     return str(value or "").strip().casefold().replace("ё", "е") in _NULLISH_CHILD_NAMES
 
 
-def _split_subjects(value: str) -> list[str]:
+def _split_traits(value: str) -> list[str]:
     parts = re.split(r"[;,/|]+", str(value or ""))
     return _dedupe(part.strip() for part in parts if part.strip())
 

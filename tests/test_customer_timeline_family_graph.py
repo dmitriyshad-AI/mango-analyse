@@ -1427,6 +1427,50 @@ def test_family_links_and_child_attribution_rerun_is_idempotent(tmp_path: Path) 
     assert len(child_keys) == 2  # the two siblings never collapse onto one child_key
 
 
+def test_persisted_family_traits_do_not_grow_on_rerun(tmp_path: Path) -> None:
+    db_path = _timeline_db(tmp_path)
+    profiles_db = _profiles_db(tmp_path)
+    _seed_customer(db_path, tmp_path, customer_id="customer:traits", phone="+79000000772")
+    _insert_profile(profiles_db, profile_id="customer:traits", phone="+79000000772")
+    _insert_field(
+        profiles_db,
+        profile_id="customer:traits",
+        field="child_name",
+        value="Анна Иванова",
+        child_key="child_1",
+    )
+    _insert_field(
+        profiles_db,
+        profile_id="customer:traits",
+        field="grade",
+        value="8",
+        child_key="child_1",
+    )
+    build_family_graph(
+        FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, profiles_db=profiles_db, apply=True)
+    )
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "CREATE TABLE a2v3_mail_event_facts (tenant_id TEXT,event_id TEXT,customer_id TEXT,"
+            "student_name TEXT,grade TEXT,subject_area TEXT,email_brand TEXT)"
+        )
+        con.execute(
+            "INSERT INTO a2v3_mail_event_facts VALUES (?,?,?,?,?,?,?)",
+            ("foton", "mail-1", "customer:traits", "Анна Иванова", "9", "", "unknown"),
+        )
+
+    config = FamilyGraphConfig(timeline_db=db_path, allowed_root=tmp_path, apply=True)
+    build_family_graph(config)
+    with sqlite3.connect(db_path) as con:
+        before = con.execute("SELECT grades_json,record_hash,record_json FROM family_links_v1").fetchone()
+    build_family_graph(config)
+    with sqlite3.connect(db_path) as con:
+        after = con.execute("SELECT grades_json,record_hash,record_json FROM family_links_v1").fetchone()
+
+    assert json.loads(before[0]) == ["8", "9"]
+    assert after == before
+
+
 def test_family_root_rejects_conflicting_tallanto_student_id(tmp_path: Path) -> None:
     db_path = _timeline_db(tmp_path)
     for customer_id, phone in (("customer:left", "+79000000001"), ("customer:right", "+79000000002")):

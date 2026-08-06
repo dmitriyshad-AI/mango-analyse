@@ -11,7 +11,7 @@ import json
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -38,6 +38,7 @@ from mango_mvp.customer_timeline.ingestion import (
     TALLANTO_TIMEZONE,
     build_source_inventory,
     compact_text,
+    customer_identity_from_json,
     guard_customer_timeline_source_path,
     parse_source_datetime,
     timeline_ingestion_safety_contract,
@@ -52,6 +53,8 @@ from mango_mvp.customer_timeline.store import (
     authoritative_tallanto_student_owners,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
+    open_family_identity_conflict_customer_ids,
+    TALLANTO_D110_PROFILE_RESOLUTION_KEY,
 )
 
 
@@ -62,6 +65,7 @@ SOURCE_KIND = "tallanto_readonly_mcp_snapshot"
 PAYMENT_MODULE = "most_finances"
 ABONEMENT_MODULE = "most_abonements"
 CLASS_MODULE = "most_class"
+IDENTITY_PROFILE_RESOLUTION_VERSION = "exact_owner_v1"
 MONEY_SELECT_FIELDS = {
     PAYMENT_MODULE: (
         "id", "contact_id", "name", "cost", "date_payment", "date_modified",
@@ -1196,6 +1200,7 @@ def run_tallanto_payments_import(
     store_summary_after: Optional[Mapping[str, Any]] = None
     source_inventory_before = build_source_inventory(records)
     resolved_owner_conflicts = close_relinked_payment_owner_conflicts(config.timeline_db, tenant_id=config.tenant_id, records=(), customer_lookup=customer_lookup) if config.apply and config.timeline_db.exists() else 0
+    reconciled_identity_profiles = reverted_identity_profiles = 0
     if config.apply:
         store = CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root)
         try:
@@ -1219,6 +1224,7 @@ def run_tallanto_payments_import(
             records=records,
             customer_lookup=customer_lookup,
         )
+        reconciled_identity_profiles, reverted_identity_profiles = reconcile_relinked_tallanto_identity_profiles(config.timeline_db, tenant_id=config.tenant_id)
     else:
         import_report = TimelineImportService(cast(CustomerTimelineSQLiteStore, _DryRunStore())).import_records(
             records,
@@ -1284,6 +1290,8 @@ def run_tallanto_payments_import(
             "ambiguous_tallanto_matches": len(customer_lookup.ambiguous_customer_ids),
             "unmatched_tallanto_contact_ids": stats.unmatched_contact_ids,
             "resolved_payment_owner_conflicts": resolved_owner_conflicts,
+            "reconciled_identity_profiles": reconciled_identity_profiles,
+            "reverted_identity_profiles": reverted_identity_profiles,
         },
         "import_report": import_report_payload,
         "store_summary_before": store_summary_before,
@@ -1319,47 +1327,18 @@ def close_relinked_payment_owner_conflicts(
         if alternate_contact_id and alternate_contact_id != contact_id:
             continue
         payment_refs.add(record.source_ref)
-    identity_conflicts: list[Mapping[str, Any]] = []
-    with open_readonly_sqlite(db_path) as con:
-        canonical_owners = authoritative_tallanto_student_owners(con, tenant_id)
-        for row in con.execute(
-            "SELECT conflict_id,record_json FROM timeline_conflicts WHERE tenant_id=? AND "
-            "conflict_type='tallanto_identity_ambiguous' AND status IN ('open','active')", (tenant_id,),
-        ):
-            payload = json.loads(str(row[1]))
-            raw_refs = payload.get("entity_refs") if isinstance(payload, Mapping) else None
-            if (payload.get("conflict_id") != row[0] or payload.get("conflict_type") != "tallanto_identity_ambiguous"
-                    or not isinstance(raw_refs, list) or not all(isinstance(item, str) and item for item in raw_refs)
-                    or not isinstance(payload.get("metadata", {}), Mapping)
-                    or row[0] != stable_prefixed_id("timeline_conflict", {"tenant_id": normalize_key(tenant_id, "tenant_id"), "conflict_type": "tallanto_identity_ambiguous", "entity_refs": sorted(raw_refs)})):
-                raise ValueError("invalid stored tallanto_identity_ambiguous conflict")
-            refs = tuple(raw_refs)
-            student_refs = tuple(item for item in refs if item.startswith("tallanto_student_id:"))
-            source_refs = tuple(item for item in refs if item.startswith((f"tallanto:{PAYMENT_MODULE}:", f"tallanto:{ABONEMENT_MODULE}:")))
-            if len(student_refs) != 1 or len(source_refs) != 1:
-                continue
-            owner = canonical_owners.get(student_refs[0].split(":", 1)[1])
-            if not owner:
-                continue
-            events = con.execute(
-                "SELECT customer_id,record_json FROM timeline_events WHERE tenant_id=? AND source_system=? AND "
-                "source_ref=? AND superseded_by IS NULL AND match_status IN ('strong_unique','manual')",
-                (tenant_id, SOURCE_SYSTEM, source_refs[0]),
-            ).fetchall()
-            if len(events) != 1 or str(events[0][0] or "") != owner:
-                continue
-            if optional_text((json.loads(str(events[0][1])).get("record") or {}).get("contact_id")) != student_refs[0].split(":", 1)[1]:
-                continue
-            identity_conflicts.append(payload)
-    if not payment_refs and not identity_conflicts:
-        return 0
     with CustomerTimelineSQLiteStore(db_path, allowed_root=db_path.parent) as store:
         with store.bulk_write():
+            identity_conflicts = _validated_relinked_tallanto_identity_conflicts(  # noqa: SLF001
+                store._con, tenant_id=tenant_id, statuses=("open", "active")
+            )
+            if not payment_refs and not identity_conflicts:
+                return 0
             resolved = store.resolve_conflicts_by_refs(
                 tenant_id, conflict_types=("tallanto_payment_owner_unresolved",),
                 entity_refs=tuple(sorted(payment_refs)), actor="tallanto_payments_conflict_resolver"
             ) if payment_refs else 0
-            for payload in identity_conflicts:
+            for payload, _owner, _student_id in identity_conflicts:
                 result = store.record_conflict(
                     tenant_id, conflict_type="tallanto_identity_ambiguous", entity_refs=tuple(payload["entity_refs"]),
                     severity=str(payload.get("severity") or "medium"), status="resolved", summary=payload.get("summary"),
@@ -1367,6 +1346,121 @@ def close_relinked_payment_owner_conflicts(
                 )
                 resolved += result.status != "duplicate"
         return resolved
+
+
+def reconcile_relinked_tallanto_identity_profiles(db_path: Path, *, tenant_id: str) -> tuple[int, int]:
+    with CustomerTimelineSQLiteStore(db_path, allowed_root=db_path.parent) as store:
+        con = store._con  # noqa: SLF001 - writer lock covers proof, blockers and profile update.
+        validated = _validated_relinked_tallanto_identity_conflicts(con, tenant_id=tenant_id, statuses=("resolved",))
+        blocked = open_family_identity_conflict_customer_ids(con, tenant_id)
+        exact_ids_by_owner: dict[str, set[str]] = {}
+        for row in authoritative_exact_identity_rows(con, tenant_id, link_types=("tallanto_student_id",)):
+            exact_ids_by_owner.setdefault(str(row["customer_id"]), set()).add(str(row["link_value"]))
+        candidates = {
+            owner
+            for _payload, owner, student_id in validated
+            if owner not in blocked and exact_ids_by_owner.get(owner) == {student_id}
+        }
+        payloads: dict[str, Mapping[str, Any]] = {}
+        for batch in chunks(sorted(candidates), 800):
+            placeholders = ",".join("?" for _ in batch)
+            for row in con.execute(
+                    f"SELECT record_json FROM customer_identities WHERE tenant_id=? "
+                    f"AND identity_status='ambiguous' AND customer_id IN ({placeholders})",
+                    (tenant_id, *batch),
+                ):
+                payload = json.loads(str(row[0]))
+                payloads[str(payload["customer_id"])] = payload
+        for row in con.execute(
+            "SELECT record_json FROM customer_identities WHERE tenant_id=? AND "
+            "json_extract(record_json, '$.metadata.tallanto_d110_profile_resolution')=?",
+            (tenant_id, IDENTITY_PROFILE_RESOLUTION_VERSION),
+        ):
+            payload = json.loads(str(row[0]))
+            payloads[str(payload["customer_id"])] = payload
+        if not payloads:
+            return 0, 0
+        changed_at = datetime.now(timezone.utc)
+        promoted = reverted = 0
+        with store.bulk_write():
+            for customer_id, payload in sorted(payloads.items()):
+                identity = customer_identity_from_json(payload)
+                metadata = dict(identity.metadata)
+                marker_owned = metadata.get(TALLANTO_D110_PROFILE_RESOLUTION_KEY) == IDENTITY_PROFILE_RESOLUTION_VERSION
+                if customer_id in candidates and identity.identity_status == IdentityStatus.AMBIGUOUS:
+                    metadata[TALLANTO_D110_PROFILE_RESOLUTION_KEY] = IDENTITY_PROFILE_RESOLUTION_VERSION
+                    updated = replace(
+                        identity,
+                        identity_status=IdentityStatus.STRONG,
+                        metadata=metadata,
+                        updated_at=changed_at,
+                    )
+                    promoted += store.upsert_customer(
+                        updated,
+                        actor="tallanto_identity_profile_reconciler",
+                    ).status != "duplicate"
+                elif customer_id not in candidates and identity.identity_status == IdentityStatus.STRONG and marker_owned:
+                    metadata[TALLANTO_D110_PROFILE_RESOLUTION_KEY] = None
+                    reverted += store.upsert_customer(
+                        replace(
+                            identity,
+                            identity_status=IdentityStatus.AMBIGUOUS,
+                            metadata=metadata,
+                            updated_at=changed_at,
+                        ),
+                        actor="tallanto_identity_profile_reconciler",
+                    ).status != "duplicate"
+        return promoted, reverted
+
+
+def _validated_relinked_tallanto_identity_conflicts(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    statuses: Sequence[str],
+) -> tuple[tuple[Mapping[str, Any], str, str], ...]:
+    normalized_statuses = tuple(sorted({normalize_key(value, "status") for value in statuses}))
+    placeholders = ",".join("?" for _ in normalized_statuses)
+    canonical_owners = authoritative_tallanto_student_owners(con, tenant_id)
+    candidates: list[tuple[Mapping[str, Any], str, str, str]] = []
+    for row in con.execute(
+        f"SELECT conflict_id,record_json FROM timeline_conflicts WHERE tenant_id=? AND "
+        f"conflict_type='tallanto_identity_ambiguous' AND status IN ({placeholders})",
+        (tenant_id, *normalized_statuses),
+    ):
+        payload = json.loads(str(row[1]))
+        raw_refs = payload.get("entity_refs") if isinstance(payload, Mapping) else None
+        if (payload.get("conflict_id") != row[0] or payload.get("conflict_type") != "tallanto_identity_ambiguous"
+                or not isinstance(raw_refs, list) or not all(isinstance(item, str) and item for item in raw_refs)
+                or not isinstance(payload.get("metadata", {}), Mapping)
+                or row[0] != stable_prefixed_id("timeline_conflict", {"tenant_id": normalize_key(tenant_id, "tenant_id"), "conflict_type": "tallanto_identity_ambiguous", "entity_refs": sorted(raw_refs)})):
+            raise ValueError("invalid stored tallanto_identity_ambiguous conflict")
+        student_refs = tuple(item for item in raw_refs if item.startswith("tallanto_student_id:"))
+        source_refs = tuple(item for item in raw_refs if item.startswith((f"tallanto:{PAYMENT_MODULE}:", f"tallanto:{ABONEMENT_MODULE}:")))
+        if len(student_refs) != 1 or len(source_refs) != 1:
+            continue
+        student_id = student_refs[0].split(":", 1)[1]
+        owner = canonical_owners.get(student_id)
+        if owner:
+            candidates.append((payload, owner, student_id, source_refs[0]))
+    events_by_ref: dict[str, list[sqlite3.Row]] = {}
+    for batch in chunks(sorted({item[3] for item in candidates}), 800):
+        event_placeholders = ",".join("?" for _ in batch)
+        for row in con.execute(
+            f"SELECT source_ref,customer_id,record_json FROM timeline_events WHERE tenant_id=? "
+            f"AND source_system=? AND source_ref IN ({event_placeholders}) AND superseded_by IS NULL "
+            "AND match_status IN ('strong_unique','manual')",
+            (tenant_id, SOURCE_SYSTEM, *batch),
+        ):
+            events_by_ref.setdefault(str(row[0]), []).append(row)
+    return tuple(
+        (payload, owner, student_id)
+        for payload, owner, student_id, source_ref in candidates
+        for events in (events_by_ref.get(source_ref, ()),)
+        if len(events) == 1
+        and str(events[0][1] or "") == owner
+        and optional_text((json.loads(str(events[0][2])).get("record") or {}).get("contact_id")) == student_id
+    )
 
 
 def load_snapshot(source: Optional[Path], *, stdin_text: Optional[str]) -> Mapping[str, Any]:

@@ -2723,7 +2723,7 @@ def _step2b1_pipeline_metadata(question: str, facts: dict[str, str]) -> dict:
 
 def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str, str]) -> dict:
     topic_id = {
-        "teacher": "theme:017_teachers",
+        "teacher": "theme:017_teacher_method",
         "recording": "theme:018_materials_homework",
         "address": "theme:015_address",
         "document": "theme:012_certificates",

@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
+from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
+
+
+def test_intent_plan_uses_canonical_teacher_topic_id() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Кто будет преподавать физику?",
+        active_brand="foton",
+    )
+
+    assert plan.primary_intent == "teacher"
+    assert plan.topic_id == "theme:017_teacher_method"
+    assert plan.topic_id in load_valid_theme_and_service_ids()
 
 
 def test_intent_plan_keeps_place_booking_only_as_legacy_floor_signal_not_primary_meaning() -> None:

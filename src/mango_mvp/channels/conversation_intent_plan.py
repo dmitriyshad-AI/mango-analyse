@@ -627,7 +627,7 @@ def _topic_for_intent(intent: str) -> str:
         "olympiad_online": "theme:016_program",
         "format": "theme:014_format",
         "address": "theme:015_address",
-        "teacher": "theme:017_teachers",
+        "teacher": "theme:017_teacher_method",
         "platform_access": "theme:024_account_access",
         "document": "theme:012_certificates",
         "matkap": "theme:007_matkap_payment",

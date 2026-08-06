@@ -24,11 +24,13 @@ from mango_mvp.customer_timeline.safety import assert_customer_timeline_safety_c
 from mango_mvp.customer_timeline.ingestion import TALLANTO_TIMEZONE, timeline_ingestion_safety_contract
 from mango_mvp.customer_timeline.stage5_money_ingest import refresh_customer_purchases_v1
 from scripts.import_tallanto_payments_to_timeline import (
+    TallantoCustomerLookup,
     TallantoPaymentsImportConfig,
     build_tallanto_records,
     fetch_tallanto_module_ids_strict,
     fetch_tallanto_module_strict,
     _latest_money_sync,
+    close_relinked_payment_owner_conflicts,
     load_existing_money_class_context,
     load_tallanto_customer_lookup,
     main,
@@ -228,6 +230,7 @@ def test_exact_tallanto_conflict_without_candidates_stays_ambiguous(tmp_path: Pa
 
     event = fetch_one_json(timeline_db, "timeline_events")
     assert report["links"]["ambiguous_tallanto_matches"] == 1
+    assert report["links"]["resolved_payment_owner_conflicts"] == 0
     assert event["customer_id"] is None
     assert event["match_status"] == "ambiguous"
 
@@ -295,6 +298,191 @@ def test_stale_tallanto_ambiguity_does_not_block_single_current_exact_owner(tmp_
         ).fetchone()[0] == 1
 
 
+def test_stale_abonement_ambiguity_closes_after_exact_owner_appears(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="current-owner", tallanto_id="contact-1"
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as writer:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=(
+                "tallanto:most_abonements:abonement-1",
+                "tallanto_student_id:contact-1",
+                f"customer:{customer_id}",
+            ),
+            metadata={"candidate_customer_count": 2},
+            actor="test",
+        )
+    config = TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True)
+
+    first = run_tallanto_payments_import(
+        config, stdin_text=json.dumps({"most_abonements": [abonement_row()]})
+    )
+    repeat = run_tallanto_payments_import(
+        config, stdin_text=json.dumps({"most_abonements": [abonement_row()]})
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    with sqlite3.connect(timeline_db) as con:
+        open_ambiguities = con.execute(
+            "SELECT COUNT(*) FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_identity_ambiguous' AND status='open'"
+        ).fetchone()[0]
+    assert first["links"]["resolved_payment_owner_conflicts"] == 1
+    assert repeat["links"]["resolved_payment_owner_conflicts"] == 0
+    assert event["customer_id"] == customer_id
+    assert open_ambiguities == 0
+
+
+def test_stale_abonement_reconcile_does_not_close_other_conflict_with_same_source_ref(
+    tmp_path: Path,
+) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="current-owner", tallanto_id="contact-1"
+    )
+    source_ref = "tallanto:most_abonements:abonement-1"
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as writer:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=(source_ref, "tallanto_student_id:contact-1", f"customer:{customer_id}"),
+            metadata={"candidate_customer_count": 2},
+            actor="test",
+        )
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=(source_ref, "tallanto_student_id:contact-1", "tallanto_student_id:contact-2"),
+            metadata={"candidate_customer_count": 2},
+            actor="test",
+        )
+
+    report = run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text=json.dumps({"most_abonements": [abonement_row()]}),
+    )
+
+    with sqlite3.connect(timeline_db) as con:
+        statuses = {}
+        for status, raw in con.execute(
+            "SELECT status,record_json FROM timeline_conflicts "
+            "WHERE conflict_type='tallanto_identity_ambiguous'"
+        ):
+            refs = json.loads(raw)["entity_refs"]
+            student_count = sum(ref.startswith("tallanto_student_id:") for ref in refs)
+            statuses[student_count] = status
+    assert report["links"]["resolved_payment_owner_conflicts"] == 1
+    assert statuses == {1: "resolved", 2: "open"}
+
+
+def test_stale_abonement_reconcile_ignores_other_tallanto_modules(tmp_path: Path) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    customer_id = seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="current-owner", tallanto_id="contact-1"
+    )
+    run_tallanto_payments_import(
+        TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+        stdin_text=json.dumps({"most_abonements": [abonement_row()]}),
+    )
+    source_ref = "tallanto:attendance:attendance-1"
+    with sqlite3.connect(timeline_db) as con:
+        con.execute("UPDATE timeline_events SET source_ref=?", (source_ref,))
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as writer:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=(source_ref, "tallanto_student_id:contact-1", f"customer:{customer_id}"),
+            metadata={"candidate_customer_count": 2},
+            actor="test",
+        )
+
+    resolved = close_relinked_payment_owner_conflicts(
+        timeline_db,
+        tenant_id="foton",
+        records=(),
+        customer_lookup=TallantoCustomerLookup({}, {}, {}),
+    )
+
+    assert resolved == 0
+    with sqlite3.connect(timeline_db) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_conflicts WHERE status='open'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        "not-json",
+        json.dumps({"entity_refs": ["tallanto:most_abonements:abonement-1", "tallanto_student_id:contact-1"]}),
+        json.dumps({"conflict_id": "wrong", "conflict_type": "tallanto_identity_ambiguous", "entity_refs": [1]}),
+    ),
+)
+def test_stale_abonement_reconcile_fails_closed_on_malformed_conflict_record(
+    tmp_path: Path,
+    malformed: str,
+) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="current-owner", tallanto_id="contact-1"
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as writer:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=("tallanto:most_abonements:abonement-1", "tallanto_student_id:contact-1"),
+            actor="test",
+        )
+    with sqlite3.connect(timeline_db) as con:
+        con.execute("UPDATE timeline_conflicts SET record_json=?", (malformed,))
+    tables = ("timeline_events", "customer_opportunities", "ingestion_runs", "identity_links")
+    before = tuple(count_rows(timeline_db, table) for table in tables)
+
+    with pytest.raises(ValueError):
+        run_tallanto_payments_import(
+            TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+            stdin_text=json.dumps({"most_abonements": [abonement_row()]}),
+        )
+
+    assert tuple(count_rows(timeline_db, table) for table in tables) == before
+    with sqlite3.connect(timeline_db) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_conflicts WHERE status='open'"
+        ).fetchone()[0] == 1
+
+
+def test_stale_abonement_reconcile_rejects_payload_whose_refs_do_not_match_conflict_id(
+    tmp_path: Path,
+) -> None:
+    timeline_db = staging_timeline_db(tmp_path)
+    seed_customer_with_tallanto_link(
+        timeline_db, tmp_path, customer_id="current-owner", tallanto_id="contact-1"
+    )
+    with CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path) as writer:
+        writer.record_conflict(
+            "foton",
+            conflict_type="tallanto_identity_ambiguous",
+            entity_refs=("tallanto:most_abonements:abonement-1", "tallanto_student_id:contact-1"),
+            actor="test",
+        )
+    with sqlite3.connect(timeline_db) as con:
+        raw = json.loads(con.execute("SELECT record_json FROM timeline_conflicts").fetchone()[0])
+        raw["entity_refs"][0] = "tallanto:most_abonements:other-abonement"
+        con.execute("UPDATE timeline_conflicts SET record_json=?", (json.dumps(raw),))
+
+    with pytest.raises(ValueError):
+        run_tallanto_payments_import(
+            TallantoPaymentsImportConfig(None, timeline_db, tmp_path, "foton", apply=True),
+            stdin_text=json.dumps({"most_abonements": [abonement_row()]}),
+        )
+
+    with sqlite3.connect(timeline_db) as con:
+        assert con.execute("SELECT status,COUNT(*) FROM timeline_conflicts").fetchone() == ("open", 1)
+
+
 def test_payment_without_contact_uses_unambiguous_abonement_contact(tmp_path: Path) -> None:
     timeline_db = staging_timeline_db(tmp_path)
     existing_customer_id = seed_customer_with_tallanto_link(
@@ -356,6 +544,7 @@ def test_conflicting_direct_and_abonement_contacts_do_not_pick_first_customer(tm
         item for item in fetch_all_json(timeline_db, "timeline_events") if item["event_type"] == "tallanto_payment"
     )
     assert report["validation_ok"] is True
+    assert report["links"]["resolved_payment_owner_conflicts"] == 0
     assert payment_event["match_status"] == "ambiguous"
     assert payment_event["customer_id"] is None
     assert count_rows(timeline_db, "customer_identities") == 2
@@ -808,6 +997,8 @@ def test_ambiguous_tallanto_contact_id_creates_conflict_without_first_match_merg
 
     assert report["validation_ok"] is True
     assert repeat["validation_ok"] is True
+    assert report["links"]["resolved_payment_owner_conflicts"] == 0
+    assert repeat["links"]["resolved_payment_owner_conflicts"] == 0
     assert report["links"]["ambiguous_tallanto_matches"] == 1
     assert repeat["links"]["ambiguous_tallanto_matches"] == 1
     assert repeat["import_report"]["write_status_counts"].get("created", 0) == 0

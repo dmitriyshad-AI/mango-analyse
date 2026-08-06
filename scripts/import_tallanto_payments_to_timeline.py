@@ -49,6 +49,7 @@ from mango_mvp.customer_timeline.safety import (
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
     authoritative_exact_identity_rows,
+    authoritative_tallanto_student_owners,
     customer_timeline_readonly_uri,
     guard_customer_timeline_sqlite_path,
 )
@@ -478,8 +479,8 @@ class TallantoPaymentsTimelineNormalizer:
                 identity_status=IdentityStatus.STRONG,
                 confidence=0.98,
             )
-        candidates = tuple(self._customer_lookup.ambiguous_customer_ids.get(contact_id, ()))
-        if candidates:
+        if contact_id in self._customer_lookup.ambiguous_customer_ids:
+            candidates = tuple(self._customer_lookup.ambiguous_customer_ids[contact_id])
             return TallantoIdentityResolution(
                 customer_id=None,
                 match_class=IdentityMatchClass.AMBIGUOUS,
@@ -1001,6 +1002,10 @@ def include_local_unowned_payment_rows(
     if db_path.exists():
         try:
             with sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+                con.row_factory = sqlite3.Row
+                canonical_owners_json = json.dumps(
+                    authoritative_tallanto_student_owners(con, tenant_id), ensure_ascii=False, sort_keys=True
+                )
                 product_condition = (
                     " OR (e.event_type='tallanto_payment' AND e.subject='Tallanto payment') "
                     "OR (e.event_type='tallanto_abonement' AND e.subject='Tallanto abonement')"
@@ -1008,6 +1013,8 @@ def include_local_unowned_payment_rows(
                     else ""
                 )
                 rows = con.execute(
+                    "WITH canonical_owner AS MATERIALIZED ("
+                    "SELECT key AS contact_id,value AS customer_id FROM json_each(?)) "
                     "SELECT event_type,event_at,subject,record_json,e.customer_id,e.match_status,"
                     "CASE WHEN e.customer_id IS NULL OR EXISTS ("
                     "SELECT 1 FROM customer_identities c WHERE c.tenant_id=e.tenant_id "
@@ -1017,8 +1024,12 @@ def include_local_unowned_payment_rows(
                     "AND NOT EXISTS (SELECT 1 FROM identity_links l WHERE l.tenant_id=c.tenant_id "
                     "AND l.customer_id=c.customer_id AND (l.source_system!=? "
                     "OR l.match_class IN ('strong_unique','manual')))) THEN 'unowned' "
+                    "WHEN owner.contact_id IS NOT NULL AND (owner.customer_id IS NULL "
+                    "OR owner.customer_id!=e.customer_id) THEN 'weak' "
                     "WHEN e.match_status NOT IN ('strong_unique','manual') THEN 'weak' "
                     "ELSE 'product' END AS retry_kind FROM timeline_events e "
+                    "LEFT JOIN canonical_owner owner ON owner.contact_id="
+                    "json_extract(e.record_json,'$.record.contact_id') "
                     "WHERE e.tenant_id=? AND e.source_system=? "
                     "AND e.event_type IN ('tallanto_payment','tallanto_abonement') "
                     "AND coalesce(e.superseded_by,'')='' AND (e.customer_id IS NULL "
@@ -1029,9 +1040,12 @@ def include_local_unowned_payment_rows(
                     "AND json_extract(c.record_json,'$.summary.source_system')=? "
                     "AND NOT EXISTS (SELECT 1 FROM identity_links l WHERE l.tenant_id=c.tenant_id "
                     "AND l.customer_id=c.customer_id AND (l.source_system!=? "
-                    "OR l.match_class IN ('strong_unique','manual')))) "
+                    "OR l.match_class IN ('strong_unique','manual')))) OR "
+                    "(owner.contact_id IS NOT NULL AND (owner.customer_id IS NULL "
+                    "OR owner.customer_id!=e.customer_id))"
                     + product_condition + ")",
                     (
+                        canonical_owners_json,
                         SOURCE_SYSTEM,
                         SOURCE_SYSTEM,
                         normalize_key(tenant_id, "tenant_id"),
@@ -1060,7 +1074,11 @@ def include_local_unowned_payment_rows(
             if retry_kind in {"unowned", "weak"}:
                 contact_id = retry_contact(record)
                 improved_owner = retry_identity.unique_customer_ids.get(contact_id)
-                if not improved_owner or (retry_kind == "weak" and improved_owner == customer_id and _match_status in {"strong_unique", "manual"}):
+                is_ambiguous = contact_id in retry_identity.ambiguous_customer_ids
+                owner_unchanged = retry_kind == "weak" and improved_owner == customer_id
+                if (not improved_owner and not is_ambiguous) or (
+                    owner_unchanged and _match_status in {"strong_unique", "manual"}
+                ):
                     continue
             if event_type == "tallanto_payment":
                 payment_id = clean_text(record.get("payment_id"))
@@ -1625,6 +1643,11 @@ def load_tallanto_customer_lookup(
     with open_readonly_sqlite(db_path) as con:
         if not sqlite_table_exists(con, "identity_links"):
             return TallantoCustomerLookup(unique_customer_ids={}, unique_match_classes={}, ambiguous_customer_ids={})
+        canonical_owners = {
+            contact_id: owner
+            for contact_id, owner in authoritative_tallanto_student_owners(con, tenant_id).items()
+            if contact_id in contact_ids
+        }
         exact_rows = tuple(
             row for row in authoritative_exact_identity_rows(
                 con, tenant_id, link_types=("tallanto_student_id",)
@@ -1633,19 +1656,16 @@ def load_tallanto_customer_lookup(
         )
     by_contact: dict[str, set[str]] = {}
     match_classes: dict[str, set[IdentityMatchClass]] = {}
-    blocked_contacts: set[str] = set()
     for row in exact_rows:
         contact_id = str(row["link_value"])
         customer_id = str(row["customer_id"])
         match_class = str(row["match_class"])
         by_contact.setdefault(contact_id, set()).add(customer_id)
         match_classes.setdefault(contact_id, set()).add(IdentityMatchClass(match_class))
-        if int(row["owner_count"]) != 1 or bool(row["has_open_conflict"]):
-            blocked_contacts.add(contact_id)
     unique_customer_ids = {
-        contact_id: next(iter(customer_ids))
-        for contact_id, customer_ids in by_contact.items()
-        if len(customer_ids) == 1 and contact_id not in blocked_contacts
+        contact_id: str(owner)
+        for contact_id, owner in canonical_owners.items()
+        if owner is not None
     }
     return TallantoCustomerLookup(
         unique_customer_ids=unique_customer_ids,
@@ -1656,9 +1676,9 @@ def load_tallanto_customer_lookup(
             for contact_id in unique_customer_ids
         },
         ambiguous_customer_ids={
-            contact_id: tuple(sorted(customer_ids))
-            for contact_id, customer_ids in by_contact.items()
-            if len(customer_ids) > 1 or contact_id in blocked_contacts
+            contact_id: tuple(sorted(by_contact.get(contact_id, ())))
+            for contact_id, owner in canonical_owners.items()
+            if owner is None
         },
     )
 

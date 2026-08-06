@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from openpyxl import load_workbook
 
 from mango_mvp.question_catalog.builder import (
@@ -27,6 +28,34 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def test_catalog_build_fails_when_required_frozen_call_source_is_missing(tmp_path: Path) -> None:
+    missing = tmp_path / "missing_enriched_reviews.csv"
+
+    with pytest.raises(FileNotFoundError, match="required frozen call question source"):
+        build_customer_question_catalog(
+            CatalogBuildConfig(
+                project_root=tmp_path,
+                out_root=tmp_path / "out",
+                calls_enriched_reviews=missing,
+            )
+        )
+
+
+@pytest.mark.parametrize("content", ("", "unrelated_column\nvalue\n"))
+def test_catalog_build_fails_when_frozen_call_source_has_no_questions(tmp_path: Path, content: str) -> None:
+    source = tmp_path / "enriched_reviews.csv"
+    source.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="produced no questions"):
+        build_customer_question_catalog(
+            CatalogBuildConfig(
+                project_root=tmp_path,
+                out_root=tmp_path / "out",
+                calls_enriched_reviews=source,
+            )
+        )
 
 
 def test_question_classes_use_raw_classification_not_redacted_sample_text() -> None:

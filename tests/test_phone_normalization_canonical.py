@@ -4,7 +4,6 @@ import pytest
 
 from mango_mvp.channels.telegram_history import normalize_phone as telegram_normalize_phone
 from mango_mvp.customer_timeline.context_provider import normalize_phone_for_match
-from mango_mvp.insights.phone_identity import normalize_phone as insight_normalize_phone
 from mango_mvp.productization.mail_archive import normalize_phone as mail_normalize_phone
 from mango_mvp.utils.phone import normalize_phone
 
@@ -52,7 +51,6 @@ def test_canonical_phone_normalizer_characterization(raw: object, expected: str 
 def test_phone_normalizer_wrappers_keep_existing_output_contracts(raw: object, expected: str | None) -> None:
     expected_digits = expected.lstrip("+") if expected else None
 
-    assert insight_normalize_phone(raw) == expected_digits
     assert telegram_normalize_phone(raw) == expected
     assert normalize_phone_for_match(raw) == (expected or "")
     assert mail_normalize_phone(raw) == (expected or "")

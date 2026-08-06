@@ -12,8 +12,14 @@
 | Mango raw/capture artifacts | JSON/JSONL/report files under the calls pipeline root | calls pipeline | Report/staging writes only |
 | amoCRM runtime | SQLAlchemy DB plus amoCRM API | CRM/runtime layer | Live writes require explicit confirmation |
 | Tallanto context | external API/read exports | CRM/runtime layer | Read-only in current scope |
-| Insight artifacts | CSV/JSON/Markdown reports | insights layer | Report writes only |
 | Agent runtime preview | SQLAlchemy tables, opt-in | experimental runtime | Disabled by default |
+
+Question Catalog treats
+`stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v11_frozen_gate/enriched_reviews.csv`
+as a retained read-only input: 2,726 rows, SHA-256
+`d71ac22699f04c67ba3f464c7cfb4886cc3c73d046717a16f5a045ec2ecf7270`.
+It is not regenerated during normal builds; a missing file blocks the catalog
+instead of silently dropping the call channel.
 
 ## Historical runtime model
 
@@ -184,25 +190,6 @@ Live write requirement:
 ```text
 execute_live_write=true and live_confirmation=WRITE_AMO_LIVE
 ```
-
-## Insight data model
-
-Primary package:
-
-- `src/mango_mvp/insights/`
-
-Current conceptual entities:
-
-- client chain;
-- call row;
-- customer signal;
-- manager answer pattern;
-- outcome link;
-- response quality score;
-- playbook item;
-- ROP validation item.
-
-Current outputs are report artifacts, not transactional application tables.
 
 ## Future migration notes
 

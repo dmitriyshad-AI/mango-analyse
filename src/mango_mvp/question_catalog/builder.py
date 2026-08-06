@@ -150,11 +150,16 @@ def build_customer_question_catalog(config: CatalogBuildConfig) -> dict[str, Any
     source_reports: list[Mapping[str, Any]] = []
     items: list[QuestionItem] = []
 
+    calls_source = config.calls_enriched_reviews or Path("__missing_calls__")
     call_items, call_report = extract_call_questions(
-        config.calls_enriched_reviews or Path("__missing_calls__"),
+        calls_source,
         tenant_id=config.tenant_id,
         since=config.since,
     )
+    if call_report.get("status") != "processed":
+        raise FileNotFoundError(f"required frozen call question source is unavailable: {calls_source}")
+    if not call_items:
+        raise ValueError(f"required frozen call question source produced no questions: {calls_source}")
     items.extend(call_items)
     source_reports.append(call_report)
 

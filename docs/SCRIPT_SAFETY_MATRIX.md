@@ -50,13 +50,8 @@
 | `benchmark_codex_merge_models.py` | processing | `SAFE_REPORT_WRITES` | Benchmark/report artifacts. | Запускать только на тестовом input. |
 | `build_amocrm_delivery_pack.py` | crm | `SAFE_REPORT_WRITES` | Собирает delivery pack, может включать sensitive data. | Проверять output перед передачей. |
 | `build_final_processing_coverage_report.py` | processing | `SAFE_REPORT_WRITES` | Пишет coverage report в `stable_runtime`. | Только read/report, без ASR/R+A. |
-| `build_insight_readiness_report.py` | insights | `SAFE_REPORT_WRITES` | Пишет readiness report. | Безопасно для insight-аудита. |
 | `build_messages28_master_exports.py` | processing | `SAFE_REPORT_WRITES` | Экспортные файлы. | Проверять output path. |
-| `build_outcome_linkage_report.py` | insights | `SAFE_REPORT_WRITES` | Пишет linkage report. | Безопасно на копиях/exports. |
-| `build_pilot_sales_moments.py` | insights | `SAFE_REPORT_WRITES` | Пишет pilot moments. | Безопасно для sales insight. |
 | `build_rop_deal_pack.py` | crm | `SAFE_REPORT_WRITES` | Формирует ROP pack, не должен писать в CRM. | Проверять входные данные. |
-| `build_rop_validation_pack.py` | insights | `SAFE_REPORT_WRITES` | Пишет validation pack. | Безопасно для ROP-review. |
-| `build_sales_insight_knowledge_base.py` | insights | `SAFE_REPORT_WRITES` | Пишет knowledge base artifacts. | Безопасно для insight layer. |
 | `build_transcript_quality_baseline.py` | processing | `PROCESSING_MUTATES_DB` | Принадлежит transcript quality ветке. | Не трогать в этом диалоге. |
 | `build_transcript_quality_stage14_comparison.py` | processing | `SAFE_REPORT_WRITES` | Сравнивает качество v2/v3, пишет Stage14 acceptance/audit package. | Запускать перед Stage15 export gate. |
 | `run_transcript_quality_stage15_gate.py` | processing | `SAFE_REPORT_WRITES` | Проверяет Stage14/baseline/allowlist перед ROP/CRM/bot export, пишет safe bot allowlist. | Обязательный gate перед production export; не пишет CRM и DB. |
@@ -67,7 +62,6 @@
 | `mango_office_mail_archive.py` | productization | `NETWORK_READ_ONLY` | Read-only IMAP ingest через `BODY.PEEK[]`; пишет локальный mail archive/matching artifacts, не отправляет, не удаляет, не двигает письма, не пишет CRM/Tallanto. | Запускать малыми pilot batch; output держать в ignored `_external_handoffs/`. |
 | `mango_office_tallanto_snapshot_export.py` | productization | `NETWORK_READ_ONLY` | Читает Tallanto contacts по телефонам из product DB и пишет локальный snapshot. | Не пишет Tallanto/CRM, не меняет product DB. |
 | `match_priority_contacts_with_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает/матчит Tallanto. | Проверять output. |
-| `merge_pilot_sales_moment_llm_reviews.py` | insights | `SAFE_REPORT_WRITES` | Merge local LLM reviews. | Безопасно. |
 | `monitor_subset_progress.py` | processing | `SAFE_READ_ONLY` | Мониторит progress. | Безопасно. |
 | `normalize_tallanto_contacts.py` | crm | `SAFE_REPORT_WRITES` | Нормализует contacts export. | Безопасно. |
 | `prefill_asr_from_dbs.py` | processing | `PROCESSING_MUTATES_DB` | Может префиллить ASR из DB. | Только processing-диалог. |
@@ -86,7 +80,6 @@
 | `promote_ai_review_to_amo_ready.py` | crm | `SAFE_REPORT_WRITES` | Готовит AMO-ready export, не live write. | Проверять перед writeback. |
 | `requeue_secondary_backfill.py` | processing | `PROCESSING_MUTATES_DB` | Requeue/backfill. | Только processing-диалог. |
 | `run_analyze_ab_test.py` | processing | `PROCESSING_MUTATES_DB` | Analyze A/B workflow. | Только processing-диалог. |
-| `run_pilot_sales_moment_llm_review.py` | insights | `NETWORK_READ_ONLY` | Может обращаться к LLM API, пишет review artifacts. | Малые batch, без CRM writes. |
 | `smoke_test_tallanto.py` | crm | `NETWORK_READ_ONLY` | Читает Tallanto API. | Безопасно при credentials. |
 | `summarize_merge_usage.py` | ops | `SAFE_READ_ONLY` | Summaries/statistics. | Безопасно. |
 | `write_recent_actionable_deals.py` | crm | `CRM_LIVE_GUARDED` | По умолчанию dry-run report; live deal writeback только с confirmation. | Live: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. |

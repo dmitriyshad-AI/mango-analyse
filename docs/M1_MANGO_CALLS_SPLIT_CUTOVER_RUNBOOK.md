@@ -43,9 +43,33 @@
 ```bash
 set -euo pipefail
 loaded=0
+deprecated_runner='run_mango_calls'"_cycle.sh"
 for label in com.mango.calls-two-processes com.mango.calls-process-a com.mango.calls-process-b; do
   if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
     printf 'STOP: loaded launchd label: %s\n' "$label" >&2
+    loaded=1
+  fi
+done
+process_matches="$(ps -axo command= | /usr/bin/awk \
+  '/[r]un_mango_calls_(cycle|process)\.sh|[r]un_mango_calls_pipeline\.py/ {print}')"
+if [[ -n "$process_matches" ]]; then
+  printf 'STOP: running calls process found\n' >&2
+  loaded=1
+fi
+cron_matches="$(crontab -l 2>/dev/null | /usr/bin/awk \
+  '/[r]un_mango_calls_|[m]ango_calls_pipeline/ {print}' || true)"
+if [[ -n "$cron_matches" ]]; then
+  printf 'STOP: calls scheduler found in crontab\n' >&2
+  loaded=1
+fi
+for plist in "$HOME"/Library/LaunchAgents/com.mango.calls-*.plist; do
+  [[ -e "$plist" ]] || continue
+  test -f "$plist" && test ! -L "$plist"
+  runner="$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$plist")"
+  config="$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$plist")"
+  test -f "$runner" && test -f "$config"
+  if [[ "$runner" == *"$deprecated_runner" ]]; then
+    printf 'STOP: deprecated calls runner in plist: %s\n' "${plist##*/}" >&2
     loaded=1
   fi
 done
@@ -53,7 +77,9 @@ done
 ```
 
 При ненулевом результате не сливать ветку и не останавливать службу без
-отдельного подтверждения владельца.
+отдельного подтверждения владельца. В owner-only доказательстве сохранить время,
+проверенные метки, число найденных процессов/cron-заданий и безопасные имена
+runner/config без значений env.
 
 ## Проверка обоих компьютеров
 

@@ -1,6 +1,6 @@
 # Реестр worktree
 
-Обновлено: 2026-08-05. Источник факта: `git worktree list --porcelain`,
+Обновлено: 2026-08-07. Источник факта: `git worktree list --porcelain`,
 активные процессы и `stable_runtime/CURRENT_RUNTIME.json`.
 
 ## Правила
@@ -15,7 +15,7 @@
 
 | Путь | HEAD / ветка | Назначение | Условие удаления |
 |---|---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `676cc772`, `claude/timeline-final-20260803` | Канонический путь данных и процессов calls A/B и Customer Timeline nightly. Все уникальные коммиты разобраны: полезное уже в `main`, остаток отклонён; ветка не содержит очереди на слияние. Дерево чистое. | Только после отдельного cutover служб на проверенный `main` и проверки PID/HEAD/env; после этого ветку можно удалить. |
+| `/Users/dmitrijfabarisov/Projects/Mango analyse` | `676cc772`, `claude/timeline-final-20260803` | Канонический путь данных и Customer Timeline. Plist Calls A/B ссылаются на этот путь, но read-only сверка 7 августа не нашла загруженных меток или процессов Calls. Все уникальные коммиты разобраны: полезное уже в `main`, остаток отклонён; ветка не содержит очереди на слияние. Дерево чистое. | Только после отдельного cutover на проверенный `main` и новой проверки PID/HEAD/env; после этого ветку можно удалить. |
 | `/Users/dmitrijfabarisov/Projects/Mango_noncontentful_call_memory_integration_20260804` | `main`; SHA через `git rev-parse main` | Чистый канонический код: все донорские ветки разобраны; отсюда готовится следующий рефакторинг и будущий cutover. | После перевода служб на проверенный `main` в основной папке. |
 | `/Users/dmitrijfabarisov/Projects/Mango_project_state_cleanup_audit_20260805` | `codex/project-state-cleanup-audit-20260805`; SHA через `git rev-parse HEAD` | Read-only переаудит состояния проекта, карты D1 и остатка безопасной уборки; код и runtime не изменяются. | После сохранения отчёта, audit pack, слияния документации в `main` и отдельного подтверждения владельца. |
 | `/Users/dmitrijfabarisov/Projects/Mango_m1_minimal_p0_exam_20260805` | `codex/m1-minimal-p0-exam-20260805`; SHA через `git rev-parse HEAD` | Подготовка минимального read-only P0-экзамена и точечного класса `child_safety` из D-103; runtime не изменяется. | После получения M1-результата, приёмки главным Codex, слияния в `main` и отдельного подтверждения владельца. |

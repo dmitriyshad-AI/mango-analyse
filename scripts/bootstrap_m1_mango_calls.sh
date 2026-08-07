@@ -10,7 +10,7 @@ ENV_READER_PYTHON=""
 
 print_plan() {
   cat <<'JSON'
-{"schema":"m1_mango_calls_bootstrap_v1","system_packages":["git","ffmpeg","node","python@3.12"],"python_requirements":["requirements.txt","requirements-local-whisper.txt","requirements-local-dual-asr.txt"],"required_access":["Mango API","Codex CLI subscription login"],"report_access":["Tallanto read-only","Tallanto contacts CSV","Yandex Disk local folder"],"pilot_required_publish_access":["private Google Drive folder","Google service account"],"starts_services":false,"runs_asr":false,"runs_resolve_analyze":false}
+{"schema":"m1_mango_calls_bootstrap_v2","system_packages":["git","ffmpeg","node","python@3.12"],"python_requirements":["requirements.txt","requirements-local-whisper.txt","requirements-local-dual-asr.txt"],"required_access":["Mango API","Codex CLI subscription login"],"report_access":["Tallanto read-only","Tallanto contacts CSV","Yandex Disk local folder"],"optional_publish_access":["private Google Drive folder","Google service account"],"starts_services":false,"runs_asr":false,"runs_resolve_analyze":false}
 JSON
 }
 
@@ -60,7 +60,7 @@ PY
 
 check_host() {
   local python="" pipeline_root="" codex_binary="" imports=false config_valid=false platform_ok=false
-  local mango=false codex_auth=false codex_version=false tallanto=false google=false revision=false env_valid=false
+  local mango=false codex_auth=false codex_version=false tallanto=false google=false google_config_valid=false revision=false env_valid=false
   if owner_only "$CONFIG"; then
     python="$(/usr/bin/plutil -extract python_executable raw -o - "$CONFIG" 2>/dev/null || true)"
     pipeline_root="$(/usr/bin/plutil -extract pipeline_root raw -o - "$CONFIG" 2>/dev/null || true)"
@@ -95,13 +95,17 @@ PY
       && has_env_key "$tallanto_env_path" CRM_TALLANTO_BASE_URL \
       && has_env_key "$tallanto_env_path" CRM_TALLANTO_API_TOKEN; then tallanto=true; fi
   local google_path="$(env_value "$ENV_FILE" GOOGLE_APPLICATION_CREDENTIALS || true)"
-  if [[ -x "$python" ]] && owner_only "$google_path" && inside_dir "$google_path" "$HOME/.mango_secrets" \
-      && [[ -n "$(env_value "$ENV_FILE" MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID || true)" ]]; then
+  local google_folder_id="$(env_value "$ENV_FILE" MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID || true)"
+  if [[ -z "$google_path" && -z "$google_folder_id" ]]; then
+    google_config_valid=true
+  elif [[ -x "$python" ]] && owner_only "$google_path" && inside_dir "$google_path" "$HOME/.mango_secrets" \
+      && [[ -n "$google_folder_id" ]]; then
     "$python" - "$google_path" <<'PY' >/dev/null 2>&1 && google=true || true
 import json, sys
 data=json.load(open(sys.argv[1], encoding="utf-8"))
 assert data.get("type") == "service_account" and data.get("client_email") and data.get("private_key")
 PY
+    [[ "$google" == true ]] && google_config_valid=true
   fi
   if owner_only "$ENV_FILE" && has_env_key "$ENV_FILE" MANGO_CALLS_EXPECTED_CODE_SHA; then
     local expected actual dirty
@@ -111,7 +115,7 @@ PY
     [[ "$expected" == "$actual" && -z "$dirty" ]] && revision=true
   fi
   local ffmpeg=false ffprobe=false skills=false yandex=false tallanto_export=false disk_space_ok=false snapshot_as_of=false
-  local secrets_dir_owner_only=false pipeline_root_owner_only=false conflicting_services_loaded=false pipeline_lock_held=false
+  local secrets_dir_owner_only=false pipeline_root_owner_only=false pipeline_root_under_owner_local=false pipeline_root_matches_env=false conflicting_services_loaded=false pipeline_lock_held=false host_preflight_passed=false
   command -v ffmpeg >/dev/null && ffmpeg=true
   command -v ffprobe >/dev/null && ffprobe=true
   if [[ -x "$python" ]]; then
@@ -142,12 +146,35 @@ value = datetime.fromisoformat(sys.argv[1])
 assert value.tzinfo is not None and value <= datetime.now(value.tzinfo)
 PY
   fi
-  [[ -d "$yandex_path" && -w "$yandex_path" ]] && yandex=true
+  if [[ -d "$yandex_path" && ! -L "$yandex_path" && -w "$yandex_path" \
+      && -f "$yandex_path/.mango_calls_yandex_target" \
+      && "$(<"$yandex_path/.mango_calls_yandex_target")" == "mango-calls-yandex-v1" ]]; then
+    yandex=true
+  fi
   local available_kib=""
   [[ -d "$pipeline_root" ]] && available_kib="$(df -Pk "$pipeline_root" 2>/dev/null | /usr/bin/awk 'NR==2 {print $4}')"
   [[ "$available_kib" == <-> && "$available_kib" -ge 41943040 ]] && disk_space_ok=true
   owner_dir_only "$HOME/.mango_secrets" && secrets_dir_owner_only=true
   [[ -n "$pipeline_root" ]] && owner_dir_only "$pipeline_root" && pipeline_root_owner_only=true
+  if [[ -x "$python" && -n "$pipeline_root" ]]; then
+    "$python" - "$pipeline_root" "$HOME" <<'PY' >/dev/null 2>&1 && pipeline_root_under_owner_local=true || true
+import os, sys
+from pathlib import Path
+raw = os.path.abspath(sys.argv[1]); candidate = os.path.realpath(raw)
+owner_raw = os.path.abspath(os.path.join(sys.argv[2], ".mango_local"))
+owner_local = os.path.realpath(owner_raw)
+assert owner_raw == owner_local
+assert raw == candidate and candidate != owner_local
+assert os.path.commonpath((candidate, owner_local)) == owner_local
+current = Path(candidate)
+while True:
+    assert not (current / ".git").exists()
+    if str(current) == owner_local:
+        break
+    current = current.parent
+PY
+  fi
+  [[ "$(env_value "$ENV_FILE" MANGO_CALLS_PIPELINE_ROOT || true)" == "$pipeline_root" ]] && pipeline_root_matches_env=true
   for label in com.mango.calls-process-a com.mango.calls-process-b com.mango.calls-two-processes; do
     /bin/launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && conflicting_services_loaded=true || true
   done
@@ -164,16 +191,18 @@ for name in ("process_a.lock", "process_b.lock"):
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 PY
   fi
-  printf '{"schema":"m1_mango_calls_host_check_v1","platform_ok":%s,"config_owner_only_and_valid":%s,"worker_env_owner_only_and_valid":%s,"python_3_12_imports":%s,"ffmpeg_present":%s,"ffprobe_present":%s,"mango_credentials_present":%s,"configured_codex_0_142_3":%s,"codex_login_present":%s,"tallanto_credentials_present":%s,"tallanto_export_owner_only":%s,"tallanto_snapshot_as_of_present":%s,"google_credentials_present":%s,"yandex_folder_writable":%s,"skills_present":%s,"secrets_dir_owner_only":%s,"pipeline_root_owner_only":%s,"disk_space_ok":%s,"clean_expected_revision":%s,"conflicting_services_loaded":%s,"pipeline_lock_held":%s,"network_access_verified":false,"services_started_by_this_script":false}\n' \
-    "$platform_ok" "$config_valid" "$env_valid" \
-    "$imports" "$ffmpeg" "$ffprobe" "$mango" "$codex_version" "$codex_auth" "$tallanto" "$tallanto_export" "$snapshot_as_of" "$google" "$yandex" "$skills" \
-    "$secrets_dir_owner_only" "$pipeline_root_owner_only" "$disk_space_ok" "$revision" "$conflicting_services_loaded" "$pipeline_lock_held"
-  [[ "$platform_ok" == true && "$config_valid" == true && "$env_valid" == true && "$imports" == true && "$ffmpeg" == true \
+  if [[ "$platform_ok" == true && "$config_valid" == true && "$env_valid" == true && "$imports" == true && "$ffmpeg" == true \
       && "$ffprobe" == true && "$mango" == true && "$codex_version" == true && "$codex_auth" == true \
       && "$tallanto" == true && "$tallanto_export" == true && "$snapshot_as_of" == true \
-      && "$google" == true && "$yandex" == true && "$skills" == true && "$secrets_dir_owner_only" == true \
-      && "$pipeline_root_owner_only" == true && "$disk_space_ok" == true && "$revision" == true \
-      && "$conflicting_services_loaded" == false && "$pipeline_lock_held" == false ]]
+      && "$google_config_valid" == true && "$yandex" == true && "$secrets_dir_owner_only" == true \
+      && "$pipeline_root_owner_only" == true && "$pipeline_root_under_owner_local" == true && "$pipeline_root_matches_env" == true \
+      && "$disk_space_ok" == true && "$revision" == true && "$conflicting_services_loaded" == false \
+      && "$pipeline_lock_held" == false ]]; then host_preflight_passed=true; fi
+  printf '{"schema":"m1_mango_calls_host_check_v2","platform_ok":%s,"config_owner_only_and_valid":%s,"worker_env_owner_only_and_valid":%s,"python_3_12_imports":%s,"ffmpeg_present":%s,"ffprobe_present":%s,"mango_credentials_present":%s,"configured_codex_0_142_3":%s,"codex_login_present":%s,"tallanto_credentials_present":%s,"tallanto_export_owner_only":%s,"tallanto_snapshot_as_of_present":%s,"google_publish_enabled":%s,"google_config_valid":%s,"yandex_target_verified":%s,"developer_profile_ready":%s,"secrets_dir_owner_only":%s,"pipeline_root_owner_only":%s,"pipeline_root_under_owner_local":%s,"pipeline_root_matches_env":%s,"disk_space_ok":%s,"clean_expected_revision":%s,"conflicting_services_loaded":%s,"pipeline_lock_held":%s,"network_access_verified":false,"host_preflight_passed":%s,"runtime_ready":false,"services_started_by_this_script":false}\n' \
+    "$platform_ok" "$config_valid" "$env_valid" \
+    "$imports" "$ffmpeg" "$ffprobe" "$mango" "$codex_version" "$codex_auth" "$tallanto" "$tallanto_export" "$snapshot_as_of" "$google" "$google_config_valid" "$yandex" "$skills" \
+    "$secrets_dir_owner_only" "$pipeline_root_owner_only" "$pipeline_root_under_owner_local" "$pipeline_root_matches_env" "$disk_space_ok" "$revision" "$conflicting_services_loaded" "$pipeline_lock_held" "$host_preflight_passed"
+  [[ "$host_preflight_passed" == true ]]
 }
 
 case "$MODE" in

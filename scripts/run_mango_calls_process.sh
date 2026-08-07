@@ -26,7 +26,10 @@ if [[ "$(/usr/bin/stat -f '%u:%Lp' "${ENV_FILE}")" != "$(/usr/bin/id -u):600" ]]
   exit 2
 fi
 
-PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}")"
+PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}" 2>/dev/null)" || {
+  print -u2 '{"status":"failed","stop_reason":"config_missing_python_executable"}'
+  exit 2
+}
 if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
   print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
   exit 2
@@ -34,6 +37,10 @@ fi
 ENV_READER_PYTHON="/usr/bin/python3"
 [[ -x "${ENV_READER_PYTHON}" ]] || {
   print -u2 '{"status":"failed","stop_reason":"env_reader_python_missing"}'; exit 2;
+}
+PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}" 2>/dev/null)" || {
+  print -u2 '{"status":"failed","stop_reason":"config_missing_pipeline_root"}'
+  exit 2
 }
 ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" --export-lines "${ENV_FILE}" 2>/dev/null)" || {
   print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'; exit 2;
@@ -46,6 +53,32 @@ done
 while IFS= read -r item; do
   [[ -n "${item}" ]] && export "${item}"
 done <<< "${ENV_EXPORTS}"
+if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-pull" ]]; then
+  if [[ -z "${MANGO_CALLS_PIPELINE_ROOT:-}" || "${MANGO_CALLS_PIPELINE_ROOT}" != "${PIPELINE_ROOT}" ]]; then
+    print -u2 '{"status":"failed","stop_reason":"pipeline_root_config_env_mismatch"}'
+    exit 2
+  fi
+  "${ENV_READER_PYTHON}" - "${PIPELINE_ROOT}" "${HOME}" <<'PY' >/dev/null 2>&1 || {
+import os, sys
+from pathlib import Path
+raw = os.path.abspath(sys.argv[1])
+candidate = os.path.realpath(raw)
+owner_raw = os.path.abspath(os.path.join(sys.argv[2], ".mango_local"))
+owner_local = os.path.realpath(owner_raw)
+assert owner_raw == owner_local
+assert raw == candidate and candidate != owner_local
+assert os.path.commonpath((candidate, owner_local)) == owner_local
+current = Path(candidate)
+while True:
+    assert not (current / ".git").exists()
+    if str(current) == owner_local:
+        break
+    current = current.parent
+PY
+    print -u2 '{"status":"failed","stop_reason":"pipeline_root_outside_owner_local_root_or_symlink"}'
+    exit 2
+  }
+fi
 
 PIPELINE_COMMAND="${COMMAND}"
 [[ "${COMMAND}" == "process-a-worker" ]] && PIPELINE_COMMAND="process-a"
@@ -76,10 +109,22 @@ publish_daily_report() {
       return 4
     fi
   fi
-  [[ -n "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" ]] || return 0
+  if [[ -z "${MANGO_CALLS_DAILY_EXPORT_OUT:-}" ]]; then
+    [[ "${COMMAND}" != "process-a-worker" ]] && return 0
+    print -u2 '{"status":"failed","stop_reason":"m1_yandex_publish_target_missing"}'
+    return 4
+  fi
+  if [[ "${COMMAND}" == "process-a-worker" ]] \
+      && [[ ! -d "${MANGO_CALLS_DAILY_EXPORT_OUT}" || ! -w "${MANGO_CALLS_DAILY_EXPORT_OUT}" \
+      || -L "${MANGO_CALLS_DAILY_EXPORT_OUT}" \
+      || ! -f "${MANGO_CALLS_DAILY_EXPORT_OUT}/.mango_calls_yandex_target" \
+      || "$(<"${MANGO_CALLS_DAILY_EXPORT_OUT}/.mango_calls_yandex_target")" != "mango-calls-yandex-v1" ]]; then
+    print -u2 '{"status":"failed","stop_reason":"yandex_publish_target_not_verified"}'
+    return 4
+  fi
   local pipeline_root ready_db working_db report_day
   local -a export_args
-  pipeline_root="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}")"
+  pipeline_root="${PIPELINE_ROOT}"
   ready_db="${pipeline_root}/drop/mango_calls_ready.sqlite"
   working_db="${pipeline_root}/working/mango_calls_pipeline.sqlite"
   [[ "${1:-}" == "sealed" ]] && working_db="${ready_db}"
@@ -105,7 +150,6 @@ if [[ "${COMMAND}" == "process-b-pull" ]]; then
     print -u2 '{"status":"failed","stop_reason":"remote_pull_config_incomplete"}'
     exit 4
   fi
-  PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}")"
   [[ -n "${MANGO_CALLS_REMOTE_SSH_KEY:-}" && -n "${MANGO_CALLS_REMOTE_KNOWN_HOSTS:-}" ]] || {
     print -u2 '{"status":"failed","stop_reason":"remote_ssh_files_incomplete"}'; exit 4;
   }

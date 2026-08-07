@@ -35,6 +35,12 @@ def test_bootstrap_plan_is_safe_and_complete() -> None:
     assert "Tallanto contacts CSV" in payload["report_access"]
     assert "requirements-local-whisper.txt" in payload["python_requirements"]
     assert "requirements-local-dual-asr.txt" in payload["python_requirements"]
+    assert "private Google Drive folder" in payload["optional_publish_access"]
+    assert (ROOT / "requirements-local-whisper.txt").read_text(encoding="utf-8").splitlines() == [
+        "mlx-whisper==0.4.3",
+        "imageio-ffmpeg==0.6.0",
+    ]
+    assert (ROOT / "requirements-local-dual-asr.txt").read_text(encoding="utf-8").strip() == "gigaam==0.1.0"
 
 
 def test_package_install_requires_exact_confirmation() -> None:
@@ -58,19 +64,43 @@ def test_bootstrap_cannot_start_pipeline_or_launchd() -> None:
     assert "--execute" not in source
     assert "@openai/codex@0.142.3" in source
     assert '"tallanto_export_owner_only":%s' in source
+    assert '"google_publish_enabled":%s' in source
+    assert '"google_config_valid":%s' in source
+    assert '"yandex_target_verified":%s' in source
     assert '"disk_space_ok":%s' in source
     assert '"network_access_verified":false' in source
     assert '&& "$tallanto_export" == true' in source
-    assert '&& "$google" == true' in source
+    assert '&& "$google_config_valid" == true' in source
     assert '&& "$yandex" == true' in source
-    assert '&& "$skills" == true' in source
+    assert '"developer_profile_ready":%s' in source
+    assert '&& "$skills" == true' not in source
     assert '&& "$pipeline_root_owner_only" == true' in source
+    assert '&& "$pipeline_root_under_owner_local" == true' in source
+    assert '&& "$pipeline_root_matches_env" == true' in source
+    assert '"pipeline_root_under_owner_local":%s' in source
+    assert '"pipeline_root_matches_env":%s' in source
+    assert '"host_preflight_passed":%s' in source
+    assert '"runtime_ready":false' in source
     assert '&& "$disk_space_ok" == true' in source
     assert '&& "$conflicting_services_loaded" == false' in source
     assert '&& "$pipeline_lock_held" == false' in source
     assert '${GOOGLE_APPLICATION_CREDENTIALS:-' not in source
     assert 'manifest["local_skills"]' in source
     assert '== "codex-cli 0.142.3"' in source
+
+    config = json.loads((HANDOFF / "config.m1.example.json").read_text(encoding="utf-8"))
+    assert "Projects/Mango analyse" not in config["pipeline_root"]
+    assert config["pipeline_root"] == "<HOME>/.mango_local/mango_calls_two_processes"
+
+
+def test_google_is_optional_but_partial_google_config_is_blocked() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert '[[ -z "$google_path" && -z "$google_folder_id" ]]' in source
+    assert '[[ "$google" == true ]] && google_config_valid=true' in source
+    env_example = (HANDOFF / "mango_calls_m1_worker.env.example").read_text(encoding="utf-8")
+    assert "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=\n" in env_example
+    assert "GOOGLE_APPLICATION_CREDENTIALS=\n" in env_example
 
 
 def test_handoff_examples_contain_no_secret_values() -> None:
@@ -92,6 +122,11 @@ def test_handoff_examples_contain_no_secret_values() -> None:
         (HANDOFF / "codex_profile_manifest_20260801.json").read_text(encoding="utf-8")
     )
     assert manifest["contains_secrets"] is False
+    assert manifest["schema_version"] == "codex_profile_manifest_v2"
+    assert manifest["transfer_archive"] is None
+    assert manifest["transfer_archive_status"] == "must_be_regenerated_after_cutover_sha_is_frozen"
+    assert "mango-progressive-data-rollout" in manifest["local_skills"]
+    assert "doc" not in manifest["local_skills"]
     assert "imagegen" in manifest["bundled_skills_reinstalled_with_codex"]
     assert "imagegen" not in manifest["local_skills"]
     assert {item["name"] for item in manifest["mcp_and_connectors"]} >= {
@@ -104,10 +139,10 @@ def test_handoff_examples_contain_no_secret_values() -> None:
 def test_prompt_forbids_live_start_and_secret_transport() -> None:
     prompt = (HANDOFF / "M1_CODEX_PROMPT.md").read_text(encoding="utf-8")
 
-    assert "НЕ запускать\nASR, Resolve, Analyze" in prompt
-    assert "Не используй --install" in prompt
-    assert "токены не копируй" in prompt
-    assert "работает в бою" in prompt
+    assert "Не\n   запускай ASR, Resolve, Analyze" in prompt
+    assert "--install и запуск службы выполняй только после отдельного подтверждения" in prompt
+    assert "auth.json не копируй" in prompt
+    assert "production_ready=false" in prompt
 
 
 def test_check_with_empty_home_returns_json_and_fails_closed() -> None:
@@ -190,3 +225,28 @@ def test_untrusted_symlink_config_cannot_execute_python(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert not marker.exists()
     assert json.loads(result.stdout)["config_owner_only_and_valid"] is False
+
+
+def test_operator_bash_blocks_are_fail_fast() -> None:
+    documents = (
+        (ROOT / "docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md", 24),
+        (HANDOFF / "README.md", 5),
+        (HANDOFF / "M1_CODEX_PROMPT.md", 0),
+        (ROOT / "tasks/_running/2026-08-07_TZ_m1_calls_final_handoff.md", 0),
+        (ROOT / "tasks/_inbox_codex/2026-08-07_TZ_m1_calls_runtime_readiness.md", 0),
+        (ROOT / "tasks/_inbox_codex/2026-07-31_TZ_m1_calls_stage10_pilot.md", 0),
+    )
+    for document, minimum_blocks in documents:
+        lines = document.read_text(encoding="utf-8").splitlines()
+        blocks = 0
+        for index, line in enumerate(lines):
+            if line.strip() in {"```bash", "```sh", "```zsh", "```shell"}:
+                blocks += 1
+                assert lines[index + 1].strip() == "set -euo pipefail", (
+                    f"{document}:{index + 1} must start with fail-fast shell options"
+                )
+            if '"$(cat ' in line:
+                assert lines[index + 1].lstrip().startswith("test "), (
+                    f"{document}:{index + 1} must validate a path read from a file immediately"
+                )
+        assert blocks >= minimum_blocks, f"{document}: expected at least {minimum_blocks} shell blocks"

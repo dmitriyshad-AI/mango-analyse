@@ -1,11 +1,11 @@
 {
-  "pipeline_root": "<HOME>/Projects/Mango analyse/product_data/mango_calls_two_processes",
+  "pipeline_root": "<HOME>/.mango_local/mango_calls_two_processes",
   "timeline_db": "<HOME>/.mango_local/customer_timeline_staging/customer_timeline_staging.sqlite",
   "timeline_allowed_root": "<HOME>/.mango_local/customer_timeline_staging",
   "python_executable": "<HOME>/.mango_local/mango_calls_runtime/venv/bin/python",
   "codex_binary": "/opt/homebrew/bin/codex",
   "codex_home_root": "<HOME>/.mango_local/mango_calls_pipeline/codex_home",
-  "bootstrap_since": "2026-07-29T00:00:00+03:00",
+  "bootstrap_since": "<CUTOVER_BOOTSTRAP_SINCE_ISO8601>",
   "poll_overlap_minutes": 30,
   "api_window_hours": 12,
   "min_free_gib": 40,

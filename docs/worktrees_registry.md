@@ -30,14 +30,14 @@
 ## Runtime
 
 - Wappi остановлен владельцем.
-- Calls A/B и Customer Timeline используют путь `Mango analyse`; эту папку
-  нельзя переключать или удалять в ходе интеграции Git.
-- Calls A/B 4 августа запущены из `Mango analyse`; `live_truth.py` их не видит,
-  потому что проверяет клиентские каналы, поэтому cutover требует отдельной
-  сверки PID, командной строки и конфигурации calls.
-- Последний зарегистрированный выход calls A и Customer Timeline nightly был с
-  кодом `1`; calls A сейчас снова работает, nightly сейчас не запущен. До cutover
-  нужен отдельный разбор последнего отчёта каждой службы, а не только проверка PID.
+- Read-only сверка 7 августа не нашла процессов Calls A/B и загруженных меток
+  `com.mango.calls-two-processes`, `com.mango.calls-process-a` или
+  `com.mango.calls-process-b`. Файлы plist для A/B существуют, но не загружены.
+- `live_truth.py` не проверяет calls, поэтому перед каждым merge/cutover всё
+  равно обязательна новая сверка PID, launchd-меток, командной строки и config;
+  исторический статус от 4 августа не использовать как текущий.
+- Customer Timeline может использовать путь `Mango analyse`; эту папку нельзя
+  переключать или удалять в ходе интеграции Git без отдельной runtime-сверки.
 - Текущая Timeline-БД:
   `product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite`.
 - Истина по runtime-указателям: `stable_runtime/CURRENT_RUNTIME.json`.

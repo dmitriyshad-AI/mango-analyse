@@ -232,7 +232,7 @@ def test_operator_bash_blocks_are_fail_fast() -> None:
         (ROOT / "docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md", 24),
         (HANDOFF / "README.md", 5),
         (HANDOFF / "M1_CODEX_PROMPT.md", 0),
-        (ROOT / "tasks/_running/2026-08-07_TZ_m1_calls_final_handoff.md", 0),
+        (ROOT / "tasks/_done/2026-08-07_TZ_m1_calls_final_handoff.md", 0),
         (ROOT / "tasks/_inbox_codex/2026-08-07_TZ_m1_calls_runtime_readiness.md", 0),
         (ROOT / "tasks/_inbox_codex/2026-07-31_TZ_m1_calls_stage10_pilot.md", 0),
     )

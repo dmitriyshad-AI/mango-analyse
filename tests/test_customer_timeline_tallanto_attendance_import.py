@@ -587,6 +587,33 @@ def test_attendance_api_unfinished_update_removes_previous_active_fact(tmp_path:
     assert __import__("json").loads(rows[0][0])["record"]["fact_active"] is False
 
 
+def test_attendance_api_never_moves_cursor_behind_regressed_source_upper_bound(tmp_path: Path) -> None:
+    db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
+    db.parent.mkdir(parents=True)
+    cursor_at = datetime.fromisoformat("2026-07-24T10:00:00+03:00")
+    with CustomerTimelineSQLiteStore(db, allowed_root=tmp_path) as store:
+        store.upsert_ingestion_cursor(
+            "foton",
+            "tallanto_attendance_api",
+            last_cursor_ts=cursor_at,
+            metadata={"class_overlap_until": "2026-07-13T03:00:00+03:00"},
+        )
+
+    report = run_tallanto_attendance_api_increment(
+        _api_config(db, tmp_path, apply=True),
+        client=FakeAttendanceApi(status="visit", modified="2026-07-23 10:00:00"),
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["cursor_before"] == cursor_at.isoformat()
+    assert report["cursor_after"] == cursor_at.isoformat()
+    with sqlite3.connect(db) as con:
+        assert con.execute(
+            "SELECT last_cursor_ts FROM ingestion_cursors "
+            "WHERE source_system='tallanto_attendance_api'"
+        ).fetchone() == (cursor_at.isoformat(),)
+
+
 def test_attendance_api_preserves_tallanto_amo_identity_conflict_with_durable_retry(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)
@@ -988,7 +1015,7 @@ def test_attendance_api_blocks_ambiguous_student_id_without_exact_owner(tmp_path
         ).fetchone()[0] == 0
 
 
-def test_attendance_api_partially_imports_reliable_events_and_retries_idempotently(tmp_path: Path) -> None:
+def test_attendance_api_imports_reliable_events_and_retries_unresolved_idempotently(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)
     _seed_tallanto_customer(db, tmp_path)
@@ -1027,14 +1054,21 @@ def test_attendance_api_partially_imports_reliable_events_and_retries_idempotent
         now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
     )
 
-    assert first["status"] == second["status"] == "partial"
+    assert first["status"] == second["status"] == "completed"
+    assert first["validation_ok"] is second["validation_ok"] is True
+    assert first["validation_errors"] == second["validation_errors"] == []
     assert first["unresolved_count"] == second["unresolved_count"] == 2
+    assert first["unresolved_breakdown"]["identity_conflict"] == 1
+    assert first["unresolved_breakdown"]["identity_unmatched_expected"] == 1
+    assert first["unresolved_breakdown"]["identity_infrastructure_gap"] == 0
+    assert first["unresolved_breakdown"]["blocking_count"] == 0
     assert first["counts"]["created"] == 1
     assert second["counts"]["duplicate"] == 1
     assert first["counts"]["unresolved_created"] == 2
     assert second["counts"]["unresolved_duplicate"] == 2
-    assert first["cursor_after"] == first["cursor_before"]
+    assert first["cursor_after"] != first["cursor_before"]
     assert second["cursor_after"] == second["cursor_before"]
+    assert second["class_overlap_after"] != second["class_overlap_before"]
     with sqlite3.connect(db) as con:
         assert con.execute(
             "SELECT count(*) FROM timeline_events WHERE source_system='tallanto_attendance_api'"
@@ -1045,10 +1079,10 @@ def test_attendance_api_partially_imports_reliable_events_and_retries_idempotent
             "WHERE source_system='tallanto_attendance_api'"
         ).fetchone()
         assert cursor is not None
-        assert cursor[0] == second["cursor_before"]
+        assert cursor[0] == second["cursor_after"]
         assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == second["class_overlap_after"]
         assert con.execute(
-            "SELECT count(*) FROM ingestion_runs WHERE source_system='tallanto_attendance_api' AND status='partial'"
+            "SELECT count(*) FROM ingestion_runs WHERE source_system='tallanto_attendance_api' AND status='completed'"
         ).fetchone()[0] == 2
 
 
@@ -1277,11 +1311,11 @@ def test_attendance_api_marks_technical_time_when_class_date_is_missing(tmp_path
 
 
 # --- D4: expected unmatched / identity conflict / infrastructure error are
-# distinct, never-silenced buckets. Only an explicit conflict has a durable
-# class-based retry queue, so the other two still hold freshness. ---
+# distinct, never-silenced buckets and all keep a durable class-based retry.
+# Only an incomplete Contact fetch blocks freshness. ---
 
 
-def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(tmp_path: Path) -> None:
+def test_attendance_api_expected_unmatched_advances_cursor_and_retries_until_identity_exists(tmp_path: Path) -> None:
     db = tmp_path / ".codex_local" / "staging" / "timeline.sqlite"
     db.parent.mkdir(parents=True)
     # Deliberately do not seed any tallanto/amo identity link for contact
@@ -1302,22 +1336,22 @@ def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(t
         "identity_conflict": 0,
         "identity_infrastructure_gap": 0,
         "identity_unmatched_expected": 1,
-        "blocking_count": 1,
+        "blocking_count": 0,
         "identity_conflict_has_durable_retry": True,
-        "expected_unmatched_blocks_freshness": True,
+        "expected_unmatched_blocks_freshness": False,
         "input_fully_processed": True,
     }
-    assert report["status"] == "partial"
-    assert report["validation_ok"] is False
-    assert report["validation_errors"] == ["identity_unmatched_expected"]
-    assert report["cursor_after"] == report["cursor_before"]
-    assert report["class_overlap_after"] == report["class_overlap_before"]
+    assert report["status"] == "completed"
+    assert report["validation_ok"] is True
+    assert report["validation_errors"] == []
+    assert report["cursor_after"] != report["cursor_before"]
+    assert report["class_overlap_after"] != report["class_overlap_before"]
     with sqlite3.connect(db) as con:
         cursor = con.execute(
             "SELECT last_cursor_ts, metadata_json FROM ingestion_cursors "
             "WHERE source_system='tallanto_attendance_api'"
         ).fetchone()
-        assert cursor[0] == report["cursor_before"]
+        assert cursor[0] == report["cursor_after"]
         assert json.loads(cursor[1])["metadata"]["class_overlap_until"] == report["class_overlap_after"]
         # Still visible, never silenced: recorded as a (low severity) conflict.
         assert con.execute(
@@ -1352,7 +1386,9 @@ def test_attendance_api_expected_unmatched_blocks_cursor_until_identity_exists(t
         now=datetime(2026, 7, 24, 12, 5, tzinfo=timezone.utc),
     )
     assert retried["counts"]["created"] == 1
-    assert retried["cursor_after"] != retried["cursor_before"]
+    # The source upper bound is unchanged, but the durable class retry still
+    # resolves the event after identity appears.
+    assert retried["cursor_after"] == retried["cursor_before"]
     assert retried["class_overlap_after"] != retried["class_overlap_before"]
     with sqlite3.connect(db) as con:
         assert con.execute(

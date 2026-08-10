@@ -93,7 +93,7 @@ def run_tallanto_attendance_api_increment(
     client: Any | None = None,
     now: datetime | None = None,
 ) -> Mapping[str, Any]:
-    """Import attendance; retry explicit identity conflicts without holding the global cursor."""
+    """Import attendance; retry unresolved identities without holding the global cursor."""
     root = Path(config.allowed_root).expanduser().resolve(strict=False)
     db = guard_customer_timeline_output_path(Path(config.timeline_db), root)
     if config.apply and (is_customer_timeline_prod_path(db) or not _is_staging_db(db)):
@@ -356,12 +356,9 @@ def run_tallanto_attendance_api_increment(
             conflicting_existing_events = tuple((str(row[0]), str(row[1])) for row in rows)
     counters["existing_events_before"] = existing_event_count
     counters["existing_events_identity_conflict"] = len(conflicting_existing_events)
-    # Open conflicts are retried by class above, so an explicit identity conflict
-    # no longer freezes the global relationship cursor.
-    blocking_reasons = (
-        "identity_infrastructure_gap",
-        "identity_unmatched_expected",
-    )
+    # Open identity conflicts are retried by class above, so only an incomplete
+    # Contact fetch blocks the global relationship cursor.
+    blocking_reasons = ("identity_infrastructure_gap",)
     blocking_unresolved_count = sum(counters[reason] for reason in blocking_reasons)
     validation_errors = [reason for reason in blocking_reasons if counters[reason]]
     if retry_metadata_invalid:
@@ -445,8 +442,8 @@ def run_tallanto_attendance_api_increment(
                             actor=config.actor,
                             ingestion_run_id=run.run_id,
                         )
-                    # Expected/missing input keeps the cursor back. Explicit identity
-                    # conflicts advance because their class IDs are retried above.
+                    # An incomplete Contact fetch keeps the cursor back. Other open
+                    # identities advance because their class IDs are retried above.
                     store.upsert_ingestion_cursor(
                         config.tenant_id,
                         API_SOURCE_SYSTEM,
@@ -492,7 +489,7 @@ def run_tallanto_attendance_api_increment(
             "identity_unmatched_expected": counters["identity_unmatched_expected"],
             "blocking_count": blocking_unresolved_count,
             "identity_conflict_has_durable_retry": True,
-            "expected_unmatched_blocks_freshness": True,
+            "expected_unmatched_blocks_freshness": "identity_unmatched_expected" in blocking_reasons,
             "input_fully_processed": True,
         },
         "apply": config.apply,

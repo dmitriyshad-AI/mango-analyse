@@ -2037,10 +2037,12 @@ def test_nightly_service_runs_required_tallanto_attendance_api_step(
         nightly_service_module,
         "run_tallanto_attendance_api_increment",
         lambda config: {
+            "status": "completed",
             "validation_ok": True,
+            "unresolved_count": 1,
             "cursor_before": config.initial_since.isoformat(),
             "cursor_after": "2026-07-24T10:00:00+03:00",
-            "counts": {"created": 1},
+            "counts": {"created": 1, "identity_unmatched_expected": 1},
             "safety": {"writes_tallanto": False},
         },
     )
@@ -2054,7 +2056,12 @@ def test_nightly_service_runs_required_tallanto_attendance_api_step(
     ).expanduser()
     assert report["overall_status"] == "ok"
     assert report["steps"][0]["status"] == "ok"
-    assert report["steps"][0]["summary"]["counts"] == {"created": 1}
+    assert report["steps"][0]["summary"]["status"] == "completed"
+    assert report["steps"][0]["summary"]["unresolved_count"] == 1
+    assert report["steps"][0]["summary"]["counts"] == {
+        "created": 1,
+        "identity_unmatched_expected": 1,
+    }
 
 
 def test_nightly_service_marks_required_tallanto_partial_and_does_not_publish_latest(

@@ -1,0 +1,37 @@
+{
+  "slug": "m1_calls_phase0_capture_manifest_recovery",
+  "created_at": "2026-08-08T13:50:50+0300",
+  "repo_head": "37e34f39",
+  "baseline": "f8faabf1d442261023605ee3285deb3b2a278cf9",
+  "frozen_diff_sha256": "ae4e59da189a99161c299689a2f61e5d313012a7539d905157fac68c52bacaf8",
+  "semantic_required": true,
+  "files_written_before_manifest": [
+    "README.md",
+    "TEST_EVIDENCE.md",
+    "backward_compatibility.md",
+    "changed_files.txt",
+    "git_context.txt",
+    "implementation_notes.md",
+    "risk_review.md",
+    "semantic_review.md",
+    "test_output.txt"
+  ],
+  "pii_redaction": [
+    "ru_phone",
+    "email"
+  ],
+  "test_counts": {
+    "targeted": 147,
+    "calls_profile": 227,
+    "exact_task": 297
+  },
+  "review_verdicts": {
+    "architect": "GO",
+    "breaker": "GO",
+    "business": "GO",
+    "cleaner": "GO",
+    "claude_opus": "GO",
+    "codex_optimizer": "GO"
+  },
+  "live_operations": "NOT_RUN"
+}

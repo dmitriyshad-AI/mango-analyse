@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import os
 import plistlib
 import shlex
 import subprocess
@@ -15,6 +16,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install_mango_calls_two_processes_service.py"
 RUNNER = ROOT / "scripts" / "run_mango_calls_process.sh"
+LEGACY_RUNNER = ROOT / "scripts" / "run_mango_calls_cycle.sh"
+
+
+def _verified_yandex_target(tmp_path: Path, name: str = "out") -> Path:
+    target = tmp_path / name
+    target.mkdir()
+    (target / ".mango_calls_yandex_target").write_text("mango-calls-yandex-v1\n", encoding="utf-8")
+    return target
 
 
 def _load_installer():
@@ -28,7 +37,7 @@ def _load_installer():
 def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config_path = tmp_path / "config.json"
     env_path = tmp_path / "mango.env"
-    pipeline_root = tmp_path / "pipeline"
+    pipeline_root = tmp_path / ".mango_local" / "pipeline"
     staging = tmp_path / "staging"
     config_path.write_text(
         json.dumps(
@@ -43,7 +52,10 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
-    env_path.write_text("MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\n", encoding="utf-8")
+    env_path.write_text(
+        f"MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\nMANGO_CALLS_PIPELINE_ROOT={pipeline_root}\n",
+        encoding="utf-8",
+    )
     env_path.chmod(0o600)
     return config_path, env_path
 
@@ -64,6 +76,10 @@ def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
     subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                     "commit", "-qm", "test"], cwd=repo, check=True)
     return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+
+def _worker_env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    return {**os.environ, "HOME": str(tmp_path), **extra}
 
 
 def _copy_runner(tmp_path: Path, launchctl: Path) -> Path:
@@ -249,7 +265,7 @@ def test_runner_rejects_readable_secret_env_before_source(tmp_path: Path) -> Non
 def test_successful_process_b_runs_daily_export_when_out_is_configured(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
-    out = tmp_path / "yandex"
+    out = _verified_yandex_target(tmp_path, "yandex")
     env_path.write_text(
         env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n",
         encoding="utf-8",
@@ -309,9 +325,10 @@ def test_runner_does_not_inherit_missing_worker_env_values(tmp_path: Path) -> No
 def test_process_b_runs_google_publisher_only_with_complete_config(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
+    out = _verified_yandex_target(tmp_path)
     env_path.write_text(
         env_path.read_text(encoding="utf-8")
-        + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n"
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n"
         + "MANGO_CALLS_GOOGLE_DRIVE_FOLDER_ID=folder_123456789\n"
         + f"GOOGLE_APPLICATION_CREDENTIALS={tmp_path / 'credentials.json'}\n",
         encoding="utf-8",
@@ -398,7 +415,8 @@ fi
 def test_process_b_idle_unchanged_retries_daily_export(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
-    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n", encoding="utf-8")
+    out = _verified_yandex_target(tmp_path)
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n", encoding="utf-8")
     fake_python = tmp_path / "configured-python"
     fake_python.write_text(
         f'''#!/bin/zsh
@@ -581,9 +599,12 @@ def test_process_a_worker_publishes_only_complete_sealed_report(
     config_path, env_path = _write_config(tmp_path)
     captured = tmp_path / "python_args.txt"
     launchctl_capture = tmp_path / "launchctl_args.txt"
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / ".mango_calls_yandex_target").write_text("mango-calls-yandex-v1\n", encoding="utf-8")
     env_path.write_text(
         env_path.read_text(encoding="utf-8")
-        + f"MANGO_CALLS_DAILY_EXPORT_OUT={tmp_path / 'out'}\n",
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n",
         encoding="utf-8",
     )
     clean_repo, head = _clean_git_repo(tmp_path)
@@ -612,18 +633,284 @@ fi
 
     result = subprocess.run(
         [str(runner), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT,
-        env={**__import__("os").environ, "CAPTURED": str(captured), "CAPTURED_LAUNCHCTL": str(launchctl_capture)},
+        env=_worker_env(tmp_path, CAPTURED=str(captured), CAPTURED_LAUNCHCTL=str(launchctl_capture)),
         check=False,
     )
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
     exports = [call for call in calls if "export_daily_mango_calls_resolve.py" in call]
-    ready = str(tmp_path / "pipeline" / "drop" / "mango_calls_ready.sqlite")
+    ready = str(tmp_path / ".mango_local" / "pipeline" / "drop" / "mango_calls_ready.sqlite")
     assert result.returncode == (0 if process_status == "ok" else 1)
     assert bool(exports) is expected_export
     if exports:
         assert exports[0].count(ready) == 2 and "--day" in exports[0] and "--sealed-only" in exports[0]
     assert not launchctl_capture.exists()
+
+
+def test_process_a_worker_refuses_unverified_yandex_target(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out = tmp_path / "ordinary-local-folder"
+    out.mkdir()
+    clean_repo, head = _clean_git_repo(tmp_path)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
+        + f"MANGO_CALLS_DAILY_EXPORT_OUT={out}\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","downstream_ready":true}}'
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-a-worker"],
+        cwd=ROOT,
+        env=_worker_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "yandex_publish_target_not_verified" in result.stderr
+
+
+def test_process_a_worker_requires_yandex_publish_target(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","downstream_ready":true}}'
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-a-worker"],
+        cwd=ROOT,
+        env=_worker_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "m1_yandex_publish_target_missing" in result.stderr
+
+
+def test_legacy_process_b_keeps_existing_unmarked_export_path(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    ordinary_out = tmp_path / "legacy-export"
+    ordinary_out.mkdir()
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + f"MANGO_CALLS_DAILY_EXPORT_OUT={ordinary_out}\n",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"ok","stop_reason":""}}'
+elif [[ "$1" == *export_daily_mango_calls_resolve.py ]]; then
+  exit 0
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_path), "process-b"],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert "yandex_publish_target_not_verified" not in result.stderr
+
+
+def test_process_wrapper_rejects_pipeline_root_inside_repository(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pipeline_root"] = str(ROOT / "product_data" / "forbidden-runtime")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            str(tmp_path / ".mango_local" / "pipeline"), config["pipeline_root"]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "pipeline_root_outside_owner_local_root_or_symlink" in result.stderr
+
+
+def test_process_wrapper_rejects_pipeline_root_symlink(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    real_root = tmp_path / ".mango_local" / "real-pipeline"
+    real_root.mkdir(parents=True)
+    link_root = tmp_path / ".mango_local" / "pipeline"
+    link_root.symlink_to(real_root)
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "pipeline_root_outside_owner_local_root_or_symlink" in result.stderr
+
+
+def test_process_wrapper_rejects_symlinked_owner_local_root(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    cloud_root = tmp_path / "cloud-runtime"
+    pipeline_root = cloud_root / "pipeline"
+    pipeline_root.mkdir(parents=True)
+    (tmp_path / ".mango_local").symlink_to(cloud_root)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pipeline_root"] = str(pipeline_root)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    env_file.write_text(
+        f"MANGO_OFFICE_API_KEY=x\nMANGO_OFFICE_API_SALT=y\nMANGO_CALLS_PIPELINE_ROOT={pipeline_root}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "pipeline_root_outside_owner_local_root_or_symlink" in result.stderr
+
+
+def test_process_wrapper_rejects_runtime_nested_in_git_repo(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    pipeline_root = tmp_path / ".mango_local" / "pipeline"
+    (pipeline_root / ".git").mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "pipeline_root_outside_owner_local_root_or_symlink" in result.stderr
+
+
+def test_process_wrapper_rejects_pipeline_root_env_mismatch(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            str(tmp_path / ".mango_local" / "pipeline"),
+            str(tmp_path / ".mango_local" / "different-pipeline"),
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "pipeline_root_config_env_mismatch" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "stop_reason"),
+    (
+        ("python_executable", "config_missing_python_executable"),
+        ("pipeline_root", "config_missing_pipeline_root"),
+    ),
+)
+def test_process_wrapper_reports_missing_required_config_key(
+    tmp_path: Path, missing_key: str, stop_reason: str
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    del config[missing_key]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a-worker"],
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stderr)["stop_reason"] == stop_reason
+
+
+def test_legacy_local_process_a_keeps_working_before_runtime_relocation(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+if [[ "$1" == "-c" ]]; then
+  {shlex.quote(sys.executable)} "$@"
+elif [[ "$1" == *run_mango_calls_pipeline.py ]]; then
+  print -r -- '{{"status":"idle","downstream_ready":false}}'
+fi
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pipeline_root"] = str(ROOT / "product_data" / "legacy-runtime")
+    config["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a"],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert "pipeline_root_outside_owner_local_root_or_symlink" not in result.stderr
+
+
+def test_legacy_cycle_entrypoint_is_fail_closed() -> None:
+    result = subprocess.run([str(LEGACY_RUNNER)], cwd=ROOT, text=True, capture_output=True)
+
+    assert result.returncode == 2
+    assert "deprecated_entrypoint_use_run_mango_calls_process" in result.stderr
+    source = LEGACY_RUNNER.read_text(encoding="utf-8")
+    assert "source " not in source
+    assert "run_mango_calls_pipeline.py" not in source
 
 
 def test_process_b_pull_rejects_partial_config_before_pipeline(tmp_path: Path) -> None:
@@ -633,7 +920,7 @@ def test_process_b_pull_rejects_partial_config_before_pipeline(tmp_path: Path) -
                         + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n"
                         + "MANGO_CALLS_REMOTE_HOST=main-host\n", encoding="utf-8")
     result = subprocess.run([str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"],
-                            cwd=ROOT, check=False)
+                            cwd=ROOT, env=_worker_env(tmp_path), check=False)
     assert result.returncode == 4
 
 
@@ -672,7 +959,7 @@ fi
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
     result = subprocess.run([str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"], cwd=ROOT,
-                            env={**__import__("os").environ, "CAPTURED": str(captured)}, check=False)
+                            env=_worker_env(tmp_path, CAPTURED=str(captured)), check=False)
 
     calls = captured.read_text(encoding="utf-8").split("--call--\n")
     pull_index = next(index for index, call in enumerate(calls) if "pull_mango_calls_drop_remote.py" in call)
@@ -694,7 +981,7 @@ def test_process_b_pull_requires_dedicated_ssh_files(tmp_path: Path) -> None:
 
     result = subprocess.run(
         [str(clean_repo / "scripts" / RUNNER.name), str(config_path), str(env_path), "process-b-pull"],
-        cwd=ROOT, text=True, capture_output=True, check=False,
+        cwd=ROOT, env=_worker_env(tmp_path), text=True, capture_output=True, check=False,
     )
 
     assert result.returncode == 4
@@ -703,11 +990,11 @@ def test_process_b_pull_requires_dedicated_ssh_files(tmp_path: Path) -> None:
 
 def test_split_modes_require_exact_clean_code_revision(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
-    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, check=False)
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, env=_worker_env(tmp_path), check=False)
     assert result.returncode == 4
     env_path.write_text(env_path.read_text(encoding="utf-8")
                         + "MANGO_CALLS_EXPECTED_CODE_SHA=0000000000000000000000000000000000000000\n", encoding="utf-8")
-    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, check=False)
+    result = subprocess.run([str(RUNNER), str(config_path), str(env_path), "process-a-worker"], cwd=ROOT, env=_worker_env(tmp_path), check=False)
     assert result.returncode == 4
 
 

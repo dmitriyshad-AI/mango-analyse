@@ -1,0 +1,45 @@
+{
+  "slug": "m1_calls_phase0_runtime_relocation",
+  "created_at": "2026-08-08T22:19:20+0300",
+  "parent_head": "82208ad1e2c95ca0c8476ec3e9b88268ebb3d455",
+  "baseline": "f8faabf1d442261023605ee3285deb3b2a278cf9",
+  "implementation_tree": "86cf64a33e4034234e334ae742e57d51b9a7cf72",
+  "implementation_diff_sha256": "1d0ade925d238a201706fe64d21b86e74695e48d257266c5ef87251eed99718f",
+  "post_audit_metadata_change": "active task zones allowlist this exact audit pack; two overbroad reliability claims were narrowed; rollback-journal, two-window main-DB metadata-drift and late-WAL timing tests were added; final hash/sidecar/stat ordering closes breaker findings",
+  "implementation_hashes": {
+    "scripts/relocate_mango_calls_pipeline.py": "4ad6234b87ca0f06b009432e234867a9c379861080f4ddd1a06e6cd160233d78",
+    "tests/test_relocate_mango_calls_pipeline.py": "9dc138d566d78e3d3d3130e3a71fc1ab886884cead6d08f4134545bacb26295c",
+    "scripts/bootstrap_m1_mango_calls.sh": "962108bb949abd89f88950a28885aa73d5a61e4c257afa09da8bc1a812249f9c",
+    "tests/test_mango_calls_m1_bootstrap.py": "96a10cf7ba076794a6f3f052b302d8ba48cf69072368b82805c81e707cdc6de4"
+  },
+  "semantic_required": true,
+  "files_written_before_manifest": [
+    "README.md",
+    "TEST_EVIDENCE.md",
+    "backward_compatibility.md",
+    "changed_files.txt",
+    "git_context.txt",
+    "implementation_notes.md",
+    "risk_review.md",
+    "semantic_review.md",
+    "test_output.txt"
+  ],
+  "pii_policy": "no inventories, call filenames, SQLite, audio, secrets, phones or email",
+  "test_counts": {
+    "focused": 72,
+    "calls_targeted": 358
+  },
+  "review_verdicts": {
+    "architect_codex": "GO",
+    "breaker_codex": "GO",
+    "business_codex": "GO_SYNTHETIC_ONLY",
+    "cleaner_codex": "GO",
+    "optimizer_codex": "GO",
+    "claude_opus_final_exact": "BLOCKED_MONTHLY_SPEND_LIMIT",
+    "claude_fable_final_exact": "BLOCKED_MONTHLY_SPEND_LIMIT",
+    "claude_sonnet_final_exact": "BLOCKED_MONTHLY_SPEND_LIMIT"
+  },
+  "overall": "GO_SYNTHETIC_ONLY_WITH_CLAUDE_LIMIT_RECORDED",
+  "host_readiness": "STOP",
+  "live_operations": "NOT_RUN"
+}

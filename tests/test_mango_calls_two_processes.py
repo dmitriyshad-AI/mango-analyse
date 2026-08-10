@@ -25,8 +25,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     dead_letter_total,
     dead_letter_mass_failure,
     environment_preflight,
+    finalize_report,
     module_probe_command,
     missing_capture_recovery_events,
+    new_calls_run_id,
     prepare_ingest_inputs,
     prepare_codex_home,
     process_lease,
@@ -64,6 +66,12 @@ def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_stagin
         codex_home_root=tmp_path / "codex_home",
         min_free_gib=1,
     )
+
+
+def create_empty_capture_manifest(config: CallsTwoProcessesConfig) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore
+
+    CaptureManifestStore(config.capture_manifest).ensure_exists()
 
 
 def test_config_refuses_prod_and_stable_runtime_paths(tmp_path: Path) -> None:
@@ -242,6 +250,288 @@ def test_capture_reports_partial_when_one_download_fails(monkeypatch: pytest.Mon
     )
 
     assert report["status"] == "partial"
+    assert config.capture_manifest.exists()
+    assert config.capture_manifest.stat().st_mode & 0o777 == 0o600
+
+
+def test_capture_refuses_to_recreate_missing_manifest_for_prior_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": "ok",
+            "checked_through": "2026-07-09T09:00:00+00:00",
+            "data_through": "2026-07-09T09:00:00+00:00",
+        },
+    )
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            pytest.fail("API poll must not run when a prior manifest is missing")
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    with pytest.raises(RuntimeError, match="missing for an existing runtime"):
+        capture_mango_window(
+            config,
+            datetime(2026, 7, 9, 9, tzinfo=timezone.utc),
+            datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+        )
+
+    assert not config.capture_manifest.exists()
+
+
+@pytest.mark.parametrize("marker_kind", ["fifo", "dangling_symlink"])
+def test_capture_prior_status_special_file_fails_closed_without_hanging(
+    tmp_path: Path,
+    marker_kind: str,
+) -> None:
+    config = config_for(tmp_path)
+    marker = config.process_a_status_path
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if marker_kind == "fifo":
+        os.mkfifo(marker)
+    else:
+        marker.symlink_to(tmp_path / "missing-status-target.json")
+    child_code = """
+import sys
+from pathlib import Path
+from mango_mvp.customer_timeline.calls_two_processes import (
+    CallsTwoProcessesConfig, capture_runtime_has_prior_state,
+)
+root = Path(sys.argv[1])
+config = CallsTwoProcessesConfig(
+    pipeline_root=root / "pipeline",
+    timeline_db=root / "staging" / "customer_timeline_staging.sqlite",
+    timeline_allowed_root=root / "staging",
+    python_executable=Path(sys.executable),
+    codex_binary=Path(sys.executable),
+    codex_home_root=root / "codex_home",
+    min_free_gib=1,
+)
+print("blocked" if capture_runtime_has_prior_state(config) else "accepted")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", child_code, str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2,
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "blocked"
+
+
+def test_capture_prior_status_swap_after_open_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.customer_timeline import calls_two_processes as module
+
+    config = config_for(tmp_path)
+    marker = config.process_a_status_path
+    replacement = tmp_path / "replacement-status.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}\n", encoding="utf-8")
+    replacement.write_text(
+        json.dumps({"checked_through": "2026-08-08T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    real_open = module.os.open
+    swapped = False
+
+    def swap_after_open(path: object, flags: int, mode: int = 0o777) -> int:
+        nonlocal swapped
+        descriptor = real_open(path, flags, mode)
+        if Path(path) == marker and not swapped:
+            os.replace(replacement, marker)
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr(module.os, "open", swap_after_open)
+
+    assert module.read_regular_json_marker(marker) is None
+    assert swapped is True
+    assert module.capture_runtime_has_prior_state(config) is True
+
+
+def test_capture_recovers_torn_manifest_when_api_window_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+        acknowledge_capture_recovery,
+    )
+
+    config = replace(config_for(tmp_path), api_window_hours=1)
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(
+        ManifestEntry(
+            schema_version="capture_manifest_v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:old-call",
+            provider_call_id="old-call",
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+    )
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", EmptyClient)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    since = datetime(2026, 7, 9, 9, tzinfo=timezone.utc)
+    until = datetime(2026, 7, 9, 10, tzinfo=timezone.utc)
+
+    first = capture_mango_window(config, since, until)
+
+    assert first["status"] == "partial"
+    assert first["incomplete_trailing_manifest_records"] == 0
+    assert first["recovered_trailing_manifest_records"] == 1
+    acknowledge_capture_recovery(
+        config.capture_manifest,
+        expected_count=1,
+        expected_incident_sha256=str(first["recovery_incident_sha256"]),
+    )
+
+    second = capture_mango_window(config, since, until)
+
+    assert second["status"] == "ok"
+    assert second["incomplete_trailing_manifest_records"] == 0
+    assert second["recovered_trailing_manifest_records"] == 0
+
+
+def test_capture_reports_tail_recovered_during_new_append(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = replace(config_for(tmp_path), api_window_hours=1)
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:expired",
+            provider_call_id="expired",
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+    )
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+    new_event = TelephonyCallEvent(
+        tenant=TenantRef("foton"),
+        provider="mango",
+        provider_call_id="new-call",
+        started_at=datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+        ended_at=None,
+        direction=Direction.INBOUND,
+        client_phone=None,
+        manager_ref=None,
+        recording_ref="new-recording",
+        raw_payload={},
+    )
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            return [{"id": "new-call"}]
+
+    class FakeMapper:
+        def from_payload(self, **_: object) -> TelephonyCallEvent:
+            return new_event
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 0}
+
+    def fake_stage(*, manifest_store: CaptureManifestStore, **_: object) -> Summary:
+        manifest_store.append(
+            ManifestEntry(
+                schema_version="v1",
+                created_at="2026-07-09T10:00:00+00:00",
+                tenant_id="foton",
+                provider="mango",
+                event_key="foton:mango:new-call",
+                provider_call_id="new-call",
+                recording_id="new-recording",
+                started_at="2026-07-09T10:00:00+00:00",
+                ended_at=None,
+                direction="inbound",
+                client_phone=None,
+                manager_ref=None,
+                status="downloaded",
+                local_audio_path="/synthetic/new-call.mp3",
+            )
+        )
+        return Summary()
+
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader", FakeClient)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.MangoOfficePayloadMapper", FakeMapper)
+    monkeypatch.setattr("mango_mvp.customer_timeline.calls_two_processes.stage_capture_events", fake_stage)
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 9, 9, tzinfo=timezone.utc),
+        datetime(2026, 7, 9, 10, tzinfo=timezone.utc),
+    )
+
+    assert report["status"] == "partial"
+    assert report["incomplete_trailing_manifest_records"] == 0
+    assert report["recovered_trailing_manifest_records"] == 1
+    assert len(CaptureManifestStore(config.capture_manifest).read_entries()) == 2
 
 
 def test_pending_recording_widens_poll_window_beyond_normal_overlap(
@@ -807,6 +1097,7 @@ def test_command_path_includes_codex_binary_directory(tmp_path: Path, monkeypatc
 
 def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
     old = "2026-07-10T01:00:00+00:00"
     for path, process in (
         (config.process_a_status_path, "process_a"),
@@ -836,6 +1127,7 @@ def test_pipeline_freshness_does_not_call_missing_drop_fresh(tmp_path: Path) -> 
 
 def test_pipeline_freshness_uses_data_not_recent_check(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
     write_json(
         config.process_a_status_path,
         {
@@ -857,6 +1149,269 @@ def test_pipeline_freshness_missing_data_is_not_fresh(tmp_path: Path) -> None:
     )
     report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
     assert report["stages"]["process_a"]["status"] == "missing"
+
+
+def test_pipeline_freshness_missing_manifest_overrides_fresh_stage(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    fresh = "2026-07-10T02:00:00+00:00"
+    for path, process in (
+        (config.process_a_status_path, "process_a"),
+        (config.process_b_status_path, "process_b"),
+    ):
+        write_json(
+            path,
+            {"process": process, "status": "ok", "checked_through": fresh, "data_through": fresh},
+        )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "missing"
+    assert report["stages"]["process_a"]["stop_reason"] == "capture_manifest_missing"
+    assert report["stages"]["process_b"]["status"] == "fresh"
+
+
+def test_pipeline_freshness_keeps_partial_day_red_with_fresh_timestamps(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": "partial",
+            "stop_reason": "capture_manifest_tail_incomplete",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+    write_json(
+        config.process_b_status_path,
+        {
+            "process": "process_b",
+            "status": "ok",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "partial"
+    assert report["stages"]["process_b"]["status"] == "fresh"
+
+
+def test_pipeline_freshness_fails_closed_on_unresolved_capture_recovery(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    store = CaptureManifestStore(config.capture_manifest)
+    entry = ManifestEntry(
+        schema_version="v1",
+        created_at="2026-07-10T02:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:before-crash",
+        provider_call_id="before-crash",
+        recording_id=None,
+        started_at="2026-07-10T02:00:00+00:00",
+        ended_at=None,
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="recording_retry_expired",
+    )
+    store.append(entry)
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+    store.append(replace(entry, event_key="foton:mango:after-crash", provider_call_id="after-crash"))
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {"process": "process_a", "status": "ok", "checked_through": fresh, "data_through": fresh},
+    )
+    write_json(
+        config.process_b_status_path,
+        {"process": "process_b", "status": "ok", "checked_through": fresh, "data_through": fresh},
+    )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "partial"
+    assert report["stages"]["process_a"]["stop_reason"] == "capture_manifest_tail_incomplete"
+    assert report["stages"]["process_a"]["capture_recovery_unresolved_count"] == 1
+    assert report["stages"]["process_b"]["status"] == "fresh"
+
+
+def test_pipeline_freshness_fails_closed_on_torn_tail_before_recovery(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+        capture_recovery_path,
+    )
+
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-10T02:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="foton:mango:before-crash",
+            provider_call_id="before-crash",
+            recording_id=None,
+            started_at="2026-07-10T02:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+    )
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+    assert not capture_recovery_path(config.capture_manifest).exists()
+    fresh = "2026-07-10T02:00:00+00:00"
+    for path, process in (
+        (config.process_a_status_path, "process_a"),
+        (config.process_b_status_path, "process_b"),
+    ):
+        write_json(
+            path,
+            {"process": process, "status": "ok", "checked_through": fresh, "data_through": fresh},
+        )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "partial"
+    assert report["stages"]["process_a"]["capture_manifest_tail_status"] == "incomplete"
+    assert report["stages"]["process_a"]["capture_recovery_status"] == "resolved"
+    assert report["stages"]["process_b"]["status"] == "fresh"
+
+
+def test_pipeline_freshness_fails_closed_on_invalid_capture_recovery(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import capture_recovery_path
+
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    recovery_path = capture_recovery_path(config.capture_manifest)
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text("{invalid", encoding="utf-8")
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {"process": "process_a", "status": "ok", "checked_through": fresh, "data_through": fresh},
+    )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "failed"
+    assert report["stages"]["process_a"]["stop_reason"] == "capture_recovery_ledger_invalid"
+
+
+@pytest.mark.parametrize("manifest_kind", ["directory", "fifo"])
+def test_pipeline_freshness_fails_closed_on_non_regular_manifest(
+    tmp_path: Path,
+    manifest_kind: str,
+) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    config.capture_manifest.parent.mkdir(parents=True, exist_ok=True)
+    if manifest_kind == "directory":
+        config.capture_manifest.mkdir()
+    else:
+        os.mkfifo(config.capture_manifest)
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {"process": "process_a", "status": "ok", "checked_through": fresh, "data_through": fresh},
+    )
+
+    report = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "failed"
+    assert report["stages"]["process_a"]["stop_reason"] == "capture_manifest_tail_invalid"
+
+
+def test_ok_stage_is_not_published_before_durable_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import atomic_write_private_json as real_atomic_write
+
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_b_status_path,
+        {"process": "process_b", "status": "ok", "checked_through": fresh, "data_through": fresh},
+    )
+
+    def crash_on_report(path: Path, payload: object, **kwargs: object) -> None:
+        if path.parent == config.reports_dir:
+            raise SystemExit(77)
+        real_atomic_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.atomic_write_private_json",
+        crash_on_report,
+    )
+
+    with pytest.raises(SystemExit, match="77"):
+        finalize_report(config, "synthetic-ok", "process_a", "ok", "", {})
+
+    assert not config.process_a_status_path.exists()
+    assert not list(config.reports_dir.glob("*_process_a.json"))
+    freshness = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+    assert freshness["stages"]["process_a"]["status"] == "missing"
+    assert freshness["status"] == "stale"
+
+
+@pytest.mark.parametrize("red_status", ["failed", "partial"])
+def test_red_stage_is_published_before_broken_report_directory(
+    tmp_path: Path,
+    red_status: str,
+) -> None:
+    config = config_for(tmp_path)
+    config.reports_dir.parent.mkdir(parents=True, exist_ok=True)
+    config.reports_dir.write_text("not-a-directory", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        finalize_report(config, "synthetic-red", "process_a", red_status, "synthetic", {})
+
+    assert read_json(config.process_a_status_path)["status"] == red_status
+
+
+def test_broken_reports_directory_cannot_leave_process_a_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1, freshness_max_age_minutes=30)
+    config.reports_dir.parent.mkdir(parents=True, exist_ok=True)
+    config.reports_dir.write_text("not-a-directory", encoding="utf-8")
+    fresh = "2026-07-10T02:00:00+00:00"
+    for path, process in (
+        (config.process_a_status_path, "process_a"),
+        (config.process_b_status_path, "process_b"),
+    ):
+        write_json(
+            path,
+            {"process": process, "status": "ok", "checked_through": fresh, "data_through": fresh},
+        )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+
+    with pytest.raises(FileExistsError):
+        run_process_a(config, skip_capture=True, skip_workers=True)
+
+    assert read_json(config.process_a_status_path)["status"] == "failed"
+    freshness = pipeline_freshness(config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc))
+    assert freshness["stages"]["process_a"]["status"] == "failed"
+    assert freshness["status"] == "stale"
 
 
 def test_dead_letter_total_ignores_empty_stage_and_counts_failures() -> None:
@@ -1169,6 +1724,21 @@ def test_foton_pdn_sweep_blocks_phone() -> None:
     assert_no_pdn({"calls": 22, "status": "ok"})
 
 
+def test_run_id_uuid_prefix_cannot_be_mistaken_for_phone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_uuid = type("FixedUuid", (), {"hex": "81234567890abcdef01234567890abcd"})()
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.uuid.uuid4",
+        lambda: fixed_uuid,
+    )
+
+    run_id = new_calls_run_id(datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc))
+
+    assert run_id.endswith("-u81234567890a")
+    assert_no_pdn({"run_id": run_id})
+
+
 def test_locked_report_does_not_claim_work_or_publish_pid() -> None:
     payload = safe_daily_payload(
         {
@@ -1325,6 +1895,41 @@ def test_prepare_ingest_inputs_counts_missing_capture_audio(tmp_path: Path) -> N
     assert result["skipped_total"] == 2
 
 
+def test_prepare_ingest_inputs_keeps_torn_manifest_tail_incomplete(tmp_path: Path) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = config_for(tmp_path)
+    audio = config.recordings_dir / "present.mp3"
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"audio-bytes")
+    CaptureManifestStore(config.capture_manifest).append(
+        ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T10:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key="present-1",
+            provider_call_id="present-1",
+            recording_id="present-1",
+            started_at="2026-07-09T10:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="downloaded",
+            local_audio_path=str(audio),
+        )
+    )
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+
+    result = prepare_ingest_inputs(config)
+
+    assert result["audio_files"] == 1
+    assert result["incomplete_trailing_manifest_records"] == 1
+    assert result["incomplete_total"] == 1
+
+
 def test_process_a_processes_available_audio_then_marks_missing_partial(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1409,6 +2014,236 @@ def test_process_a_partial_capture_publishes_available_work_and_advances_cursor(
     assert report["downstream_ready"] is True
     assert config.ready_db.exists()
     assert read_json(config.cursor_path)["until"] == "2026-07-09T10:00:00+00:00"
+
+
+def test_process_a_reports_recovered_manifest_tail_and_blocks_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    store = CaptureManifestStore(config.capture_manifest)
+
+    def terminal_entry(call_id: str) -> ManifestEntry:
+        return ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=f"foton:mango:{call_id}",
+            provider_call_id=call_id,
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+
+    store.append(terminal_entry("before-crash"))
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+
+    def recover_during_capture(
+        _config: CallsTwoProcessesConfig,
+        _since: datetime,
+        _until: datetime,
+    ) -> dict[str, object]:
+        CaptureManifestStore(config.capture_manifest).append(terminal_entry("after-restart"))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+
+    report = run_process_a(
+        config,
+        since="2026-07-09T09:00:00+00:00",
+        until="2026-07-09T10:00:00+00:00",
+        skip_workers=True,
+        capture_runner=recover_during_capture,
+    )
+
+    assert report["status"] == "partial"
+    assert report["stop_reason"] == "capture_manifest_tail_incomplete"
+    assert report["downstream_ready"] is False
+    assert report["counters"]["drop"] == {
+        "status": "blocked",
+        "reason": "capture_manifest_tail_incomplete",
+    }
+    assert report["counters"]["metadata"]["recovered_trailing_manifest_records"] == 1
+    assert not config.ready_db.exists()
+    assert read_json(config.cursor_path) == {}
+    assert CaptureManifestStore(config.capture_manifest).recovered_trailing_records == 0
+    partial_report_path = Path(str(report["report_path"]))
+    partial_report_bytes = partial_report_path.read_bytes()
+
+    clean_retry = run_process_a(config, skip_capture=True, skip_workers=True)
+
+    assert clean_retry["status"] == "ok"
+    assert clean_retry["downstream_ready"] is True
+    assert len(CaptureManifestStore(config.capture_manifest).read_entries()) == 2
+    assert Path(str(clean_retry["report_path"])) != partial_report_path
+    assert partial_report_path.read_bytes() == partial_report_bytes
+    assert read_json(partial_report_path)["stop_reason"] == "capture_manifest_tail_incomplete"
+
+
+def test_process_a_report_failure_leaves_recovery_unacknowledged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+
+    def terminal_entry(call_id: str) -> ManifestEntry:
+        return ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=f"foton:mango:{call_id}",
+            provider_call_id=call_id,
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(terminal_entry("before-crash"))
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+
+    def recover_during_capture(*_args: object) -> dict[str, object]:
+        CaptureManifestStore(config.capture_manifest).append(terminal_entry("after-restart"))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+
+    from mango_mvp.productization.capture_staging import atomic_write_private_json as real_atomic_write
+
+    def fail_report_write(path: Path, payload: object, **kwargs: object) -> None:
+        if path.parent == config.reports_dir:
+            raise OSError("synthetic report failure")
+        real_atomic_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.atomic_write_private_json",
+        fail_report_write,
+    )
+
+    with pytest.raises(OSError, match="synthetic report failure"):
+        run_process_a(
+            config,
+            since="2026-07-09T09:00:00+00:00",
+            until="2026-07-09T10:00:00+00:00",
+            skip_workers=True,
+            capture_runner=recover_during_capture,
+        )
+
+    restarted = CaptureManifestStore(config.capture_manifest)
+    assert restarted.recovered_trailing_records == 1
+    assert restarted.recovery_incident_sha256
+    assert read_json(config.process_a_status_path)["status"] == "failed"
+    assert pipeline_freshness(config)["stages"]["process_a"]["status"] == "failed"
+    assert read_json(config.cursor_path) == {}
+    assert not config.ready_db.exists()
+
+
+@pytest.mark.parametrize("raise_after_ack", [False, True])
+def test_process_a_ack_failure_preserves_partial_incident_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raise_after_ack: bool,
+) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+        acknowledge_capture_recovery as real_acknowledge,
+    )
+
+    config = replace(config_for(tmp_path), min_free_gib=1, foton_daily_dir=tmp_path / "daily")
+    create_ready_call_db(config.working_db)
+
+    def terminal_entry(call_id: str) -> ManifestEntry:
+        return ManifestEntry(
+            schema_version="v1",
+            created_at="2026-07-09T08:00:00+00:00",
+            tenant_id="foton",
+            provider="mango",
+            event_key=f"foton:mango:{call_id}",
+            provider_call_id=call_id,
+            recording_id=None,
+            started_at="2026-07-09T08:00:00+00:00",
+            ended_at=None,
+            direction="inbound",
+            client_phone=None,
+            manager_ref=None,
+            status="recording_retry_expired",
+        )
+
+    store = CaptureManifestStore(config.capture_manifest)
+    store.append(terminal_entry("before-crash"))
+    with config.capture_manifest.open("ab") as handle:
+        handle.write(b'{"event_key":"unfinished"')
+
+    def recover_during_capture(*_args: object) -> dict[str, object]:
+        CaptureManifestStore(config.capture_manifest).append(terminal_entry("after-restart"))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+
+    def fail_acknowledge(*args: object, **kwargs: object) -> int:
+        if raise_after_ack:
+            real_acknowledge(*args, **kwargs)
+        raise RuntimeError("synthetic acknowledgement failure")
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.acknowledge_capture_recovery",
+        fail_acknowledge,
+    )
+
+    failed = run_process_a(
+        config,
+        since="2026-07-09T09:00:00+00:00",
+        until="2026-07-09T10:00:00+00:00",
+        skip_workers=True,
+        capture_runner=recover_during_capture,
+    )
+
+    reports = [read_json(path) for path in sorted(config.reports_dir.glob("*_process_a.json"))]
+    partial = [report for report in reports if report.get("status") == "partial"]
+    failures = [report for report in reports if report.get("status") == "failed"]
+    restarted = CaptureManifestStore(config.capture_manifest)
+
+    assert failed["status"] == "failed"
+    assert len(reports) == 2
+    assert len(partial) == 1
+    assert len(failures) == 1
+    assert failed["run_id"] != partial[0]["run_id"]
+    assert partial[0]["stop_reason"] == "capture_manifest_tail_incomplete"
+    assert failures[0]["counters"]["diagnostic"]["preserved_report_run_id"] == partial[0]["run_id"]
+    daily_failure = read_json(Path(str(failed["daily_report_path"])))
+    assert daily_failure["counters"]["preserved_report"]["run_id"] == partial[0]["run_id"]
+    assert "diagnostic" not in daily_failure["counters"]
+    assert restarted.recovered_trailing_records == (0 if raise_after_ack else 1)
+    assert read_json(config.cursor_path) == {}
+    assert not config.ready_db.exists()
 
 
 def test_process_a_runs_workers_for_existing_open_db_work_without_reingest(

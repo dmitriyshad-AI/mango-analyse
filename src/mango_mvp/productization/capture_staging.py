@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
+import stat
+import tempfile
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent
 
 
 CAPTURE_MANIFEST_SCHEMA_VERSION = "capture_manifest_v1"
+CAPTURE_RECOVERY_SCHEMA_VERSION = "capture_manifest_recovery_v1"
 DEFAULT_CAPTURE_FILENAME_TZ = ZoneInfo("Europe/Moscow")
 TERMINAL_EVENT_STATUSES = {
     "downloaded",
@@ -23,11 +28,446 @@ TERMINAL_EVENT_STATUSES = {
     "multiple_recordings_needs_review",
 }
 ASSET_STATUSES = {"downloaded", "multiple_recordings_needs_review"}
+RECOVERABLE_EOF_JSON_MESSAGES = {
+    "Expecting ',' delimiter",
+    "Expecting ':' delimiter",
+    "Expecting property name enclosed in double quotes",
+    "Expecting value",
+}
+JSON_LITERAL_PREFIXES = frozenset(
+    literal[:length]
+    for literal in ("false", "null", "true")
+    for length in range(1, len(literal))
+)
+INCOMPLETE_NUMBER_SUFFIX_RE = re.compile(r"(?:\.\d*|[eE][+-]?\d*)\Z")
+INCOMPLETE_UNICODE_ESCAPE_RE = re.compile(r"u[0-9a-fA-F]{0,4}\Z")
+REQUIRED_MANIFEST_STRING_FIELDS = (
+    "created_at",
+    "tenant_id",
+    "provider",
+    "event_key",
+    "provider_call_id",
+    "started_at",
+    "direction",
+    "status",
+)
+
+
+def manifest_signature(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _open_regular_file(
+    path: Path,
+    flags: int,
+    *,
+    mode: int = 0o600,
+    label: str,
+) -> int:
+    safe_flags = (
+        flags
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, safe_flags, mode)
+    try:
+        is_regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not is_regular:
+        os.close(descriptor)
+        raise RuntimeError(f"{label} must be a regular file")
+    return descriptor
+
+
+def _assert_open_path_identity(
+    path: Path,
+    descriptor: int,
+    *,
+    label: str,
+) -> os.stat_result:
+    descriptor_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(descriptor_stat.st_mode) or descriptor_stat.st_nlink < 1:
+        raise RuntimeError(f"{label} changed while open")
+    path_stat = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(path_stat.st_mode)
+        or path_stat.st_dev != descriptor_stat.st_dev
+        or path_stat.st_ino != descriptor_stat.st_ino
+    ):
+        raise RuntimeError(f"{label} changed while open")
+    return descriptor_stat
+
+
+def atomic_write_private_json(
+    path: Path,
+    payload: Mapping[str, Any],
+    *,
+    indent: Optional[int] = None,
+) -> None:
+    if os.path.lexists(path) and path.is_symlink():
+        raise RuntimeError("refusing to replace symlink with private JSON")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(payload, handle, ensure_ascii=False, indent=indent, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.path.lexists(path) and path.is_symlink():
+            raise RuntimeError("refusing to replace symlink with private JSON")
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def capture_recovery_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(f".{manifest_path.name}.recovery.json")
+
+
+def valid_capture_recovery_fingerprint(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    size_bytes = value.get("size_bytes")
+    return bool(
+        re.fullmatch(r"[0-9a-f]{64}", str(value.get("sha256") or ""))
+        and re.fullmatch(r"[0-9a-f]{64}", str(value.get("valid_prefix_sha256") or ""))
+        and isinstance(size_bytes, int)
+        and not isinstance(size_bytes, bool)
+        and size_bytes > 0
+        and isinstance(value.get("valid_prefix_size_bytes"), int)
+        and not isinstance(value.get("valid_prefix_size_bytes"), bool)
+        and int(value["valid_prefix_size_bytes"]) >= 0
+    )
+
+
+def capture_recovery_incident_sha256(tails: Sequence[Mapping[str, Any]]) -> str:
+    canonical = sorted(
+        json.dumps(dict(item), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        for item in tails
+    )
+    return hashlib.sha256("\n".join(canonical).encode("utf-8")).hexdigest()
+
+
+def load_capture_recovery(path: Path) -> Mapping[str, Any]:
+    if not os.path.lexists(path):
+        return {
+            "schema_version": CAPTURE_RECOVERY_SCHEMA_VERSION,
+            "status": "resolved",
+            "unresolved_count": 0,
+            "tails": [],
+            "incident_sha256": None,
+            "acknowledged_incident_sha256": None,
+        }
+    if path.is_symlink():
+        raise RuntimeError("capture recovery ledger must not be a symlink")
+    descriptor = _open_regular_file(
+        path,
+        os.O_RDONLY,
+        label="capture recovery ledger",
+    )
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        payload = json.load(handle)
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("capture recovery ledger must be a JSON object")
+    status = payload.get("status")
+    tails = payload.get("tails")
+    unresolved_count = payload.get("unresolved_count")
+    fingerprint_keys = [
+        json.dumps(dict(item), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        for item in tails
+    ] if isinstance(tails, list) and all(isinstance(item, Mapping) for item in tails) else []
+    incident_sha256 = payload.get("incident_sha256")
+    acknowledged_sha256 = payload.get("acknowledged_incident_sha256")
+    if (
+        payload.get("schema_version") != CAPTURE_RECOVERY_SCHEMA_VERSION
+        or status not in {"resolved", "unresolved"}
+        or not isinstance(tails, list)
+        or any(not valid_capture_recovery_fingerprint(item) for item in tails)
+        or not isinstance(unresolved_count, int)
+        or isinstance(unresolved_count, bool)
+        or unresolved_count != (len(tails) if status == "unresolved" else 0)
+        or (status == "unresolved" and unresolved_count <= 0)
+        or (status == "resolved" and bool(tails))
+        or len(fingerprint_keys) != len(set(fingerprint_keys))
+        or (
+            status == "unresolved"
+            and (
+                not isinstance(incident_sha256, str)
+                or incident_sha256 != capture_recovery_incident_sha256(tails)
+            )
+        )
+        or (status == "resolved" and incident_sha256 is not None)
+        or (
+            acknowledged_sha256 is not None
+            and not re.fullmatch(r"[0-9a-f]{64}", str(acknowledged_sha256))
+        )
+    ):
+        raise RuntimeError("capture recovery ledger is invalid")
+    return payload
+
+
+def record_capture_recovery(path: Path, tail: bytes, valid_prefix: bytes) -> tuple[int, str]:
+    if not tail:
+        raise RuntimeError("capture recovery tail must not be empty")
+    existing = load_capture_recovery(path)
+    tails = list(existing.get("tails") or ()) if existing.get("status") == "unresolved" else []
+    fingerprint = {
+        "sha256": hashlib.sha256(tail).hexdigest(),
+        "size_bytes": len(tail),
+        "valid_prefix_sha256": hashlib.sha256(valid_prefix).hexdigest(),
+        "valid_prefix_size_bytes": len(valid_prefix),
+    }
+    if fingerprint in tails:
+        return len(tails), str(existing["incident_sha256"])
+    tails.append(fingerprint)
+    incident_sha256 = capture_recovery_incident_sha256(tails)
+    atomic_write_private_json(
+        path,
+        {
+            "schema_version": CAPTURE_RECOVERY_SCHEMA_VERSION,
+            "status": "unresolved",
+            "unresolved_count": len(tails),
+            "tails": tails,
+            "incident_sha256": incident_sha256,
+            "acknowledged_incident_sha256": existing.get("acknowledged_incident_sha256"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return len(tails), incident_sha256
+
+
+def acknowledge_capture_recovery(
+    manifest_path: Path,
+    *,
+    expected_count: int,
+    expected_incident_sha256: str,
+) -> int:
+    recovery_path = capture_recovery_path(manifest_path)
+    if expected_count < 0:
+        raise ValueError("expected recovery count must not be negative")
+    if not manifest_path.exists() or not recovery_path.exists():
+        if expected_count:
+            raise RuntimeError("capture recovery ledger is missing")
+        return 0
+    descriptor = _open_regular_file(
+        manifest_path,
+        os.O_RDONLY,
+        label="capture manifest",
+    )
+    with os.fdopen(descriptor, "rb") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _assert_open_path_identity(
+            manifest_path,
+            handle.fileno(),
+            label="capture manifest",
+        )
+        existing = load_capture_recovery(recovery_path)
+        count = int(existing.get("unresolved_count") or 0)
+        if (
+            count != expected_count
+            or existing.get("incident_sha256") != expected_incident_sha256
+        ):
+            raise RuntimeError("capture recovery ledger changed before acknowledgement")
+        if count:
+            atomic_write_private_json(
+                recovery_path,
+                {
+                    "schema_version": CAPTURE_RECOVERY_SCHEMA_VERSION,
+                    "status": "resolved",
+                    "unresolved_count": 0,
+                    "tails": [],
+                    "incident_sha256": None,
+                    "acknowledged_incident_sha256": expected_incident_sha256,
+                    "recovered_count": count,
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        _assert_open_path_identity(
+            manifest_path,
+            handle.fileno(),
+            label="capture manifest",
+        )
+        return count
+
+
+def recoverable_json_tail(text: str, error: json.JSONDecodeError) -> bool:
+    """Return True only when *text* is demonstrably a prefix of JSON object syntax."""
+    if not text.lstrip().startswith("{"):
+        return False
+    if error.pos == len(text) and error.msg in RECOVERABLE_EOF_JSON_MESSAGES:
+        return True
+    if error.msg == "Unterminated string starting at":
+        return error.pos < len(text) and text[error.pos] == '"'
+    suffix = text[error.pos:]
+    if error.msg == "Expecting value" and suffix in JSON_LITERAL_PREFIXES | {"-"}:
+        return True
+    if error.msg == "Expecting ',' delimiter" and INCOMPLETE_NUMBER_SUFFIX_RE.fullmatch(suffix):
+        return True
+    return bool(
+        error.msg == "Invalid \\uXXXX escape"
+        and error.pos > 0
+        and text[error.pos - 1] == "\\"
+        and INCOMPLETE_UNICODE_ESCAPE_RE.fullmatch(suffix)
+    )
+
+
+def recoverable_utf8_tail(line_bytes: bytes, error: UnicodeDecodeError) -> bool:
+    if error.reason != "unexpected end of data" or error.end != len(line_bytes):
+        return False
+    prefix = line_bytes[: error.start].decode("utf-8")
+    try:
+        json.loads(prefix)
+    except json.JSONDecodeError as json_error:
+        return recoverable_json_tail(prefix, json_error)
+    return False
+
+
+def _previous_newline_offset(handle: BinaryIO, before: int) -> int:
+    position = before
+    while position > 0:
+        start = max(0, position - 64 * 1024)
+        handle.seek(start)
+        chunk = handle.read(position - start)
+        index = chunk.rfind(b"\n")
+        if index >= 0:
+            return start + index
+        position = start
+    return -1
+
+
+def _last_nonempty_manifest_line(handle: BinaryIO) -> tuple[bytes, bool]:
+    handle.seek(0, os.SEEK_END)
+    boundary = handle.tell()
+    terminated = False
+    while True:
+        newline = _previous_newline_offset(handle, boundary)
+        start = newline + 1
+        handle.seek(start)
+        line = handle.read(boundary - start)
+        if line.strip():
+            return line, terminated
+        if newline < 0:
+            return b"", True
+        boundary = newline
+        terminated = True
+
+
+def _capture_manifest_tail_status(handle: BinaryIO) -> str:
+    line_bytes, terminated = _last_nonempty_manifest_line(handle)
+    if not line_bytes:
+        return "clean"
+    try:
+        line = line_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return (
+            "incomplete"
+            if not terminated and recoverable_utf8_tail(line_bytes, exc)
+            else "invalid"
+        )
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError as exc:
+        return (
+            "incomplete"
+            if not terminated and recoverable_json_tail(line, exc)
+            else "invalid"
+        )
+    try:
+        entry_from_json(payload)
+    except (TypeError, ValueError):
+        return "invalid"
+    return "clean"
+
+
+def capture_manifest_health(manifest_path: Path) -> Mapping[str, Any]:
+    health: dict[str, Any] = {
+        "tail_status": "missing",
+        "recovery_status": "resolved",
+        "recovery_unresolved_count": 0,
+    }
+    if os.path.lexists(manifest_path) and manifest_path.is_symlink():
+        health["tail_status"] = "invalid"
+        return health
+    if not os.path.lexists(manifest_path):
+        try:
+            recovery = load_capture_recovery(capture_recovery_path(manifest_path))
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
+            health["recovery_status"] = "invalid"
+        else:
+            health["recovery_status"] = recovery["status"]
+            health["recovery_unresolved_count"] = recovery["unresolved_count"]
+        return health
+    try:
+        descriptor = _open_regular_file(
+            manifest_path,
+            os.O_RDONLY,
+            label="capture manifest",
+        )
+    except (OSError, RuntimeError):
+        health["tail_status"] = "invalid"
+        return health
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            before = manifest_signature(
+                _assert_open_path_identity(
+                    manifest_path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            try:
+                recovery = load_capture_recovery(capture_recovery_path(manifest_path))
+            except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
+                health["recovery_status"] = "invalid"
+            else:
+                health["recovery_status"] = recovery["status"]
+                health["recovery_unresolved_count"] = recovery["unresolved_count"]
+            health["tail_status"] = _capture_manifest_tail_status(handle)
+            after = manifest_signature(
+                _assert_open_path_identity(
+                    manifest_path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if after != before:
+                health["tail_status"] = "invalid"
+    except (OSError, RuntimeError):
+        health["tail_status"] = "invalid"
+    return health
 
 
 class RecordingDownloader(Protocol):
     def download(self, recording_id: str, target_path: Path) -> int:
         """Download recording_id into target_path and return downloaded size in bytes."""
+
 
 @dataclass(frozen=True)
 class AudioValidation:
@@ -86,6 +526,9 @@ class CaptureStageSummary:
     needs_review_multiple_recordings: int
     manifest_path: str
     recordings_dir: str
+    incomplete_trailing_manifest_records: int = 0
+    recovered_trailing_manifest_records: int = 0
+    recovery_incident_sha256: Optional[str] = None
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return asdict(self)
@@ -95,16 +538,258 @@ class CaptureManifestStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.recovery_path = capture_recovery_path(path)
+        self._manifest_seen = os.path.lexists(path)
+        recovery = load_capture_recovery(self.recovery_path)
+        self.incomplete_trailing_records = 0
+        self.recovered_trailing_records = int(recovery.get("unresolved_count") or 0)
+        self.recovery_incident_sha256 = (
+            str(recovery.get("incident_sha256"))
+            if self.recovered_trailing_records
+            else None
+        )
+        self._valid_prefix_bytes = 0
+        self._needs_line_separator = False
+        self._validated_signature: Optional[tuple[int, int, int, int, int]] = None
+        self._lineage_prefix_bytes = 0
+        self._validated_digest: Optional[bytes] = None
+        self._validated_hasher: Optional[Any] = None
+        self._validated_raw_size_bytes = 0
+        self._validated_raw_digest: Optional[bytes] = None
+        self._validated_tail_fingerprint: Optional[Mapping[str, Any]] = None
+        self._cached_entries: list[ManifestEntry] = []
+
+    def _assert_append_only_lineage(
+        self,
+        signature: tuple[int, int, int, int, int],
+        raw: bytes,
+        recovery: Mapping[str, Any],
+    ) -> None:
+        if self._validated_signature is None:
+            return
+        old_dev, old_ino, _, _, _ = self._validated_signature
+        if signature[0] != old_dev or signature[1] != old_ino:
+            raise RuntimeError("capture manifest inode changed during active store")
+        if len(raw) < self._lineage_prefix_bytes:
+            raise RuntimeError("capture manifest shrank during active store")
+        if self._validated_digest is None:
+            raise RuntimeError("capture manifest lineage is unavailable")
+        if (
+            hashlib.sha256(raw[: self._lineage_prefix_bytes]).digest()
+            != self._validated_digest
+        ):
+            raise RuntimeError("capture manifest was rewritten during active store")
+        if self._validated_tail_fingerprint is None:
+            return
+        unchanged_raw = bool(
+            len(raw) == self._validated_raw_size_bytes
+            and self._validated_raw_digest is not None
+            and hashlib.sha256(raw).digest() == self._validated_raw_digest
+        )
+        recorded_tails = recovery.get("tails") if recovery.get("status") == "unresolved" else ()
+        recovery_proves_tail = bool(
+            isinstance(recorded_tails, list)
+            and self._validated_tail_fingerprint in recorded_tails
+        )
+        if not unchanged_raw and not recovery_proves_tail:
+            raise RuntimeError("capture manifest incomplete tail changed without recovery record")
+
+    def _set_validated_snapshot(
+        self,
+        signature: tuple[int, int, int, int, int],
+        raw: bytes,
+    ) -> None:
+        prefix = raw[: self._valid_prefix_bytes]
+        hasher = hashlib.sha256(prefix)
+        self._validated_signature = signature
+        self._lineage_prefix_bytes = len(prefix)
+        self._validated_digest = hasher.digest()
+        self._validated_hasher = hasher
+        self._validated_raw_size_bytes = len(raw)
+        self._validated_raw_digest = hashlib.sha256(raw).digest()
+        if self.incomplete_trailing_records:
+            tail = raw[self._valid_prefix_bytes :]
+            self._validated_tail_fingerprint = {
+                "sha256": hashlib.sha256(tail).hexdigest(),
+                "size_bytes": len(tail),
+                "valid_prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+                "valid_prefix_size_bytes": len(prefix),
+            }
+        else:
+            self._validated_tail_fingerprint = None
+
+    def _refresh_recovery(self) -> Mapping[str, Any]:
+        recovery = load_capture_recovery(self.recovery_path)
+        count = int(recovery.get("unresolved_count") or 0)
+        incident_sha256 = str(recovery.get("incident_sha256")) if count else None
+        if count and self.recovered_trailing_records and count <= self.recovered_trailing_records:
+            if incident_sha256 != self.recovery_incident_sha256:
+                raise RuntimeError("capture recovery ledger identity changed during active run")
+            return recovery
+        if count > self.recovered_trailing_records:
+            self.recovered_trailing_records = count
+            self.recovery_incident_sha256 = incident_sha256
+        return recovery
+
+    def ensure_exists(self) -> None:
+        current_exists = os.path.lexists(self.path)
+        allow_create = not self._manifest_seen and not current_exists
+        created = False
+        if allow_create:
+            if os.path.lexists(self.recovery_path):
+                raise RuntimeError("capture manifest is missing after recorded recovery")
+            try:
+                descriptor = _open_regular_file(
+                    self.path,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                    mode=0o600,
+                    label="capture manifest",
+                )
+                created = True
+            except FileExistsError:
+                descriptor = _open_regular_file(
+                    self.path,
+                    os.O_RDWR,
+                    label="capture manifest",
+                )
+        else:
+            descriptor = _open_regular_file(
+                self.path,
+                os.O_RDWR,
+                label="capture manifest",
+            )
+        self._manifest_seen = True
+        with os.fdopen(descriptor, "r+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            before = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if os.fstat(handle.fileno()).st_mode & 0o777 != 0o600:
+                os.fchmod(handle.fileno(), 0o600)
+            handle.seek(0)
+            raw = handle.read()
+            os.fsync(handle.fileno())
+            after = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if before[0:3] != after[0:3] or len(raw) != after[2]:
+                raise RuntimeError("capture manifest changed while validating")
+            recovery = self._refresh_recovery()
+            self._assert_append_only_lineage(after, raw, recovery)
+            self._parse_raw(raw)
+            self._set_validated_snapshot(after, raw)
+        if created:
+            fsync_directory(self.path.parent)
 
     def read_entries(self) -> Sequence[ManifestEntry]:
-        if not self.path.exists():
+        if not os.path.lexists(self.path):
+            if self._manifest_seen or os.path.lexists(self.recovery_path):
+                raise RuntimeError("capture manifest disappeared")
+            self.incomplete_trailing_records = 0
+            self._valid_prefix_bytes = 0
+            self._needs_line_separator = False
+            self._validated_signature = None
+            self._lineage_prefix_bytes = 0
+            self._validated_digest = None
+            self._validated_hasher = None
+            self._validated_raw_size_bytes = 0
+            self._validated_raw_digest = None
+            self._validated_tail_fingerprint = None
+            self._cached_entries = []
             return ()
-        entries = []
-        for line in self.path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        descriptor = _open_regular_file(
+            self.path,
+            os.O_RDONLY,
+            label="capture manifest",
+        )
+        self._manifest_seen = True
+        with os.fdopen(descriptor, "rb") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            before = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            recovery = self._refresh_recovery()
+            if before == self._validated_signature:
+                cached_after = manifest_signature(
+                    _assert_open_path_identity(
+                        self.path,
+                        handle.fileno(),
+                        label="capture manifest",
+                    )
+                )
+                if cached_after != before:
+                    raise RuntimeError("capture manifest changed while reading")
+                return tuple(self._cached_entries)
+            raw = handle.read()
+            after = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if before != after or len(raw) != after[2]:
+                raise RuntimeError("capture manifest changed while reading")
+        self._assert_append_only_lineage(after, raw, recovery)
+        self._parse_raw(raw)
+        self._set_validated_snapshot(after, raw)
+        return tuple(self._cached_entries)
+
+    def _parse_raw(self, raw: bytes) -> None:
+        self.incomplete_trailing_records = 0
+        self._valid_prefix_bytes = 0
+        self._needs_line_separator = False
+        self._cached_entries = []
+        if not raw:
+            return
+        has_unterminated_tail = not raw.endswith(b"\n")
+        lines = raw.split(b"\n")
+        if not has_unterminated_tail:
+            lines.pop()
+        entries: list[ManifestEntry] = []
+        self._valid_prefix_bytes = len(raw)
+        offset = 0
+        for index, line_bytes in enumerate(lines):
+            is_unterminated_final_line = has_unterminated_tail and index == len(lines) - 1
+            try:
+                line = line_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                if not is_unterminated_final_line or not recoverable_utf8_tail(line_bytes, exc):
+                    raise
+                self.incomplete_trailing_records = 1
+                self._valid_prefix_bytes = offset
+                break
             if not line.strip():
+                offset += len(line_bytes) + (0 if is_unterminated_final_line else 1)
                 continue
-            entries.append(entry_from_json(json.loads(line)))
-        return tuple(entries)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                if not is_unterminated_final_line or not recoverable_json_tail(line, exc):
+                    raise
+                self.incomplete_trailing_records = 1
+                self._valid_prefix_bytes = offset
+                break
+            entries.append(entry_from_json(payload))
+            offset += len(line_bytes) + (0 if is_unterminated_final_line else 1)
+        self._needs_line_separator = (
+            bool(raw)
+            and not raw.endswith(b"\n")
+            and not self.incomplete_trailing_records
+        )
+        self._cached_entries = entries
 
     def latest_by_event_key(self) -> Mapping[str, ManifestEntry]:
         latest = {}
@@ -123,9 +808,158 @@ class CaptureManifestStore:
             latest[frozenset(recording_ids)] = entry
         return latest
 
+    def recover_incomplete_tail(self) -> int:
+        if not self._manifest_seen:
+            self.ensure_exists()
+        descriptor = _open_regular_file(
+            self.path,
+            os.O_RDWR,
+            label="capture manifest",
+        )
+        self._manifest_seen = True
+        with os.fdopen(descriptor, "r+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            before = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            recovery = self._refresh_recovery()
+            handle.seek(0)
+            raw = handle.read()
+            stable_signature = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if before != stable_signature or len(raw) != stable_signature[2]:
+                raise RuntimeError("capture manifest changed while reading")
+            if stable_signature != self._validated_signature:
+                self._assert_append_only_lineage(stable_signature, raw, recovery)
+                self._parse_raw(raw)
+                self._set_validated_snapshot(stable_signature, raw)
+            if not self.incomplete_trailing_records:
+                return 0
+            valid_prefix = raw[: self._valid_prefix_bytes]
+            tail = raw[self._valid_prefix_bytes :]
+            (
+                self.recovered_trailing_records,
+                self.recovery_incident_sha256,
+            ) = record_capture_recovery(
+                self.recovery_path,
+                tail,
+                valid_prefix,
+            )
+            handle.seek(self._valid_prefix_bytes)
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+            after = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    handle.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if after[2] != len(valid_prefix):
+                raise RuntimeError("capture manifest changed while recovering")
+            self._parse_raw(valid_prefix)
+            self._set_validated_snapshot(after, valid_prefix)
+            return 1
+
     def append(self, entry: ManifestEntry) -> None:
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry.to_json_dict(), ensure_ascii=False, sort_keys=True) + "\n")
+        encoded = (json.dumps(entry.to_json_dict(), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        if not self._manifest_seen:
+            self.ensure_exists()
+        descriptor = _open_regular_file(
+            self.path,
+            os.O_RDWR,
+            label="capture manifest",
+        )
+        self._manifest_seen = True
+        with os.fdopen(descriptor, "r+b") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            _assert_open_path_identity(
+                self.path,
+                fh.fileno(),
+                label="capture manifest",
+            )
+            recovery = self._refresh_recovery()
+            current_stat = os.fstat(fh.fileno())
+            if current_stat.st_mode & 0o777 != 0o600:
+                os.fchmod(fh.fileno(), 0o600)
+                current_stat = os.fstat(fh.fileno())
+            signature = manifest_signature(current_stat)
+            if signature != self._validated_signature:
+                fh.seek(0)
+                raw = fh.read()
+                stable_signature = manifest_signature(
+                    _assert_open_path_identity(
+                        self.path,
+                        fh.fileno(),
+                        label="capture manifest",
+                    )
+                )
+                if signature != stable_signature or len(raw) != stable_signature[2]:
+                    raise RuntimeError("capture manifest changed while reading")
+                self._assert_append_only_lineage(stable_signature, raw, recovery)
+                self._parse_raw(raw)
+                self._set_validated_snapshot(stable_signature, raw)
+            if self._validated_hasher is None:
+                raise RuntimeError("capture manifest lineage is unavailable")
+            recovered_prefix: Optional[bytes] = None
+            if self.incomplete_trailing_records:
+                fh.seek(0)
+                valid_prefix = fh.read(self._valid_prefix_bytes)
+                recovered_prefix = valid_prefix
+                fh.seek(self._valid_prefix_bytes)
+                (
+                    self.recovered_trailing_records,
+                    self.recovery_incident_sha256,
+                ) = record_capture_recovery(
+                    self.recovery_path,
+                    fh.read(),
+                    valid_prefix,
+                )
+                fh.truncate(self._valid_prefix_bytes)
+            fh.seek(0, os.SEEK_END)
+            appended = b""
+            if self._needs_line_separator:
+                fh.write(b"\n")
+                appended += b"\n"
+            fh.write(encoded)
+            appended += encoded
+            fh.flush()
+            os.fsync(fh.fileno())
+            self.incomplete_trailing_records = 0
+            self._needs_line_separator = False
+            self._valid_prefix_bytes = fh.tell()
+            self._cached_entries.append(entry)
+            hasher = (
+                hashlib.sha256(recovered_prefix)
+                if recovered_prefix is not None
+                else self._validated_hasher.copy()
+            )
+            hasher.update(appended)
+            self._validated_hasher = hasher
+            self._validated_digest = hasher.digest()
+            self._lineage_prefix_bytes = self._valid_prefix_bytes
+            self._validated_raw_size_bytes = self._valid_prefix_bytes
+            self._validated_raw_digest = self._validated_digest
+            self._validated_tail_fingerprint = None
+            self._validated_signature = manifest_signature(
+                _assert_open_path_identity(
+                    self.path,
+                    fh.fileno(),
+                    label="capture manifest",
+                )
+            )
+            if self._validated_signature[2] != self._valid_prefix_bytes:
+                raise RuntimeError("capture manifest changed while appending")
 
 
 def stage_capture_events(
@@ -271,6 +1105,9 @@ def stage_capture_events(
         needs_review_multiple_recordings=counts["needs_review_multiple_recordings"],
         manifest_path=str(manifest_store.path),
         recordings_dir=str(recordings_dir),
+        incomplete_trailing_manifest_records=manifest_store.incomplete_trailing_records,
+        recovered_trailing_manifest_records=manifest_store.recovered_trailing_records,
+        recovery_incident_sha256=manifest_store.recovery_incident_sha256,
     )
 
 
@@ -352,6 +1189,15 @@ def manifest_entry_from_event(
 
 
 def entry_from_json(data: Mapping[str, Any]) -> ManifestEntry:
+    if not isinstance(data, Mapping):
+        raise ValueError("capture manifest entry must be a JSON object")
+    invalid_fields = [
+        key
+        for key in REQUIRED_MANIFEST_STRING_FIELDS
+        if not isinstance(data.get(key), str) or not str(data[key]).strip()
+    ]
+    if invalid_fields:
+        raise ValueError(f"capture manifest entry has invalid required fields: {','.join(invalid_fields)}")
     raw_recording_ids = data.get("recording_ids")
     recording_ids = raw_recording_ids if isinstance(raw_recording_ids, (list, tuple)) and raw_recording_ids else [data.get("recording_id")]
     raw_recording_paths = data.get("recording_paths")
@@ -441,6 +1287,9 @@ def audit_capture_manifest(manifest_path: Path, recordings_dir: Optional[Path] =
         "manifest_path": str(manifest_path),
         "recordings_dir": str(recordings_dir) if recordings_dir else None,
         "manifest_rows": len(entries),
+        "incomplete_trailing_records": store.incomplete_trailing_records,
+        "recovered_trailing_records": store.recovered_trailing_records,
+        "recovery_incident_sha256": store.recovery_incident_sha256,
         "latest_unique_events": len(latest_by_event),
         "status_counts": dict(sorted(status_counts.items())),
         "latest_status_counts": dict(sorted(latest_status_counts.items())),

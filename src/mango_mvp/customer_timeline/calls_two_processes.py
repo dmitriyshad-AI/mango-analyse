@@ -8,9 +8,11 @@ import re
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -31,10 +33,13 @@ from mango_mvp.customer_timeline.safety import (
 from mango_mvp.productization.capture_staging import (
     CaptureManifestStore,
     ManifestEntry,
+    acknowledge_capture_recovery,
+    capture_manifest_health,
     entry_recording_ids,
     event_recording_ids,
     manifest_assets_exist,
     merge_recording_ids,
+    atomic_write_private_json,
     stage_capture_events,
 )
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
@@ -239,8 +244,7 @@ def run_process_a(
     command_runner = command_runner or run_command
     capture_runner = capture_runner or capture_mango_window
     started = datetime.now(timezone.utc)
-    run_id = started.strftime("%Y%m%dT%H%M%SZ")
-    config.reports_dir.mkdir(parents=True, exist_ok=True)
+    run_id = new_calls_run_id(started)
     try:
         with process_lease(config.process_a_lock, stale_seconds=config.stale_lock_seconds) as lock_info:
             disk = disk_preflight(config)
@@ -349,21 +353,33 @@ def run_process_a(
             capture_incomplete = capture.get("status") == "partial"
             audio_incomplete = positive_int(metadata.get("incomplete_total", metadata.get("skipped_total"))) > 0
             if capture_incomplete or audio_incomplete:
-                drop = (
-                    publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers)))
-                    if bool(environment.get("codex_network_ok")) and config.working_db.exists()
-                    else {"status": "not_created"}
+                manifest_tail_incomplete = any(
+                    positive_int(value) > 0
+                    for value in (
+                        capture.get("incomplete_trailing_manifest_records"),
+                        capture.get("recovered_trailing_manifest_records"),
+                        metadata.get("incomplete_trailing_manifest_records"),
+                        metadata.get("recovered_trailing_manifest_records"),
+                    )
                 )
-                if not skip_capture:
+                if manifest_tail_incomplete:
+                    drop = {"status": "blocked", "reason": "capture_manifest_tail_incomplete"}
+                else:
+                    drop = (
+                        publish_ready_db_if_changed(config, db_counts, changed=bool(metadata["audio_files"] or (metadata["db_open_work"] and not skip_workers)))
+                        if bool(environment.get("codex_network_ok")) and config.working_db.exists()
+                        else {"status": "not_created"}
+                    )
+                if not skip_capture and not manifest_tail_incomplete:
                     # Failed captures remain in the manifest recovery queue, so
                     # advancing the API window cannot lose them.
                     write_cursor(config.cursor_path, window_until, capture)
-                return finalize_report(
+                report = finalize_report(
                     config,
                     run_id,
                     "process_a",
                     "partial",
-                    "capture_audio_incomplete",
+                    "capture_manifest_tail_incomplete" if manifest_tail_incomplete else "capture_audio_incomplete",
                     {
                         "disk": disk,
                         "environment": environment,
@@ -375,6 +391,27 @@ def run_process_a(
                         "lock": lock_info,
                     },
                 )
+                recovered_tail_count = max(
+                    positive_int(capture.get("recovered_trailing_manifest_records")),
+                    positive_int(metadata.get("recovered_trailing_manifest_records")),
+                )
+                if recovered_tail_count:
+                    incident_sha256_values = {
+                        str(value)
+                        for value in (
+                            capture.get("recovery_incident_sha256"),
+                            metadata.get("recovery_incident_sha256"),
+                        )
+                        if value
+                    }
+                    if len(incident_sha256_values) != 1:
+                        raise RuntimeError("capture recovery incident identity is missing or inconsistent")
+                    acknowledge_capture_recovery(
+                        config.capture_manifest,
+                        expected_count=recovered_tail_count,
+                        expected_incident_sha256=incident_sha256_values.pop(),
+                    )
+                return report
             if not bool(environment.get("codex_network_ok")):
                 if not skip_capture:
                     write_cursor(config.cursor_path, window_until, capture)
@@ -422,13 +459,21 @@ def run_process_a(
             {"lock": exc.metadata},
         )
     except Exception as exc:
+        failure_run_id = run_id
+        preserved_report = config.reports_dir / f"{run_id}_process_a.json"
+        diagnostic = dict(safe_exception_diagnostic(exc))
+        failure_counters: dict[str, Any] = {"diagnostic": diagnostic}
+        if os.path.lexists(preserved_report):
+            failure_run_id = new_calls_run_id(datetime.now(timezone.utc))
+            diagnostic["preserved_report_run_id"] = run_id
+            failure_counters["preserved_report"] = {"run_id": run_id}
         return finalize_report(
             config,
-            run_id,
+            failure_run_id,
             "process_a",
             "failed",
             f"process_a_exception:{type(exc).__name__}",
-            {"diagnostic": safe_exception_diagnostic(exc)},
+            failure_counters,
         )
 
 
@@ -439,7 +484,7 @@ def _run_process_b(
     import_runner: ImportRunner = run_timeline_import_cli,
 ) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
-    run_id = started.strftime("%Y%m%dT%H%M%SZ")
+    run_id = new_calls_run_id(started)
     producer_runner = producer_runner or run_increment_producer
     config.ingest_dir.mkdir(parents=True, exist_ok=True)
     if not config.ready_db.exists():
@@ -567,7 +612,7 @@ def run_process_b(
     import_runner: ImportRunner = run_timeline_import_cli,
 ) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
-    run_id = started.strftime("%Y%m%dT%H%M%SZ")
+    run_id = new_calls_run_id(started)
     try:
         config.validate()
     except Exception as exc:  # noqa: BLE001 - normalized fail-loud boundary
@@ -735,6 +780,10 @@ def capture_mango_window(
     tenant = TenantRef(config.tenant_id)
     rows: list[Mapping[str, Any]] = []
     manifest_store = CaptureManifestStore(config.capture_manifest)
+    if not os.path.lexists(config.capture_manifest) and capture_runtime_has_prior_state(config):
+        raise RuntimeError("capture manifest is missing for an existing runtime")
+    manifest_store.ensure_exists()
+    manifest_store.recover_incomplete_tail()
     latest_manifest = manifest_store.latest_by_event_key()
     pending_entries = [entry for entry in latest_manifest.values() if entry.status == "skipped_no_recording"]
     pending_keys = {entry.event_key for entry in pending_entries}
@@ -804,9 +853,21 @@ def capture_mango_window(
         if entry is not None and entry.status == "skipped_no_recording":
             manifest_store.append(replace(entry, created_at=until.isoformat(), status="recording_retry_expired", error="recording_missing_after_retry_ttl"))
             pending_expired += 1
-    remaining_pending = {key for key, entry in manifest_store.latest_by_event_key().items() if entry.status == "skipped_no_recording"}
-    open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in manifest_store.latest_by_event_key().values())
-    complete = summary.failed == 0 and summary.skipped_no_recording == 0 and not remaining_pending and pending_expired == 0 and open_multi_review == 0
+    final_latest = manifest_store.latest_by_event_key()
+    remaining_pending = {key for key, entry in final_latest.items() if entry.status == "skipped_no_recording"}
+    open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in final_latest.values())
+    incomplete_tail = manifest_store.incomplete_trailing_records
+    recovered_tail = manifest_store.recovered_trailing_records
+    recovery_incident_sha256 = manifest_store.recovery_incident_sha256
+    complete = (
+        summary.failed == 0
+        and summary.skipped_no_recording == 0
+        and not remaining_pending
+        and pending_expired == 0
+        and open_multi_review == 0
+        and incomplete_tail == 0
+        and recovered_tail == 0
+    )
     status = "ok" if complete else "partial"
     return {
         "status": status,
@@ -821,7 +882,87 @@ def capture_mango_window(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
         **summary.to_json_dict(),
+        "incomplete_trailing_manifest_records": incomplete_tail,
+        "recovered_trailing_manifest_records": recovered_tail,
+        "recovery_incident_sha256": recovery_incident_sha256,
     }
+
+
+def capture_runtime_has_prior_state(config: CallsTwoProcessesConfig) -> bool:
+    if os.path.lexists(config.cursor_path):
+        return True
+    prior_status = read_regular_json_marker(config.process_a_status_path)
+    if prior_status is None:
+        return True
+    if prior_status.get("checked_through") or prior_status.get("stop_reason") in {
+        "capture_audio_incomplete",
+        "capture_manifest_tail_incomplete",
+    }:
+        return True
+    if not os.path.lexists(config.recordings_dir):
+        return False
+    if not config.recordings_dir.is_dir() or config.recordings_dir.is_symlink():
+        return True
+    try:
+        return next(config.recordings_dir.iterdir(), None) is not None
+    except OSError:
+        return True
+
+
+def read_regular_json_marker(path: Path) -> Optional[Mapping[str, Any]]:
+    def stable_identity(descriptor: int) -> Optional[tuple[int, int, int, int, int]]:
+        descriptor_stat = os.fstat(descriptor)
+        path_stat = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(descriptor_stat.st_mode)
+            or descriptor_stat.st_nlink < 1
+            or not stat.S_ISREG(path_stat.st_mode)
+            or path_stat.st_dev != descriptor_stat.st_dev
+            or path_stat.st_ino != descriptor_stat.st_ino
+        ):
+            return None
+        return (
+            descriptor_stat.st_dev,
+            descriptor_stat.st_ino,
+            descriptor_stat.st_size,
+            descriptor_stat.st_mtime_ns,
+            descriptor_stat.st_ctime_ns,
+        )
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None if os.path.lexists(path) else {}
+    except OSError:
+        return None
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = -1
+            before = stable_identity(handle.fileno())
+            if before is None:
+                return None
+            text = handle.read()
+            after = stable_identity(handle.fileno())
+            if after != before:
+                return None
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not text.strip():
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
 def missing_capture_recovery_events(config: CallsTwoProcessesConfig) -> tuple[TelephonyCallEvent, ...]:
@@ -863,7 +1004,8 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
     skipped: dict[str, int] = {}
     stable_before = datetime.now(timezone.utc) - timedelta(hours=max(1, config.pending_recording_retry_hours))
     ingested_call_ids = read_ingested_call_ids(config.working_db)
-    latest = CaptureManifestStore(config.capture_manifest).latest_by_event_key() if config.capture_manifest.exists() else {}
+    manifest_store = CaptureManifestStore(config.capture_manifest)
+    latest = manifest_store.latest_by_event_key() if config.capture_manifest.exists() else {}
     for entry in sorted(latest.values(), key=lambda item: (item.started_at, item.event_key)):
         if entry.status != "downloaded" or not entry.local_audio_path:
             continue
@@ -913,7 +1055,14 @@ def prepare_ingest_inputs(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
         "metadata_rows": len(rows),
         "skipped": skipped,
         "skipped_total": sum(skipped.values()),
-        "incomplete_total": sum(count for reason, count in skipped.items() if reason != "already_ingested"),
+        "incomplete_total": (
+            sum(count for reason, count in skipped.items() if reason != "already_ingested")
+            + manifest_store.incomplete_trailing_records
+            + manifest_store.recovered_trailing_records
+        ),
+        "incomplete_trailing_manifest_records": manifest_store.incomplete_trailing_records,
+        "recovered_trailing_manifest_records": manifest_store.recovered_trailing_records,
+        "recovery_incident_sha256": manifest_store.recovery_incident_sha256,
     }
 
 
@@ -1592,11 +1741,21 @@ def finalize_report(
             "runs_sync": False,
         },
     }
-    report["downstream_ready"] = bool(process == "process_a" and status in {"ok", "partial"} and isinstance(counters.get("drop"), Mapping) and counters["drop"].get("status") == "ready")
-    config.reports_dir.mkdir(parents=True, exist_ok=True)
+    report["downstream_ready"] = bool(
+        process == "process_a"
+        and status in {"ok", "partial"}
+        and isinstance(counters.get("drop"), Mapping)
+        and counters["drop"].get("status") == "ready"
+    )
     local_path = config.reports_dir / f"{run_id}_{process}.json"
-    write_json(local_path, report)
-    write_stage_status(config, report)
+    if status in {"failed", "partial"}:
+        write_stage_status(config, report)
+        config.reports_dir.mkdir(parents=True, exist_ok=True)
+        write_json(local_path, report)
+    else:
+        config.reports_dir.mkdir(parents=True, exist_ok=True)
+        write_json(local_path, report)
+        write_stage_status(config, report)
     report["report_path"] = str(local_path)
     if config.foton_daily_dir is not None:
         daily_payload = safe_daily_payload(report)
@@ -1734,6 +1893,10 @@ def pipeline_freshness(
 ) -> Mapping[str, Any]:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     threshold = config.freshness_max_age_minutes * 60
+    capture_health = capture_manifest_health(config.capture_manifest)
+    tail_status = str(capture_health["tail_status"])
+    recovery_status = str(capture_health["recovery_status"])
+    recovery_unresolved_count = positive_int(capture_health["recovery_unresolved_count"])
     stages: dict[str, Any] = {}
     for process, path in (
         ("process_a", config.process_a_status_path),
@@ -1747,8 +1910,24 @@ def pipeline_freshness(
         checked_age = max(0.0, (current - checked).total_seconds()) if checked else None
         data_age = max(0.0, (current - data_at).total_seconds()) if data_at else None
         status = "missing" if data_at is None else "stale" if data_age > threshold else "fresh"
+        stage_stop_reason = state.get("stop_reason")
         if state.get("status") == "failed":
             status = "failed"
+        elif process == "process_a" and (tail_status == "invalid" or recovery_status == "invalid"):
+            status = "failed"
+            stage_stop_reason = (
+                "capture_manifest_tail_invalid"
+                if tail_status == "invalid"
+                else "capture_recovery_ledger_invalid"
+            )
+        elif process == "process_a" and (tail_status == "incomplete" or recovery_unresolved_count):
+            status = "partial"
+            stage_stop_reason = "capture_manifest_tail_incomplete"
+        elif process == "process_a" and tail_status == "missing":
+            status = "missing"
+            stage_stop_reason = "capture_manifest_missing"
+        elif state.get("status") == "partial":
+            status = "partial"
         elif state.get("stop_reason") == "drop_missing":
             status = "missing"
         stages[process] = {
@@ -1758,8 +1937,12 @@ def pipeline_freshness(
             "checked_through": raw_checked,
             "data_through": raw_data,
             "last_run_status": state.get("status"),
-            "stop_reason": state.get("stop_reason"),
+            "stop_reason": stage_stop_reason,
         }
+        if process == "process_a":
+            stages[process]["capture_manifest_tail_status"] = tail_status
+            stages[process]["capture_recovery_status"] = recovery_status
+            stages[process]["capture_recovery_unresolved_count"] = recovery_unresolved_count
     ok = all(item["status"] == "fresh" for item in stages.values())
     return {"schema_version": "mango_calls_freshness_v1", "status": "fresh" if ok else "stale", "stages": stages}
 
@@ -1836,6 +2019,10 @@ def positive_int(value: Any) -> int:
         return 0
 
 
+def new_calls_run_id(started: datetime) -> str:
+    return f"{started.strftime('%Y%m%dT%H%M%S%fZ')}-u{uuid.uuid4().hex[:12]}"
+
+
 def parse_json_object(text: str) -> Mapping[str, Any]:
     try:
         value = json.loads(text) if text.strip() else {}
@@ -1852,6 +2039,4 @@ def read_json(path: Path) -> Mapping[str, Any]:
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp.replace(path)
+    atomic_write_private_json(path, payload, indent=2)

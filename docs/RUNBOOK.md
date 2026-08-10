@@ -156,8 +156,8 @@ tail -100 product_data/mango_calls_two_processes/logs/process-b.stderr.log
 
 ```bash
 python3 scripts/install_mango_calls_two_processes_service.py \
-  --config /Users/dmitrijfabarisov/.mango_local/mango_calls_two_processes/config.json \
-  --env-file /Users/dmitrijfabarisov/.mango_secrets/mango_office.env \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --env-file "$HOME/.mango_secrets/mango_office.env" \
   --process-a-interval-seconds 1800 \
   --install
 ```

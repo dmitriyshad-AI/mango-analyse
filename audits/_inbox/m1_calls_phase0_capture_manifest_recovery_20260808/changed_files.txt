@@ -1,0 +1,16 @@
+M src/mango_mvp/customer_timeline/calls_two_processes.py
+M src/mango_mvp/productization/capture_staging.py
+M tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md
+M tests/test_mango_calls_m1_bootstrap.py
+M tests/test_mango_calls_two_processes.py
+M tests/test_productization_capture_staging.py
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/README.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/TEST_EVIDENCE.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/backward_compatibility.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/changed_files.txt
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/git_context.txt
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/implementation_notes.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/manifest.json
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/risk_review.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/semantic_review.md
+A audits/_inbox/m1_calls_phase0_capture_manifest_recovery_20260808/test_output.txt

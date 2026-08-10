@@ -1,0 +1,20 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_productization_capture_staging.py tests/test_mango_calls_two_processes.py
+147 passed in 5.74s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_mango_calls_*.py tests/test_productization_capture_staging.py
+227 passed in 27.28s
+
+Exact test command from active task
+297 passed in 26.44s
+
+python3 scripts/skills/tz_lint.py tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md
+PASS
+
+python3 scripts/preflight.py --root . --tz tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md
+PREFLIGHT: OK
+
+git diff --check
+OK
+
+Real Mango API / ASR / Resolve / Analyze / launchd / cutover / stable_runtime
+NOT RUN

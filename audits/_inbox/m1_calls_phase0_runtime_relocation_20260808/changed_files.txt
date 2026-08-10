@@ -1,0 +1,11 @@
+docs/M1_MANGO_CALLS_SPLIT_CUTOVER_RUNBOOK.md
+docs/RUNBOOK.md
+docs/THREAT_MODEL.md
+docs/m1_calls_handoff_20260801/M1_CODEX_PROMPT.md
+docs/m1_calls_handoff_20260801/README.md
+docs/m1_calls_handoff_20260801/mango_calls_m1_worker.env.example
+scripts/bootstrap_m1_mango_calls.sh
+scripts/relocate_mango_calls_pipeline.py
+tasks/_running/2026-08-07_TZ_m1_calls_runtime_readiness.md
+tests/test_mango_calls_m1_bootstrap.py
+tests/test_relocate_mango_calls_pipeline.py

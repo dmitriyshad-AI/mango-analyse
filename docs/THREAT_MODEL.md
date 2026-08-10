@@ -490,3 +490,56 @@ Readback mismatch после live writeback является blocker даже е
 - `tests/test_crm_text_quality_detector.py`;
 - Stage51 evidence: `stable_runtime/amo_live_stage51_20260512_v1/readback_after_live/summary.json`;
 - Stage51 repair pack: `audits/_inbox/amo_stage51_summary_repair_preflight_20260512_v1/`.
+
+## Mango Calls Runtime Relocation Addendum (2026-08-08)
+
+### Symlink Escape During Runtime Relocation
+
+Relocation работает только с остановленной проверенной копией runtime внутри
+`$HOME/.mango_local`. Символическая ссылка или специальный файл в переносимом
+дереве, source inventory, каталоге состояния, lock-файле или staged artifact
+может увести чтение, `chmod` либо atomic replace за разрешённую границу.
+
+Защита обязательна до первой записи:
+
+- отклонять все symlink и special entries в полном source/target inventory;
+- открывать файлы с `O_NOFOLLOW`, сверять `lstat` с `fstat` и тип inode;
+- держать durable state и staging в owner-only каталоге вне переносимого дерева,
+  закреплять каталоги открытыми дескрипторами и выполнять state-записи,
+  временные файлы и rename относительно этих дескрипторов;
+- хранить и читать полные inventory только под реальным `$HOME/.mango_local`,
+  вне Git, cloud-sync каталогов и символических ссылок;
+- для lock-файла требовать обычный файл владельца с одной ссылкой;
+- перед `fchmod` сверять число внутренних hardlink-алиасов; внешний alias
+  означает STOP до изменения inode, а допустимые внутренние hardlink остаются;
+- повторно сверять inventory и метаданные каталогов, чтобы изменение дерева во
+  время обхода завершалось STOP;
+- не выполнять слепую замену строк в SQLite: разрешены только известные поля
+  manifest и `call_records.source_file` в обеих базах;
+- до первого durable plan принимать управляемые пути только под `old_root`:
+  заранее смешанные `old_root/new_root` означают STOP, а частично заменённые
+  артефакты допустимы только при resume по совпадающему plan;
+- после SQLite-триггеров сверять полный ожидаемый вектор
+  `(call_records.id, source_file)` в staged и опубликованных working/ready DB;
+- строить staged SQLite только внутри закреплённого локального staging, не
+  доверять `TMPDIR` и не создавать полную временную БД в Git, Яндекс.Диске или
+  другом cloud-sync каталоге.
+
+Активно вредоносный процесс того же UID способен управлять самим аккаунтом и
+не входит в эту границу доверия. Поэтому relocation требует остановленного
+runtime и свободных process locks; детерминированные подмены между фазами при
+этом обязаны завершаться STOP без записи за локальную границу.
+
+### Test Reference
+
+- `tests/test_relocate_mango_calls_pipeline.py`:
+  `test_symlink_and_special_tree_entries_fail_before_write`,
+  `test_relocation_lock_symlink_cannot_escape_owner_only_state`,
+  `test_state_directory_swap_after_open_cannot_redirect_writes`,
+  `test_hardlink_swap_before_permission_repair_never_chmods_external_inode`,
+  `test_permission_repair_preserves_supported_internal_hardlinks`,
+  `test_first_plan_rejects_any_path_already_below_new_root`,
+  `test_sqlite_cross_row_trigger_cannot_escape_full_path_vector`,
+  `test_sqlite_staging_ignores_cloud_directed_tmpdir`,
+  `test_inventory_rejects_a_directory_changed_after_scandir`;
+- implementation: `scripts/relocate_mango_calls_pipeline.py`.

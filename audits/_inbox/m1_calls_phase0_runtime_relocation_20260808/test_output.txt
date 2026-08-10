@@ -1,0 +1,20 @@
+Focused relocation/bootstrap suite:
+72 passed
+
+Full Calls task suite:
+358 passed
+
+tz_lint:
+PASS
+
+preflight:
+PREFLIGHT: OK
+
+zsh syntax:
+PASS
+
+git diff checks:
+clean
+
+Live operations:
+NOT_RUN

@@ -1,0 +1,83 @@
+{
+  "schema_version": "m1_calls_controlled_one_isolation_audit_v1",
+  "created_at": "2026-08-11T21:34:34Z",
+  "status": "controlled_one_code_go_runtime_stop",
+  "base_sha": "a81edeab2b5b8b448d09cade252945fa517ecf7d",
+  "code_sha": "0027677eba2539968ce6e8183ed5413a9f3de07a",
+  "tree_sha": "dc6d53f170db97041ce86f7874f3a4af6cd6835a",
+  "branch": "codex/m1-calls-service-fast-value-20260811",
+  "formal_pass": true,
+  "semantic_pass": true,
+  "business_pass": false,
+  "business_verdict": "no_real_call_or_human_review",
+  "data_pass": "synthetic_only",
+  "runtime_pass": false,
+  "runtime_verdict": "stop_until_owner_authorizes_one_real_call",
+  "tests": {
+    "calls_profile_passed": 746,
+    "calls_profile_warnings": 42,
+    "controlled_regression_passed": 413,
+    "controlled_regression_subtests_passed": 10,
+    "controlled_file_passed": 48,
+    "py_compile": "pass",
+    "python_312_ast": "pass",
+    "diff_check": "pass"
+  },
+  "graphify": {
+    "revision": "0027677eba2539968ce6e8183ed5413a9f3de07a",
+    "nodes": 7227,
+    "edges": 29092,
+    "reproducible": true,
+    "graph_sha256": "5bd24d4f78211b237c8b36d169afcc2e7ba12785b56b0c75d7f5b96fca28dd09",
+    "report_sha256": "ece469d685f11d3fe28e39d2d0b1e2b2f66c241874161fc2b822d11b90aff760",
+    "structural_manifest_sha256": "ced00f98fd676d4ec2f3618f7c0c6fa5847825d7b76eadb9be664df626c4122a",
+    "summary_sha256": "c4e951e44c855a9e30735fd6bdae112e866f99f53f5f216b517969959b311b16"
+  },
+  "audits": {
+    "codex_architect": "go",
+    "codex_breaker": "go",
+    "codex_business": "go_code_business_stop",
+    "codex_cleaner": "go_with_p2",
+    "codex_optimizer": "go",
+    "claude_opus_5": "go_code_pilot_stop",
+    "claude_fable_5": "go_code_business_stop",
+    "claude_sonnet_5": "go_with_same_uid_backlog"
+  },
+  "operations": {
+    "real_mango_capture": false,
+    "real_asr": false,
+    "real_resolve_analyze": false,
+    "launchd": false,
+    "calls_cutover": false,
+    "stable_runtime_write": false,
+    "amo_write": false,
+    "tallanto_write": false,
+    "crm_write": false,
+    "wappi_write": false,
+    "google_write": false,
+    "yandex_disk_business_write": false,
+    "customer_message": false,
+    "historical_audio_transfer": false,
+    "main_merge": false
+  },
+  "files_written_before_manifest": [
+    "README.md",
+    "implementation_notes.md",
+    "changed_files.txt",
+    "tests.md",
+    "test_output.txt",
+    "codex_audits.md",
+    "claude_audits.md",
+    "graphify.md",
+    "risk_review.md",
+    "semantic_review.md",
+    "backward_compatibility.md",
+    "self_declaration.md"
+  ],
+  "pii_redaction": [
+    "no_real_call_text",
+    "no_phone",
+    "no_email",
+    "no_secret"
+  ]
+}

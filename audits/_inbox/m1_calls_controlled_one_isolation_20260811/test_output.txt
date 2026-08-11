@@ -1,0 +1,20 @@
+CODE SHA: 0027677eba2539968ce6e8183ed5413a9f3de07a
+
+Calls profile:
+746 passed, 42 warnings in 45.24s
+
+Controlled/regression profile:
+413 passed, 425 warnings, 10 subtests passed in 24.32s
+
+Controlled-one file:
+48 passed
+
+Final cleanup negative controls:
+4 passed in 2.23s
+
+Syntax/diff:
+python3 -m py_compile: PASS
+Python 3.12 AST: PASS
+git diff --check: PASS
+
+Real Mango/API/audio/model/external operations: NOT RUN

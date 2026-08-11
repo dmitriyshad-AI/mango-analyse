@@ -5,16 +5,18 @@ import json
 import os
 import re
 import sqlite3
-import stat
 import subprocess
 from collections import Counter
-from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from mango_mvp.productization.capture_staging import atomic_write_private_json
+from mango_mvp.productization.owner_only_io import (
+    read_stable_regular_bytes,
+    stable_regular_file_evidence,
+)
 
 
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -233,98 +235,8 @@ def validate_quarantine_items_payload(
     return []
 
 
-def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
-    return (
-        value.st_dev,
-        value.st_ino,
-        value.st_mode,
-        value.st_nlink,
-        value.st_size,
-        value.st_mtime_ns,
-    )
-
-
-@contextmanager
-def _stable_regular_descriptor(
-    path: Path,
-    *,
-    label: str,
-    owner_only_mode: Optional[int] = None,
-) -> Iterable[int]:
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise RuntimeError(f"{label}_unsafe_or_missing") from exc
-    try:
-        opened = os.fstat(descriptor)
-        current = os.lstat(path)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or not stat.S_ISREG(current.st_mode)
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
-        ):
-            raise RuntimeError(f"{label}_must_be_regular_nofollow")
-        if owner_only_mode is not None and (
-            opened.st_uid != os.getuid()
-            or stat.S_IMODE(opened.st_mode) != owner_only_mode
-        ):
-            raise RuntimeError(f"{label}_must_be_owner_only_{owner_only_mode:04o}")
-        yield descriptor
-        after = os.fstat(descriptor)
-        current_after = os.lstat(path)
-        if (
-            _file_identity(opened) != _file_identity(after)
-            or (after.st_dev, after.st_ino)
-            != (current_after.st_dev, current_after.st_ino)
-            or not stat.S_ISREG(current_after.st_mode)
-        ):
-            raise RuntimeError(f"{label}_changed_while_reading")
-    finally:
-        os.close(descriptor)
-
-
-def read_stable_regular_bytes(
-    path: Path,
-    *,
-    label: str,
-    owner_only_mode: Optional[int] = None,
-) -> bytes:
-    chunks: list[bytes] = []
-    with _stable_regular_descriptor(
-        path, label=label, owner_only_mode=owner_only_mode
-    ) as descriptor:
-        while chunk := os.read(descriptor, 1024 * 1024):
-            chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def sha256_file(path: Path) -> str:
     return str(stable_regular_file_evidence(path)["sha256"])
-
-
-def stable_regular_file_evidence(
-    path: Path, *, label: str = "sha256_source"
-) -> Mapping[str, Any]:
-    digest = hashlib.sha256()
-    size_bytes = 0
-    with _stable_regular_descriptor(path, label=label) as descriptor:
-        opened = os.fstat(descriptor)
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    return {
-        "sha256": digest.hexdigest(),
-        "size_bytes": size_bytes,
-        "device": opened.st_dev,
-        "inode": opened.st_ino,
-        "mtime_ns": opened.st_mtime_ns,
-    }
 
 
 def _safe_git_environment() -> Mapping[str, str]:
@@ -887,7 +799,7 @@ def _json_object(value: Any) -> Mapping[str, Any]:
     return parsed if isinstance(parsed, Mapping) else {}
 
 
-def _has_dual_asr_or_exception(
+def has_dual_asr_or_exception(
     row: Mapping[str, Any], *, now: Optional[datetime] = None
 ) -> bool:
     variants = _json_object(row.get("transcript_variants_json"))
@@ -933,7 +845,7 @@ def ready_row_is_complete(
 ) -> bool:
     return bool(
         str(row.get("transcription_status") or "") == "done"
-        and _has_dual_asr_or_exception(row, now=now)
+        and has_dual_asr_or_exception(row, now=now)
         and str(row.get("resolve_status") or "") in {"done", "skipped"}
         and str(row.get("analysis_status") or "") == "done"
         and _json_object(row.get("analysis_json"))
@@ -1179,7 +1091,7 @@ def build_stage10_verdict(
     active_ready_rows = [row for key, row in ready.items() if key in active_db_keys]
     ready_without_dual = sum(
         str(row.get("transcription_status") or "") != "done"
-        or not _has_dual_asr_or_exception(row, now=current)
+        or not has_dual_asr_or_exception(row, now=current)
         for row in active_ready_rows
     )
     ready_without_resolve = sum(

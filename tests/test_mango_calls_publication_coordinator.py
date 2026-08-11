@@ -81,6 +81,35 @@ def test_daily_status_always_writes_honest_incomplete_status(
     )
 
 
+def test_closed_verdict_cannot_hide_incomplete_export_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        coordinator, "_ready_manifest", lambda *_args: _manifest(closed=True)
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_daily_export",
+        lambda *_args, **_kwargs: {
+            "package_status": "INCOMPLETE_DO_NOT_USE_AS_FINAL",
+            "closure_ok": False,
+            "ready_rows": 0,
+            "reused": False,
+        },
+    )
+
+    close = coordinator.run(config_path, "daily-close", day=DAY)
+    status = coordinator.run(config_path, "daily-status", day=DAY)
+
+    assert close["status"] == "incomplete"
+    assert close["target_status"] == "incomplete"
+    assert close["attempts"][0]["closure_ok"] is False
+    assert status["status"] == "incomplete"
+    assert status["closure_ok"] is False
+    assert status["package_status"] == "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+
+
 def test_daily_status_records_export_failure_without_leaking_exception_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,7 +191,11 @@ def test_daily_close_retries_closed_days_from_the_previous_72_hours(
         assert sealed_only is True
         assert expected_ready_manifest_sha256 is None
         exported.append(day)
-        return {"package_status": "FINAL", "reused": False}
+        return {
+            "package_status": "FINAL_CLOSED",
+            "closure_ok": True,
+            "reused": False,
+        }
 
     monkeypatch.setattr(coordinator, "_daily_export", export)
 
@@ -192,7 +225,11 @@ def test_daily_close_keeps_the_full_72_hour_boundary_reachable(
         "_daily_export",
         lambda _config, _root, candidate, *, sealed_only, **_kwargs: (
             exported.append(candidate)
-            or {"package_status": "FINAL", "reused": False}
+            or {
+                "package_status": "FINAL_CLOSED",
+                "closure_ok": True,
+                "reused": False,
+            }
         ),
     )
 
@@ -219,7 +256,11 @@ def test_daily_close_processes_three_missed_days_in_order(
         "_daily_export",
         lambda _config, _root, candidate, *, sealed_only, **_kwargs: (
             exported.append(candidate)
-            or {"package_status": "FINAL", "reused": False}
+            or {
+                "package_status": "FINAL_CLOSED",
+                "closure_ok": True,
+                "reused": False,
+            }
         ),
     )
 
@@ -254,7 +295,11 @@ def test_daily_close_cannot_hide_failed_catch_up_behind_closed_target(
         assert expected_ready_manifest_sha256 is None
         if candidate == older:
             raise RuntimeError("synthetic old-day export failure")
-        return {"package_status": "FINAL_CLOSED", "reused": False}
+        return {
+            "package_status": "FINAL_CLOSED",
+            "closure_ok": True,
+            "reused": False,
+        }
 
     monkeypatch.setattr(coordinator, "_daily_export", export)
 

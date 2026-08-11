@@ -17,8 +17,15 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.customer_timeline.calls_two_processes import (  # noqa: E402
+    CallsTwoProcessesConfig,
+)
 
 from scripts.receive_mango_calls_drop import (  # noqa: E402
     CONFIRMATION as RECEIVER_CONFIRMATION,
@@ -192,6 +199,13 @@ def pull_then_process_b(*, remote_host: str, remote_drop_root: str, incoming_roo
             pipeline_root=pipeline_root, execute=False, confirmation=confirmation,
             identity_file=identity_file, known_hosts=known_hosts, runner=transfer_runner,
         )
+    parsed_config = CallsTwoProcessesConfig.from_json(config)
+    configured_pipeline = parsed_config.pipeline_root.expanduser().resolve(
+        strict=False
+    )
+    requested_pipeline = pipeline_root.expanduser().resolve(strict=False)
+    if requested_pipeline != configured_pipeline:
+        raise RuntimeError("pull pipeline_root does not match runtime config")
     with handoff_lock(pipeline_root):
         transfer = pull_drop(
             remote_host=remote_host, remote_drop_root=remote_drop_root, incoming_root=incoming_root,

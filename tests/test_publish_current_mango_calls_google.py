@@ -407,7 +407,8 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
                 id INTEGER, source_call_id TEXT, started_at TEXT, manager_name TEXT,
                 phone TEXT, direction TEXT, duration_sec REAL,
                 transcription_status TEXT, resolve_status TEXT, analysis_status TEXT,
-                analysis_json TEXT, transcript_text TEXT, source_file TEXT
+                analysis_json TEXT, transcript_variants_json TEXT,
+                transcript_text TEXT, source_file TEXT
             )
             """
         )
@@ -435,7 +436,7 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
             else {}
         )
         con.execute(
-            "INSERT INTO call_records VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO call_records VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "call-1",
                 "2026-08-11T09:00:00+00:00",
@@ -447,6 +448,21 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
                 "done",
                 "done" if analyzed else "pending",
                 json.dumps(analysis, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "primary_provider": "mlx",
+                        "secondary_provider": "gigaam",
+                        "manager": {
+                            "variant_a": "Здравствуйте",
+                            "variant_b": "Здравствуйте",
+                        },
+                        "client": {
+                            "variant_a": "Нужен курс",
+                            "variant_b": "Нужен курс",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
                 "СЕКРЕТНЫЙ ПОЛНЫЙ ДИАЛОГ",
                 "/Users/private/call.mp3",
             ),
@@ -670,6 +686,57 @@ def test_projection_uses_real_analyze_schema_without_list_repr(tmp_path: Path) -
     assert "текущей схемой Analyze" not in str(row["Причина проверки"])
 
 
+def test_missing_second_asr_is_explicitly_marked_for_review(tmp_path: Path) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    with sqlite3.connect(db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=?",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": sha256_file(db), "size_bytes": db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    row = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )[0]
+
+    assert row["Нужна проверка"] == "Да"
+    assert "Вторая расшифровка GigaAM не готова" in str(row["Причина проверки"])
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    plan = publisher.build_safe_plan(
+        day=date(2026, 8, 11),
+        rows=[row],
+        ready_manifest=manifest_payload,
+        now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+    )
+    summary = publisher._summary_rows(
+        [row],
+        {
+            **plan["stage10_counts"],
+            "consistency_ok": plan["consistency_ok"],
+            "closure_ok": plan["closure_ok"],
+        },
+    )
+
+    assert plan["stage10_counts"]["processing_ready_unique"] == 0
+    assert plan["row_completion_ok"] is False
+    assert plan["closure_ok"] is False
+    assert ["Полностью готово", 0] in summary
+    assert ["День закрыт", "Нет"] in summary
+
+
 def test_v2_non_conversation_has_deterministic_result(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=True)
 
@@ -845,7 +912,9 @@ def test_safe_plan_validator_rejects_rows_removed_after_build(
     )
     plan["rows"] = []
 
-    with pytest.raises(RuntimeError, match="rows do not match Stage10"):
+    with pytest.raises(
+        RuntimeError, match="row completion state|rows do not match Stage10"
+    ):
         publisher.validate_safe_plan_payload(
             plan,
             expected_day=date(2026, 8, 11),

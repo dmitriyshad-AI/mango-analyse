@@ -3007,6 +3007,8 @@ def test_launchd_installer_defaults_to_near_realtime_900_seconds(tmp_path: Path)
                 "codex_binary": str(config.codex_binary),
                 "codex_home_root": str(config.codex_home_root),
                 "poll_overlap_minutes": 30,
+                "require_cutover_authority": False,
+                "strict_ready_provenance": False,
             }
         ),
         encoding="utf-8",

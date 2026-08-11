@@ -6,8 +6,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.productization.mango_calls_service_contract import (
     EXTERNAL_WATCHDOG_SCHEMA,
+    load_owner_only_json,
     validate_external_watchdog_observation,
 )
 
@@ -53,6 +56,30 @@ def validate(payload: object) -> dict[str, object]:
             now=NOW,
         )
     )
+
+
+def cli_command(source: Path) -> list[str]:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "check_mango_calls_external_watchdog.py"
+    )
+    return [
+        sys.executable,
+        str(script),
+        "--observation",
+        str(source),
+        "--expected-active-host-id",
+        "m1-host",
+        "--expected-previous-host-id",
+        PREVIOUS_HOST_ID,
+        "--expected-code-sha",
+        CODE_SHA,
+        "--expected-cutover-manifest-sha256",
+        CUTOVER_SHA,
+        "--expected-previous-host-snapshot-sha256",
+        SNAPSHOT_SHA,
+    ]
 
 
 def test_external_watchdog_green_observation_is_safe_and_read_only() -> None:
@@ -147,31 +174,14 @@ def test_external_watchdog_cli_requires_owner_only_bound_observation(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "observation.json"
-    source.write_text(json.dumps(observation()), encoding="utf-8")
+    payload = observation()
+    current = datetime.now(timezone.utc)
+    payload["observed_at_utc"] = current.isoformat()
+    assert isinstance(payload["m1"], dict)
+    payload["m1"]["heartbeat_at"] = current.isoformat()
+    source.write_text(json.dumps(payload), encoding="utf-8")
     source.chmod(0o600)
-    script = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "check_mango_calls_external_watchdog.py"
-    )
-    command = [
-        sys.executable,
-        str(script),
-        "--observation",
-        str(source),
-        "--expected-active-host-id",
-        "m1-host",
-        "--expected-previous-host-id",
-        PREVIOUS_HOST_ID,
-        "--expected-code-sha",
-        CODE_SHA,
-        "--expected-cutover-manifest-sha256",
-        CUTOVER_SHA,
-        "--expected-previous-host-snapshot-sha256",
-        SNAPSHOT_SHA,
-        "--now",
-        NOW.isoformat(),
-    ]
+    command = cli_command(source)
 
     accepted = subprocess.run(command, text=True, capture_output=True)
     assert accepted.returncode == 0
@@ -183,3 +193,54 @@ def test_external_watchdog_cli_requires_owner_only_bound_observation(
     payload = json.loads(rejected.stdout)
     assert payload["status"] == "alert"
     assert payload["errors"] == ["watchdog_input_error:RuntimeError"]
+
+
+def test_external_watchdog_cli_has_no_clock_override(tmp_path: Path) -> None:
+    source = tmp_path / "observation.json"
+    payload = observation()
+    payload["observed_at_utc"] = "2000-01-01T00:00:00+00:00"
+    assert isinstance(payload["m1"], dict)
+    payload["m1"]["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    source.chmod(0o600)
+
+    stale = subprocess.run(cli_command(source), text=True, capture_output=True)
+    assert stale.returncode == 2
+    assert "observation_stale_or_future" in json.loads(stale.stdout)["errors"]
+
+    overridden = subprocess.run(
+        [*cli_command(source), "--now", "2000-01-01T00:00:00+00:00"],
+        text=True,
+        capture_output=True,
+    )
+    assert overridden.returncode == 2
+    assert "unrecognized arguments: --now" in overridden.stderr
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACL syntax")
+def test_owner_only_observation_rejects_extended_acl(tmp_path: Path) -> None:
+    source = tmp_path / "observation.json"
+    payload = observation()
+    current = datetime.now(timezone.utc)
+    payload["observed_at_utc"] = current.isoformat()
+    assert isinstance(payload["m1"], dict)
+    payload["m1"]["heartbeat_at"] = current.isoformat()
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    source.chmod(0o600)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(source)],
+        check=True,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="must_not_have_extended_acl"):
+            load_owner_only_json(source, label="external_watchdog_observation")
+        rejected = subprocess.run(
+            cli_command(source), text=True, capture_output=True
+        )
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(source)], check=True)
+
+    assert rejected.returncode == 2
+    assert json.loads(rejected.stdout)["errors"] == [
+        "watchdog_input_error:RuntimeError"
+    ]

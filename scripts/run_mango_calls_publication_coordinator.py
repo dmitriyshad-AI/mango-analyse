@@ -29,10 +29,12 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
     read_host_id,
-    read_stable_regular_bytes,
     safe_alert_payload,
     sha256_file,
     validate_ready_manifest_payload,
+)
+from mango_mvp.productization.mango_calls_config import (  # noqa: E402
+    load_owner_only_runtime_config,
 )
 from mango_mvp.productization.ready_publication import (  # noqa: E402
     inspect_ready_publication,
@@ -56,16 +58,12 @@ COMMANDS = ("current-plan", "daily-close", "daily-alert", "daily-status")
 
 def _read_config(path: Path) -> Mapping[str, Any]:
     try:
-        raw = read_stable_regular_bytes(
-            path,
-            label="publication_coordinator_config",
-            owner_only_mode=0o600,
-        )
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("publication coordinator config is invalid") from exc
-    if not isinstance(payload, Mapping):
-        raise RuntimeError("publication coordinator config must be an object")
+        payload = load_owner_only_runtime_config(path)
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            "publication coordinator config must be owner-only 0600, valid, "
+            "and match the wrapper snapshot"
+        ) from exc
     return payload
 
 
@@ -293,6 +291,13 @@ def _daily_export(
     )
 
 
+def _package_is_final(package: Mapping[str, Any]) -> bool:
+    return (
+        package.get("package_status") == "FINAL_CLOSED"
+        and package.get("closure_ok") is True
+    )
+
+
 def _daily_close(
     config: Mapping[str, Any], root: Path, day: date
 ) -> Mapping[str, Any]:
@@ -326,12 +331,14 @@ def _daily_close(
                 sealed_only=True,
                 expected_ready_manifest_sha256=manifest_sha256,
             )
+            package_closed = _package_is_final(result)
             attempts.append(
                 {
                     "day": candidate.isoformat(),
-                    "status": "closed",
+                    "status": "closed" if package_closed else "incomplete",
                     "reused": bool(result.get("reused")),
                     "package_status": result.get("package_status"),
+                    "closure_ok": package_closed,
                 }
             )
         except Exception as exc:
@@ -343,11 +350,12 @@ def _daily_close(
                 }
             )
     target = next(item for item in attempts if item["day"] == day.isoformat())
-    overall_status = (
-        "failed"
-        if any(item.get("status") == "failed" for item in attempts)
-        else str(target["status"])
-    )
+    if any(item.get("status") == "failed" for item in attempts):
+        overall_status = "failed"
+    elif any(item.get("status") == "incomplete" for item in attempts):
+        overall_status = "incomplete"
+    else:
+        overall_status = str(target["status"])
     return {
         "status": overall_status,
         "target_status": target["status"],
@@ -411,19 +419,21 @@ def _daily_status(
     config: Mapping[str, Any], root: Path, day: date
 ) -> Mapping[str, Any]:
     _pipeline, ready, _working = _ready_paths(config)
-    closed = False
+    verdict_closed = False
+    package_closed = False
     try:
         manifest, manifest_sha256 = _ready_snapshot(config, ready)
-        closed = _day_verdict(manifest, day).get("closure_ok") is True
+        verdict_closed = _day_verdict(manifest, day).get("closure_ok") is True
         package = _daily_export(
             config,
             root,
             day,
-            sealed_only=closed,
+            sealed_only=verdict_closed,
             expected_ready_manifest_sha256=manifest_sha256,
         )
+        package_closed = verdict_closed and _package_is_final(package)
         result: dict[str, Any] = {
-            "status": "final" if closed else "incomplete",
+            "status": "final" if package_closed else "incomplete",
             "package_status": package.get("package_status"),
             "reused": bool(package.get("reused")),
         }
@@ -431,14 +441,16 @@ def _daily_status(
         result = {
             "status": "failed",
             "package_status": (
-                "FINAL_EXPORT_FAILED" if closed else "INCOMPLETE_EXPORT_FAILED"
+                "FINAL_EXPORT_FAILED"
+                if verdict_closed
+                else "INCOMPLETE_EXPORT_FAILED"
             ),
             "error_type": type(exc).__name__,
         }
     result.update(
         schema_version=SCHEMA,
         day=day.isoformat(),
-        closure_ok=closed,
+        closure_ok=package_closed,
         generated_at=datetime.now(timezone.utc).isoformat(),
         external_write=False,
     )

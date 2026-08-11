@@ -66,6 +66,10 @@ from mango_mvp.productization.mango_calls_service_contract import (
     validate_runtime_fingerprint,
     verify_cutover_authority,
 )
+from mango_mvp.productization.mango_calls_config import (
+    load_owner_only_runtime_config,
+    strict_service_flags,
+)
 from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import (
     DEFAULT_MANGO_BASE_URL,
@@ -141,10 +145,15 @@ class CallsTwoProcessesConfig:
     publication_root: Optional[Path] = None
 
     @classmethod
-    def from_json(cls, path: Path) -> "CallsTwoProcessesConfig":
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, Mapping):
-            raise ValueError("config must be a JSON object")
+    def from_json(
+        cls, path: Path, *, expected_sha256: str | None = None
+    ) -> "CallsTwoProcessesConfig":
+        payload = load_owner_only_runtime_config(
+            path, expected_sha256=expected_sha256
+        )
+        require_cutover_authority, strict_ready_provenance = strict_service_flags(
+            payload
+        )
         optional_daily = str(payload.get("foton_daily_dir") or "").strip()
         config = cls(
             pipeline_root=Path(str(payload["pipeline_root"])).expanduser(),
@@ -209,12 +218,8 @@ class CallsTwoProcessesConfig:
                 payload.get("cutover_proof_max_age_minutes", 90)
             ),
             max_catch_up_days=int(payload.get("max_catch_up_days", 7)),
-            require_cutover_authority=bool(
-                payload.get("require_cutover_authority", True)
-            ),
-            strict_ready_provenance=bool(
-                payload.get("strict_ready_provenance", True)
-            ),
+            require_cutover_authority=require_cutover_authority,
+            strict_ready_provenance=strict_ready_provenance,
             publication_root=(
                 Path(str(payload["publication_root"])).expanduser()
                 if payload.get("publication_root")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import plistlib
@@ -130,7 +131,10 @@ def _payload(
 
 
 def _validate_process_a_install_authority(
-    config_path: Path, config: dict[str, object]
+    config_path: Path,
+    config: dict[str, object],
+    *,
+    expected_config_sha256: str,
 ) -> None:
     if config.get("require_cutover_authority") is not True:
         raise RuntimeError("Process A install requires cutover authority")
@@ -150,7 +154,9 @@ def _validate_process_a_install_authority(
         verify_cutover_authority,
     )
 
-    parsed = CallsTwoProcessesConfig.from_json(config_path)
+    parsed = CallsTwoProcessesConfig.from_json(
+        config_path, expected_sha256=expected_config_sha256
+    )
     if not parsed.require_cutover_authority or not parsed.strict_ready_provenance:
         raise RuntimeError("Process A install requires the complete strict config")
     cursor = parsed.cursor_path
@@ -248,17 +254,25 @@ def _is_loaded(domain: str, label: str) -> bool:
     ).returncode == 0
 
 
-def _validate_local_file(path: Path, *, secret: bool) -> None:
-    info = path.lstat()
-    mode = stat.S_IMODE(info.st_mode)
-    if (
-        path.is_symlink()
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.getuid()
-        or mode != 0o600
-    ):
-        kind = "env" if secret else "config"
-        raise RuntimeError(f"{kind} file permissions are unsafe")
+def _validate_local_file(path: Path, *, secret: bool) -> bytes:
+    import sys
+
+    src = ROOT / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from mango_mvp.productization.owner_only_io import (
+        read_stable_regular_bytes,
+    )
+
+    kind = "env" if secret else "config"
+    try:
+        return read_stable_regular_bytes(
+            path,
+            label=f"service_{kind}",
+            owner_only_mode=0o600,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"{kind} file permissions are unsafe") from exc
 
 
 def _live_process_lock(pipeline_root: Path, name: str) -> bool:
@@ -341,7 +355,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     env_path = Path(args.env_file).expanduser().absolute()
     if not config_path.is_file() or not env_path.is_file():
         raise FileNotFoundError("config and env file must exist")
-    _validate_local_file(config_path, secret=False)
+    config_raw = _validate_local_file(config_path, secret=False)
     _validate_local_file(env_path, secret=True)
     fallback_interval = _interval(args.interval_seconds, DEFAULT_INTERVAL_SECONDS)
     intervals: dict[str, Optional[int]] = {
@@ -350,7 +364,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # only after Process A returns an explicit successful status.
         LABEL_B: _interval(args.process_b_interval_seconds, fallback_interval) if args.process_b_only else None,
     }
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    from mango_mvp.productization.mango_calls_config import (
+        decode_runtime_config_bytes,
+        strict_service_flags,
+    )
+
+    config = decode_runtime_config_bytes(config_raw)
+    require_cutover_authority, strict_ready_provenance = strict_service_flags(config)
+    if (require_cutover_authority or strict_ready_provenance) and not (
+        args.fast_service or args.process_a_only or args.process_b_only
+    ):
+        raise RuntimeError(
+            "strict M1 config requires --fast-service or an explicit single-role mode"
+        )
     pipeline_root = Path(str(config["pipeline_root"])).expanduser().resolve()
     log_dir = pipeline_root / "logs"
     paths = _plist_paths(args)
@@ -360,7 +386,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.install and not args.process_b_only:
         if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
             raise RuntimeError("Process A service config must be owner-only 0600")
-        _validate_process_a_install_authority(config_path, config)
+        _validate_process_a_install_authority(
+            config_path,
+            config,
+            expected_config_sha256=hashlib.sha256(config_raw).hexdigest(),
+        )
     if args.install and not args.fast_service and not args.process_b_only:
         fast_topology_labels = (
             LABEL_CAPTURE,

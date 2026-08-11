@@ -40,9 +40,13 @@ working SQLite не ingest-ится второй раз. Пропустить о
 пути исходного Mac и M1 остаются разными явными параметрами. Слепая замена строк
 в SQLite запрещена; используется только relocation-механизм.
 
-Config и env — обычные файлы владельца `0600`, не symlink. Runtime находится
-под `$HOME/.mango_local`, секреты — под `$HOME/.mango_secrets`; Git, iCloud и
-Яндекс.Диск для SQLite, аудио, Codex-профиля и служебных журналов запрещены.
+Config и env — обычные файлы владельца `0600`, не symlink и без extended ACL.
+Runtime находится под `$HOME/.mango_local`, секреты — под
+`$HOME/.mango_secrets`; Git, iCloud и Яндекс.Диск для SQLite, аудио,
+Codex-профиля и служебных журналов запрещены. Любой extended ACL на owner-only
+cutover/watchdog evidence даёт отказ; код не снимает ACL автоматически.
+Запущенный wrapper связывает дочерний процесс с SHA-256 проверенного поколения
+config, поэтому замена файла между проверкой и фактическим caller даёт отказ.
 
 Ключевые значения пилота:
 
@@ -105,7 +109,9 @@ python3 scripts/install_mango_calls_two_processes_service.py \
 ```
 
 Вторая команда только отрисовывает plist. Флаг `--install` без отдельного
-разрешения запрещён.
+разрешения запрещён. Строгий M1 config требует явный `--fast-service`,
+`--process-a-only` или `--process-b-only`: старые команды wrapper без суффикса
+`-worker` для такого config отклоняются и не являются fallback-топологией.
 
 После разрешения на конкретный этап CLI имеет отдельные команды:
 

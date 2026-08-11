@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import platform
@@ -27,6 +28,7 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     current_git_sha,
     git_worktree_is_clean,
     load_owner_only_json,
+    read_stable_regular_bytes,
     stage_capacity_report,
     validate_runtime_fingerprint,
 )
@@ -117,19 +119,17 @@ def inspect_codex_home(path: Path) -> Mapping[str, Any]:
 
 
 def _owner_env(path: Path) -> Mapping[str, str]:
-    info = path.lstat()
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or path.is_symlink()
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) != 0o600
-    ):
-        raise RuntimeError("probe env must be owner-only 0600")
+    try:
+        raw = read_stable_regular_bytes(
+            path, label="probe_env", owner_only_mode=0o600
+        ).decode("utf-8")
+    except (RuntimeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("probe env must be owner-only 0600") from exc
     from dotenv import dotenv_values
 
     return {
         str(key): str(value)
-        for key, value in dotenv_values(path).items()
+        for key, value in dotenv_values(stream=io.StringIO(raw)).items()
         if key and value is not None
     }
 

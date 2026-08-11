@@ -24,37 +24,55 @@ if [[ ! -f "${CONFIG}" || ! -f "${ENV_FILE}" || -L "${CONFIG}" || -L "${ENV_FILE
   print -u2 '{"status":"failed","stop_reason":"config_or_env_missing"}'
   exit 2
 fi
-CONFIG_META="$(/usr/bin/stat -f '%u:%Lp' "${CONFIG}")"
-CONFIG_UID="${CONFIG_META%%:*}"
-CONFIG_MODE="${CONFIG_META##*:}"
-if [[ "${CONFIG_UID}" != "$(/usr/bin/id -u)" || "${CONFIG_MODE}" != "600" ]]; then
-  print -u2 '{"status":"failed","stop_reason":"config_file_must_be_owner_only_0600"}'
-  exit 2
-fi
-if [[ "$(/usr/bin/stat -f '%u:%Lp' "${ENV_FILE}")" != "$(/usr/bin/id -u):600" ]]; then
-  print -u2 '{"status":"failed","stop_reason":"env_file_must_be_owner_only_0600"}'
-  exit 2
-fi
-
-PYTHON_EXECUTABLE="$(/usr/bin/plutil -extract python_executable raw -o - "${CONFIG}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"config_missing_python_executable"}'
-  exit 2
-}
-if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
-  print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
-  exit 2
-fi
 ENV_READER_PYTHON="/usr/bin/python3"
 [[ -x "${ENV_READER_PYTHON}" ]] || {
   print -u2 '{"status":"failed","stop_reason":"env_reader_python_missing"}'; exit 2;
 }
-PIPELINE_ROOT="$(/usr/bin/plutil -extract pipeline_root raw -o - "${CONFIG}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"config_missing_pipeline_root"}'
+RUNTIME_CONFIG_FIELDS="$(MANGO_CALLS_EXPECTED_CONFIG_SHA256= \
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${ROOT}/src" \
+  "${ENV_READER_PYTHON}" -m mango_mvp.productization.mango_calls_config \
+  "${CONFIG}" 2>/dev/null)" || {
+  print -u2 '{"status":"failed","stop_reason":"config_file_must_be_owner_only_0600_or_invalid"}'
   exit 2
 }
-ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" --export-lines "${ENV_FILE}" 2>/dev/null)" || {
-  print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'; exit 2;
-}
+typeset -a RUNTIME_CONFIG_LINES
+RUNTIME_CONFIG_LINES=("${(@f)RUNTIME_CONFIG_FIELDS}")
+if (( ${#RUNTIME_CONFIG_LINES[@]} != 5 )); then
+  print -u2 '{"status":"failed","stop_reason":"config_file_must_be_owner_only_0600_or_invalid"}'
+  exit 2
+fi
+PYTHON_EXECUTABLE="${RUNTIME_CONFIG_LINES[1]}"
+PIPELINE_ROOT="${RUNTIME_CONFIG_LINES[2]}"
+STRICT_RUNTIME="${RUNTIME_CONFIG_LINES[3]}"
+CONFIG_SHA256="${RUNTIME_CONFIG_LINES[5]}"
+if [[ ! "${CONFIG_SHA256}" =~ '^[0-9a-f]{64}$' ]]; then
+  print -u2 '{"status":"failed","stop_reason":"config_snapshot_sha_invalid"}'
+  exit 2
+fi
+if [[ ! -x "${PYTHON_EXECUTABLE}" ]]; then
+  print -u2 '{"status":"failed","stop_reason":"configured_python_missing"}'
+  exit 2
+fi
+if [[ "${STRICT_RUNTIME}" == "true" ]] \
+    && [[ "${COMMAND}" == "process-a" || "${COMMAND}" == "process-b" \
+        || "${COMMAND}" == "capture" || "${COMMAND}" == "pipeline" \
+        || "${COMMAND}" == "watchdog" ]]; then
+  print -u2 '{"status":"failed","stop_reason":"strict_runtime_requires_guarded_worker_command"}'
+  exit 2
+fi
+set +e
+ENV_EXPORTS="$("${ENV_READER_PYTHON}" "${ROOT}/scripts/mango_calls_env.py" \
+  --export-lines "${ENV_FILE}" 2>/dev/null)"
+ENV_PARSE_RC=$?
+set -e
+if (( ENV_PARSE_RC == 3 )); then
+  print -u2 '{"status":"failed","stop_reason":"env_file_must_be_owner_only_0600"}'
+  exit 2
+fi
+if (( ENV_PARSE_RC != 0 )); then
+  print -u2 '{"status":"failed","stop_reason":"worker_env_invalid"}'
+  exit 2
+fi
 for inherited_name in ${(k)parameters}; do
   if [[ "${inherited_name}" == MANGO_* || "${inherited_name}" == GOOGLE_APPLICATION_CREDENTIALS ]]; then
     unset "${inherited_name}"
@@ -63,6 +81,7 @@ done
 while IFS= read -r item; do
   [[ -n "${item}" ]] && export "${item}"
 done <<< "${ENV_EXPORTS}"
+export MANGO_CALLS_EXPECTED_CONFIG_SHA256="${CONFIG_SHA256}"
 if [[ "${COMMAND}" == "process-a-worker" || "${COMMAND}" == "process-b-worker" \
     || "${COMMAND}" == "process-b-pull" \
     || "${COMMAND}" == "capture-worker" || "${COMMAND}" == "pipeline-worker" \

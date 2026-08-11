@@ -34,6 +34,7 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
 )
 from mango_mvp.productization.mango_office_client import MangoOfficeClient, MangoOfficeCredentials
 from mango_mvp.productization.mango_calls_service_contract import (
+    has_dual_asr_or_exception,
     parse_aware_datetime,
     read_stable_regular_bytes,
     stable_regular_file_evidence,
@@ -557,9 +558,17 @@ def clean_summary(value: Any) -> str:
     return " ".join(text.split())
 
 
-def processing_issues(row: sqlite3.Row, analysis: Mapping[str, Any], resolve: Mapping[str, Any]) -> list[str]:
+def processing_issues(
+    row: sqlite3.Row,
+    analysis: Mapping[str, Any],
+    resolve: Mapping[str, Any],
+    *,
+    dual_asr_ready: bool,
+) -> list[str]:
     flags = analysis.get("quality_flags") if isinstance(analysis.get("quality_flags"), dict) else {}
     issues: list[str] = []
+    if not dual_asr_ready:
+        issues.append("Вторая расшифровка GigaAM не готова")
     if row["resolve_status"] not in {"done", "skipped"}:
         issues.append("Разделение ролей не завершено автоматически")
     if row["analysis_status"] != "done":
@@ -593,8 +602,20 @@ def normalize_row(row: sqlite3.Row, names: Mapping[str, str], *, sealed_only: bo
     extension = str(row["manager_name"] or "").strip()
     manager = names.get(extension, "")
     resolve_ok = row["resolve_status"] == "done" or (row["resolve_status"] == "skipped" and resolve.get("decision") == "skip_short_call")
-    complete = bool(row["transcription_status"] == "done" and resolve_ok and row["analysis_status"] == "done" and analysis)
-    issues = processing_issues(row, analysis, resolve)
+    dual_asr_ready = has_dual_asr_or_exception(dict(row))
+    complete = bool(
+        row["transcription_status"] == "done"
+        and dual_asr_ready
+        and resolve_ok
+        and row["analysis_status"] == "done"
+        and analysis
+    )
+    issues = processing_issues(
+        row,
+        analysis,
+        resolve,
+        dual_asr_ready=dual_asr_ready,
+    )
     if not complete and not issues:
         issues.append("Обработка звонка не завершена")
     if not order_confirmed:
@@ -1256,13 +1277,18 @@ def _export_day_locked(
     if cloud_output:
         if external_publication_evidence is None:
             raise RuntimeError("внешняя публикация полного отчёта не разрешена")
-        info = external_publication_evidence.lstat()
-        evidence = parse_json(external_publication_evidence.read_text(encoding="utf-8"))
+        try:
+            evidence = json.loads(
+                read_stable_regular_bytes(
+                    external_publication_evidence,
+                    label="mango_yandex_publication_authority",
+                    owner_only_mode=0o600,
+                ).decode("utf-8")
+            )
+        except (RuntimeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("доказательство внешней публикации недействительно") from exc
         if (
-            not stat.S_ISREG(info.st_mode)
-            or external_publication_evidence.is_symlink()
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o600
+            not isinstance(evidence, Mapping)
             or evidence.get("schema_version") != "mango_yandex_publication_authority_v1"
             or evidence.get("private_acl_readback_ok") is not True
             or evidence.get("retention_policy_approved") is not True
@@ -1291,9 +1317,7 @@ def _export_day_locked(
         "source_ready_manifest_sha256"
     ) != source_before.get("ready_manifest_sha256"):
         raise RuntimeError("доказательство не связано с ready manifest")
-    incomplete = source_before.get("closure_ok") is not True
-    if cloud_output and incomplete:
-        raise RuntimeError("на внешний диск разрешён только закрытый суточный пакет")
+    source_incomplete = source_before.get("closure_ok") is not True
     manager_names = load_manager_map(manager_users, current_manager_users)
     if sealed_only:
         rows, working_only = merged_day_rows(
@@ -1316,6 +1340,10 @@ def _export_day_locked(
     tallanto_freshness = apply_tallanto_names(
         rows, tallanto_export, client, snapshot_as_of=tallanto_snapshot_as_of
     )
+    row_incomplete = any(not row["complete"] for row in rows)
+    incomplete = source_incomplete or row_incomplete
+    if cloud_output and incomplete:
+        raise RuntimeError("на внешний диск разрешён только закрытый суточный пакет")
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_root.chmod(0o700)
     manager_source = (
@@ -1436,7 +1464,7 @@ def _export_day_locked(
         "source_ready_db_sha256": source_before["sha256"], "tallanto_export_sha256": sha256_file(tallanto_export),
         "tallanto_snapshot_as_of": tallanto_snapshot_as_of.isoformat() if tallanto_snapshot_as_of else None,
         "tallanto_freshness": tallanto_freshness,
-        "closure_ok": source_before.get("closure_ok") is True,
+        "closure_ok": not incomplete,
         "package_status": package_status,
         "quarantine_items": list(stage10_balance.get("quarantine_items") or ()),
         **{

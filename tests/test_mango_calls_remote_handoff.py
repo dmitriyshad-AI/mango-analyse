@@ -39,6 +39,29 @@ def ssh_files(root: Path) -> dict[str, Path]:
     return {"identity_file": identity, "known_hosts": known_hosts}
 
 
+def runtime_config(root: Path, pipeline_root: Path) -> Path:
+    staging = root / "staging"
+    staging.mkdir(exist_ok=True)
+    path = root / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pipeline_root": str(pipeline_root),
+                "timeline_db": str(staging / "customer_timeline_staging.sqlite"),
+                "timeline_allowed_root": str(staging),
+                "python_executable": sys.executable,
+                "codex_binary": sys.executable,
+                "codex_home_root": str(root / "codex_home"),
+                "require_cutover_authority": False,
+                "strict_ready_provenance": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
 def test_receiver_dry_run_does_not_write(tmp_path: Path) -> None:
     package, sha = make_package(tmp_path / "incoming", "one")
     target = tmp_path / "pipeline"
@@ -303,6 +326,8 @@ def test_pull_rejects_symlinked_incoming_before_network(tmp_path: Path) -> None:
 def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) -> None:
     package, _ = make_package(tmp_path / "remote", "one")
     events: list[str] = []
+    pipeline = tmp_path / "pipeline"
+    config = runtime_config(tmp_path, pipeline)
 
     class OrderedTransfer(FakePullRunner):
         def __call__(self, command: list[str] | tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -315,8 +340,8 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
 
     result = puller.pull_then_process_b(
         remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
-        incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
-        config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
+        incoming_root=tmp_path / "incoming", pipeline_root=pipeline,
+        config=config, execute=True, confirmation=puller.CONFIRMATION,
         transfer_runner=OrderedTransfer(package), process_runner=process_ok, **ssh_files(tmp_path),
     )
     assert result["process_b_status"] == "ok" and events == ["transfer", "transfer", "transfer", "process_b"]
@@ -325,12 +350,46 @@ def test_pull_then_process_b_holds_order_and_blocks_non_success(tmp_path: Path) 
     with pytest.raises(RuntimeError, match="did not complete"):
         puller.pull_then_process_b(
             remote_host="m1-worker", remote_drop_root="/Users/test/.mango_local/drop",
-            incoming_root=tmp_path / "incoming", pipeline_root=tmp_path / "pipeline",
-            config=tmp_path / "config.json", execute=True, confirmation=puller.CONFIRMATION,
+            incoming_root=tmp_path / "incoming", pipeline_root=pipeline,
+            config=config, execute=True, confirmation=puller.CONFIRMATION,
             transfer_runner=FakePullRunner(other), **ssh_files(tmp_path),
             process_runner=lambda command: subprocess.CompletedProcess(
                 command, 0, stdout='{"status":"locked","stop_reason":"timeline_writer_locked"}\n', stderr=""),
         )
+
+
+def test_pull_rejects_changed_wrapper_config_before_network_or_local_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mango_mvp.productization.mango_calls_config import (
+        EXPECTED_CONFIG_SHA_ENV,
+    )
+
+    package, _ = make_package(tmp_path / "remote", "one")
+    pipeline = tmp_path / "pipeline"
+    config = runtime_config(tmp_path, pipeline)
+    expected = hashlib.sha256(config.read_bytes()).hexdigest()
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["poll_overlap_minutes"] = 31
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(EXPECTED_CONFIG_SHA_ENV, expected)
+    runner = FakePullRunner(package)
+
+    with pytest.raises(RuntimeError, match="snapshot_mismatch"):
+        puller.pull_then_process_b(
+            remote_host="m1-worker",
+            remote_drop_root="/Users/test/.mango_local/drop",
+            incoming_root=tmp_path / "incoming",
+            pipeline_root=pipeline,
+            config=config,
+            execute=True,
+            confirmation=puller.CONFIRMATION,
+            transfer_runner=runner,
+            **ssh_files(tmp_path),
+        )
+
+    assert runner.commands == []
+    assert not pipeline.exists()
 
 
 def test_readonly_rsync_gate_allows_only_two_sender_paths(tmp_path: Path) -> None:

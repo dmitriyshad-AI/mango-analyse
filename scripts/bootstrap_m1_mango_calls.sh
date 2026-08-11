@@ -6,7 +6,7 @@ MODE="${1:-check}"
 CONFIG="${MANGO_CALLS_CONFIG:-$HOME/.mango_local/mango_calls_two_processes/config.json}"
 ENV_FILE="${MANGO_CALLS_ENV_FILE:-$HOME/.mango_secrets/mango_calls_m1_worker.env}"
 VENV="${MANGO_CALLS_VENV:-$HOME/.mango_local/mango_calls_runtime/venv}"
-ENV_READER_PYTHON=""
+ENV_READER_PYTHON="/usr/bin/python3"
 
 print_plan() {
   cat <<'JSON'
@@ -44,12 +44,26 @@ env_value() {
 }
 
 owner_only() {
-  [[ -f "$1" && ! -L "$1" && "$(/usr/bin/stat -f '%u:%Lp' "$1")" == "$(id -u):600" ]]
+  local acl_free=false
+  /bin/ls -lde "$1" 2>/dev/null | /usr/bin/awk '
+    NR == 1 { seen = 1 }
+    NR > 1 && $1 ~ /^[0-9]+:$/ { acl = 1 }
+    END { exit (seen && !acl) ? 0 : 1 }
+  ' && acl_free=true
+  [[ -f "$1" && ! -L "$1" && "$(/usr/bin/stat -f '%u:%Lp' "$1")" == "$(id -u):600" \
+      && "${acl_free}" == true ]]
 }
 
 owner_dir_only() {
+  local acl_free=false
+  /bin/ls -lde "$1" 2>/dev/null | /usr/bin/awk '
+    NR == 1 { seen = 1 }
+    NR > 1 && $1 ~ /^[0-9]+:$/ { acl = 1 }
+    END { exit (seen && !acl) ? 0 : 1 }
+  ' && acl_free=true
   [[ -d "$1" && ! -L "$1" \
-      && "$(/usr/bin/stat -f '%u:%Lp' "$1")" == "$(id -u):700" ]]
+      && "$(/usr/bin/stat -f '%u:%Lp' "$1")" == "$(id -u):700" \
+      && "${acl_free}" == true ]]
 }
 
 inside_dir() {
@@ -61,17 +75,29 @@ PY
 }
 
 check_host() {
-  local python="" pipeline_root="" codex_binary="" imports=false config_valid=false platform_ok=false
+  local python="" pipeline_root="" codex_binary="" config_sha256="" imports=false config_valid=false platform_ok=false
   local mango=false codex_auth=false codex_version=false tallanto=false google=false google_config_valid=false revision=false env_valid=false
+  local runtime_config_fields=""
+  typeset -a runtime_config_lines
   if owner_only "$CONFIG"; then
-    python="$(/usr/bin/plutil -extract python_executable raw -o - "$CONFIG" 2>/dev/null || true)"
-    pipeline_root="$(/usr/bin/plutil -extract pipeline_root raw -o - "$CONFIG" 2>/dev/null || true)"
-    codex_binary="$(/usr/bin/plutil -extract codex_binary raw -o - "$CONFIG" 2>/dev/null || true)"
+    runtime_config_fields="$(MANGO_CALLS_EXPECTED_CONFIG_SHA256= \
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" \
+      /usr/bin/python3 -m mango_mvp.productization.mango_calls_config \
+      "$CONFIG" 2>/dev/null || true)"
+    runtime_config_lines=("${(@f)runtime_config_fields}")
+    if (( ${#runtime_config_lines[@]} == 5 )); then
+      python="${runtime_config_lines[1]}"
+      pipeline_root="${runtime_config_lines[2]}"
+      codex_binary="${runtime_config_lines[4]}"
+      config_sha256="${runtime_config_lines[5]}"
+    fi
   fi
   [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] && platform_ok=true
   if [[ -n "$python" && -x "$python" ]]; then
     ENV_READER_PYTHON="$python"
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" "$python" - "$CONFIG" <<'PY' >/dev/null 2>&1 && config_valid=true || true
+    MANGO_CALLS_EXPECTED_CONFIG_SHA256="$config_sha256" \
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" \
+      "$python" - "$CONFIG" <<'PY' >/dev/null 2>&1 && config_valid=true || true
 import sys
 from pathlib import Path
 from mango_mvp.customer_timeline.calls_two_processes import CallsTwoProcessesConfig
@@ -102,9 +128,14 @@ PY
     google_config_valid=true
   elif [[ -x "$python" ]] && owner_only "$google_path" && inside_dir "$google_path" "$HOME/.mango_secrets" \
       && [[ -n "$google_folder_id" ]]; then
-    "$python" - "$google_path" <<'PY' >/dev/null 2>&1 && google=true || true
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" \
+      "$python" - "$google_path" <<'PY' >/dev/null 2>&1 && google=true || true
 import json, sys
-data=json.load(open(sys.argv[1], encoding="utf-8"))
+from pathlib import Path
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes
+data=json.loads(read_stable_regular_bytes(
+    Path(sys.argv[1]), label="google_credentials", owner_only_mode=0o600
+).decode("utf-8"))
 assert data.get("type") == "service_account" and data.get("client_email") and data.get("private_key")
 PY
     [[ "$google" == true ]] && google_config_valid=true
@@ -143,9 +174,15 @@ PY
   local tallanto_export_path="$(env_value "$ENV_FILE" MANGO_CALLS_TALLANTO_EXPORT || true)"
   local yandex_path="$(env_value "$ENV_FILE" MANGO_CALLS_DAILY_EXPORT_OUT || true)"
   if [[ -x "$python" && -n "$tallanto_export_path" ]] && owner_only "$tallanto_export_path" && [[ -s "$tallanto_export_path" ]]; then
-    "$python" - "$tallanto_export_path" <<'PY' >/dev/null 2>&1 && tallanto_export=true || true
-import csv, sys
-with open(sys.argv[1], encoding="utf-8-sig", newline="") as stream:
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/src" \
+      "$python" - "$tallanto_export_path" <<'PY' >/dev/null 2>&1 && tallanto_export=true || true
+import csv, io, sys
+from pathlib import Path
+from mango_mvp.productization.owner_only_io import read_stable_regular_bytes
+raw = read_stable_regular_bytes(
+    Path(sys.argv[1]), label="tallanto_export", owner_only_mode=0o600
+).decode("utf-8-sig")
+with io.StringIO(raw, newline="") as stream:
     headers = set(next(csv.reader(stream)))
 assert {"ID", "Имя", "Фамилия", "ФИО родителя", "Тел. (родителя)", "Тел. (доп.)"} <= headers
 PY

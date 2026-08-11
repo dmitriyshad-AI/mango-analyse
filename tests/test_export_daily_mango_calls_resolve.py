@@ -117,6 +117,8 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                 "pending" if pending else "done",
                 "MANAGER:\nЗдравствуйте, Анна Иванова. Хорошо, отправлю договор и позвоню завтра.\nCLIENT:\nДобрый день. Ищу сыну Петру, он в седьмом классе, очный летний лагерь с математикой. Бюджет около ста тысяч рублей, цена важна. Есть скидка? Сначала нужно обсудить договор. Отправьте договор и свяжитесь со мной завтра по телефону.",
                 json.dumps({
+                    "primary_provider": "mlx",
+                    "secondary_provider": "gigaam",
                     "dialogue_lines": dialogue,
                     "call_topology": "simple_two_party",
                     "role_mapping": {
@@ -124,8 +126,16 @@ def _insert(db: Path, *, pending: bool = False, call_id: str = "call-ready", sta
                         "manager_quality_allowed": True,
                         "topology": "simple_two_party",
                     },
-                    "manager": {"physical_channel": "left"},
-                    "client": {"physical_channel": "right"},
+                    "manager": {
+                        "physical_channel": "left",
+                        "variant_a": "Здравствуйте. Отправлю договор.",
+                        "variant_b": "Здравствуйте. Отправлю договор.",
+                    },
+                    "client": {
+                        "physical_channel": "right",
+                        "variant_a": "Нужен лагерь. Пришлите договор.",
+                        "variant_b": "Нужен лагерь. Пришлите договор.",
+                    },
                 }, ensure_ascii=False),
                 "{}" if pending else json.dumps({"decision": "automatic"}, ensure_ascii=False),
                 "{}" if pending else json.dumps(_analysis(), ensure_ascii=False),
@@ -750,6 +760,179 @@ def test_export_merges_pending_rows_and_preserves_dialogue(tmp_path: Path, monke
     assert "сверить с полной расшифровкой" in description
     assert "audio" not in json.dumps(result, ensure_ascii=False).casefold()
     wb.close()
+
+
+def test_missing_second_asr_is_not_manager_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["ready_rows"] == 0
+    assert result["manager_ready_rows"] == 0
+    wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+    problems = " ".join(
+        str(cell)
+        for row in wb["Проблемы данных"].iter_rows(values_only=True)
+        for cell in row
+    )
+    assert "Вторая расшифровка GigaAM не готова" in problems
+    wb.close()
+
+
+def test_sealed_manifest_cannot_hide_row_without_second_asr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert result["ready_rows"] == 0
+    assert result["closure_ok"] is False
+    assert result["package_status"] == "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+    assert Path(result["xlsx"]).name.startswith("НЕПОЛНЫЙ")
+
+
+def test_cloud_export_rejects_sealed_manifest_with_incomplete_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, _ = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    with sqlite3.connect(ready_db) as con:
+        raw = con.execute(
+            "SELECT transcript_variants_json FROM call_records "
+            "WHERE source_call_id='call-ready'"
+        ).fetchone()[0]
+        variants = json.loads(raw)
+        variants.pop("secondary_provider")
+        for role in ("manager", "client"):
+            variants[role].pop("variant_b")
+        con.execute(
+            "UPDATE call_records SET transcript_variants_json=? "
+            "WHERE source_call_id='call-ready'",
+            (json.dumps(variants, ensure_ascii=False),),
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"sha256": _sha(ready_db), "size_bytes": ready_db.stat().st_size})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    out = tmp_path / "Yandex.Disk" / "calls"
+    evidence_path = tmp_path / "publication-authority.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mango_yandex_publication_authority_v1",
+                "private_acl_readback_ok": True,
+                "retention_policy_approved": True,
+                "confirmation": "PUBLISH_CLOSED_MANGO_DAY",
+                "day": "2026-07-28",
+                "output_root": str(out.resolve()),
+                "source_ready_manifest_sha256": _sha(manifest_path),
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence_path.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="только закрытый суточный пакет"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+            external_publication_evidence=evidence_path,
+        )
+
+    assert not out.exists()
+
+
+def test_cloud_export_fails_closed_when_authority_reader_rejects_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, _ = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    out = tmp_path / "Yandex.Disk" / "calls"
+    evidence_path = tmp_path / "publication-authority.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_path.chmod(0o600)
+
+    def reject_authority(*_args: object, **_kwargs: object) -> bytes:
+        raise RuntimeError("synthetic extended ACL")
+
+    monkeypatch.setattr(exporter, "read_stable_regular_bytes", reject_authority)
+
+    with pytest.raises(RuntimeError, match="доказательство внешней публикации недействительно"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+            external_publication_evidence=evidence_path,
+        )
+
+    assert not out.exists()
 
 
 def test_incomplete_row_without_specific_issue_remains_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1530,13 +1713,23 @@ def test_long_transcript_is_split_without_loss(tmp_path: Path, monkeypatch: pyte
     for db in (ready_db, working_db):
         with sqlite3.connect(db) as con:
                 con.execute(
-                    "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
-                    (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
-                        "dialogue_lines": lines,
+                        "UPDATE call_records SET transcript_text=?, transcript_variants_json=? WHERE source_call_id='call-ready'",
+                        (f"MANAGER:\n{manager_text}\n\nCLIENT:\nконец", json.dumps({
+                            "primary_provider": "mlx",
+                            "secondary_provider": "gigaam",
+                            "dialogue_lines": lines,
                         "call_topology": "simple_two_party",
                         "role_mapping": {"confirmed": True, "manager_quality_allowed": True, "topology": "simple_two_party"},
-                        "manager": {"physical_channel": "left"},
-                        "client": {"physical_channel": "right"},
+                            "manager": {
+                                "physical_channel": "left",
+                                "variant_a": manager_text,
+                                "variant_b": manager_text,
+                            },
+                            "client": {
+                                "physical_channel": "right",
+                                "variant_a": "конец",
+                                "variant_b": "конец",
+                            },
                     }, ensure_ascii=False),),
                 )
     manifest_path = ready_db.with_suffix(".manifest.json")

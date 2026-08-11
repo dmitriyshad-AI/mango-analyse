@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import ctypes
+import errno
+import hashlib
+import os
+import stat
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterable, Mapping, Optional
+
+
+def _file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _descriptor_has_extended_acl(descriptor: int, *, label: str) -> bool:
+    """Fail closed when an owner-only descriptor grants access through an ACL."""
+    if sys.platform == "darwin":
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            acl_get_fd_np = libc.acl_get_fd_np
+            acl_get_fd_np.argtypes = (ctypes.c_int, ctypes.c_int)
+            acl_get_fd_np.restype = ctypes.c_void_p
+            acl_free = libc.acl_free
+            acl_free.argtypes = (ctypes.c_void_p,)
+            acl_free.restype = ctypes.c_int
+        except (AttributeError, OSError) as exc:
+            raise RuntimeError(f"{label}_acl_check_failed") from exc
+        ctypes.set_errno(0)
+        acl = acl_get_fd_np(descriptor, 0x100)  # ACL_TYPE_EXTENDED
+        if acl:
+            acl_free(acl)
+            return True
+        if ctypes.get_errno() == errno.ENOENT:
+            return False
+        raise RuntimeError(f"{label}_acl_check_failed")
+    if sys.platform.startswith("linux"):
+        try:
+            os.getxattr(descriptor, "system.posix_acl_access")
+        except OSError as exc:
+            no_acl_errors = {
+                value
+                for value in (
+                    getattr(errno, "ENODATA", None),
+                    getattr(errno, "ENOATTR", None),
+                )
+                if value is not None
+            }
+            if exc.errno in no_acl_errors:
+                return False
+            raise RuntimeError(f"{label}_acl_check_failed") from exc
+        return True
+    raise RuntimeError(f"{label}_acl_check_unsupported")
+
+
+@contextmanager
+def _stable_regular_descriptor(
+    path: Path,
+    *,
+    label: str,
+    owner_only_mode: Optional[int] = None,
+) -> Iterable[int]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError(f"{label}_unsafe_or_missing") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise RuntimeError(f"{label}_must_be_regular_nofollow")
+        if owner_only_mode is not None and (
+            opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != owner_only_mode
+        ):
+            raise RuntimeError(f"{label}_must_be_owner_only_{owner_only_mode:04o}")
+        if owner_only_mode is not None and _descriptor_has_extended_acl(
+            descriptor, label=label
+        ):
+            raise RuntimeError(f"{label}_must_not_have_extended_acl")
+        yield descriptor
+        after = os.fstat(descriptor)
+        current_after = os.lstat(path)
+        if (
+            _file_identity(opened) != _file_identity(after)
+            or (after.st_dev, after.st_ino)
+            != (current_after.st_dev, current_after.st_ino)
+            or not stat.S_ISREG(current_after.st_mode)
+        ):
+            raise RuntimeError(f"{label}_changed_while_reading")
+        if owner_only_mode is not None and _descriptor_has_extended_acl(
+            descriptor, label=label
+        ):
+            raise RuntimeError(f"{label}_must_not_have_extended_acl")
+    finally:
+        os.close(descriptor)
+
+
+def read_stable_regular_bytes(
+    path: Path,
+    *,
+    label: str,
+    owner_only_mode: Optional[int] = None,
+) -> bytes:
+    chunks: list[bytes] = []
+    with _stable_regular_descriptor(
+        path, label=label, owner_only_mode=owner_only_mode
+    ) as descriptor:
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def stable_regular_file_evidence(
+    path: Path, *, label: str = "sha256_source"
+) -> Mapping[str, object]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    with _stable_regular_descriptor(path, label=label) as descriptor:
+        opened = os.fstat(descriptor)
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    return {
+        "sha256": digest.hexdigest(),
+        "size_bytes": size_bytes,
+        "device": opened.st_dev,
+        "inode": opened.st_ino,
+        "mtime_ns": opened.st_mtime_ns,
+    }

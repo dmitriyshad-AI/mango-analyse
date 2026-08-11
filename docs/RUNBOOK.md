@@ -152,7 +152,8 @@ tail -100 product_data/mango_calls_two_processes/logs/process-a.stderr.log
 tail -100 product_data/mango_calls_two_processes/logs/process-b.stderr.log
 ```
 
-Штатная переустановка, только по отдельному подтверждённому ТЗ:
+Старая двухпроцессная топология ниже допустима только для явного
+legacy/non-strict config и только по отдельному подтверждённому ТЗ:
 
 ```bash
 python3 scripts/install_mango_calls_two_processes_service.py \
@@ -161,6 +162,18 @@ python3 scripts/install_mango_calls_two_processes_service.py \
   --process-a-interval-seconds 1800 \
   --install
 ```
+
+Для строгого M1 config штатная топология выбирается только явно:
+
+```bash
+python3 scripts/install_mango_calls_two_processes_service.py \
+  --config "$HOME/.mango_local/mango_calls_two_processes/config.json" \
+  --env-file "$HOME/.mango_secrets/mango_calls_m1_worker.env" \
+  --fast-service \
+  --install
+```
+
+Обе команды запрещено выполнять без отдельного разрешения на `launchd` и cutover.
 
 Старый label `com.mango.calls-two-processes` не является действующим
 конвейером A/B.

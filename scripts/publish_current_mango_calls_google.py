@@ -30,6 +30,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
+    has_dual_asr_or_exception,
     parse_aware_datetime,
     read_stable_regular_bytes,
     sha256_file,
@@ -113,6 +114,12 @@ CALL_TYPE_RU = {
     "technical_call": "Технический вопрос",
     "non_conversation": "Разговор не состоялся",
 }
+BLOCKING_PROCESSING_REASONS = (
+    "Распознавание не завершено",
+    "Вторая расшифровка GigaAM не готова",
+    "Разделение ролей не завершено",
+    "Смысловой анализ не завершён",
+)
 
 
 def json_object(value: Any) -> Mapping[str, Any]:
@@ -320,6 +327,8 @@ def load_manager_rows(
         issues: list[str] = []
         if row.get("transcription_status") != "done":
             issues.append("Распознавание не завершено")
+        if not has_dual_asr_or_exception(row):
+            issues.append("Вторая расшифровка GigaAM не готова")
         if row.get("resolve_status") not in {"done", "skipped"}:
             issues.append("Разделение ролей не завершено")
         if row.get("analysis_status") != "done" or not analysis:
@@ -524,6 +533,11 @@ def validate_safe_rows(rows: Any) -> list[Mapping[str, Any]]:
     return validated
 
 
+def processing_ready_row(row: Mapping[str, Any]) -> bool:
+    reasons = str(row.get("Причина проверки") or "")
+    return not any(reason in reasons for reason in BLOCKING_PROCESSING_REASONS)
+
+
 def build_safe_plan(
     *,
     day: date,
@@ -556,6 +570,9 @@ def build_safe_plan(
             "quarantine_without_reason",
         )
     }
+    processing_ready_unique = sum(processing_ready_row(row) for row in safe_rows)
+    row_completion_ok = processing_ready_unique == len(safe_rows)
+    stage10_counts["processing_ready_unique"] = processing_ready_unique
     if not (
         stage10_counts["ready_unique"]
         <= len(safe_rows)
@@ -583,7 +600,8 @@ def build_safe_plan(
         "source_ready_sha256": str(ready_manifest.get("sha256") or ""),
         "stage10_sha256": _safe_json_sha256(verdict),
         "consistency_ok": True,
-        "closure_ok": verdict.get("closure_ok") is True,
+        "closure_ok": verdict.get("closure_ok") is True and row_completion_ok,
+        "row_completion_ok": row_completion_ok,
         "pending_unique": pending_unique,
         "stage10_counts": stage10_counts,
         "rows": safe_rows,
@@ -634,6 +652,7 @@ def validate_safe_plan_payload(
     )
     try:
         normalized_counts = {field: int(counts[field]) for field in count_fields}
+        processing_ready_unique = int(counts["processing_ready_unique"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("safe Google plan Stage10 counts are invalid") from exc
     if (
@@ -653,6 +672,19 @@ def validate_safe_plan_payload(
     ):
         raise RuntimeError("safe Google plan Stage10 balance is invalid")
     safe_rows = validate_safe_rows(payload.get("rows"))
+    derived_processing_ready = sum(processing_ready_row(row) for row in safe_rows)
+    expected_row_completion = processing_ready_unique == len(safe_rows)
+    if (
+        processing_ready_unique != derived_processing_ready
+        or processing_ready_unique < 0
+        or processing_ready_unique > len(safe_rows)
+        or payload.get("row_completion_ok") is not expected_row_completion
+        or (
+            payload.get("closure_ok") is True
+            and processing_ready_unique != len(safe_rows)
+        )
+    ):
+        raise RuntimeError("safe Google plan row completion state is inconsistent")
     quarantine_items = payload.get("quarantine_items")
     quarantine_errors = validate_quarantine_items_payload(
         quarantine_items,
@@ -1203,7 +1235,15 @@ def _summary_rows(
     )
     return [
         ["Найдено Mango", int(stage10.get("mango_unique", len(desired_rows)))],
-        ["Полностью готово", int(stage10.get("ready_unique", len(desired_rows)))],
+        [
+            "Полностью готово",
+            int(
+                stage10.get(
+                    "processing_ready_unique",
+                    stage10.get("ready_unique", len(desired_rows)),
+                )
+            ),
+        ],
         ["Ожидает обработки", int(stage10.get("pending_unique", 0))],
         ["Карантин", int(stage10.get("quarantine_unique", 0))],
         ["Непонятные пропуски", int(stage10.get("unexplained_missing", 0))],
@@ -1529,22 +1569,23 @@ def publication_lock(path: Path) -> Iterable[None]:
 
 
 def validate_credentials(path: Path) -> Mapping[str, Any]:
-    info = path.lstat()
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or path.is_symlink()
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) != 0o600
-    ):
-        raise RuntimeError("Google credentials must be owner-only 0600")
-    resolved = path.resolve()
+    candidate = path.expanduser().absolute()
+    try:
+        raw = read_stable_regular_bytes(
+            candidate,
+            label="google_credentials",
+            owner_only_mode=0o600,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError("Google credentials must be owner-only 0600") from exc
+    resolved = candidate.resolve()
     if resolved == ROOT or ROOT in resolved.parents or any(
         marker in part.casefold()
         for part in resolved.parts
         for marker in ("yandex.disk", "icloud", "mobile documents", "dropbox", "onedrive")
     ):
         raise RuntimeError("Google credentials must stay outside repository and cloud folders")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, Mapping) or not str(payload.get("client_email") or "").strip():
         raise RuntimeError("Google credentials are invalid")
     return payload
@@ -1586,10 +1627,11 @@ def load_google_config(path: Path) -> Mapping[str, Any]:
         "allowed_emails": tuple(sorted(set(roles) - {owner})),
         "pilot_started_day": pilot,
         "credentials": credentials,
+        "credentials_info": dict(credentials_payload),
     }
 
 
-def authorized_session(credentials: Path) -> Any:
+def authorized_session(credentials_info: Mapping[str, Any]) -> Any:
     from google.auth.transport.requests import AuthorizedSession
     from google.oauth2.service_account import Credentials
 
@@ -1598,7 +1640,7 @@ def authorized_session(credentials: Path) -> Any:
         "https://www.googleapis.com/auth/spreadsheets",
     )
     return AuthorizedSession(
-        Credentials.from_service_account_file(str(credentials), scopes=scopes)
+        Credentials.from_service_account_info(dict(credentials_info), scopes=scopes)
     )
 
 
@@ -1707,7 +1749,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             report = publish_current(
                 GoogleGateway(
-                    authorized_session(config["credentials"]),
+                    authorized_session(config["credentials_info"]),
                     str(config["spreadsheet_id"]),
                 ),
                 day=args.day,

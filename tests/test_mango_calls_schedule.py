@@ -4,6 +4,7 @@ import json
 import fcntl
 import os
 import plistlib
+import shutil
 import shlex
 import subprocess
 import sys
@@ -79,6 +80,8 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
                 "python_executable": sys.executable,
                 "codex_binary": sys.executable,
                 "codex_home_root": str(tmp_path / "codex_home"),
+                "require_cutover_authority": False,
+                "strict_ready_provenance": False,
             }
         ),
         encoding="utf-8",
@@ -90,6 +93,19 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     )
     env_path.chmod(0o600)
     return config_path, env_path
+
+
+def _copy_runtime_reader_modules(target_root: Path) -> None:
+    for relative in (
+        "src/mango_mvp/__init__.py",
+        "src/mango_mvp/productization/__init__.py",
+        "src/mango_mvp/productization/owner_only_io.py",
+        "src/mango_mvp/productization/mango_calls_config.py",
+    ):
+        source = ROOT / relative
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
@@ -104,7 +120,8 @@ def _clean_git_repo(tmp_path: Path) -> tuple[Path, str]:
     (scripts / "mango_calls_env.py").write_text(
         (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
     )
-    subprocess.run(["git", "add", "scripts"], cwd=repo, check=True)
+    _copy_runtime_reader_modules(repo)
+    subprocess.run(["git", "add", "scripts", "src"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                     "commit", "-qm", "test"], cwd=repo, check=True)
     return repo, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
@@ -126,6 +143,7 @@ def _copy_runner(tmp_path: Path, launchctl: Path) -> Path:
     (scripts / "mango_calls_env.py").write_text(
         (ROOT / "scripts" / "mango_calls_env.py").read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _copy_runtime_reader_modules(scripts.parent)
     return runner
 
 
@@ -177,10 +195,56 @@ def test_launchd_installer_renders_scheduled_a_and_demand_only_b(tmp_path: Path)
     assert process_a["Umask"] == process_b["Umask"] == 63
 
 
+def test_strict_config_requires_explicit_installer_topology(tmp_path: Path) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(RuntimeError, match="requires --fast-service"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+            ]
+        )
+
+
+def test_missing_strict_flags_require_explicit_installer_topology(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("require_cutover_authority")
+    config.pop("strict_ready_provenance")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(RuntimeError, match="requires --fast-service"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+            ]
+        )
+
+
 def test_fast_service_renders_exact_publication_schedule_without_execute(
     tmp_path: Path,
 ) -> None:
     config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
     out_dir = tmp_path / "launchd"
     subprocess.run(
         [
@@ -220,6 +284,20 @@ def test_fast_service_renders_exact_publication_schedule_without_execute(
         {"Minute": 7},
         {"Minute": 37},
     ]
+    assert {
+        plists[label]["ProgramArguments"][-1]
+        for label in (
+            "com.mango.calls-capture",
+            "com.mango.calls-pipeline",
+            "com.mango.calls-process-b",
+            "com.mango.calls-watchdog",
+        )
+    } == {
+        "capture-worker",
+        "pipeline-worker",
+        "process-b-worker",
+        "watchdog-worker",
+    }
     runner = RUNNER.read_text(encoding="utf-8")
     assert "current-plan" in runner
     assert "publish_daily_mango_calls_google.py" not in runner
@@ -337,7 +415,8 @@ def test_process_b_launchd_path_does_not_use_cycle_or_asr_runner(tmp_path: Path)
     assert "asr" not in runner_text
     assert "--stages" not in runner_text
     assert "mango_mvp.cli" not in runner_text
-    assert "/usr/bin/plutil -extract python_executable" in runner_text
+    assert "mango_mvp.productization.mango_calls_config" in runner_text
+    assert "/usr/bin/plutil" not in runner_text
     assert '"${python_executable}" "${root}/scripts/run_mango_calls_pipeline.py"' in runner_text
     assert "launchctl kickstart" in runner_text
 
@@ -956,15 +1035,9 @@ def test_process_wrapper_rejects_pipeline_root_env_mismatch(tmp_path: Path) -> N
     assert "pipeline_root_config_env_mismatch" in result.stderr
 
 
-@pytest.mark.parametrize(
-    ("missing_key", "stop_reason"),
-    (
-        ("python_executable", "config_missing_python_executable"),
-        ("pipeline_root", "config_missing_pipeline_root"),
-    ),
-)
+@pytest.mark.parametrize("missing_key", ("python_executable", "pipeline_root"))
 def test_process_wrapper_reports_missing_required_config_key(
-    tmp_path: Path, missing_key: str, stop_reason: str
+    tmp_path: Path, missing_key: str
 ) -> None:
     config_path, env_file = _write_config(tmp_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -977,7 +1050,10 @@ def test_process_wrapper_reports_missing_required_config_key(
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stderr)["stop_reason"] == stop_reason
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "config_file_must_be_owner_only_0600_or_invalid"
+    )
 
 
 def test_legacy_local_process_a_keeps_working_before_runtime_relocation(tmp_path: Path) -> None:
@@ -1006,6 +1082,225 @@ fi
 
     assert result.returncode == 0
     assert "pipeline_root_outside_owner_local_root_or_symlink" not in result.stderr
+
+
+def test_config_swap_between_wrapper_and_pipeline_is_rejected(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    fake_python = tmp_path / "configured-python"
+    fake_python.write_text(
+        f'''#!/bin/zsh
+{shlex.quote(sys.executable)} - "$CONFIG_TO_SWAP" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload.update(require_cutover_authority=True, strict_ready_provenance=True)
+path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+exec {shlex.quote(sys.executable)} "$@"
+''',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pipeline_root"] = str(ROOT / "product_data" / "legacy-runtime")
+    config["python_executable"] = str(fake_python)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a"],
+        cwd=ROOT,
+        env={**_worker_env(tmp_path), "CONFIG_TO_SWAP": str(config_path)},
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "failed"
+    assert payload["stop_reason"] == "cli_exception:RuntimeError"
+    assert "launchctl" not in result.stderr
+
+
+def test_unchanged_config_matches_wrapper_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from mango_mvp.customer_timeline.calls_two_processes import (
+        CallsTwoProcessesConfig,
+    )
+    from mango_mvp.productization.mango_calls_config import (
+        EXPECTED_CONFIG_SHA_ENV,
+    )
+
+    config_path, _ = _write_config(tmp_path)
+    expected = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    monkeypatch.setenv(EXPECTED_CONFIG_SHA_ENV, expected)
+
+    config = CallsTwoProcessesConfig.from_json(config_path)
+
+    assert config.pipeline_root == tmp_path / ".mango_local" / "pipeline"
+
+
+@pytest.mark.parametrize("command", ["process-a", "process-b", "capture", "pipeline", "watchdog"])
+def test_strict_runtime_rejects_unguarded_aliases(
+    tmp_path: Path, command: str
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=True)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), command],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "strict_runtime_requires_guarded_worker_command"
+    )
+
+
+def test_missing_strict_flags_default_to_strict_runtime(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("require_cutover_authority")
+    config.pop("strict_ready_provenance")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [str(RUNNER), str(config_path), str(env_file), "process-a"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert (
+        json.loads(result.stderr)["stop_reason"]
+        == "strict_runtime_requires_guarded_worker_command"
+    )
+
+
+@pytest.mark.parametrize("invalid", ("true", 1, None))
+def test_strict_flags_must_be_json_booleans(
+    tmp_path: Path, invalid: object
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["require_cutover_authority"] = invalid
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(ValueError, match="JSON boolean"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_file),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+                "--fast-service",
+            ]
+        )
+
+
+def test_strict_flags_must_be_enabled_together(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.update(require_cutover_authority=True, strict_ready_provenance=False)
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    installer = _load_installer()
+
+    with pytest.raises(ValueError, match="enabled together"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_file),
+                "--out-dir",
+                str(tmp_path / "launchd"),
+                "--fast-service",
+            ]
+        )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACL syntax")
+@pytest.mark.parametrize("target", ("config", "env"))
+def test_runtime_wrapper_rejects_owner_only_file_with_extended_acl(
+    tmp_path: Path, target: str
+) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    path = config_path if target == "config" else env_file
+    subprocess.run(
+        ["/usr/bin/xattr", "-w", "com.mango.synthetic", "1", str(path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(path)],
+        check=True,
+    )
+    try:
+        result = subprocess.run(
+            [str(RUNNER), str(config_path), str(env_file), "process-a"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
+        subprocess.run(
+            ["/usr/bin/xattr", "-d", "com.mango.synthetic", str(path)],
+            check=False,
+        )
+
+    assert result.returncode == 2
+    expected = (
+        "config_file_must_be_owner_only_0600_or_invalid"
+        if target == "config"
+        else "env_file_must_be_owner_only_0600"
+    )
+    assert json.loads(result.stderr)["stop_reason"] == expected
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended ACL syntax")
+def test_installer_rejects_owner_only_config_with_extended_acl(tmp_path: Path) -> None:
+    config_path, env_file = _write_config(tmp_path)
+    subprocess.run(
+        ["/usr/bin/xattr", "-w", "com.mango.synthetic", "1", str(config_path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read", str(config_path)],
+        check=True,
+    )
+    installer = _load_installer()
+    try:
+        with pytest.raises(RuntimeError, match="config file permissions are unsafe"):
+            installer.main(
+                [
+                    "--config",
+                    str(config_path),
+                    "--env-file",
+                    str(env_file),
+                    "--out-dir",
+                    str(tmp_path / "launchd"),
+                    "--fast-service",
+                ]
+            )
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(config_path)], check=True)
+        subprocess.run(
+            ["/usr/bin/xattr", "-d", "com.mango.synthetic", str(config_path)],
+            check=False,
+        )
 
 
 def test_legacy_cycle_entrypoint_is_fail_closed() -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -32,7 +31,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-code-sha", required=True)
     parser.add_argument("--expected-cutover-manifest-sha256", required=True)
     parser.add_argument("--expected-previous-host-snapshot-sha256", required=True)
-    parser.add_argument("--now", help="Test-only aware ISO-8601 clock override.")
     return parser
 
 
@@ -53,7 +51,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             expected_previous_host_snapshot_sha256=(
                 args.expected_previous_host_snapshot_sha256
             ),
-            now=datetime.fromisoformat(args.now) if args.now else None,
         )
     except Exception as exc:  # noqa: BLE001 - safe CLI boundary
         report = {

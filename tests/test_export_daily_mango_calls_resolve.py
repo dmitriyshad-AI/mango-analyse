@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,12 @@ from openpyxl import Workbook, load_workbook
 from scripts import export_daily_mango_calls_resolve as exporter
 from scripts import evaluate_dialogue_quality as dialogue_quality
 from mango_mvp.productization.mango_calls_service_contract import (
+    STAGE10_SCHEMA,
     approved_runtime_fingerprint,
+)
+from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
+    inspect_ready_publication,
 )
 
 
@@ -42,6 +48,30 @@ CREATE TABLE call_records (
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _interrupt_ready_publication(ready_db: Path) -> None:
+    staged = ready_db.parent / "synthetic-next.sqlite"
+    shutil.copy2(ready_db, staged)
+    staged.chmod(0o600)
+    with sqlite3.connect(staged) as con:
+        con.execute("CREATE TABLE synthetic_publication_marker(value INTEGER)")
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        ready_db=str(ready_db),
+        sha256=_sha(staged),
+        size_bytes=staged.stat().st_size,
+        ready_mtime_ns=staged.stat().st_mtime_ns,
+        published_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    def crash(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic ready publication crash")
+
+    with pytest.raises(RuntimeError, match="synthetic ready publication crash"):
+        commit_ready_generation(ready_db, staged, manifest, checkpoint=crash)
 
 
 def _analysis() -> dict:
@@ -137,8 +167,15 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     return ready_db, working_db, users, tallanto, tmp_path / "out"
 
 
-def _seal_ready(ready_db: Path, *, ready_count: int) -> Path:
+def _seal_ready(
+    ready_db: Path,
+    *,
+    ready_count: int,
+    mango_count: int | None = None,
+    quarantine_count: int = 0,
+) -> Path:
     day = "2026-07-28"
+    mango_count = ready_count if mango_count is None else mango_count
     source = {
         "mode": "strict_service",
         "since": "2026-07-27T21:00:00+00:00",
@@ -159,14 +196,27 @@ def _seal_ready(ready_db: Path, *, ready_count: int) -> Path:
         "catch_up": False,
     }
     verdict = {
-        "schema_version": "mango_calls_stage10_verdict_v1",
+        "schema_version": STAGE10_SCHEMA,
         "day": day,
         "generated_at": "2026-07-29T00:00:00+00:00",
         "mango_enumeration_complete": True,
         "mango_enumeration_source": source,
-        "mango_unique": ready_count,
+        "mango_unique": mango_count,
         "ready_unique": ready_count,
-        "quarantine_unique": 0,
+        "quarantine_unique": quarantine_count,
+        "quarantine_items": [
+            {
+                "call_key": f"quarantine-{index + 1}",
+                "started_at": "2026-07-28T12:00:00+00:00",
+                "code": "recording_retry_expired",
+                "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
+                "action": (
+                    "Проверить запись в Mango и повторить загрузку вручную, "
+                    "если файл появился."
+                ),
+            }
+            for index in range(quarantine_count)
+        ],
         "pending_unique": 0,
         "unexplained_missing": 0,
         "state_overlap_count": 0,
@@ -232,6 +282,46 @@ class FailingTallantoClient:
 
 def test_moscow_calendar_day_has_exact_utc_bounds() -> None:
     assert exporter.day_bounds_utc(date(2026, 7, 28)) == ("2026-07-27 21:00:00", "2026-07-28 21:00:00")
+
+
+def test_daily_export_lock_is_derived_from_exact_ready_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = tmp_path / "pipeline" / "drop" / "ready.sqlite"
+    output = tmp_path / "reports"
+    monkeypatch.setattr(exporter, "PIPELINE_ROOT", tmp_path / "wrong-global-root")
+
+    with exporter.daily_export_lock(ready, output, date(2026, 7, 28)):
+        with pytest.raises(RuntimeError, match="already running"):
+            with exporter.daily_export_lock(
+                ready, output, date(2026, 7, 28)
+            ):
+                pass
+
+    assert (ready.parent / ".daily-export-locks").is_dir()
+    assert not (tmp_path / "wrong-global-root").exists()
+
+
+def test_daily_export_rejects_generation_changed_after_coordinator_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_db, working_db, users, _tallanto, out = _fixture(
+        tmp_path, monkeypatch
+    )
+    _seal_ready(ready_db, ready_count=1)
+
+    with pytest.raises(RuntimeError, match="coordinator decision"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            expected_ready_manifest_sha256="0" * 64,
+        )
+
+    assert not out.exists()
 
 
 def test_current_mango_users_override_archived_manager_name(tmp_path: Path) -> None:
@@ -688,6 +778,52 @@ def test_incomplete_row_without_specific_issue_remains_visible(tmp_path: Path, m
     wb.close()
 
 
+def test_daily_export_recovers_interrupted_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _interrupt_ready_publication(ready_db)
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["rows"] == 2
+    assert inspect_ready_publication(ready_db)["recovery_required"] is False
+
+
+def test_missing_target_day_verdict_can_never_be_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    manifest_path = _seal_ready(ready_db, ready_count=1)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["daily_verdicts"] = {}
+    manifest["moscow_dates"] = []
+    manifest["closure_ok"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+    )
+
+    assert result["closure_ok"] is False
+    assert result["package_status"] == "INCOMPLETE_DO_NOT_USE_AS_FINAL"
+    assert Path(result["xlsx"]).name.startswith("НЕПОЛНЫЙ")
+
+
 def test_repeated_export_reuses_identical_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
     kwargs = {"tallanto_export": tallanto, "tallanto_client": FakeTallantoClient()}
@@ -1079,6 +1215,48 @@ def test_crash_after_xlsx_resumes_across_unrelated_ready_generation(
     assert not list(out.glob(".daily_export_*.journal.json"))
 
 
+def test_changed_day_content_quarantines_interrupted_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    _seal_ready(ready_db, ready_count=1)
+    real_write = exporter.write_private_json
+
+    def crash_before_export_manifest(path: Path, payload: object) -> None:
+        if isinstance(payload, dict) and payload.get("schema_version") == exporter.EXPORT_SCHEMA_VERSION:
+            raise OSError("synthetic crash after XLSX")
+        real_write(path, payload)
+
+    monkeypatch.setattr(exporter, "write_private_json", crash_before_export_manifest)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    with pytest.raises(OSError, match="synthetic crash"):
+        exporter.export_day(
+            ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+        )
+    old_xlsx = next(out.glob("*.xlsx"))
+    with sqlite3.connect(ready_db) as con:
+        con.execute("UPDATE call_records SET duration_sec=duration_sec+1")
+    _seal_ready(ready_db, ready_count=1)
+    monkeypatch.setattr(exporter, "write_private_json", real_write)
+
+    result = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    quarantines = list(out.glob(".daily_export_*.quarantine.json"))
+
+    assert len(quarantines) == 1
+    quarantine = json.loads(quarantines[0].read_text(encoding="utf-8"))
+    assert quarantine["status"] == "quarantined_source_content_changed"
+    assert quarantine["xlsx"] == old_xlsx.name
+    assert Path(result["xlsx"]) != old_xlsx
+    assert len(list(out.glob("*.xlsx"))) == 2
+    assert not list(out.glob(".daily_export_*.journal.json"))
+
+
 def test_final_supersedes_immutable_incomplete_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1174,6 +1352,22 @@ def test_late_closed_call_creates_one_immutable_supplement(
     assert supplement["supplement_number"] == 1
     assert supplement["supplement_of"] == Path(base["manifest"]).name
     assert supplement["supplement_of_sha256"] == base_hashes[Path(base["manifest"])]
+    assert {
+        field: supplement[field]
+        for field in (
+            "mango_unique",
+            "ready_unique",
+            "quarantine_unique",
+            "pending_unique",
+            "unexplained_missing",
+        )
+    } == {
+        "mango_unique": 2,
+        "ready_unique": 2,
+        "quarantine_unique": 0,
+        "pending_unique": 0,
+        "unexplained_missing": 0,
+    }
     assert all(_sha(path) == digest for path, digest in base_hashes.items())
     repeated = exporter.export_day(
         ready_db,
@@ -1188,6 +1382,83 @@ def test_late_closed_call_creates_one_immutable_supplement(
     assert repeated["reused"] is True
     assert repeated["manifest"] == supplement["manifest"]
     assert not list(out.glob("*supplement-2.manifest.json"))
+
+    base_manifest = Path(base["manifest"])
+    changed_base = json.loads(base_manifest.read_text(encoding="utf-8"))
+    changed_base["generated_at"] = "2099-01-01T00:00:00+00:00"
+    base_manifest.write_text(json.dumps(changed_base), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="supplement lineage"):
+        exporter.export_day(
+            ready_db,
+            working_db,
+            out,
+            date(2026, 7, 28),
+            users,
+            tallanto_export=tallanto,
+            tallanto_client=FakeTallantoClient(),
+            sealed_only=True,
+        )
+    assert not list(out.glob("*supplement-2.manifest.json"))
+
+
+def test_balance_only_change_creates_supplement_with_new_balance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready_db, working_db, users, tallanto, out = _fixture(tmp_path, monkeypatch)
+    kwargs = {
+        "tallanto_export": tallanto,
+        "tallanto_client": FakeTallantoClient(),
+        "sealed_only": True,
+    }
+    _seal_ready(ready_db, ready_count=1)
+    base = exporter.export_day(
+        ready_db, working_db, out, date(2026, 7, 28), users, **kwargs
+    )
+    _seal_ready(
+        ready_db,
+        ready_count=1,
+        mango_count=2,
+        quarantine_count=1,
+    )
+
+    supplement = exporter.export_day(
+        ready_db,
+        working_db,
+        out,
+        date(2026, 7, 28),
+        users,
+        tallanto_export=tallanto,
+        tallanto_client=FakeTallantoClient(),
+        sealed_only=True,
+    )
+
+    assert supplement["supplement_number"] == 1
+    assert supplement["content_sha256"] != base["content_sha256"]
+    assert supplement["mango_unique"] == 2
+    assert supplement["ready_unique"] == 1
+    assert supplement["quarantine_unique"] == 1
+    assert supplement["quarantine_items"][0]["call_key"] == "quarantine-1"
+    wb = load_workbook(supplement["xlsx"], read_only=True, data_only=True)
+    try:
+        summary = {
+            str(row[0]): row[1]
+            for row in wb["Сводка"].iter_rows(values_only=True)
+            if row and row[0]
+        }
+        problems = " ".join(
+            str(cell)
+            for row in wb["Проблемы данных"].iter_rows(values_only=True)
+            for cell in row
+        )
+    finally:
+        wb.close()
+    assert "Карантин Stage10" in problems
+    assert "Аудиозапись не появилась в Mango в течение 72 часов." in problems
+    assert "повторить загрузку вручную" in problems
+    assert "+7999" not in problems
+    assert summary["Всего звонков"] == 2
+    assert summary["Строк с доступными данными"] == 1
+    assert summary["Требуют проверки"] >= 1
 
 
 def test_tallanto_multiple_matches_are_not_selected(tmp_path: Path) -> None:

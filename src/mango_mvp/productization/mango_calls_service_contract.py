@@ -20,7 +20,7 @@ from mango_mvp.productization.capture_staging import atomic_write_private_json
 MOSCOW = ZoneInfo("Europe/Moscow")
 READY_MANIFEST_SCHEMA = "mango_calls_ready_v2"
 CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v1"
-STAGE10_SCHEMA = "mango_calls_stage10_verdict_v1"
+STAGE10_SCHEMA = "mango_calls_stage10_verdict_v2"
 APPROVED_MODELS: Mapping[str, Mapping[str, Any]] = {
     "whisper": {
         "provider": "mlx",
@@ -62,9 +62,44 @@ APPROVED_MODELS: Mapping[str, Mapping[str, Any]] = {
     },
 }
 QUARANTINE_STATUSES = {
+    "audio_integrity_quarantined",
     "recording_retry_expired",
     "multiple_recordings_needs_review",
     "duplicate_recording",
+}
+QUARANTINE_MANAGER_GUIDANCE: Mapping[str, tuple[str, str]] = {
+    "quarantine_evidence_incomplete": (
+        "Карантин зарегистрирован, но подтверждённая причина отсутствует.",
+        "Проверить исходные данные и восстановить доказательство причины карантина.",
+    ),
+    "audio_integrity_quarantined": (
+        "Контрольная сумма сохранённой аудиозаписи изменилась.",
+        "Восстановить исходный файл по контрольной сумме или оставить звонок в карантине.",
+    ),
+    "recording_retry_expired": (
+        "Аудиозапись не появилась в Mango в течение 72 часов.",
+        "Проверить запись в Mango и повторить загрузку вручную, если файл появился.",
+    ),
+    "multiple_recordings_needs_review": (
+        "Для звонка найдено несколько аудиозаписей.",
+        "Выбрать соответствующую звонку запись вручную.",
+    ),
+    "duplicate_recording": (
+        "Аудиозапись уже связана с другим событием звонка.",
+        "Проверить связь звонка и записи, затем оставить только каноническое событие.",
+    ),
+    "dead_letter_transcribe": (
+        "Распознавание не завершилось после допустимых попыток.",
+        "Проверить аудиофайл и повторить распознавание вручную.",
+    ),
+    "dead_letter_resolve": (
+        "Разделение ролей не завершилось после допустимых попыток.",
+        "Проверить расшифровку и повторить разделение ролей вручную.",
+    ),
+    "dead_letter_analyze": (
+        "Смысловой анализ не завершился после допустимых попыток.",
+        "Проверить подготовленный диалог и повторить смысловой анализ вручную.",
+    ),
 }
 SAFE_ALERT_KEYS = {
     "schema_version",
@@ -115,6 +150,59 @@ def event_is_on_moscow_day(started_at: Any, day: date) -> bool:
         return parse_aware_datetime(started_at).astimezone(MOSCOW).date() == day
     except (TypeError, ValueError):
         return False
+
+
+def validate_quarantine_items_payload(
+    value: Any,
+    *,
+    day: date,
+    expected_count: int,
+    expected_without_reason: Optional[int] = None,
+) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ["daily_verdict_quarantine_items_invalid"]
+    keys: set[str] = set()
+    normalized_order: list[tuple[datetime, str]] = []
+    incomplete_count = 0
+    for raw_item in value:
+        if not isinstance(raw_item, Mapping) or set(raw_item) != {
+            "call_key",
+            "started_at",
+            "code",
+            "reason",
+            "action",
+        }:
+            return ["daily_verdict_quarantine_items_invalid"]
+        call_key = str(raw_item.get("call_key") or "").strip()
+        code = str(raw_item.get("code") or "")
+        guidance = QUARANTINE_MANAGER_GUIDANCE.get(code)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", call_key)
+            or call_key in keys
+            or guidance is None
+            or raw_item.get("reason") != guidance[0]
+            or raw_item.get("action") != guidance[1]
+        ):
+            return ["daily_verdict_quarantine_items_invalid"]
+        try:
+            started_at = parse_aware_datetime(raw_item.get("started_at"))
+        except (TypeError, ValueError):
+            return ["daily_verdict_quarantine_items_invalid"]
+        if started_at.astimezone(MOSCOW).date() != day:
+            return ["daily_verdict_quarantine_items_invalid"]
+        keys.add(call_key)
+        normalized_order.append((started_at, call_key))
+        incomplete_count += code == "quarantine_evidence_incomplete"
+    if (
+        len(keys) != expected_count
+        or normalized_order != sorted(normalized_order)
+        or (
+            expected_without_reason is not None
+            and incomplete_count != expected_without_reason
+        )
+    ):
+        return ["daily_verdict_quarantine_items_invalid"]
+    return []
 
 
 def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -648,10 +736,44 @@ def build_stage10_verdict(
                 and entry.get("remediation_code")
                 == "manual_review_or_retry_if_recording_appears"
             )
+        if status == "audio_integrity_quarantined":
+            return bool(
+                entry.get("error") == "capture_target_integrity_mismatch"
+                and entry.get("remediation_code")
+                == "manual_restore_or_quarantine_corrupted_audio"
+                and entry.get("recovery_state") == "immutable_audio_violation"
+            )
         return bool(str(entry.get("error") or "").strip())
 
     quarantine_without_reason = sum(
-        not quarantine_has_reason(key) for key in quarantine_keys
+        not quarantine_has_reason(key) for key in quarantine_keys & mango_keys
+    )
+
+    def quarantine_item(key: str) -> Mapping[str, str]:
+        has_reason = quarantine_has_reason(key)
+        if key in db_quarantine_keys:
+            source_row = ready[key]
+            code = f"dead_letter_{str(source_row.get('dead_letter_stage') or '')}"
+        else:
+            source_row = latest_capture[key]
+            code = str(source_row.get("status") or "")
+        if not has_reason:
+            code = "quarantine_evidence_incomplete"
+        reason, action = QUARANTINE_MANAGER_GUIDANCE[code]
+        started_at = parse_aware_datetime(
+            source_row.get("started_at") or source_row.get("created_at")
+        ).isoformat()
+        return {
+            "call_key": key,
+            "started_at": started_at,
+            "code": code,
+            "reason": reason,
+            "action": action,
+        }
+
+    quarantine_items = sorted(
+        (quarantine_item(key) for key in quarantine_keys & mango_keys),
+        key=lambda item: (parse_aware_datetime(item["started_at"]), item["call_key"]),
     )
     active_ready_rows = [row for key, row in ready.items() if key in active_db_keys]
     ready_without_dual = sum(
@@ -697,6 +819,7 @@ def build_stage10_verdict(
         "ready_unique": len(ready_keys & mango_keys),
         "ready_incomplete_unique": len(db_pending_keys & mango_keys),
         "quarantine_unique": len(quarantine_keys & mango_keys),
+        "quarantine_items": quarantine_items,
         "pending_unique": len(pending_keys & mango_keys),
         "unexplained_missing": len(unexplained_keys),
         "state_overlap_count": state_overlap_count,
@@ -924,6 +1047,14 @@ def validate_ready_manifest_payload(
                 + counts["unexplained_missing"]
             ):
                 errors.append("daily_verdict_balance_mismatch")
+            errors.extend(
+                validate_quarantine_items_payload(
+                    raw_verdict.get("quarantine_items"),
+                    day=date.fromisoformat(str(day_key)),
+                    expected_count=counts["quarantine_unique"],
+                    expected_without_reason=counts["quarantine_without_reason"],
+                )
+            )
             if (
                 counts["pending_awaiting_recording"] > counts["pending_unique"]
                 or counts["pending_over_sla"] > counts["pending_unique"]

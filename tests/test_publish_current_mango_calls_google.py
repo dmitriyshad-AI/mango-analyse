@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -9,8 +10,13 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.productization.mango_calls_service_contract import (
+    STAGE10_SCHEMA,
     approved_runtime_fingerprint,
     sha256_file,
+)
+from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
+    inspect_ready_publication,
 )
 from scripts import publish_current_mango_calls_google as publisher
 
@@ -18,6 +24,29 @@ from scripts import publish_current_mango_calls_google as publisher
 OWNER = "owner@example.test"
 SERVICE = "calls@example.test"
 ROP = "rop@example.test"
+
+
+def _interrupt_ready_publication(ready_db: Path) -> None:
+    staged = ready_db.parent / "synthetic-next.sqlite"
+    shutil.copy2(ready_db, staged)
+    staged.chmod(0o600)
+    with sqlite3.connect(staged) as con:
+        con.execute("CREATE TABLE synthetic_publication_marker(value INTEGER)")
+    manifest_path = ready_db.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        ready_db=str(ready_db),
+        sha256=sha256_file(staged),
+        size_bytes=staged.stat().st_size,
+        ready_mtime_ns=staged.stat().st_mtime_ns,
+    )
+
+    def crash(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic ready publication crash")
+
+    with pytest.raises(RuntimeError, match="synthetic ready publication crash"):
+        commit_ready_generation(ready_db, staged, manifest, checkpoint=crash)
 
 
 def permissions(*, extra: str | None = None, public: bool = False) -> list[dict[str, str]]:
@@ -229,6 +258,68 @@ def test_three_header_based_upserts_preserve_rop_sort_and_unknown_column() -> No
     assert third["status"] == "unchanged" and third["managed_cell_updates"] == 0
 
 
+def test_quarantine_is_only_in_review_is_idempotent_and_clears() -> None:
+    gateway = Gateway()
+    quarantine = publisher.quarantine_review_rows(
+        [
+            {
+                "call_key": "quarantine-1",
+                "started_at": "2026-08-11T09:30:00+00:00",
+                "code": "recording_retry_expired",
+                "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
+                "action": (
+                    "Проверить запись в Mango и повторить загрузку вручную, "
+                    "если файл появился."
+                ),
+            }
+        ],
+        day=date(2026, 8, 11),
+    )
+    summary = {
+        "mango_unique": 2,
+        "ready_unique": 1,
+        "quarantine_unique": 1,
+        "pending_unique": 0,
+        "unexplained_missing": 0,
+        "consistency_ok": True,
+        "closure_ok": True,
+    }
+
+    first = publish(
+        gateway,
+        [manager_row("call-1")],
+        quarantine_rows=quarantine,
+        stage10_summary=summary,
+    )
+    second = publish(
+        gateway,
+        [manager_row("call-1")],
+        quarantine_rows=quarantine,
+        stage10_summary=summary,
+    )
+
+    assert first["quarantine_rows"] == 1
+    assert second["status"] == "unchanged"
+    current = gateway.values[publisher.CURRENT_TITLE]
+    review = gateway.values[publisher.REVIEW_TITLE]
+    assert [row[0] for row in current[1:] if row] == ["call-1"]
+    assert [row[0] for row in review[1:] if row] == ["quarantine-1"]
+    assert review[1][review[0].index("Телефон")] == ""
+    assert review[1][review[0].index(publisher.TRANSCRIPT_LINK_HEADER)] == ""
+    assert review[1][review[0].index("Следующий шаг")].startswith(
+        "Техническое действие с данными:"
+    )
+
+    cleared = publish(
+        gateway,
+        [manager_row("call-1")],
+        quarantine_rows=[],
+        stage10_summary={**summary, "mango_unique": 1, "quarantine_unique": 0},
+    )
+    assert cleared["status"] == "updated"
+    assert not [row for row in gateway.values[publisher.REVIEW_TITLE][1:] if any(row)]
+
+
 @pytest.mark.parametrize(
     "acl",
     [permissions(extra="outsider@example.test"), permissions(public=True)],
@@ -361,7 +452,8 @@ def _ready_fixture(tmp_path: Path, *, analyzed: bool) -> tuple[Path, Path]:
             ),
         )
     verdict = {
-        "schema_version": "mango_calls_stage10_verdict_v1",
+        "schema_version": STAGE10_SCHEMA,
+        "quarantine_items": [],
         "day": "2026-08-11",
         "generated_at": "2026-08-11T10:00:00+00:00",
         "mango_enumeration_complete": True,
@@ -468,6 +560,66 @@ def test_projection_never_contains_full_dialogue_path_or_diagnostic_json(tmp_pat
     assert set(rows[0]) == set(publisher.MANAGED_HEADERS)
 
 
+def test_capture_quarantine_is_visible_as_safe_manager_review_row(
+    tmp_path: Path,
+) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verdict = manifest["daily_verdicts"]["2026-08-11"]
+    verdict.update(
+        mango_unique=2,
+        quarantine_unique=1,
+        quarantine_items=[
+            {
+                "call_key": "capture-quarantine-1",
+                "started_at": "2026-08-11T09:30:00+00:00",
+                "code": "recording_retry_expired",
+                "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
+                "action": (
+                    "Проверить запись в Mango и повторить загрузку вручную, "
+                    "если файл появился."
+                ),
+            }
+        ],
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rows = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )
+
+    assert len(rows) == 1
+    plan = publisher.build_safe_plan(
+        day=date(2026, 8, 11),
+        rows=rows,
+        ready_manifest=manifest,
+        now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+    )
+    quarantine_rows = publisher.quarantine_review_rows(
+        plan["quarantine_items"], day=date(2026, 8, 11)
+    )
+    assert len(quarantine_rows) == 1
+    quarantine = quarantine_rows[0]
+    assert quarantine["Тип разговора"] == "Карантин данных"
+    assert quarantine["Нужна проверка"] == "Да"
+    assert quarantine["Телефон"] == ""
+    assert quarantine[publisher.TRANSCRIPT_LINK_HEADER] == ""
+    assert "72 часов" in quarantine["Причина проверки"]
+    assert "повторить загрузку вручную" in quarantine["Следующий шаг"]
+    serialized = json.dumps(quarantine, ensure_ascii=False).casefold()
+    assert "error" not in serialized and "/users/" not in serialized
+
+    assert len(publisher.validate_safe_plan_payload(
+        plan,
+        expected_day=date(2026, 8, 11),
+        now=datetime(2026, 8, 11, 10, 1, tzinfo=timezone.utc),
+    )) == 1
+
+
 def test_private_link_requires_exact_acl_evidence(tmp_path: Path) -> None:
     db, manifest = _ready_fixture(tmp_path, analyzed=True)
     evidence = {
@@ -513,7 +665,7 @@ def test_projection_uses_real_analyze_schema_without_list_repr(tmp_path: Path) -
     assert row["Главное возражение"] == "Стоимость | Расписание"
     assert row["Следующий шаг"] == "Перезвонить после обсуждения"
     assert row["Срок"] == "2026-08-12"
-    assert row["Результат"] == "Согласован следующий шаг"
+    assert row["Результат"] == "Следующий шаг выделен анализом"
     assert row["Нужна проверка"] == "Да"
     assert "текущей схемой Analyze" not in str(row["Причина проверки"])
 
@@ -669,6 +821,38 @@ def test_safe_plan_expires_after_sixty_minutes(tmp_path: Path) -> None:
         )
 
 
+def test_safe_plan_validator_rejects_rows_removed_after_build(
+    tmp_path: Path,
+) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = publisher.load_manager_rows(
+        ready_db=db,
+        ready_manifest=manifest_path,
+        ready_manifest_payload=manifest,
+        day=date(2026, 8, 11),
+        owner_email=OWNER,
+        allowed_emails=(SERVICE, ROP),
+    )
+    generated = datetime(2026, 8, 11, 10, tzinfo=timezone.utc)
+    plan = dict(
+        publisher.build_safe_plan(
+            day=date(2026, 8, 11),
+            rows=rows,
+            ready_manifest=manifest,
+            now=generated,
+        )
+    )
+    plan["rows"] = []
+
+    with pytest.raises(RuntimeError, match="rows do not match Stage10"):
+        publisher.validate_safe_plan_payload(
+            plan,
+            expected_day=date(2026, 8, 11),
+            now=generated,
+        )
+
+
 def test_current_plan_uses_green_target_day_even_when_older_day_is_red(
     tmp_path: Path,
 ) -> None:
@@ -722,6 +906,29 @@ def test_current_plan_uses_green_target_day_even_when_older_day_is_red(
     assert plan["moscow_day"] == "2026-08-11"
 
 
+def test_zero_stage10_rejects_nonempty_manager_rows(tmp_path: Path) -> None:
+    _db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verdict = manifest["daily_verdicts"]["2026-08-11"]
+    verdict.update(
+        mango_unique=0,
+        ready_unique=0,
+        quarantine_unique=0,
+        pending_unique=0,
+        unexplained_missing=0,
+        independent_zero_enumerations=2,
+        closure_ok=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Stage10 balance"):
+        publisher.build_safe_plan(
+            day=date(2026, 8, 11),
+            rows=[manager_row("impossible-row")],
+            ready_manifest=manifest,
+            now=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
+        )
+
+
 def test_manifest_and_publication_lock_symlinks_are_rejected(
     tmp_path: Path,
 ) -> None:
@@ -758,7 +965,7 @@ def test_dry_run_uses_one_ready_manifest_generation(
 
     def rows(**kwargs: object) -> list[dict[str, object]]:
         seen_payloads.append(kwargs.get("ready_manifest_payload"))
-        return []
+        return [manager_row("call-1")]
 
     monkeypatch.setattr(publisher, "stable_json_object", stable)
     monkeypatch.setattr(publisher, "load_manager_rows", rows)
@@ -778,6 +985,34 @@ def test_dry_run_uses_one_ready_manifest_generation(
     assert len(reads) == 1
     assert len(seen_payloads) == 1
     assert isinstance(seen_payloads[0], dict)
+
+
+def test_dry_run_recovers_interrupted_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, manifest_path = _ready_fixture(tmp_path, analyzed=True)
+    _interrupt_ready_publication(db)
+    monkeypatch.setattr(
+        publisher,
+        "load_manager_rows",
+        lambda **_kwargs: [manager_row("call-1")],
+    )
+
+    result = publisher.main(
+        [
+            "--ready-db",
+            str(db),
+            "--ready-manifest",
+            str(manifest_path),
+            "--owner-email",
+            OWNER,
+            "--day",
+            "2026-08-11",
+        ]
+    )
+
+    assert result == 0
+    assert inspect_ready_publication(db)["recovery_required"] is False
 
 
 def test_execute_requires_owner_approval_of_exact_safe_plan_sha() -> None:

@@ -489,6 +489,23 @@ def _relocate(fixture: Mapping[str, Any], *, execute: bool, checkpoint=lambda _n
     )
 
 
+def test_relocation_stops_for_interrupted_ready_publication(
+    synthetic_pipeline: Mapping[str, Any],
+) -> None:
+    pipeline = synthetic_pipeline["pipeline"]
+    journal = pipeline / relocation.READY_PUBLICATION_JOURNAL_REL
+    transaction = pipeline / relocation.READY_PUBLICATION_TRANSACTION_REL
+    transaction.mkdir(mode=0o700)
+    journal.write_text("{}\n", encoding="utf-8")
+    journal.chmod(0o600)
+
+    with pytest.raises(
+        relocation.RelocationError,
+        match="ready publication recovery must finish",
+    ):
+        _relocate(synthetic_pipeline, execute=False)
+
+
 def test_capture_tail_uses_the_runtime_recoverability_predicate() -> None:
     recoverable = b'{"event_key":"unfinished","status":"downlo\xd0'
     rows, tail = relocation.split_capture_rows(recoverable)

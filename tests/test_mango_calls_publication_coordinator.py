@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
+    inspect_ready_publication,
+)
 from scripts import run_mango_calls_publication_coordinator as coordinator
 
 
@@ -148,9 +152,15 @@ def test_daily_close_retries_closed_days_from_the_previous_72_hours(
     exported: list[date] = []
 
     def export(
-        _config: object, _root: Path, day: date, *, sealed_only: bool
+        _config: object,
+        _root: Path,
+        day: date,
+        *,
+        sealed_only: bool,
+        expected_ready_manifest_sha256: str | None = None,
     ) -> dict[str, object]:
         assert sealed_only is True
+        assert expected_ready_manifest_sha256 is None
         exported.append(day)
         return {"package_status": "FINAL", "reused": False}
 
@@ -180,7 +190,7 @@ def test_daily_close_keeps_the_full_72_hour_boundary_reachable(
     monkeypatch.setattr(
         coordinator,
         "_daily_export",
-        lambda _config, _root, candidate, *, sealed_only: (
+        lambda _config, _root, candidate, *, sealed_only, **_kwargs: (
             exported.append(candidate)
             or {"package_status": "FINAL", "reused": False}
         ),
@@ -190,6 +200,128 @@ def test_daily_close_keeps_the_full_72_hour_boundary_reachable(
 
     assert result["status"] == "pending_closure"
     assert exported == [boundary]
+
+
+def test_daily_close_cannot_hide_failed_catch_up_behind_closed_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    older = DAY - date.resolution
+    manifest = _manifest(closed=True)
+    manifest["daily_verdicts"][older.isoformat()] = {  # type: ignore[index]
+        "closure_ok": True
+    }
+    monkeypatch.setattr(coordinator, "_ready_manifest", lambda *_args: manifest)
+
+    def export(
+        _config: object,
+        _root: Path,
+        candidate: date,
+        *,
+        sealed_only: bool,
+        expected_ready_manifest_sha256: str | None = None,
+    ) -> dict[str, object]:
+        assert sealed_only is True
+        assert expected_ready_manifest_sha256 is None
+        if candidate == older:
+            raise RuntimeError("synthetic old-day export failure")
+        return {"package_status": "FINAL_CLOSED", "reused": False}
+
+    monkeypatch.setattr(coordinator, "_daily_export", export)
+
+    result = coordinator.run(config_path, "daily-close", day=DAY)
+    assert result["status"] == "failed"
+    assert result["target_status"] == "closed"
+    assert [item["status"] for item in result["attempts"]] == ["failed", "closed"]
+
+    rc = coordinator.main(
+        ["--config", str(config_path), "daily-close", "--day", DAY.isoformat()]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 2
+    assert payload["status"] == "failed"
+    assert payload["target_status"] == "closed"
+
+
+def test_standalone_daily_close_recovers_interrupted_ready_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    ready = Path(config["pipeline_root"]) / "drop" / "mango_calls_ready.sqlite"
+    ready.parent.mkdir(parents=True)
+    ready.write_bytes(b"old-ready-generation")
+    ready.chmod(0o600)
+    old_manifest = {
+        "ready_db": str(ready),
+        "sha256": coordinator.sha256_file(ready),
+        "size_bytes": ready.stat().st_size,
+    }
+    manifest_path = ready.with_suffix(".manifest.json")
+    manifest_path.write_text(json.dumps(old_manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
+    staged = ready.parent / "staged.sqlite"
+    staged.write_bytes(b"new-ready-generation")
+    staged.chmod(0o600)
+    new_manifest = {
+        "ready_db": str(ready),
+        "sha256": coordinator.sha256_file(staged),
+        "size_bytes": staged.stat().st_size,
+    }
+
+    def crash(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic publication interruption")
+
+    with pytest.raises(RuntimeError, match="synthetic publication interruption"):
+        commit_ready_generation(ready, staged, new_manifest, checkpoint=crash)
+    assert inspect_ready_publication(ready)["recovery_required"] is True
+
+    def recovered_manifest(*_args: object) -> dict[str, object]:
+        assert inspect_ready_publication(ready)["recovery_required"] is False
+        return _manifest(closed=False)
+
+    monkeypatch.setattr(coordinator, "_ready_manifest", recovered_manifest)
+    result = coordinator.run(config_path, "daily-close", day=DAY)
+
+    assert result["status"] == "pending_closure"
+    assert inspect_ready_publication(ready)["recovery_required"] is False
+    assert ready.read_bytes() == b"new-ready-generation"
+
+
+def test_daily_status_binds_decision_and_export_to_same_ready_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    expected_manifest_sha = "a" * 64
+    monkeypatch.setattr(
+        coordinator,
+        "_ready_snapshot",
+        lambda *_args: (_manifest(closed=False), expected_manifest_sha),
+    )
+    observed: list[str | None] = []
+
+    def export(
+        *_args: object,
+        sealed_only: bool,
+        expected_ready_manifest_sha256: str | None = None,
+    ) -> dict[str, object]:
+        assert sealed_only is False
+        observed.append(expected_ready_manifest_sha256)
+        return {
+            "package_status": "INCOMPLETE_DO_NOT_USE_AS_FINAL",
+            "reused": False,
+        }
+
+    monkeypatch.setattr(coordinator, "_daily_export", export)
+    result = coordinator.run(config_path, "daily-status", day=DAY)
+
+    assert result["status"] == "incomplete"
+    assert observed == [expected_manifest_sha]
 
 
 def test_daily_status_and_alert_exist_when_ready_manifest_is_missing(
@@ -206,6 +338,32 @@ def test_daily_status_and_alert_exist_when_ready_manifest_is_missing(
     assert alert["status"] == "alert"
     assert "ready_manifest_unavailable" in alert["stop_reason"]
     assert Path(str(alert["alert"])).is_file()
+
+
+def test_cli_normalizes_exception_to_safe_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        coordinator,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("secret detail must not escape")
+        ),
+    )
+
+    rc = coordinator.main(
+        ["--config", str(config_path), "current-plan", "--day", DAY.isoformat()]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert payload["status"] == "failed"
+    assert payload["stop_reason"] == "coordinator_exception:RuntimeError"
+    assert "secret detail" not in json.dumps(payload)
 
 
 def test_ready_manifest_binds_exact_code_host_and_database(

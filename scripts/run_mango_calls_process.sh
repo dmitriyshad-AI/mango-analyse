@@ -167,13 +167,22 @@ if [[ "${PIPELINE_COMMAND}" != "process-a" ]] && (( RC != 0 )); then
   exit "${RC}"
 fi
 if [[ "${COMMAND}" == "pipeline-worker" ]]; then
-  "${PYTHON_EXECUTABLE}" \
+  set +e
+  CURRENT_OUTPUT="$("${PYTHON_EXECUTABLE}" \
     "${ROOT}/scripts/run_mango_calls_publication_coordinator.py" \
-    --config "${CONFIG}" current-plan
-  "${PYTHON_EXECUTABLE}" \
+    --config "${CONFIG}" current-plan)"
+  CURRENT_RC=$?
+  print -r -- "${CURRENT_OUTPUT}"
+  DAILY_OUTPUT="$("${PYTHON_EXECUTABLE}" \
     "${ROOT}/scripts/run_mango_calls_publication_coordinator.py" \
-    --config "${CONFIG}" daily-close
-  exit $?
+    --config "${CONFIG}" daily-close)"
+  DAILY_RC=$?
+  print -r -- "${DAILY_OUTPUT}"
+  set -e
+  if (( CURRENT_RC != 0 )); then
+    exit "${CURRENT_RC}"
+  fi
+  exit "${DAILY_RC}"
 fi
 
 if [[ "${PIPELINE_COMMAND}" == "process-a" ]]; then

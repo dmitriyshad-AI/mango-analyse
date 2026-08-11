@@ -60,6 +60,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
 )
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
+from mango_mvp.productization.ready_publication import (
+    inspect_ready_publication,
+    recover_ready_generation,
+)
 
 
 def config_for(tmp_path: Path, *, timeline_name: str = "customer_timeline_staging.sqlite") -> CallsTwoProcessesConfig:
@@ -97,6 +101,18 @@ def test_config_refuses_prod_and_stable_runtime_paths(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="stable_runtime"):
         stable.validate()
+
+
+def test_disk_preflight_creates_owner_only_pipeline_root(tmp_path: Path) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=0)
+    previous = os.umask(0)
+    try:
+        report = calls_runtime.disk_preflight(config)
+    finally:
+        os.umask(previous)
+
+    assert report["ok"] is True
+    assert config.pipeline_root.stat().st_mode & 0o777 == 0o700
 
 
 def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> None:
@@ -890,6 +906,273 @@ def test_recording_retry_ttl_uses_first_seen_and_expires_once(
     assert len(requested) == 3
 
 
+def test_audio_integrity_quarantine_is_stable_and_never_retried_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from mango_mvp.productization.capture_staging import (
+        CaptureManifestStore,
+        ManifestEntry,
+    )
+
+    config = replace(config_for(tmp_path), pending_recording_retry_hours=24)
+    store = CaptureManifestStore(config.capture_manifest)
+    quarantined = ManifestEntry(
+        schema_version="capture_manifest_v1",
+        created_at="2026-07-09T08:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:damaged-audio",
+        provider_call_id="damaged-audio",
+        recording_id="recording-damaged",
+        started_at="2026-07-09T08:00:00+00:00",
+        ended_at=None,
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="audio_integrity_quarantined",
+        error="capture_target_integrity_mismatch",
+        remediation_code="manual_restore_or_quarantine_corrupted_audio",
+        recovery_state="immutable_audio_violation",
+    )
+    store.append(quarantined)
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(self, **_: object) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 20, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 20, 11, tzinfo=timezone.utc),
+    )
+
+    latest = store.latest_by_event_key()[quarantined.event_key]
+    assert latest == quarantined
+    assert len(store.read_entries()) == 1
+    assert report["status"] == "ok"
+    assert report["pending_recording_retries"] == 0
+    assert report["pending_recording_expired"] == 0
+    assert report["open_audio_integrity_quarantined"] == 1
+    assert report["capture_assets_complete"] is False
+
+
+def test_expired_unknown_recording_is_reenumerated_daily_by_full_moscow_day(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(
+        config_for(tmp_path), api_window_hours=12, pending_recording_retry_hours=72
+    )
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    expired = ManifestEntry(
+        schema_version="v1",
+        created_at="2026-07-11T09:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:expired-unknown",
+        provider_call_id="expired-unknown",
+        recording_id=None,
+        started_at="2025-01-01T10:00:00+00:00",
+        ended_at="2025-01-01T10:20:00+00:00",
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="recording_retry_expired",
+        error="recording_missing_after_retry_ttl",
+        remediation_code="manual_review_or_retry_if_recording_appears",
+    )
+    store.append(expired)
+    requested: list[tuple[datetime, datetime]] = []
+
+    class EmptyClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[dict[str, str]]:
+            requested.append((since, until))
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 0, "failed": 0, "skipped_no_recording": 0}
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        EmptyClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        lambda **_: Summary(),
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+    first_until = datetime(2026, 7, 12, 11, tzinfo=timezone.utc)
+
+    first = capture_mango_window(
+        config,
+        first_until - timedelta(hours=1),
+        first_until,
+    )
+    old_day_requests = [
+        (start, end)
+        for start, end in requested
+        if start.year < 2026
+    ]
+    entries_after_first = store.read_entries()
+    requested.clear()
+    second = capture_mango_window(
+        config,
+        first_until + timedelta(hours=22),
+        first_until + timedelta(hours=23),
+    )
+
+    assert len(old_day_requests) == 2
+    assert all(end - start <= timedelta(hours=12) for start, end in old_day_requests)
+    assert old_day_requests[0][0] == datetime(2024, 12, 31, 21, tzinfo=timezone.utc)
+    assert old_day_requests[-1][1] == datetime(2025, 1, 1, 21, tzinfo=timezone.utc)
+    assert first["pending_recording_expired"] == 0
+    assert first["expired_recording_reenumerated_still_missing"] == 1
+    assert first["capture_assets_complete"] is True
+    assert "2025-01-02" not in first["independent_zero_enumerations_by_day"]
+    assert len(entries_after_first) == 2
+    assert entries_after_first[-1].status == "recording_retry_expired"
+    assert entries_after_first[-1].created_at == first_until.isoformat()
+    assert (
+        entries_after_first[-1].recovery_state
+        == "late_recording_reenumerated_still_missing"
+    )
+    assert len(requested) == 1
+    assert second["expired_recording_reenumerated_still_missing"] == 0
+    assert len(store.read_entries()) == len(entries_after_first)
+
+
+def test_expired_unknown_recording_recovers_when_id_appears(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), api_window_hours=12)
+    from mango_mvp.productization.capture_staging import CaptureManifestStore, ManifestEntry
+
+    store = CaptureManifestStore(config.capture_manifest)
+    expired = ManifestEntry(
+        schema_version="v1",
+        created_at="2026-07-11T09:00:00+00:00",
+        tenant_id="foton",
+        provider="mango",
+        event_key="foton:mango:expired-unknown",
+        provider_call_id="expired-unknown",
+        recording_id=None,
+        started_at="2025-01-01T10:00:00+00:00",
+        ended_at="2025-01-01T10:20:00+00:00",
+        direction="inbound",
+        client_phone=None,
+        manager_ref=None,
+        status="recording_retry_expired",
+        error="recording_missing_after_retry_ttl",
+        remediation_code="manual_review_or_retry_if_recording_appears",
+    )
+    store.append(expired)
+
+    class LateClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def poll_call_history(
+            self, *, since: datetime, until: datetime
+        ) -> list[dict[str, str]]:
+            started = datetime(2025, 1, 1, 10, tzinfo=timezone.utc)
+            if since <= started < until:
+                return [
+                    {
+                        "id": "expired-unknown",
+                        "started_at": started.isoformat(),
+                        "ended_at": "2025-01-01T10:20:00+00:00",
+                        "direction": "inbound",
+                        "recording_ref": "recording-late",
+                    }
+                ]
+            return []
+
+    class Summary:
+        failed = 0
+        skipped_no_recording = 0
+
+        def to_json_dict(self) -> dict[str, int]:
+            return {"downloaded": 1, "failed": 0, "skipped_no_recording": 0}
+
+    def fake_stage(
+        *,
+        events: list[TelephonyCallEvent],
+        manifest_store: CaptureManifestStore,
+        **_: object,
+    ) -> Summary:
+        assert [event.recording_ref for event in events] == ["recording-late"]
+        manifest_store.append(
+            replace(
+                expired,
+                created_at="2026-07-12T11:00:00+00:00",
+                recording_id="recording-late",
+                recording_ids=("recording-late",),
+                status="downloaded",
+                recovery_state="recovered_late_recording",
+            )
+        )
+        return Summary()
+
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoOfficeClient",
+        LateClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.MangoRecordingDownloader",
+        LateClient,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.stage_capture_events",
+        fake_stage,
+    )
+    monkeypatch.setenv("MANGO_OFFICE_API_KEY", "present")
+    monkeypatch.setenv("MANGO_OFFICE_API_SALT", "present")
+
+    report = capture_mango_window(
+        config,
+        datetime(2026, 7, 12, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 11, tzinfo=timezone.utc),
+    )
+    latest = store.latest_by_event_key()[expired.event_key]
+
+    assert report["api_requests"] == 3
+    assert report["expired_recording_reenumerated_still_missing"] == 0
+    assert latest.status == "downloaded"
+    assert latest.recording_id == "recording-late"
+    assert latest.recovery_state == "recovered_late_recording"
+    assert len(store.read_entries()) == 2
+
+
 def test_expired_recording_is_recovered_on_last_bounded_attempt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1258,6 +1541,27 @@ def test_each_stage_timeout_is_capped_by_shared_four_hour_cycle() -> None:
     )
 
 
+def test_prelude_command_obeys_shared_heavy_cycle_deadline(tmp_path: Path) -> None:
+    timed_out = run_command(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        os.environ,
+        tmp_path,
+        deadline=calls_runtime.time.monotonic() + 0.05,
+    )
+    completed = run_command(
+        [sys.executable, "-c", "print('ok')"],
+        os.environ,
+        tmp_path,
+        deadline=calls_runtime.time.monotonic() + 2,
+    )
+
+    assert timed_out["rc"] == 124
+    assert timed_out["timed_out"] is True
+    assert timed_out["timeout_scope"] == "heavy_cycle"
+    assert completed["rc"] == 0
+    assert completed["timed_out"] is False
+
+
 def test_single_asr_fallback_mode_is_rejected(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), asr_mode="gigaam_fallback")
     with pytest.raises(ValueError, match="single-ASR fallback is disabled"):
@@ -1296,6 +1600,263 @@ def test_publish_ready_db_is_private_under_open_umask(tmp_path: Path) -> None:
     assert config.ready_db.stat().st_mode & 0o777 == 0o600
     assert config.ready_db.parent.stat().st_mode & 0o777 == 0o700
     assert config.ready_manifest.stat().st_mode & 0o777 == 0o600
+
+
+def test_ready_manifest_build_failure_keeps_previous_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    before_db = sha256_file(config.ready_db)
+    before_manifest = sha256_file(config.ready_manifest)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("INSERT INTO call_records VALUES (2)")
+    monkeypatch.setattr(
+        calls_runtime,
+        "_ready_verdicts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic manifest failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic manifest failure"):
+        publish_ready_db(config, {"total": 2})
+
+    assert sha256_file(config.ready_db) == before_db
+    assert sha256_file(config.ready_manifest) == before_manifest
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is False
+
+
+def test_ready_publication_recovers_crash_after_database_replace(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    old_sha = sha256_file(config.ready_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("INSERT INTO call_records VALUES (2)")
+
+    def crash_after_database(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic crash after database")
+
+    with pytest.raises(RuntimeError, match="synthetic crash after database"):
+        publish_ready_db(
+            config,
+            {"total": 2},
+            publication_checkpoint=crash_after_database,
+        )
+
+    assert sha256_file(config.ready_db) != old_sha
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is True
+    recovered = recover_ready_generation(config.ready_db)
+    fingerprint = calls_runtime.ready_drop_fingerprint(config)
+
+    assert recovered == {
+        "status": "recovered",
+        "recovered": True,
+        "generation": "new",
+    }
+    assert fingerprint["manifest_valid"] is True
+    with sqlite3.connect(config.ready_db) as con:
+        assert con.execute("SELECT COUNT(*) FROM call_records").fetchone()[0] == 2
+    assert recover_ready_generation(config.ready_db) == {
+        "status": "clean",
+        "recovered": False,
+    }
+
+
+def test_ready_publication_recovers_idempotently_after_manifest_replace(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+
+    def crash_after_manifest(stage: str) -> None:
+        if stage == "manifest_replaced":
+            raise RuntimeError("synthetic crash after manifest")
+
+    with pytest.raises(RuntimeError, match="synthetic crash after manifest"):
+        publish_ready_db(
+            config,
+            {"total": 1},
+            publication_checkpoint=crash_after_manifest,
+        )
+
+    first = recover_ready_generation(config.ready_db)
+    pair = (sha256_file(config.ready_db), sha256_file(config.ready_manifest))
+    second = recover_ready_generation(config.ready_db)
+
+    assert first["generation"] == "new"
+    assert second == {"status": "clean", "recovered": False}
+    assert pair == (sha256_file(config.ready_db), sha256_file(config.ready_manifest))
+
+
+def test_ready_publication_rolls_back_if_forward_manifest_is_missing(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    old_pair = (sha256_file(config.ready_db), sha256_file(config.ready_manifest))
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("INSERT INTO call_records VALUES (2)")
+
+    def crash_after_database(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic crash after database")
+
+    with pytest.raises(RuntimeError):
+        publish_ready_db(
+            config,
+            {"total": 2},
+            publication_checkpoint=crash_after_database,
+        )
+    transaction = config.ready_db.parent / (
+        f".{config.ready_db.name}.publication.txn"
+    )
+    (transaction / "new.manifest.json").unlink()
+
+    recovered = recover_ready_generation(config.ready_db)
+
+    assert recovered["generation"] == "old"
+    assert old_pair == (sha256_file(config.ready_db), sha256_file(config.ready_manifest))
+    restored_manifest = read_json(config.ready_manifest)
+    assert config.ready_db.stat().st_mtime_ns == restored_manifest["ready_mtime_ns"]
+
+
+def test_ready_publication_inspection_does_not_alarm_during_active_commit(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    observations: list[Mapping[str, Any]] = []
+
+    def inspect_while_locked(stage: str) -> None:
+        if stage == "journal_written":
+            observations.append(inspect_ready_publication(config.ready_db))
+
+    publish_ready_db(
+        config,
+        {"total": 1},
+        publication_checkpoint=inspect_while_locked,
+    )
+
+    assert observations == [
+        {"status": "publication_active", "recovery_required": False}
+    ]
+    assert inspect_ready_publication(config.ready_db) == {
+        "status": "clean",
+        "recovery_required": False,
+    }
+
+
+def test_publish_ready_db_never_reports_new_after_safe_rollback(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+    publish_ready_db(config, {"total": 1})
+    old_pair = (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+    )
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("INSERT INTO call_records VALUES (2)")
+
+    def lose_forward_manifest(stage: str) -> None:
+        if stage == "journal_written":
+            transaction = config.ready_db.parent / (
+                f".{config.ready_db.name}.publication.txn"
+            )
+            (transaction / "new.manifest.json").unlink()
+
+    with pytest.raises(RuntimeError, match="rolled back"):
+        publish_ready_db(
+            config,
+            {"total": 2},
+            publication_checkpoint=lose_forward_manifest,
+        )
+
+    assert old_pair == (
+        sha256_file(config.ready_db),
+        sha256_file(config.ready_manifest),
+    )
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is False
+
+
+def test_ready_publication_recovery_refuses_unknown_canonical_hash(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    config.working_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute("CREATE TABLE call_records(id INTEGER PRIMARY KEY)")
+        con.execute("INSERT INTO call_records VALUES (1)")
+
+    def crash_after_database(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic crash after database")
+
+    with pytest.raises(RuntimeError):
+        publish_ready_db(
+            config,
+            {"total": 1},
+            publication_checkpoint=crash_after_database,
+        )
+    config.ready_db.write_bytes(b"unknown generation")
+
+    with pytest.raises(RuntimeError, match="unknown generation"):
+        recover_ready_generation(config.ready_db)
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is True
+
+
+def test_process_b_recovers_interrupted_ready_publication_before_import(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+
+    def crash_after_database(stage: str) -> None:
+        if stage == "db_replaced":
+            raise RuntimeError("synthetic crash after database")
+
+    with pytest.raises(RuntimeError):
+        publish_ready_db(
+            config,
+            {"total": 1},
+            publication_checkpoint=crash_after_database,
+        )
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db, allowed_root=config.timeline_allowed_root
+    ):
+        pass
+
+    report = run_process_b(config)
+
+    assert report["status"] == "ok"
+    assert inspect_ready_publication(config.ready_db)["recovery_required"] is False
+    assert calls_runtime.ready_drop_fingerprint(config)["manifest_valid"] is True
 
 
 def test_strict_cli_creates_owner_only_sqlite_under_open_umask(
@@ -1851,10 +2412,39 @@ def test_process_b_is_idempotent_and_keeps_one_source_system(tmp_path: Path) -> 
         )
 
     assert first["status"] == "ok"
-    assert second["status"] == "idle"
-    assert second["stop_reason"] == "drop_unchanged"
+    assert second["status"] == "ok"
+    assert second["stop_reason"] == ""
+    assert second["counters"]["import"]["status_counts"] == {"duplicate": 3}
     assert first_count == second_count == 1
     assert call_event_source_systems(config.timeline_db) == ["mango_processed_summary"]
+
+
+def test_process_b_rebuilds_lost_timeline_from_unchanged_drop(
+    tmp_path: Path,
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.ready_db)
+    with CustomerTimelineSQLiteStore(
+        config.timeline_db, allowed_root=config.timeline_allowed_root
+    ):
+        pass
+    first = run_process_b(config)
+    cursor_before = read_json(config.process_b_cursor_path)
+    for candidate in (
+        config.timeline_db,
+        Path(str(config.timeline_db) + "-wal"),
+        Path(str(config.timeline_db) + "-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
+
+    second = run_process_b(config)
+
+    assert first["status"] == second["status"] == "ok"
+    assert read_json(config.process_b_cursor_path)["sha256"] == cursor_before["sha256"]
+    with sqlite3.connect(f"file:{config.timeline_db}?mode=ro", uri=True) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM timeline_events WHERE event_type='mango_call'"
+        ).fetchone()[0] == 1
 
 
 def test_process_b_fails_loud_when_import_validation_fails(tmp_path: Path) -> None:
@@ -2563,6 +3153,38 @@ def test_process_a_runs_workers_for_existing_open_db_work_without_reingest(
     assert report["counters"]["metadata"]["db_open_work"] is True
     assert any("worker" in command for command in commands)
     assert not any(" init-db" in command or " ingest" in command for command in commands)
+
+
+def test_process_a_stops_heavy_prelude_after_init_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = replace(config_for(tmp_path), min_free_gib=1)
+    create_ready_call_db(config.working_db)
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.environment_preflight",
+        lambda *_args, **_kwargs: {"ok": True, "codex_network_ok": True},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.customer_timeline.calls_two_processes.prepare_ingest_inputs",
+        lambda _config: {"audio_files": 1, "skipped_total": 0},
+    )
+    commands: list[str] = []
+
+    def fail_init(command: list[str], *_args: object) -> dict[str, object]:
+        commands.append(" ".join(command))
+        return {"rc": 9, "command": command[-1]}
+
+    report = run_process_a(
+        config,
+        skip_capture=True,
+        command_runner=fail_init,
+    )
+
+    assert report["status"] == "failed"
+    assert report["stop_reason"] == "worker_command_failed"
+    assert len(commands) == 1
+    assert "init-db" in commands[0]
+    assert " ingest " not in f" {commands[0]} "
 
 
 def test_process_a_complete_existing_db_runs_no_commands(

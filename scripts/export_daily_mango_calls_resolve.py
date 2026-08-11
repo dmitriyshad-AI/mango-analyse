@@ -34,9 +34,14 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
 )
 from mango_mvp.productization.mango_office_client import MangoOfficeClient, MangoOfficeCredentials
 from mango_mvp.productization.mango_calls_service_contract import (
+    parse_aware_datetime,
     read_stable_regular_bytes,
     stable_regular_file_evidence,
     validate_ready_manifest_payload,
+)
+from mango_mvp.productization.ready_publication import (
+    ready_publication_lock,
+    recover_ready_generation,
 )
 from mango_mvp.services.export_excel import call_to_row
 from mango_mvp.utils.filename_repair import repair_manager_name
@@ -60,7 +65,7 @@ DEFAULT_MANAGER_USERS = ROOT / (
     "raw_payload_archive/mango_users_config_20260507.json"
 )
 MOSCOW = ZoneInfo("Europe/Moscow")
-TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v4"
+TRANSCRIPT_CHUNK, EXPORT_SCHEMA_VERSION = 30_000, "daily_mango_calls_resolve_export_v5"
 ORDER_WARNING = "Порядок реплик не сохранён в исходных данных; ниже приведён полный текст по ролям без выдуманной очередности."
 NEUTRAL_SUMMARY = "Смысловой анализ не завершён; строка ожидает повторной обработки."
 TIMED_LINE_RE = re.compile(
@@ -177,6 +182,20 @@ def verify_ready_drop(
         if day is not None and isinstance(verdicts, Mapping)
         else None
     )
+    stage10_balance = {
+        field: int(day_verdict.get(field) or 0)
+        for field in (
+            "mango_unique",
+            "ready_unique",
+            "quarantine_unique",
+            "pending_unique",
+            "unexplained_missing",
+        )
+    } if isinstance(day_verdict, Mapping) else {}
+    if isinstance(day_verdict, Mapping):
+        stage10_balance["quarantine_items"] = list(
+            day_verdict.get("quarantine_items") or ()
+        )
     return {
         **actual,
         "published_at": manifest.get("published_at"),
@@ -184,8 +203,11 @@ def verify_ready_drop(
             day_verdict.get("closure_ok") is True
             if isinstance(day_verdict, Mapping)
             else manifest.get("closure_ok") is True
+            if day is None
+            else False
         ),
         "ready_manifest_sha256": manifest_before["sha256"],
+        "stage10_balance": stage10_balance,
         "ready_generation_fingerprint": {
             "db_sha256": db_before["sha256"],
             "db_size_bytes": db_before["size_bytes"],
@@ -200,6 +222,8 @@ def verify_ready_drop(
                 day_verdict.get("closure_ok") is True
                 if isinstance(day_verdict, Mapping)
                 else manifest.get("closure_ok") is True
+                if day is None
+                else False
             ),
         },
     }
@@ -659,6 +683,7 @@ def publication_content_sha256(
     day: date | None = None,
     manager_source: str = "",
     package_status: str = "",
+    stage10_balance: Mapping[str, Any] | None = None,
 ) -> str:
     payload = [{
         "call_id": row["call_id"], "started": row["started"].isoformat(), "manager": row["manager"],
@@ -672,6 +697,7 @@ def publication_content_sha256(
         "day": day.isoformat() if day is not None else None,
         "manager_source": manager_source,
         "package_status": package_status,
+        "stage10_balance": dict(stage10_balance or {}),
         "rows": payload,
     }
     return hashlib.sha256(json.dumps(document, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -765,11 +791,66 @@ def existing_export_manifests(
     output_root: Path, day: date, *, incomplete: bool
 ) -> list[Mapping[str, Any]]:
     paths = export_manifest_paths(output_root, day, incomplete=incomplete)
-    return [
+    manifests = [
         verified_export_manifest(path, output_root)
         for path in paths
         if path.is_file() or os.path.lexists(path)
     ]
+    if not manifests:
+        return []
+    prefix = incomplete_prefix(incomplete)
+    base_name = f"{prefix}Отчёт РОП по звонкам {day.isoformat()}.manifest.json"
+    if Path(str(manifests[0]["_manifest_path"])).name != base_name:
+        raise RuntimeError("daily export supplement lineage has no immutable base")
+    base_sha = manifests[0]["_manifest_sha256"]
+    expected_status = (
+        "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
+    )
+    for index, manifest in enumerate(manifests):
+        if (
+            manifest.get("day") != day.isoformat()
+            or manifest.get("package_status") != expected_status
+        ):
+            raise RuntimeError("daily export manifest lineage metadata is inconsistent")
+        if index == 0:
+            if any(
+                manifest.get(field) is not None
+                for field in (
+                    "supplement_number",
+                    "supplement_of",
+                    "supplement_of_sha256",
+                )
+            ):
+                raise RuntimeError("daily export base lineage is inconsistent")
+        elif (
+            manifest.get("supplement_number") != index
+            or manifest.get("supplement_of") != base_name
+            or manifest.get("supplement_of_sha256") != base_sha
+        ):
+            raise RuntimeError("daily export supplement lineage is inconsistent")
+        supersedes = manifest.get("supersedes_incomplete")
+        if not incomplete and supersedes is not None:
+            if not isinstance(supersedes, Mapping):
+                raise RuntimeError("daily export incomplete lineage is inconsistent")
+            linked_name = _private_package_name(
+                supersedes.get("manifest"), label="superseded manifest"
+            )
+            allowed = {
+                path.name
+                for path in export_manifest_paths(
+                    output_root, day, incomplete=True
+                )
+            }
+            if linked_name not in allowed:
+                raise RuntimeError("daily export incomplete lineage is inconsistent")
+            linked = verified_export_manifest(output_root / linked_name, output_root)
+            if (
+                supersedes.get("sha256") != linked["_manifest_sha256"]
+                or supersedes.get("content_sha256")
+                != linked.get("content_sha256")
+            ):
+                raise RuntimeError("daily export incomplete lineage is inconsistent")
+    return manifests
 
 
 def public_manifest_payload(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -819,6 +900,94 @@ def write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
         fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def reconcile_interrupted_export_journals(
+    output_root: Path,
+    day: date,
+    *,
+    current_content_sha256: str,
+) -> None:
+    completed = {
+        (str(manifest.get("content_sha256") or ""), str(manifest.get("xlsx") or ""))
+        for incomplete in (False, True)
+        for manifest in existing_export_manifests(
+            output_root, day, incomplete=incomplete
+        )
+    }
+    for journal_path in sorted(
+        output_root.glob(f".daily_export_{day.isoformat()}_*.journal.json")
+    ):
+        raw = read_stable_regular_bytes(
+            journal_path, label="daily export journal"
+        )
+        journal_evidence = stable_regular_file_evidence(
+            journal_path, label="daily export journal"
+        )
+        if hashlib.sha256(raw).hexdigest() != journal_evidence["sha256"]:
+            raise RuntimeError("daily export journal changed while reading")
+        try:
+            journal = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("daily export journal is invalid") from exc
+        if (
+            not isinstance(journal, Mapping)
+            or journal.get("schema_version")
+            != "daily_mango_calls_export_journal_v1"
+            or journal.get("day") != day.isoformat()
+            or journal.get("status") != "write_uncertain"
+        ):
+            raise RuntimeError("daily export journal is invalid")
+        old_content = str(journal.get("content_sha256") or "")
+        xlsx_name = _private_package_name(
+            journal.get("xlsx"), label="journal XLSX path"
+        )
+        transcript_name = _private_package_name(
+            journal.get("transcript_dir"), label="journal transcript directory"
+        )
+        if (old_content, xlsx_name) in completed:
+            journal_path.unlink()
+            fsync_directory(output_root)
+            continue
+        if old_content == current_content_sha256:
+            continue
+        xlsx = output_root / xlsx_name
+        transcript_dir = output_root / transcript_name
+        observed_xlsx_sha256: str | None = None
+        if os.path.lexists(xlsx):
+            observed = stable_regular_file_evidence(
+                xlsx, label="interrupted daily export XLSX"
+            )
+            observed_xlsx_sha256 = str(observed["sha256"])
+            if observed_xlsx_sha256 != journal.get("xlsx_sha256"):
+                raise RuntimeError("interrupted daily export XLSX is inconsistent")
+        if os.path.lexists(transcript_dir) and (
+            transcript_dir.is_symlink() or not transcript_dir.is_dir()
+        ):
+            raise RuntimeError("interrupted transcript generation is unsafe")
+        quarantine_path = journal_path.with_name(
+            journal_path.name.replace(".journal.json", ".quarantine.json")
+        )
+        quarantine = {
+            "schema_version": "daily_mango_calls_export_quarantine_v1",
+            "status": "quarantined_source_content_changed",
+            "day": day.isoformat(),
+            "journal_sha256": journal_evidence["sha256"],
+            "content_sha256": old_content,
+            "current_content_sha256": current_content_sha256,
+            "xlsx": xlsx_name,
+            "xlsx_sha256": observed_xlsx_sha256,
+            "transcript_dir": transcript_name,
+            "remediation": "inspect_or_remove_only_after_owner_review",
+        }
+        if quarantine_path.is_file():
+            existing = parse_json(quarantine_path.read_text(encoding="utf-8"))
+            if existing != quarantine:
+                raise RuntimeError("daily export quarantine record is inconsistent")
+        else:
+            write_private_json(quarantine_path, quarantine)
+        journal_path.unlink()
+        fsync_directory(output_root)
 
 
 def supplement_number(output_root: Path, day: date, *, incomplete: bool) -> int | None:
@@ -914,18 +1083,30 @@ def write_workbook(
     day: date,
     rows: Sequence[dict[str, Any]],
     manager_source: str,
+    stage10_balance: Mapping[str, Any],
 ) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     ready, manager_ready, unfinished = [row for row in rows if row["complete"]], [row for row in rows if row["manager_ready"]], [row for row in rows if not row["complete"]]
+    quarantine_items = list(stage10_balance.get("quarantine_items") or ())
+    review_keys = {
+        str(row.get("call_id") or "") for row in rows if row["issues"]
+    } | {str(item["call_key"]) for item in quarantine_items}
+    mango_total = int(stage10_balance.get("mango_unique") or len(rows))
     summary = wb.create_sheet("Сводка")
-    for line in (["Ежедневный отчёт РОПа", day.isoformat()], ["Всего звонков", len(rows)], ["Полностью обработано", len(ready)],
-                 ["Обработка не завершена", len(unfinished)], ["Требуют проверки", sum(bool(row["issues"]) for row in rows)],
+    for line in (["Ежедневный отчёт РОПа", day.isoformat()], ["Всего звонков", mango_total],
+                 ["Строк с доступными данными", len(rows)], ["Полностью обработано", len(ready)],
+                 ["Обработка не завершена", len(unfinished)], ["Требуют проверки", len(review_keys)],
                  ["Допущено к оценке менеджера", len(manager_ready)],
                  ["Порядок реплик подтверждён", sum(row["chronology_confirmed"] for row in rows)],
                  ["ФИО найдено в Tallanto", sum(bool(row["client_fio"]) for row in rows)],
                  ["ФИО менеджера неполное или не найдено", sum(bool(manager_name_issue(row["manager"])) for row in rows)],
-                 ["Источник ФИО менеджеров", manager_source or "не задан"]):
+                 ["Источник ФИО менеджеров", manager_source or "не задан"],
+                 ["Mango: найдено уникальных", stage10_balance.get("mango_unique", "")],
+                 ["Готово", stage10_balance.get("ready_unique", "")],
+                 ["Карантин", stage10_balance.get("quarantine_unique", "")],
+                 ["В ожидании", stage10_balance.get("pending_unique", "")],
+                 ["Необъяснённые пропуски", stage10_balance.get("unexplained_missing", "")]):
         append_safe(summary, line)
     summary.append([])
     append_safe(summary, ["Менеджер", "Допущенных к оценке звонков", "Часов"])
@@ -943,6 +1124,38 @@ def write_workbook(
             transcript_cell = sheet.cell(sheet.max_row, headers.index("Файл полной расшифровки") + 1)
             transcript_cell.hyperlink = source_row["transcript_file"].relative_to(path.parent).as_posix()
             transcript_cell.style = "Hyperlink"
+        if title == "Проблемы данных":
+            if quarantine_items:
+                sheet.append([])
+                append_safe(sheet, ["Карантин Stage10"])
+                append_safe(
+                    sheet,
+                    [
+                        "Дата и время",
+                        "Ключ звонка",
+                        "Код",
+                        "Причина",
+                        "Что сделать",
+                    ],
+                )
+                for item in quarantine_items:
+                    try:
+                        started = parse_aware_datetime(item.get("started_at")).astimezone(
+                            MOSCOW
+                        )
+                        displayed_started = started.strftime("%d.%m.%Y %H:%M:%S")
+                    except (TypeError, ValueError):
+                        displayed_started = day.strftime("%d.%m.%Y") + " — время не определено"
+                    append_safe(
+                        sheet,
+                        [
+                            displayed_started,
+                            str(item["call_key"]),
+                            str(item["code"]),
+                            str(item["reason"]),
+                            str(item["action"]),
+                        ],
+                    )
         format_sheet(sheet)
     description = wb.create_sheet("Описание полей")
     for line in (["Правило", "Описание"], ["Период", "Полные календарные сутки по Москве."],
@@ -977,8 +1190,8 @@ def write_workbook(
 
 
 @contextmanager
-def daily_export_lock(output_root: Path, day: date):
-    lock_dir = PIPELINE_ROOT / "locks"
+def daily_export_lock(ready_db: Path, output_root: Path, day: date):
+    lock_dir = ready_db.parent / ".daily-export-locks"
     lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock_dir.chmod(0o700)
     output_key = hashlib.sha256(
@@ -1113,11 +1326,13 @@ def _export_day_locked(
         else ""
     )
     package_status = "INCOMPLETE_DO_NOT_USE_AS_FINAL" if incomplete else "FINAL_CLOSED"
+    stage10_balance = dict(source_before.get("stage10_balance") or {})
     content_sha256 = publication_content_sha256(
         rows,
         day=day,
         manager_source=manager_source,
         package_status=package_status,
+        stage10_balance=stage10_balance,
     )
     source_after = verify_ready_drop(
         ready_db, require_closure=sealed_only, day=day
@@ -1127,6 +1342,11 @@ def _export_day_locked(
         != source_after["ready_generation_fingerprint"]
     ):
         raise RuntimeError("готовое поколение изменилось во время выгрузки; повторите запуск")
+    reconcile_interrupted_export_journals(
+        output_root,
+        day,
+        current_content_sha256=content_sha256,
+    )
     if reused := reusable_export(
         output_root,
         day,
@@ -1150,11 +1370,11 @@ def _export_day_locked(
     supplement_suffix = f" supplement-{supplement}" if supplement is not None else ""
     prefix = incomplete_prefix(incomplete)
     transcript_dir = output_root / (
-        f"{prefix}Расшифровки разговоров {day.isoformat()}{supplement_suffix} v4-{generation}"
+        f"{prefix}Расшифровки разговоров {day.isoformat()}{supplement_suffix} v5-{generation}"
     )
     assign_transcript_targets(rows, transcript_dir)
     xlsx = output_root / (
-        f"{prefix}Отчёт РОП по звонкам {day.isoformat()}{supplement_suffix} v4-{generation}.xlsx"
+        f"{prefix}Отчёт РОП по звонкам {day.isoformat()}{supplement_suffix} v5-{generation}.xlsx"
     )
     journal_path = output_root / f".daily_export_{day.isoformat()}_{generation}.journal.json"
     journal = parse_json(journal_path.read_text(encoding="utf-8")) if journal_path.is_file() else {}
@@ -1175,7 +1395,9 @@ def _export_day_locked(
         with tempfile.NamedTemporaryFile(prefix=f".Отчёт РОП {day.isoformat()}-", suffix=".staging.xlsx", dir=output_root, delete=False) as handle:
             staged_xlsx = Path(handle.name)
         try:
-            write_workbook(staged_xlsx, day, rows, manager_source)
+            write_workbook(
+                staged_xlsx, day, rows, manager_source, stage10_balance
+            )
             staged_sha = sha256_file(staged_xlsx)
             write_private_json(
                 journal_path,
@@ -1216,6 +1438,17 @@ def _export_day_locked(
         "tallanto_freshness": tallanto_freshness,
         "closure_ok": source_before.get("closure_ok") is True,
         "package_status": package_status,
+        "quarantine_items": list(stage10_balance.get("quarantine_items") or ()),
+        **{
+            field: stage10_balance.get(field)
+            for field in (
+                "mango_unique",
+                "ready_unique",
+                "quarantine_unique",
+                "pending_unique",
+                "unexplained_missing",
+            )
+        },
         "source_ready_manifest_sha256": source_before.get("ready_manifest_sha256"),
         "external_publication_authorized": bool(cloud_output),
         "xlsx": xlsx.name, "xlsx_sha256": sha256_file(xlsx), "transcript_dir": transcript_dir.name,
@@ -1267,24 +1500,33 @@ def export_day(
     current_manager_users: Sequence[Mapping[str, Any]] = (),
     sealed_only: bool = False,
     external_publication_evidence: Path | None = None,
+    expected_ready_manifest_sha256: str | None = None,
 ) -> Mapping[str, Any]:
     if day >= datetime.now(MOSCOW).date():
         raise ValueError("можно выгружать только завершённые сутки по Москве")
-    with daily_export_lock(output_root, day):
-        return _export_day_locked(
-            ready_db,
-            working_db,
-            output_root,
-            day,
-            manager_users,
-            tallanto_export=tallanto_export,
-            tallanto_env=tallanto_env,
-            tallanto_snapshot_as_of=tallanto_snapshot_as_of,
-            tallanto_client=tallanto_client,
-            current_manager_users=current_manager_users,
-            sealed_only=sealed_only,
-            external_publication_evidence=external_publication_evidence,
-        )
+    with daily_export_lock(ready_db, output_root, day):
+        with ready_publication_lock(ready_db):
+            recover_ready_generation(ready_db, lock_held=True)
+            if expected_ready_manifest_sha256 is not None and sha256_file(
+                ready_db.with_suffix(".manifest.json")
+            ) != expected_ready_manifest_sha256:
+                raise RuntimeError(
+                    "ready manifest changed after the coordinator decision"
+                )
+            return _export_day_locked(
+                ready_db,
+                working_db,
+                output_root,
+                day,
+                manager_users,
+                tallanto_export=tallanto_export,
+                tallanto_env=tallanto_env,
+                tallanto_snapshot_as_of=tallanto_snapshot_as_of,
+                tallanto_client=tallanto_client,
+                current_manager_users=current_manager_users,
+                sealed_only=sealed_only,
+                external_publication_evidence=external_publication_evidence,
+            )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

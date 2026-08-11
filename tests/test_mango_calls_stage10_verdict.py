@@ -152,6 +152,47 @@ def test_expired_missing_recording_stays_in_reasoned_quarantine() -> None:
     assert result["pending_unique"] == 0
     assert result["consistency_ok"] is True
     assert result["closure_ok"] is True
+    assert result["quarantine_items"] == [
+        {
+            "call_key": "missing-audio",
+            "started_at": "2026-08-10T12:00:00+00:00",
+            "code": "recording_retry_expired",
+            "reason": "Аудиозапись не появилась в Mango в течение 72 часов.",
+            "action": (
+                "Проверить запись в Mango и повторить загрузку вручную, "
+                "если файл появился."
+            ),
+        }
+    ]
+
+
+def test_audio_integrity_incident_is_reasoned_quarantine_not_pending() -> None:
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("damaged-audio", "normal"),
+        capture_entries=[
+            _capture(
+                "damaged-audio",
+                "audio_integrity_quarantined",
+                error="capture_target_integrity_mismatch",
+                remediation_code="manual_restore_or_quarantine_corrupted_audio",
+                recovery_state="immutable_audio_violation",
+            ),
+            _capture("normal"),
+        ],
+        ready_rows=[_ready("normal")],
+        now=NOW,
+    )
+
+    assert result["quarantine_unique"] == 1
+    assert result["quarantine_without_reason"] == 0
+    assert result["pending_unique"] == 0
+    assert result["ready_unique"] == 1
+    assert result["consistency_ok"] is True
+    assert result["closure_ok"] is True
+    serialized = json.dumps(result["quarantine_items"], ensure_ascii=False)
+    assert "capture_target_integrity_mismatch" not in serialized
+    assert "manual_restore_or_quarantine_corrupted_audio" not in serialized
 
 
 def test_two_recordings_quarantine_only_that_call() -> None:
@@ -173,6 +214,109 @@ def test_two_recordings_quarantine_only_that_call() -> None:
     assert result["quarantine_unique"] == 1
     assert result["ready_unique"] == 1
     assert result["consistency_ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("code", "capture_extra", "dead_letter_stage"),
+    [
+        (
+            "multiple_recordings_needs_review",
+            {"remediation_code": "manual_recording_selection"},
+            "",
+        ),
+        (
+            "recording_retry_expired",
+            {
+                "error": "SECRET +79990001122 /Users/private/file.mp3",
+                "remediation_code": "manual_review_or_retry_if_recording_appears",
+            },
+            "",
+        ),
+        (
+            "audio_integrity_quarantined",
+            {
+                "error": "capture_target_integrity_mismatch",
+                "remediation_code": "manual_restore_or_quarantine_corrupted_audio",
+                "recovery_state": "immutable_audio_violation",
+            },
+            "",
+        ),
+        ("dead_letter_transcribe", {}, "transcribe"),
+        ("dead_letter_resolve", {}, "resolve"),
+        ("dead_letter_analyze", {}, "analyze"),
+    ],
+)
+def test_all_quarantine_codes_have_static_manager_safe_guidance(
+    code: str,
+    capture_extra: dict[str, object],
+    dead_letter_stage: str,
+) -> None:
+    capture_status = code if not dead_letter_stage else "downloaded"
+    ready_rows = (
+        [
+            _ready(
+                "quarantine",
+                dead_letter_stage=dead_letter_stage,
+                last_error="SECRET +79990001122 /Users/private/file.mp3",
+            )
+        ]
+        if dead_letter_stage
+        else []
+    )
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("quarantine"),
+        capture_entries=[_capture("quarantine", capture_status, **capture_extra)],
+        ready_rows=ready_rows,
+        now=NOW + timedelta(days=3),
+    )
+
+    assert result["quarantine_items"][0]["code"] == code
+    serialized = json.dumps(result["quarantine_items"], ensure_ascii=False)
+    for forbidden in ("SECRET", "+79990001122", "/Users/", "last_error"):
+        assert forbidden not in serialized
+
+
+def test_duplicate_recording_has_safe_guidance() -> None:
+    result = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("duplicate", "canonical"),
+        capture_entries=[
+            _capture(
+                "duplicate",
+                "duplicate_recording",
+                canonical_event_key="event:canonical",
+            ),
+            _capture("canonical"),
+        ],
+        ready_rows=[_ready("canonical")],
+        now=NOW,
+    )
+
+    assert result["quarantine_items"][0]["code"] == "duplicate_recording"
+    assert result["consistency_ok"] is True
+
+
+def test_recovered_late_recording_leaves_no_current_quarantine_item() -> None:
+    recovered = build_stage10_verdict(
+        day=DAY,
+        enumeration=_enumeration("late"),
+        capture_entries=[
+            _capture(
+                "late",
+                "recording_retry_expired",
+                error="recording_missing_after_retry_ttl",
+                remediation_code="manual_review_or_retry_if_recording_appears",
+                created_at="2026-08-07T12:00:00+00:00",
+            ),
+            _capture("late", "downloaded", created_at="2026-08-11T08:00:00+00:00"),
+        ],
+        ready_rows=[_ready("late")],
+        now=NOW,
+    )
+
+    assert recovered["quarantine_unique"] == 0
+    assert recovered["quarantine_items"] == []
 
 
 @pytest.mark.parametrize(
@@ -510,6 +654,78 @@ def test_valid_strict_ready_manifest_is_accepted() -> None:
     ) == []
 
 
+def test_ready_manifest_rejects_tampered_quarantine_guidance() -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("missing-audio"),
+            capture_entries=[
+                _capture(
+                    "missing-audio",
+                    "recording_retry_expired",
+                    error="recording_missing_after_retry_ttl",
+                    remediation_code=(
+                        "manual_review_or_retry_if_recording_appears"
+                    ),
+                )
+            ],
+            ready_rows=[],
+            now=NOW + timedelta(days=3),
+        )
+    )
+    verdict["quarantine_items"] = [
+        {
+            **dict(verdict["quarantine_items"][0]),
+            "reason": "raw internal error: /Users/private/call.mp3",
+        }
+    ]
+
+    errors = validate_ready_manifest_payload(
+        _strict_ready_manifest_for(verdict), require_closure=True
+    )
+
+    assert "daily_verdict_quarantine_items_invalid" in errors
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "duplicate", "extra_field", "unknown_code", "wrong_day"),
+)
+def test_ready_manifest_rejects_malformed_quarantine_items(mutation: str) -> None:
+    verdict = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("missing-audio"),
+            capture_entries=[
+                _capture(
+                    "missing-audio",
+                    "recording_retry_expired",
+                    error="recording_missing_after_retry_ttl",
+                    remediation_code="manual_review_or_retry_if_recording_appears",
+                )
+            ],
+            ready_rows=[],
+            now=NOW + timedelta(days=3),
+        )
+    )
+    items = json.loads(json.dumps(verdict["quarantine_items"]))
+    if mutation == "missing":
+        items = []
+    elif mutation == "duplicate":
+        items = [items[0], dict(items[0])]
+    elif mutation == "extra_field":
+        items[0]["error"] = "raw"
+    elif mutation == "unknown_code":
+        items[0]["code"] = "unknown"
+    elif mutation == "wrong_day":
+        items[0]["started_at"] = "2026-08-09T12:00:00+00:00"
+    verdict["quarantine_items"] = items
+
+    assert "daily_verdict_quarantine_items_invalid" in validate_ready_manifest_payload(
+        _strict_ready_manifest_for(verdict), require_closure=True
+    )
+
+
 def test_required_day_can_be_green_while_another_day_keeps_generation_red() -> None:
     green = dict(
         build_stage10_verdict(
@@ -649,6 +865,10 @@ def test_safe_alert_projection_drops_pii_paths_and_diagnostics() -> None:
             "phone": "+79991234567",
             "db_path": "/Users/person/private.sqlite",
             "diagnostic": {"prompt": "secret"},
+            "quarantine_items": [
+                {"call_key": "secret-call", "reason": "private"}
+            ],
+            "call_key": "secret-call",
         }
     )
     assert result == {"status": "failed", "pending_unique": 2}

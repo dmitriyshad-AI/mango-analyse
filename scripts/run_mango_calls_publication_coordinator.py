@@ -34,6 +34,11 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     sha256_file,
     validate_ready_manifest_payload,
 )
+from mango_mvp.productization.ready_publication import (  # noqa: E402
+    inspect_ready_publication,
+    ready_publication_lock,
+    recover_ready_generation,
+)
 from scripts.export_daily_mango_calls_resolve import export_day  # noqa: E402
 from scripts.publish_current_mango_calls_google import (  # noqa: E402
     atomic_owner_json,
@@ -152,6 +157,8 @@ def _ready_paths(config: Mapping[str, Any]) -> tuple[Path, Path, Path]:
 def _ready_manifest(
     config: Mapping[str, Any], ready: Path
 ) -> Mapping[str, Any]:
+    if inspect_ready_publication(ready).get("recovery_required"):
+        raise RuntimeError("ready publication recovery is required")
     manifest = stable_json_object(
         ready.with_suffix(".manifest.json"), label="ready manifest"
     )
@@ -192,31 +199,51 @@ def _day_verdict(manifest: Mapping[str, Any], day: date) -> Mapping[str, Any]:
     return verdict if isinstance(verdict, Mapping) else {}
 
 
+def _ready_snapshot(
+    config: Mapping[str, Any], ready: Path
+) -> tuple[Mapping[str, Any], Optional[str]]:
+    """Recover and bind a coordinator decision to one ready manifest."""
+
+    with ready_publication_lock(ready):
+        recover_ready_generation(ready, lock_held=True)
+        manifest = _ready_manifest(config, ready)
+        manifest_path = ready.with_suffix(".manifest.json")
+        # The fallback exists only for isolated unit fakes that replace
+        # _ready_manifest.  A real successful _ready_manifest always read this
+        # regular file and therefore always returns an exact byte hash here.
+        manifest_sha256 = (
+            sha256_file(manifest_path) if manifest_path.is_file() else None
+        )
+        return manifest, manifest_sha256
+
+
 def _current_plan(
     config: Mapping[str, Any], root: Path, day: date
 ) -> Mapping[str, Any]:
     _pipeline, ready, _working = _ready_paths(config)
     manifest_path = ready.with_suffix(".manifest.json")
-    manifest = _ready_manifest(config, ready)
-    google = config.get("current_google")
-    if not isinstance(google, Mapping):
-        raise RuntimeError("current_google local plan config is missing")
-    owner_email = str(google.get("owner_email") or "").strip()
-    allowed = google.get("allowed_emails")
-    if not owner_email or not isinstance(allowed, list):
-        raise RuntimeError("current_google owner/allowlist is incomplete")
-    link_path = google.get("link_evidence")
-    links = owner_json(Path(str(link_path)).expanduser()) if link_path else {}
-    rows = load_manager_rows(
-        ready_db=ready,
-        ready_manifest=manifest_path,
-        ready_manifest_payload=manifest,
-        day=day,
-        owner_email=owner_email,
-        allowed_emails=[str(value) for value in allowed],
-        link_evidence=links,
-    )
-    plan = build_safe_plan(day=day, rows=rows, ready_manifest=manifest)
+    with ready_publication_lock(ready):
+        recover_ready_generation(ready, lock_held=True)
+        manifest = _ready_manifest(config, ready)
+        google = config.get("current_google")
+        if not isinstance(google, Mapping):
+            raise RuntimeError("current_google local plan config is missing")
+        owner_email = str(google.get("owner_email") or "").strip()
+        allowed = google.get("allowed_emails")
+        if not owner_email or not isinstance(allowed, list):
+            raise RuntimeError("current_google owner/allowlist is incomplete")
+        link_path = google.get("link_evidence")
+        links = owner_json(Path(str(link_path)).expanduser()) if link_path else {}
+        rows = load_manager_rows(
+            ready_db=ready,
+            ready_manifest=manifest_path,
+            ready_manifest_payload=manifest,
+            day=day,
+            owner_email=owner_email,
+            allowed_emails=[str(value) for value in allowed],
+            link_evidence=links,
+        )
+        plan = build_safe_plan(day=day, rows=rows, ready_manifest=manifest)
     output = root / "current" / f"{day.isoformat()}.safe-plan.json"
     atomic_owner_json(output, plan)
     return {
@@ -229,7 +256,12 @@ def _current_plan(
 
 
 def _daily_export(
-    config: Mapping[str, Any], root: Path, day: date, *, sealed_only: bool
+    config: Mapping[str, Any],
+    root: Path,
+    day: date,
+    *,
+    sealed_only: bool,
+    expected_ready_manifest_sha256: Optional[str] = None,
 ) -> Mapping[str, Any]:
     _pipeline, ready, working = _ready_paths(config)
     daily = config.get("daily_export")
@@ -256,6 +288,7 @@ def _daily_export(
         root / "daily",
         day,
         manager_users,
+        expected_ready_manifest_sha256=expected_ready_manifest_sha256,
         **kwargs,
     )
 
@@ -264,7 +297,7 @@ def _daily_close(
     config: Mapping[str, Any], root: Path, day: date
 ) -> Mapping[str, Any]:
     _pipeline, ready, _working = _ready_paths(config)
-    manifest = _ready_manifest(config, ready)
+    manifest, manifest_sha256 = _ready_snapshot(config, ready)
     attempts: list[Mapping[str, Any]] = []
     verdicts = manifest.get("daily_verdicts")
     catch_up_days = max(3, int(config.get("max_catch_up_days") or 7))
@@ -286,7 +319,13 @@ def _daily_close(
             )
             continue
         try:
-            result = _daily_export(config, root, candidate, sealed_only=True)
+            result = _daily_export(
+                config,
+                root,
+                candidate,
+                sealed_only=True,
+                expected_ready_manifest_sha256=manifest_sha256,
+            )
             attempts.append(
                 {
                     "day": candidate.isoformat(),
@@ -304,8 +343,14 @@ def _daily_close(
                 }
             )
     target = next(item for item in attempts if item["day"] == day.isoformat())
+    overall_status = (
+        "failed"
+        if any(item.get("status") == "failed" for item in attempts)
+        else str(target["status"])
+    )
     return {
-        "status": target["status"],
+        "status": overall_status,
+        "target_status": target["status"],
         "day": day.isoformat(),
         "attempts": attempts,
         "external_write": False,
@@ -318,7 +363,7 @@ def _daily_alert(
     pipeline, ready, _working = _ready_paths(config)
     manifest_error = False
     try:
-        manifest = _ready_manifest(config, ready)
+        manifest, _manifest_sha256 = _ready_snapshot(config, ready)
         verdict = _day_verdict(manifest, day)
     except Exception:
         manifest_error = True
@@ -368,9 +413,15 @@ def _daily_status(
     _pipeline, ready, _working = _ready_paths(config)
     closed = False
     try:
-        manifest = _ready_manifest(config, ready)
+        manifest, manifest_sha256 = _ready_snapshot(config, ready)
         closed = _day_verdict(manifest, day).get("closure_ok") is True
-        package = _daily_export(config, root, day, sealed_only=closed)
+        package = _daily_export(
+            config,
+            root,
+            day,
+            sealed_only=closed,
+            expected_ready_manifest_sha256=manifest_sha256,
+        )
         result: dict[str, Any] = {
             "status": "final" if closed else "incomplete",
             "package_status": package.get("package_status"),
@@ -440,7 +491,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("command", choices=COMMANDS)
     parser.add_argument("--day", type=date.fromisoformat)
     args = parser.parse_args(argv)
-    result = run(args.config, args.command, day=args.day)
+    try:
+        result = run(args.config, args.command, day=args.day)
+    except Exception as exc:  # noqa: BLE001 - CLI must emit one safe JSON result
+        result = {
+            "schema_version": SCHEMA,
+            "command": args.command,
+            "status": "failed",
+            "stop_reason": f"coordinator_exception:{type(exc).__name__}",
+            "external_write": False,
+        }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if result.get("status") not in {"failed", "alert"} else 2
 

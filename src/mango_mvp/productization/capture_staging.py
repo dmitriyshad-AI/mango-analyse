@@ -22,6 +22,7 @@ CAPTURE_MANIFEST_SCHEMA_VERSION = "capture_manifest_v1"
 CAPTURE_RECOVERY_SCHEMA_VERSION = "capture_manifest_recovery_v1"
 DEFAULT_CAPTURE_FILENAME_TZ = ZoneInfo("Europe/Moscow")
 TERMINAL_EVENT_STATUSES = {
+    "audio_integrity_quarantined",
     "downloaded",
     "duplicate_recording",
     "recording_retry_expired",
@@ -530,6 +531,7 @@ class CaptureStageSummary:
     needs_review_multiple_recordings: int
     manifest_path: str
     recordings_dir: str
+    integrity_quarantined: int = 0
     incomplete_trailing_manifest_records: int = 0
     recovered_trailing_manifest_records: int = 0
     recovery_incident_sha256: Optional[str] = None
@@ -541,7 +543,15 @@ class CaptureStageSummary:
 class CaptureManifestStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent_info = os.lstat(self.path.parent)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or self.path.parent.is_symlink()
+            or parent_info.st_uid != os.getuid()
+        ):
+            raise RuntimeError("capture manifest directory is unsafe")
+        self.path.parent.chmod(0o700)
         self.recovery_path = capture_recovery_path(path)
         self._manifest_seen = os.path.lexists(path)
         recovery = load_capture_recovery(self.recovery_path)
@@ -1043,6 +1053,16 @@ def stage_capture_events(
         if existing is not None and existing.status == "skipped_no_recording" and not recording_id:
             counts["already_manifested"] += 1
             continue
+        if (
+            existing is not None
+            and existing.status == "recording_retry_expired"
+            and not recording_id
+        ):
+            # The caller owns the once-per-day retry cadence marker.  Avoid a
+            # transient expired -> pending -> expired state and a duplicate
+            # append when Mango still has no recording id.
+            counts["already_manifested"] += 1
+            continue
         if not recording_id:
             entry = manifest_entry_from_event(
                 event, status="skipped_no_recording", host_id=host_id
@@ -1078,6 +1098,49 @@ def stage_capture_events(
             continue
 
         target_path = recordings_dir / build_capture_audio_filename(event, recording_id)
+        # A sealed asset is append-only evidence.  Missing or changed bytes
+        # must never be silently downloaded again and adopted under the same
+        # event, for either a single recording or a multi-part recording.  The
+        # gate precedes dry-run so a probe cannot mask the sealed evidence.
+        if (
+            existing is not None
+            and existing.recovery_state == "immutable_audio_violation"
+        ):
+            if existing.status != "audio_integrity_quarantined":
+                entry = replace(
+                    existing,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    status="audio_integrity_quarantined",
+                    error="capture_target_integrity_mismatch",
+                    remediation_code="manual_restore_or_quarantine_corrupted_audio",
+                )
+                manifest_store.append(entry)
+                latest_by_event[event.event_key] = entry
+            counts["integrity_quarantined"] += 1
+            continue
+
+        if (
+            existing is not None
+            and existing.status in ASSET_STATUSES
+            and not manifest_assets_exist(
+                existing,
+                recordings_dir,
+                require_integrity_metadata=require_integrity_metadata,
+            )
+        ):
+            entry = replace(
+                existing,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                status="audio_integrity_quarantined",
+                error="capture_target_integrity_mismatch",
+                remediation_code="manual_restore_or_quarantine_corrupted_audio",
+                recovery_state="immutable_audio_violation",
+            )
+            manifest_store.append(entry)
+            latest_by_event[event.event_key] = entry
+            counts["integrity_quarantined"] += 1
+            continue
+
         if dry_run:
             entry = manifest_entry_from_event(
                 event,
@@ -1153,10 +1216,10 @@ def stage_capture_events(
                 counts["failed"] += 1
             continue
 
+        # A crash can leave a fully fsynced target before the durable manifest
+        # append.  It may be adopted only when no prior sealed asset claims the
+        # same target.  A changed sealed asset is evidence, not a new truth.
         try:
-            # A crash can leave a fully fsynced target before the durable
-            # manifest append.  Validate and reuse that immutable file; the
-            # downloader itself deliberately refuses overwrite.
             target_info = _existing_capture_target(target_path)
             if target_info is not None and target_info.st_size <= 0:
                 target_path.unlink()
@@ -1234,6 +1297,7 @@ def stage_capture_events(
         needs_review_multiple_recordings=counts["needs_review_multiple_recordings"],
         manifest_path=str(manifest_store.path),
         recordings_dir=str(recordings_dir),
+        integrity_quarantined=counts["integrity_quarantined"],
         incomplete_trailing_manifest_records=manifest_store.incomplete_trailing_records,
         recovered_trailing_manifest_records=manifest_store.recovered_trailing_records,
         recovery_incident_sha256=manifest_store.recovery_incident_sha256,

@@ -23,7 +23,7 @@ from openpyxl import load_workbook
 GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-SCHEMA = "daily_mango_calls_resolve_export_v4"
+SCHEMA = "daily_mango_calls_resolve_export_v5"
 CONFIRMATION = "UPLOAD_MANGO_DAILY_REPORT"
 MULTIPART_LIMIT = 5 * 1024 * 1024
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -92,7 +92,7 @@ def load_plan(root: Path, day: date) -> dict[str, Any]:
     return {
         "day": day.isoformat(), "content_sha256": content_hash, "xlsx_sha256": manifest["xlsx_sha256"],
         "xlsx": xlsx, "upload_bytes": uploaded, "workbook_digest": workbook_digest(uploaded),
-        "name": f"Отчёт РОП по звонкам {day.isoformat()} — опубликован {stamp} — v4-{content_hash[:12]}",
+        "name": f"Отчёт РОП по звонкам {day.isoformat()} — опубликован {stamp} — v5-{content_hash[:12]}",
         "temporary_name": f"ПРОВЕРКА — НЕ ИСПОЛЬЗОВАТЬ — {day.isoformat()} — {content_hash[:12]}",
     }
 

@@ -48,6 +48,12 @@ CAPTURE_REL = "capture/capture_manifest.jsonl"
 WORKING_DB_REL = "working/mango_calls_pipeline.sqlite"
 READY_DB_REL = "drop/mango_calls_ready.sqlite"
 READY_MANIFEST_REL = "drop/mango_calls_ready.manifest.json"
+READY_PUBLICATION_JOURNAL_REL = (
+    "drop/.mango_calls_ready.sqlite.publication.journal.json"
+)
+READY_PUBLICATION_TRANSACTION_REL = (
+    "drop/.mango_calls_ready.sqlite.publication.txn"
+)
 CURSOR_REL = "state/mango_api_freshness.json"
 ARTIFACT_ORDER = (CAPTURE_REL, WORKING_DB_REL, READY_DB_REL, READY_MANIFEST_REL)
 REQUIRED_TRANSFER_FILES = (*ARTIFACT_ORDER, CURSOR_REL)
@@ -1710,6 +1716,7 @@ def optional_process_locks(pipeline_root: Path) -> Iterator[None]:
             "locks/process_b.lock",
             "locks/capture.lock",
             "locks/pipeline.lock",
+            "drop/.mango_calls_ready.sqlite.publication.lock",
         ):
             path = pipeline_root / relative
             if not path_exists(path):
@@ -2129,6 +2136,12 @@ def preflight_plan(
     inventory: Mapping[str, Any],
     source_inventory: Mapping[str, Any],
 ) -> Mapping[str, Any]:
+    if path_exists(pipeline_root / READY_PUBLICATION_JOURNAL_REL) or path_exists(
+        pipeline_root / READY_PUBLICATION_TRANSACTION_REL
+    ):
+        raise RelocationError(
+            "ready publication recovery must finish before relocation"
+        )
     files, directories = inventory_sets(inventory)
     source_files, _source_directories = inventory_sets(source_inventory)
     for relative in REQUIRED_TRANSFER_FILES:
@@ -3041,6 +3054,12 @@ def relocate_pipeline(
     assert_no_symlink_components(state_dir_path, allow_missing=True)
 
     with optional_process_locks(pipeline):
+        if path_exists(pipeline / READY_PUBLICATION_JOURNAL_REL) or path_exists(
+            pipeline / READY_PUBLICATION_TRANSACTION_REL
+        ):
+            raise RelocationError(
+                "ready publication recovery must finish before relocation"
+            )
         if not execute:
             if path_exists(state_dir_path / "plan.json") and not path_exists(state_dir_path / "complete.json"):
                 return {

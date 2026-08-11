@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.import_cli import (
 )
 from mango_mvp.customer_timeline.nightly_service import mango_processed_cursor
 from mango_mvp.customer_timeline.safe_copy import file_sha256 as sha256_file
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.customer_timeline.safety import (
     guard_customer_timeline_output_path,
     is_customer_timeline_prod_path,
@@ -55,6 +56,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     current_git_sha,
     foreign_host_ids,
     load_ready_rows,
+    moscow_day_bounds_utc,
     parse_aware_datetime,
     read_host_id,
     ready_row_is_complete,
@@ -70,6 +72,12 @@ from mango_mvp.productization.mango_office_client import (
     MangoOfficeCredentials,
 )
 from mango_mvp.productization.mango_recordings import MangoRecordingDownloader
+from mango_mvp.productization.ready_publication import (
+    commit_ready_generation,
+    inspect_ready_publication,
+    ready_publication_lock,
+    recover_ready_generation,
+)
 from mango_mvp.productization.contracts import Direction, TelephonyCallEvent, TenantRef
 from mango_mvp.services.transcribe import TranscribeService
 
@@ -783,30 +791,47 @@ def run_process_a(
                 )
                 base_env = worker_environment(config)
                 if metadata["audio_files"]:
-                    worker_reports.append(
-                        command_runner(
-                            cli_command(config, "init-db"),
+                    prelude_commands = (
+                        cli_command(config, "init-db"),
+                        cli_command(
+                            config,
+                            "ingest",
+                            "--recordings-dir",
+                            str(config.working_audio_dir),
+                            "--metadata-csv",
+                            str(config.metadata_csv),
+                        ),
+                    )
+                    for command in prelude_commands:
+                        report = (
+                            run_command(
+                                command,
+                                base_env,
+                                config.working_dir,
+                                deadline=heavy_cycle_deadline,
+                            )
+                            if command_runner is run_command
+                            else command_runner(
+                                command, base_env, config.working_dir
+                            )
+                        )
+                        worker_reports.append(report)
+                        if int(report.get("rc", 0)) != 0:
+                            break
+                if not any(
+                    int(report.get("rc", 0)) != 0
+                    for report in worker_reports
+                ):
+                    worker_reports.extend(
+                        run_sequential_pipeline_workers(
+                            config,
                             base_env,
-                            config.working_dir,
+                            command_runner,
+                            include_llm=bool(environment.get("codex_network_ok")),
+                            run_id=run_id,
+                            cycle_deadline=heavy_cycle_deadline,
                         )
                     )
-                    worker_reports.append(
-                        command_runner(
-                            cli_command(config, "ingest", "--recordings-dir", str(config.working_audio_dir), "--metadata-csv", str(config.metadata_csv)),
-                            base_env,
-                            config.working_dir,
-                        )
-                    )
-                worker_reports.extend(
-                    run_sequential_pipeline_workers(
-                        config,
-                        base_env,
-                        command_runner,
-                        include_llm=bool(environment.get("codex_network_ok")),
-                        run_id=run_id,
-                        cycle_deadline=heavy_cycle_deadline,
-                    )
-                )
             failed_commands = [item for item in worker_reports if int(item.get("rc", 0)) != 0]
             if failed_commands:
                 return finalize_report(
@@ -1020,13 +1045,6 @@ def _run_process_b(
         return finalize_report(config, run_id, "process_b", "idle", "drop_missing", {"events": 0})
     drop_fingerprint = ready_drop_fingerprint(config)
     if not drop_fingerprint.get("manifest_valid"):
-        # publish_ready_db swaps the sqlite before it writes the manifest, so a
-        # single invalid read can just be that window: re-read once before failing.
-        time.sleep(max(0.0, float(config.manifest_recheck_sleep_sec)))
-        drop_fingerprint = ready_drop_fingerprint(config)
-    if not drop_fingerprint.get("manifest_valid"):
-        # A sealed drop whose manifest still disagrees with the sqlite is not a
-        # trustworthy source: fail closed instead of importing it as success.
         return finalize_report(
             config,
             run_id,
@@ -1035,23 +1053,31 @@ def _run_process_b(
             "drop_manifest_mismatch" if drop_fingerprint.get("manifest_mismatch") else "drop_manifest_invalid",
             {"events": 0, "drop": drop_fingerprint},
         )
-    previous_cursor = read_json(config.process_b_cursor_path)
-    if drop_fingerprint.get("sha256") and previous_cursor.get("sha256") == drop_fingerprint.get("sha256"):
-        return finalize_report(
-            config,
-            run_id,
-            "process_b",
-            "idle",
-            "drop_unchanged",
-            {"events": 0, "drop": drop_fingerprint, "cursor_before": previous_cursor},
-        )
+    if not config.timeline_db.is_file():
+        # The target is reconstructible from the sealed full-drop scan.  Build
+        # an empty staging schema before the read-only producer resolves
+        # identities; otherwise target loss would make recovery impossible.
+        with CustomerTimelineSQLiteStore(
+            config.timeline_db,
+            allowed_root=config.timeline_allowed_root,
+        ):
+            pass
     quick_before = sqlite_check(config.timeline_db, "quick_check")
     source_systems_before = call_event_source_systems(config.timeline_db)
-    cursor = mango_processed_cursor(config.timeline_db, tenant_id=config.tenant_id)
+    cursor = (
+        mango_processed_cursor(config.timeline_db, tenant_id=config.tenant_id)
+        if config.timeline_db.is_file()
+        else {
+            "source_system": "mango_processed_summary",
+            "last_cursor_ts": None,
+            "max_source_ts": None,
+        }
+    )
     increment_path = config.ingest_dir / "mango_processed_summary.jsonl"
     producer_report_path = config.ingest_dir / "mango_processed_summary_producer_report.json"
-    # A call may finish Analyze after newer calls were already imported. Scan the
-    # sealed drop fully and let dedupe_key decide; a timestamp cursor can lose it.
+    # Always scan the sealed drop and let dedupe_key decide.  A source-only
+    # cursor cannot prove that the target Timeline still exists or is complete,
+    # so skipping an unchanged drop would make target loss permanent.
     producer = producer_runner(config, increment_path, producer_report_path, None)
     if str(producer.get("status") or "ok") not in {"ok", "ready"}:
         return finalize_report(
@@ -1181,11 +1207,13 @@ def run_process_b(
                     "cutover_authority_failed",
                     {"authority": authority},
                 )
-            return _run_process_b(
-                config,
-                producer_runner=producer_runner,
-                import_runner=import_runner,
-            )
+            with ready_publication_lock(config.ready_db):
+                recover_ready_generation(config.ready_db, lock_held=True)
+                return _run_process_b(
+                    config,
+                    producer_runner=producer_runner,
+                    import_runner=import_runner,
+                )
     except LockBusy as exc:
         return finalize_report(
             config, run_id, "process_b", "locked", "process_b_locked", {"lock": exc.metadata},
@@ -1417,14 +1445,31 @@ def capture_mango_window(
         for entry in latest_manifest.values()
         if entry.status in {"skipped_no_recording", "failed"}
     ]
-    pending_keys = {entry.event_key for entry in pending_entries}
+    expired_retry_interval = timedelta(hours=24)
+    due_expired_entries = [
+        entry
+        for entry in latest_manifest.values()
+        if entry.status == "recording_retry_expired"
+        and until.astimezone(timezone.utc)
+        - parse_datetime(entry.created_at).astimezone(timezone.utc)
+        >= expired_retry_interval
+    ]
+    due_expired_unknown = [
+        entry for entry in due_expired_entries if not entry_recording_ids(entry)
+    ]
+    due_expired_unknown_by_key = {
+        entry.event_key: entry for entry in due_expired_unknown
+    }
+    pending_keys = {
+        entry.event_key for entry in (*pending_entries, *due_expired_unknown)
+    }
     threshold = until - timedelta(hours=max(1, config.pending_recording_retry_hours))
     recent_entries = [entry for entry in latest_manifest.values() if parse_datetime(entry.started_at) >= threshold]
     expired_keys = {
         entry.event_key
         for entry in pending_entries
         if parse_datetime(entry.started_at) < threshold
-    }
+    } | {entry.event_key for entry in due_expired_unknown}
     overlap = timedelta(minutes=config.poll_overlap_minutes)
     # The permanent service always proves a rolling TTL window.  Direct legacy
     # callers retain their explicit window; service JSON enables strict mode.
@@ -1439,10 +1484,20 @@ def capture_mango_window(
         else since
     )
     poll_windows = [(base_window_start, until)]
-    for entry in {entry.event_key: entry for entry in (*pending_entries, *recent_entries)}.values():
+    for entry in {
+        entry.event_key: entry for entry in (*pending_entries, *recent_entries)
+    }.values():
         started = parse_datetime(entry.started_at)
         ended = parse_datetime(entry.ended_at) if entry.ended_at else started + timedelta(hours=1)
         poll_windows.append((started - overlap, ended + overlap))
+    for entry in due_expired_unknown:
+        poll_windows.append(
+            moscow_day_bounds_utc(
+                parse_datetime(entry.started_at)
+                .astimezone(ZoneInfo("Europe/Moscow"))
+                .date()
+            )
+        )
     merged_windows: list[tuple[datetime, datetime]] = []
     for start, end in sorted(poll_windows):
         if merged_windows and start <= merged_windows[-1][1]:
@@ -1539,9 +1594,23 @@ def capture_mango_window(
     )
     latest = manifest_store.latest_by_event_key()
     pending_expired = 0
+    expired_reenumerated = 0
     for event_key in expired_keys:
         entry = latest.get(event_key)
-        if entry is not None and entry.status in {"skipped_no_recording", "failed"}:
+        original_due = due_expired_unknown_by_key.get(event_key)
+        should_refresh_due = bool(
+            entry is not None
+            and original_due is not None
+            and entry.status == "recording_retry_expired"
+            and not entry_recording_ids(entry)
+            and entry.created_at == original_due.created_at
+        )
+        should_expire_pending = bool(
+            entry is not None
+            and original_due is None
+            and entry.status in {"skipped_no_recording", "failed"}
+        )
+        if entry is not None and (should_refresh_due or should_expire_pending):
             manifest_store.append(
                 replace(
                     entry,
@@ -1550,9 +1619,17 @@ def capture_mango_window(
                     error="recording_missing_after_retry_ttl",
                     remediation_code="manual_review_or_retry_if_recording_appears",
                     host_id=host_id,
+                    recovery_state=(
+                        "late_recording_reenumerated_still_missing"
+                        if should_refresh_due
+                        else entry.recovery_state
+                    ),
                 )
             )
-            pending_expired += 1
+            if should_refresh_due:
+                expired_reenumerated += 1
+            else:
+                pending_expired += 1
     final_latest = manifest_store.latest_by_event_key()
     remaining_pending = {
         key
@@ -1560,6 +1637,10 @@ def capture_mango_window(
         if entry.status in {"skipped_no_recording", "failed"}
     }
     open_multi_review = sum(entry.status == "multiple_recordings_needs_review" for entry in final_latest.values())
+    open_integrity_quarantine = sum(
+        entry.status == "audio_integrity_quarantined"
+        for entry in final_latest.values()
+    )
     incomplete_tail = manifest_store.incomplete_trailing_records
     recovered_tail = manifest_store.recovered_trailing_records
     recovery_incident_sha256 = manifest_store.recovery_incident_sha256
@@ -1583,20 +1664,28 @@ def capture_mango_window(
     previous_zero = previous_cursor.get("independent_zero_enumerations_by_day")
     if not isinstance(previous_zero, Mapping):
         previous_zero = {}
-    zero_proofs: dict[str, int] = {}
+    zero_proofs: dict[str, int] = {
+        key: 0 for key in calls_by_moscow_day
+    }
     enumeration_start = min(start for start, _end in merged_windows)
-    day_cursor = enumeration_start.astimezone(
-        ZoneInfo("Europe/Moscow")
-    ).date()
-    last_day = until.astimezone(ZoneInfo("Europe/Moscow")).date()
-    while day_cursor <= last_day:
-        key = day_cursor.isoformat()
+    covered_days: set[date] = set()
+    for start, end in merged_windows:
+        day_cursor = start.astimezone(ZoneInfo("Europe/Moscow")).date()
+        last_day = (end - timedelta(microseconds=1)).astimezone(
+            ZoneInfo("Europe/Moscow")
+        ).date()
+        while day_cursor <= last_day:
+            day_start, day_end = moscow_day_bounds_utc(day_cursor)
+            if start <= day_start and end >= day_end:
+                covered_days.add(day_cursor)
+            day_cursor += timedelta(days=1)
+    for covered_day in sorted(covered_days):
+        key = covered_day.isoformat()
         zero_proofs[key] = (
             0
             if calls_by_moscow_day.get(key)
             else positive_int(previous_zero.get(key)) + 1
         )
-        day_cursor += timedelta(days=1)
     manifest_end_offset = config.capture_manifest.stat().st_size
     sealed_capture = capture_manifest_snapshot(
         config.capture_manifest, end_offset=manifest_end_offset
@@ -1639,7 +1728,9 @@ def capture_mango_window(
         "api_events_already_known_external": len(external_known_keys),
         "pending_recording_retries": len(remaining_pending),
         "pending_recording_expired": pending_expired,
+        "expired_recording_reenumerated_still_missing": expired_reenumerated,
         "open_multiple_recordings_needs_review": open_multi_review,
+        "open_audio_integrity_quarantined": open_integrity_quarantine,
         "api_events_without_recording": sum(
             1 for event in mapped_events if not (event.recording_ref or event.recording_url)
         ),
@@ -1652,6 +1743,7 @@ def capture_mango_window(
             and not remaining_pending
             and pending_expired == 0
             and open_multi_review == 0
+            and open_integrity_quarantine == 0
         ),
     }
 
@@ -2301,7 +2393,15 @@ def codex_network_available() -> bool:
 
 
 def disk_preflight(config: CallsTwoProcessesConfig) -> Mapping[str, Any]:
-    config.pipeline_root.mkdir(parents=True, exist_ok=True)
+    config.pipeline_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root_info = os.lstat(config.pipeline_root)
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or config.pipeline_root.is_symlink()
+        or root_info.st_uid != os.getuid()
+    ):
+        raise RuntimeError("pipeline root is unsafe")
+    config.pipeline_root.chmod(0o700)
     usage = shutil.disk_usage(config.pipeline_root)
     required = int(config.min_free_gib * 1024**3)
     return {"free_bytes": usage.free, "required_free_bytes": required, "ok": usage.free >= required}
@@ -2706,26 +2806,43 @@ def cli_command(config: CallsTwoProcessesConfig, *args: str) -> list[str]:
     return [str(config.python_executable), "-m", "mango_mvp.cli", *args]
 
 
-def run_command(command: Sequence[str], env: Mapping[str, str], cwd: Path) -> Mapping[str, Any]:
+def run_command(
+    command: Sequence[str],
+    env: Mapping[str, str],
+    cwd: Path,
+    *,
+    deadline: Optional[float] = None,
+) -> Mapping[str, Any]:
     cwd.mkdir(parents=True, exist_ok=True)
     logs_dir = cwd / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log_path = logs_dir / f"command_{stamp}.log"
     with log_path.open("w", encoding="utf-8") as handle:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             list(command),
             cwd=cwd,
             env=dict(env),
             text=True,
             stdout=handle,
             stderr=subprocess.STDOUT,
-            check=False,
+            start_new_session=True,
         )
+        timed_out = False
+        while proc.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                terminate_process_group(proc)
+                handle.write("heavy_cycle_timeout\n")
+                break
+            time.sleep(0.1)
+        return_code = 124 if timed_out else int(proc.returncode or 0)
     report: dict[str, Any] = {
-        "rc": proc.returncode,
+        "rc": return_code,
         "command": compact_command_name(command),
         "log_path": str(log_path),
+        "timed_out": timed_out,
+        "timeout_scope": "heavy_cycle" if timed_out else None,
     }
     if "ingest" in command:
         payload = parse_json_object(log_path.read_text(encoding="utf-8"))
@@ -2776,6 +2893,7 @@ def run_increment_producer(
 def _ready_verdicts(
     config: CallsTwoProcessesConfig,
     *,
+    ready_db: Optional[Path] = None,
     capture_evidence: Mapping[str, Any],
     manifest_end_offset: Optional[int],
 ) -> tuple[Mapping[str, Mapping[str, Any]], Mapping[str, Any], Mapping[str, Any]]:
@@ -2784,7 +2902,7 @@ def _ready_verdicts(
     )
     # Verdict and manifest must describe the sealed generation, never a live
     # working DB that may advance immediately after backup.
-    rows = load_ready_rows(config.ready_db)
+    rows = load_ready_rows(ready_db or config.ready_db)
     evidence: dict[str, Any] = dict(capture_evidence)
     calls_by_day = evidence.get("calls_by_moscow_day")
     if not isinstance(calls_by_day, Mapping) and not config.strict_ready_provenance:
@@ -2846,6 +2964,7 @@ def publish_ready_db(
     manifest_end_offset: Optional[int] = None,
     stage_reports: Sequence[Mapping[str, Any]] = (),
     runtime_fingerprint: Optional[Mapping[str, Any]] = None,
+    publication_checkpoint: Optional[Callable[[str], None]] = None,
 ) -> Mapping[str, Any]:
     config.ready_db.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     config.ready_db.parent.chmod(0o700)
@@ -2870,112 +2989,139 @@ def publish_ready_db(
                 quick = str(target.execute("PRAGMA quick_check").fetchone()[0])
                 integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
         temp.chmod(0o600)
-    except Exception:
-        temp.unlink(missing_ok=True)
-        cleanup_sqlite_sidecars(temp)
-        raise
-    source_after = sqlite_storage_signature(config.working_db)
-    if source_before != source_after:
-        temp.unlink(missing_ok=True)
-        cleanup_sqlite_sidecars(temp)
-        raise RuntimeError("working DB changed while sealing ready generation")
-    if quick != "ok" or integrity != "ok":
-        temp.unlink(missing_ok=True)
-        cleanup_sqlite_sidecars(temp)
-        raise RuntimeError("ready DB integrity check failed")
-    if os.path.lexists(config.ready_db):
-        existing = os.lstat(config.ready_db)
-        if (
-            not stat.S_ISREG(existing.st_mode)
-            or config.ready_db.is_symlink()
-            or existing.st_uid != os.getuid()
-            or existing.st_nlink != 1
-        ):
-            temp.unlink(missing_ok=True)
-            cleanup_sqlite_sidecars(temp)
-            raise RuntimeError("ready DB target is unsafe")
-    temp.replace(config.ready_db)
-    config.ready_db.chmod(0o600)
-    cleanup_sqlite_sidecars(temp)
-    sha = sha256_file(config.ready_db)
-    evidence = dict(capture_evidence or read_json(config.cursor_path))
-    verdicts, snapshot, evidence = _ready_verdicts(
-        config,
-        capture_evidence=evidence,
-        manifest_end_offset=manifest_end_offset,
-    )
-    expected_capture_sha = optional_text(evidence.get("manifest_snapshot_sha256"))
-    if config.strict_ready_provenance and expected_capture_sha != snapshot["sha256"]:
-        raise RuntimeError("ready generation capture snapshot digest mismatch")
-    consistency_ok = bool(verdicts) and all(
-        verdict.get("consistency_ok") is True for verdict in verdicts.values()
-    )
-    closure_ok = bool(verdicts) and all(
-        verdict.get("closure_ok") is True for verdict in verdicts.values()
-    )
-    if not config.strict_ready_provenance and not verdicts:
-        consistency_ok = closure_ok = True
-    project_root = Path(__file__).resolve().parents[3]
-    producer_sha = config.expected_code_sha or current_git_sha(project_root)
-    host_id = configured_host_id(
-        config, required=config.require_cutover_authority
-    )
-    source = evidence.get("mango_enumeration_source")
-    if not isinstance(source, Mapping):
-        source = {}
-    created = datetime.now(timezone.utc)
-    observed_fingerprint = (
-        dict(runtime_fingerprint)
-        if isinstance(runtime_fingerprint, Mapping)
-        else approved_runtime_fingerprint()
-    )
-    fingerprint_errors = validate_runtime_fingerprint(observed_fingerprint)
-    if config.strict_ready_provenance and fingerprint_errors:
-        raise RuntimeError(
-            "runtime fingerprint is not proven: " + ",".join(fingerprint_errors)
+        source_after = sqlite_storage_signature(config.working_db)
+        if source_before != source_after:
+            raise RuntimeError("working DB changed while sealing ready generation")
+        if quick != "ok" or integrity != "ok":
+            raise RuntimeError("ready DB integrity check failed")
+        if os.path.lexists(config.ready_db):
+            existing = os.lstat(config.ready_db)
+            if (
+                not stat.S_ISREG(existing.st_mode)
+                or config.ready_db.is_symlink()
+                or existing.st_uid != os.getuid()
+                or existing.st_nlink != 1
+            ):
+                raise RuntimeError("ready DB target is unsafe")
+        sha = sha256_file(temp)
+        temp_stat = temp.stat()
+        evidence = dict(capture_evidence or read_json(config.cursor_path))
+        verdicts, snapshot, evidence = _ready_verdicts(
+            config,
+            ready_db=temp,
+            capture_evidence=evidence,
+            manifest_end_offset=manifest_end_offset,
         )
-    manifest = {
-        "schema_version": READY_MANIFEST_SCHEMA,
-        "status": "ready",
-        "published_at": created.isoformat(),
-        "created_at_utc": created.isoformat(),
-        "moscow_dates": sorted(verdicts),
-        "producer_git_sha": producer_sha,
-        "host_id": host_id,
-        "run_id": run_id or new_calls_run_id(created),
-        "ready_db": str(config.ready_db),
-        "sha256": sha,
-        "size_bytes": config.ready_db.stat().st_size,
-        "ready_mtime_ns": config.ready_db.stat().st_mtime_ns,
-        "quick_check": quick,
-        "integrity_check": integrity,
-        "provenance_mode": (
-            "strict_service"
-            if config.strict_ready_provenance
-            else "compatibility_not_for_service"
-        ),
-        "mango_window": {
-            "since": source.get("rolling_since") or source.get("since") or "not_proven",
-            "until": source.get("until") or "not_proven",
-        },
-        "mango_enumeration_complete": evidence.get("mango_enumeration_complete") is True,
-        "mango_enumeration_source": dict(source),
-        "catch_up": bool(source.get("catch_up")),
-        "sla_mode": "catch_up" if source.get("catch_up") else "live",
-        "manifest_snapshot": {
-            "end_offset": snapshot["end_offset"],
-            "sha256": snapshot["sha256"],
-        },
-        "consistency_ok": consistency_ok,
-        "closure_ok": closure_ok,
-        "daily_verdicts": verdicts,
-        "runtime_fingerprint": observed_fingerprint,
-        "stage_metrics": compact_command_reports(stage_reports),
-        "counts": counts,
-        "source_storage": source_after,
-    }
-    write_json(config.ready_db.with_suffix(".manifest.json"), manifest)
-    return manifest
+        expected_capture_sha = optional_text(
+            evidence.get("manifest_snapshot_sha256")
+        )
+        if (
+            config.strict_ready_provenance
+            and expected_capture_sha != snapshot["sha256"]
+        ):
+            raise RuntimeError("ready generation capture snapshot digest mismatch")
+        consistency_ok = bool(verdicts) and all(
+            verdict.get("consistency_ok") is True
+            for verdict in verdicts.values()
+        )
+        closure_ok = bool(verdicts) and all(
+            verdict.get("closure_ok") is True for verdict in verdicts.values()
+        )
+        if not config.strict_ready_provenance and not verdicts:
+            consistency_ok = closure_ok = True
+        project_root = Path(__file__).resolve().parents[3]
+        producer_sha = config.expected_code_sha or current_git_sha(project_root)
+        host_id = configured_host_id(
+            config, required=config.require_cutover_authority
+        )
+        source = evidence.get("mango_enumeration_source")
+        if not isinstance(source, Mapping):
+            source = {}
+        created = datetime.now(timezone.utc)
+        observed_fingerprint = (
+            dict(runtime_fingerprint)
+            if isinstance(runtime_fingerprint, Mapping)
+            else approved_runtime_fingerprint()
+        )
+        fingerprint_errors = validate_runtime_fingerprint(observed_fingerprint)
+        if config.strict_ready_provenance and fingerprint_errors:
+            raise RuntimeError(
+                "runtime fingerprint is not proven: "
+                + ",".join(fingerprint_errors)
+            )
+        manifest = {
+            "schema_version": READY_MANIFEST_SCHEMA,
+            "status": "ready",
+            "published_at": created.isoformat(),
+            "created_at_utc": created.isoformat(),
+            "moscow_dates": sorted(verdicts),
+            "producer_git_sha": producer_sha,
+            "host_id": host_id,
+            "run_id": run_id or new_calls_run_id(created),
+            "ready_db": str(config.ready_db),
+            "sha256": sha,
+            "size_bytes": temp_stat.st_size,
+            "ready_mtime_ns": temp_stat.st_mtime_ns,
+            "quick_check": quick,
+            "integrity_check": integrity,
+            "provenance_mode": (
+                "strict_service"
+                if config.strict_ready_provenance
+                else "compatibility_not_for_service"
+            ),
+            "mango_window": {
+                "since": (
+                    source.get("rolling_since")
+                    or source.get("since")
+                    or "not_proven"
+                ),
+                "until": source.get("until") or "not_proven",
+            },
+            "mango_enumeration_complete": (
+                evidence.get("mango_enumeration_complete") is True
+            ),
+            "mango_enumeration_source": dict(source),
+            "catch_up": bool(source.get("catch_up")),
+            "sla_mode": "catch_up" if source.get("catch_up") else "live",
+            "manifest_snapshot": {
+                "end_offset": snapshot["end_offset"],
+                "sha256": snapshot["sha256"],
+            },
+            "consistency_ok": consistency_ok,
+            "closure_ok": closure_ok,
+            "daily_verdicts": verdicts,
+            "runtime_fingerprint": observed_fingerprint,
+            "stage_metrics": compact_command_reports(stage_reports),
+            "counts": counts,
+            "source_storage": source_after,
+        }
+        validation_errors = validate_ready_manifest_payload(
+            manifest,
+            # A red Stage10 balance is a valid sealed generation and must be
+            # published as evidence, while downstream consumers still reject
+            # it through their default consistency gate.
+            require_consistency=False,
+            expected_code_sha=(
+                config.expected_code_sha if config.strict_ready_provenance else None
+            ),
+            expected_host_id=(host_id if config.strict_ready_provenance else None),
+            allow_compatibility=not config.strict_ready_provenance,
+        )
+        if validation_errors:
+            raise RuntimeError(
+                "staged ready manifest is invalid: "
+                + ",".join(validation_errors)
+            )
+        commit_ready_generation(
+            config.ready_db,
+            temp,
+            manifest,
+            checkpoint=publication_checkpoint,
+        )
+        return manifest
+    finally:
+        temp.unlink(missing_ok=True)
+        cleanup_sqlite_sidecars(temp)
 
 
 def sqlite_storage_signature(path: Path) -> Mapping[str, Mapping[str, int]]:
@@ -2998,6 +3144,7 @@ def publish_ready_db_if_changed(
     stage_reports: Sequence[Mapping[str, Any]] = (),
     runtime_fingerprint: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
+    recover_ready_generation(config.ready_db)
     manifest_path = config.ready_db.with_suffix(".manifest.json")
     if not changed and config.ready_db.is_file() and manifest_path.is_file():
         manifest = read_json(manifest_path)
@@ -3583,6 +3730,8 @@ def run_local_watchdog(
         if manifest
         else ["ready_manifest_missing"]
     )
+    if inspect_ready_publication(config.ready_db).get("recovery_required"):
+        manifest_errors.append("ready_publication_recovery_required")
     if manifest and config.strict_ready_provenance:
         try:
             ready_stat = os.lstat(config.ready_db)
@@ -3892,6 +4041,7 @@ def write_cursor(path: Path, until: datetime, capture: Mapping[str, Any]) -> Non
             "capture_status": capture.get("status"),
             "downloaded": capture.get("downloaded"),
             "failed": capture.get("failed"),
+            "integrity_quarantined": capture.get("integrity_quarantined"),
             "host_id": capture.get("host_id"),
             "manifest_end_offset": capture.get("manifest_end_offset"),
             "manifest_snapshot_sha256": capture.get(

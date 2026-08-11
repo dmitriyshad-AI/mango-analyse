@@ -33,14 +33,19 @@ from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E40
     parse_aware_datetime,
     read_stable_regular_bytes,
     sha256_file,
+    validate_quarantine_items_payload,
     validate_ready_manifest_payload,
+)
+from mango_mvp.productization.ready_publication import (  # noqa: E402
+    ready_publication_lock,
+    recover_ready_generation,
 )
 from mango_mvp.services.export_excel import call_to_row  # noqa: E402
 
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 SCHEMA = "mango_calls_current_google_v1"
-SAFE_PLAN_SCHEMA = "mango_calls_current_google_safe_plan_v1"
+SAFE_PLAN_SCHEMA = "mango_calls_current_google_safe_plan_v2"
 CONFIG_SCHEMA = "mango_calls_current_google_config_v1"
 CURRENT_TITLE = "Сегодня — предварительно"
 REVIEW_TITLE = "Требует проверки"
@@ -256,6 +261,20 @@ def load_manager_rows(
         *(email.strip().casefold() for email in allowed_emails if email.strip()),
     }
     links = link_evidence or {}
+    verdicts = manifest.get("daily_verdicts")
+    day_verdict = (
+        verdicts.get(day.isoformat()) if isinstance(verdicts, Mapping) else None
+    )
+    quarantine_items = (
+        list(day_verdict.get("quarantine_items") or ())
+        if isinstance(day_verdict, Mapping)
+        else []
+    )
+    quarantine_keys = {
+        str(item.get("call_key") or "")
+        for item in quarantine_items
+        if isinstance(item, Mapping)
+    }
     result: list[Mapping[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
@@ -269,6 +288,8 @@ def load_manager_rows(
         if not call_key or call_key in seen:
             raise RuntimeError("ready generation has duplicate or empty call_key")
         seen.add(call_key)
+        if call_key in quarantine_keys:
+            continue
         analysis = json_object(row.get("analysis_json"))
         analysis_complete = row.get("analysis_status") == "done" and bool(analysis)
         business_analysis = analysis if analysis_complete else {}
@@ -329,7 +350,7 @@ def load_manager_rows(
             if clean_text(normalized.get("call_type")) == "non_conversation":
                 explicit_result = "Разговор не состоялся"
             elif clean_text(normalized.get("next_step_action")):
-                explicit_result = "Согласован следующий шаг"
+                explicit_result = "Следующий шаг выделен анализом"
             else:
                 explicit_result = "Итог не зафиксирован"
                 issues.append("Итог разговора требует ручной проверки")
@@ -386,6 +407,50 @@ def load_manager_rows(
         result.append(manager_row)
     result.sort(key=lambda item: (str(item["Дата и время"]), str(item["call_key"])))
     return result
+
+
+def quarantine_review_rows(
+    items: Any, *, day: date
+) -> list[Mapping[str, Any]]:
+    raw_items = list(items) if isinstance(items, list) else items
+    errors = validate_quarantine_items_payload(
+        raw_items,
+        day=day,
+        expected_count=len(raw_items) if isinstance(raw_items, list) else -1,
+    )
+    if errors:
+        raise RuntimeError("safe quarantine items are invalid")
+    result: list[Mapping[str, Any]] = []
+    for item in raw_items:
+        started = parse_aware_datetime(item["started_at"])
+        result.append(
+            {
+                "call_key": str(item["call_key"]),
+                "Дата и время": started.astimezone(MOSCOW).strftime(
+                    "%d.%m.%Y %H:%M:%S"
+                ),
+                "Менеджер": "Не определён",
+                "Направление": "Не определено",
+                "Клиент": "",
+                "Телефон": "",
+                "Длительность": 0,
+                "Тип разговора": "Карантин данных",
+                "Краткое содержание": (
+                    "Разговор не обработан: данные находятся в карантине"
+                ),
+                "Результат": "Результат разговора не определён",
+                "Интерес клиента": "",
+                "Главное возражение": "",
+                "Следующий шаг": (
+                    "Техническое действие с данными: " + str(item["action"])
+                ),
+                "Срок": "",
+                TRANSCRIPT_LINK_HEADER: "",
+                "Нужна проверка": "Да",
+                "Причина проверки": str(item["reason"]),
+            }
+        )
+    return validate_safe_rows(result)
 
 
 def _safe_json_sha256(value: Any) -> str:
@@ -488,8 +553,28 @@ def build_safe_plan(
             "quarantine_unique",
             "pending_unique",
             "unexplained_missing",
+            "quarantine_without_reason",
         )
     }
+    if not (
+        stage10_counts["ready_unique"]
+        <= len(safe_rows)
+        <= stage10_counts["mango_unique"] - stage10_counts["quarantine_unique"]
+    ):
+        raise RuntimeError("manager rows do not match target-day Stage10 balance")
+    quarantine_items = list(verdict.get("quarantine_items") or ())
+    quarantine_errors = validate_quarantine_items_payload(
+        quarantine_items,
+        day=day,
+        expected_count=stage10_counts["quarantine_unique"],
+        expected_without_reason=stage10_counts["quarantine_without_reason"],
+    )
+    if quarantine_errors:
+        raise RuntimeError("ready manifest quarantine details are invalid")
+    if {str(item["call_key"]) for item in quarantine_items} & {
+        str(row["call_key"]) for row in safe_rows
+    }:
+        raise RuntimeError("ready and quarantine manager rows overlap")
     return {
         "schema_version": SAFE_PLAN_SCHEMA,
         "moscow_day": day.isoformat(),
@@ -502,6 +587,7 @@ def build_safe_plan(
         "pending_unique": pending_unique,
         "stage10_counts": stage10_counts,
         "rows": safe_rows,
+        "quarantine_items": quarantine_items,
     }
 
 
@@ -544,6 +630,7 @@ def validate_safe_plan_payload(
         "quarantine_unique",
         "pending_unique",
         "unexplained_missing",
+        "quarantine_without_reason",
     )
     try:
         normalized_counts = {field: int(counts[field]) for field in count_fields}
@@ -552,11 +639,41 @@ def validate_safe_plan_payload(
     if (
         any(value < 0 for value in normalized_counts.values())
         or normalized_counts["pending_unique"] != pending
+        or normalized_counts["quarantine_without_reason"] != 0
         or normalized_counts["mango_unique"]
-        != sum(normalized_counts[field] for field in count_fields[1:])
+        != sum(
+            normalized_counts[field]
+            for field in (
+                "ready_unique",
+                "quarantine_unique",
+                "pending_unique",
+                "unexplained_missing",
+            )
+        )
     ):
         raise RuntimeError("safe Google plan Stage10 balance is invalid")
-    return validate_safe_rows(payload.get("rows"))
+    safe_rows = validate_safe_rows(payload.get("rows"))
+    quarantine_items = payload.get("quarantine_items")
+    quarantine_errors = validate_quarantine_items_payload(
+        quarantine_items,
+        day=expected_day,
+        expected_count=normalized_counts["quarantine_unique"],
+        expected_without_reason=normalized_counts["quarantine_without_reason"],
+    )
+    if quarantine_errors:
+        raise RuntimeError("safe Google plan quarantine details are invalid")
+    if not (
+        normalized_counts["ready_unique"]
+        <= len(safe_rows)
+        <= normalized_counts["mango_unique"]
+        - normalized_counts["quarantine_unique"]
+    ):
+        raise RuntimeError("safe Google plan rows do not match Stage10 balance")
+    if {str(item["call_key"]) for item in quarantine_items} & {
+        str(row["call_key"]) for row in safe_rows
+    }:
+        raise RuntimeError("safe Google plan ready/quarantine rows overlap")
+    return safe_rows
 
 
 def header_map(
@@ -606,7 +723,7 @@ def plan_named_upsert(
     if clear_absent:
         for key in sorted(set(existing_by_key) - desired_keys):
             for name in managed_headers:
-                if name == "call_key":
+                if name == "call_key" and manual_headers:
                     continue
                 prior_row = existing_by_key[key]
                 prior = prior_row[mapping[name]] if mapping[name] < len(prior_row) else ""
@@ -1074,9 +1191,12 @@ def _cell_updates(title: str, updates: Sequence[Mapping[str, Any]]) -> list[Mapp
 def _summary_rows(
     desired_rows: Sequence[Mapping[str, Any]],
     stage10_summary: Optional[Mapping[str, Any]] = None,
+    quarantine_rows: Sequence[Mapping[str, Any]] = (),
 ) -> list[list[Any]]:
     stage10 = stage10_summary or {}
-    review = sum(str(row.get("Нужна проверка") or "") == "Да" for row in desired_rows)
+    review = sum(
+        str(row.get("Нужна проверка") or "") == "Да" for row in desired_rows
+    ) + len(quarantine_rows)
     analyzed = sum(
         str(row.get("Краткое содержание") or "") != NEUTRAL_SUMMARY
         for row in desired_rows
@@ -1131,6 +1251,7 @@ def publish_current(
     stage10_summary: Optional[Mapping[str, Any]] = None,
     expected_roles: Optional[Mapping[str, str]] = None,
     service_account_email: str = "",
+    quarantine_rows: Sequence[Mapping[str, Any]] = (),
 ) -> Mapping[str, Any]:
     if not retention_allows(
         day=day,
@@ -1139,6 +1260,19 @@ def publish_current(
     ):
         raise RuntimeError("Google pilot retention decision is overdue")
     desired_rows = validate_safe_rows(list(desired_rows))
+    quarantine_rows = validate_safe_rows(list(quarantine_rows))
+    if {str(row["call_key"]) for row in desired_rows} & {
+        str(row["call_key"]) for row in quarantine_rows
+    }:
+        raise RuntimeError("ready and quarantine Google rows overlap")
+    if any(
+        row.get("Тип разговора") != "Карантин данных"
+        or row.get("Нужна проверка") != "Да"
+        or row.get("Телефон")
+        or row.get(TRANSCRIPT_LINK_HEADER)
+        for row in quarantine_rows
+    ):
+        raise RuntimeError("quarantine Google row is not manager-safe")
     allowed = tuple(allowed_emails)
     if not exact_acl_ok(
         gateway.permissions(),
@@ -1221,7 +1355,7 @@ def publish_current(
     verify_readback(readback, desired_rows, planned["manual_before"])
     review_rows = [
         row for row in desired_rows if str(row.get("Нужна проверка") or "") == "Да"
-    ]
+    ] + list(quarantine_rows)
     review_existing = gateway.read_values(REVIEW_TITLE)
     review_plan = plan_named_upsert(
         review_existing,
@@ -1244,7 +1378,9 @@ def publish_current(
 
     summary_values = gateway.read_values(SUMMARY_TITLE)
     header_map(summary_values[0] if summary_values else (), SUMMARY_HEADERS)
-    wanted_summary = _summary_rows(desired_rows, stage10_summary)
+    wanted_summary = _summary_rows(
+        desired_rows, stage10_summary, quarantine_rows
+    )
     existing_summary = [list(row[:2]) for row in summary_values[1:]]
     summary_changed = existing_summary != wanted_summary
     if summary_changed:
@@ -1271,9 +1407,10 @@ def publish_current(
         raise RuntimeError("Google spreadsheet ACL changed during update")
     return {
         "schema_version": SCHEMA,
-        "status": "updated" if data else "unchanged",
+        "status": "updated" if data or review_data or summary_changed else "unchanged",
         "day": day.isoformat(),
         "rows": len(desired_rows),
+        "quarantine_rows": len(quarantine_rows),
         "managed_cell_updates": len(data) + len(review_data) + (
             len(wanted_summary) * 2 if summary_changed else 0
         ),
@@ -1492,24 +1629,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         manifest_path = args.ready_manifest or args.ready_db.with_suffix(
             ".manifest.json"
         )
-        manifest_payload = stable_json_object(
-            manifest_path, label="ready manifest"
-        )
-        links = owner_json(args.link_evidence)
-        rows = load_manager_rows(
-            ready_db=args.ready_db,
-            ready_manifest=manifest_path,
-            day=args.day,
-            owner_email=args.owner_email,
-            allowed_emails=args.allowed_email,
-            link_evidence=links,
-            ready_manifest_payload=manifest_payload,
-        )
-        safe_plan = build_safe_plan(
-            day=args.day,
-            rows=rows,
-            ready_manifest=manifest_payload,
-        )
+        with ready_publication_lock(args.ready_db):
+            recover_ready_generation(args.ready_db, lock_held=True)
+            manifest_payload = stable_json_object(
+                manifest_path, label="ready manifest"
+            )
+            links = owner_json(args.link_evidence)
+            rows = load_manager_rows(
+                ready_db=args.ready_db,
+                ready_manifest=manifest_path,
+                day=args.day,
+                owner_email=args.owner_email,
+                allowed_emails=args.allowed_email,
+                link_evidence=links,
+                ready_manifest_payload=manifest_payload,
+            )
+            safe_plan = build_safe_plan(
+                day=args.day,
+                rows=rows,
+                ready_manifest=manifest_payload,
+            )
         if args.plan_out:
             atomic_owner_json(args.plan_out, safe_plan)
         report = {
@@ -1517,6 +1656,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "status": "dry_run",
             "day": args.day.isoformat(),
             "rows": len(rows),
+            "quarantine_rows": len(safe_plan["quarantine_items"]),
             "safe_plan_sha256": _safe_json_sha256(safe_plan),
             "plan_written": bool(args.plan_out),
             "full_transcript_fields_written": 0,
@@ -1542,6 +1682,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if safe_plan_sha256 != args.approved_plan_sha256:
             raise RuntimeError("safe Google plan does not match the approved SHA-256")
         rows = validate_safe_plan_payload(safe_plan_payload, expected_day=args.day)
+        quarantine_rows = quarantine_review_rows(
+            safe_plan_payload.get("quarantine_items"), day=args.day
+        )
         state = owner_json(args.state) if args.state.exists() else {}
         prior = (
             date.fromisoformat(str(state["active_day"]))
@@ -1584,6 +1727,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 },
                 expected_roles=config["expected_roles"],
                 service_account_email=str(config["service_account_email"]),
+                quarantine_rows=quarantine_rows,
             )
             atomic_owner_json(
                 args.state,

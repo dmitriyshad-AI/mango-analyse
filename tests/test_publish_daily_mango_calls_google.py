@@ -99,7 +99,7 @@ def fixture_report(tmp_path: Path) -> tuple[Path, dict[str, object], bytes]:
 def test_export_and_publisher_share_schema_contract(tmp_path: Path) -> None:
     assert publisher.SCHEMA == exporter.EXPORT_SCHEMA_VERSION
     root, _, _ = fixture_report(tmp_path)
-    assert "— v4-" in publisher.load_plan(root, date(2026, 7, 29))["name"]
+    assert "— v5-" in publisher.load_plan(root, date(2026, 7, 29))["name"]
 
 
 def test_dry_run_validates_without_google_import_or_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

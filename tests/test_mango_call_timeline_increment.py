@@ -160,7 +160,14 @@ def analysis(summary: str = "Клиент уточнил стоимость.", *
     )
 
 
-def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: int | None = None) -> tuple[list[dict], dict]:
+def run_producer(
+    tmp_path: Path,
+    *,
+    timeline_db: Path,
+    package_db: Path,
+    limit: int | None = None,
+    strict_service_ready: bool = False,
+) -> tuple[list[dict], dict]:
     out_jsonl = tmp_path / "mango_increment.jsonl"
     report_out = tmp_path / "producer_report.json"
     argv = [
@@ -175,6 +182,8 @@ def run_producer(tmp_path: Path, *, timeline_db: Path, package_db: Path, limit: 
     ]
     if limit is not None:
         argv.extend(["--limit", str(limit)])
+    if strict_service_ready:
+        argv.append("--strict-service-ready")
     assert producer.main(argv) == 0
     events = [json.loads(line) for line in out_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()]
     report = json.loads(report_out.read_text(encoding="utf-8"))
@@ -319,6 +328,220 @@ def test_producer_fails_loudly_on_done_row_with_invalid_analysis_json(tmp_path: 
 
     with pytest.raises(ValueError, match="invalid done analysis_json"):
         run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)
+
+
+def test_service_ready_predicate_keeps_quarantine_out_of_timeline(
+    tmp_path: Path,
+) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(
+        timeline_db,
+        tmp_path,
+        customer_id="customer:one",
+        phone="+79161112233",
+    )
+    package_db = tmp_path / "strict-ready.sqlite"
+    variants = json.dumps(
+        {
+            "primary_provider": "mlx",
+            "secondary_provider": "gigaam",
+            "full": {
+                "variant_a": "готовый Whisper",
+                "variant_b": "готовый GigaAM",
+            },
+        },
+        ensure_ascii=False,
+    )
+    with sqlite3.connect(package_db) as con:
+        con.execute(
+            """
+            CREATE TABLE call_records (
+              id INTEGER PRIMARY KEY,
+              source_call_id TEXT,
+              source_filename TEXT,
+              source_file TEXT,
+              started_at TEXT,
+              phone TEXT,
+              manager_name TEXT,
+              direction TEXT,
+              duration_sec REAL,
+              transcription_status TEXT,
+              transcript_variants_json TEXT,
+              resolve_status TEXT,
+              analysis_status TEXT,
+              analysis_json TEXT,
+              dead_letter_stage TEXT,
+              last_error TEXT,
+              pipeline_stage TEXT,
+              pipeline_worker_id TEXT,
+              pipeline_claimed_at TEXT,
+              analysis_worker_id TEXT,
+              analysis_claimed_at TEXT
+            )
+            """
+        )
+        con.executemany(
+            """
+            INSERT INTO call_records VALUES (
+              :id, :source_call_id, :source_filename, :source_file,
+              :started_at, :phone, :manager_name, :direction, :duration_sec,
+              :transcription_status, :transcript_variants_json,
+              :resolve_status, :analysis_status, :analysis_json,
+              :dead_letter_stage, :last_error, :pipeline_stage,
+              :pipeline_worker_id, :pipeline_claimed_at,
+              :analysis_worker_id, :analysis_claimed_at
+            )
+            """,
+            [
+                {
+                    "id": 1,
+                    "source_call_id": "shared-call",
+                    "source_filename": "ready.wav",
+                    "source_file": "/ignored/ready.wav",
+                    "started_at": "2026-06-25T09:00:00+00:00",
+                    "phone": "+7 916 111-22-33",
+                    "manager_name": "Менеджер",
+                    "direction": "inbound",
+                    "duration_sec": 60,
+                    "transcription_status": "done",
+                    "transcript_variants_json": variants,
+                    "resolve_status": "done",
+                    "analysis_status": "done",
+                    "analysis_json": analysis("Готовый звонок."),
+                    "dead_letter_stage": None,
+                    "last_error": None,
+                    "pipeline_stage": None,
+                    "pipeline_worker_id": None,
+                    "pipeline_claimed_at": None,
+                    "analysis_worker_id": None,
+                    "analysis_claimed_at": None,
+                },
+                {
+                    "id": 2,
+                    "source_call_id": "shared-call",
+                    "source_filename": "quarantine.wav",
+                    "source_file": "/ignored/quarantine.wav",
+                    "started_at": "2026-06-25T09:05:00+00:00",
+                    "phone": "+7 916 111-22-33",
+                    "manager_name": "Менеджер",
+                    "direction": "inbound",
+                    "duration_sec": 60,
+                    "transcription_status": "failed",
+                    "transcript_variants_json": variants,
+                    "resolve_status": "failed",
+                    "analysis_status": "done",
+                    "analysis_json": analysis("Не публиковать."),
+                    "dead_letter_stage": "resolve",
+                    "last_error": "synthetic private failure",
+                    "pipeline_stage": None,
+                    "pipeline_worker_id": None,
+                    "pipeline_claimed_at": None,
+                    "analysis_worker_id": None,
+                    "analysis_claimed_at": None,
+                },
+            ],
+        )
+
+    events, report = run_producer(
+        tmp_path,
+        timeline_db=timeline_db,
+        package_db=package_db,
+        strict_service_ready=True,
+    )
+
+    assert report["rows_read"] == 1
+    assert report["rows_selected"] == 1
+    assert report["events_written"] == 1
+    assert len(events) == 1
+    stable_ready_id = events[0]["call_id"]
+    assert stable_ready_id.startswith("provider:shared-call:")
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "Не публиковать" not in serialized
+
+    with sqlite3.connect(package_db) as con:
+        con.execute(
+            """
+            UPDATE call_records
+            SET transcription_status='done', resolve_status='done',
+                dead_letter_stage=NULL, last_error=NULL
+            WHERE id=2
+            """
+        )
+
+    recovered_events, recovered_report = run_producer(
+        tmp_path,
+        timeline_db=timeline_db,
+        package_db=package_db,
+        strict_service_ready=True,
+    )
+
+    assert recovered_report["rows_read"] == 2
+    assert recovered_report["events_written"] == 2
+    assert len({event["call_id"] for event in recovered_events}) == 2
+    recovered_ready = next(
+        event for event in recovered_events if event["call_at"].startswith("2026-06-25T09:00:00")
+    )
+    assert recovered_ready["call_id"] == stable_ready_id
+
+
+def test_migrated_legacy_columns_do_not_imply_strict_service_mode(
+    tmp_path: Path,
+) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(
+        timeline_db,
+        tmp_path,
+        customer_id="customer:one",
+        phone="+79161112233",
+    )
+    package_db = tmp_path / "migrated-legacy.sqlite"
+    create_call_records_db(
+        package_db,
+        [
+            {
+                "id": 1,
+                "source_call_id": "legacy-call",
+                "source_filename": "legacy.wav",
+                "source_file": "/ignored/legacy.wav",
+                "started_at": "2026-06-25T09:00:00+00:00",
+                "phone": "+7 916 111-22-33",
+                "manager_name": "Менеджер",
+                "direction": "inbound",
+                "duration_sec": 60,
+                "analysis_status": "done",
+                "analysis_json": analysis("Исторический готовый звонок."),
+                "amocrm_contact_id": None,
+                "amocrm_lead_id": None,
+            }
+        ],
+    )
+    with sqlite3.connect(package_db) as con:
+        con.execute("ALTER TABLE call_records ADD COLUMN transcription_status TEXT")
+        con.execute("ALTER TABLE call_records ADD COLUMN transcript_variants_json TEXT")
+        con.execute("ALTER TABLE call_records ADD COLUMN resolve_status TEXT")
+        con.execute("ALTER TABLE call_records ADD COLUMN dead_letter_stage TEXT")
+        con.execute(
+            """
+            UPDATE call_records
+            SET transcription_status='done', transcript_variants_json='{}',
+                resolve_status='done'
+            """
+        )
+
+    legacy_events, legacy_report = run_producer(
+        tmp_path,
+        timeline_db=timeline_db,
+        package_db=package_db,
+    )
+    assert legacy_report["events_written"] == 1
+    assert [event["call_id"] for event in legacy_events] == ["provider:legacy-call"]
+    with pytest.raises(ValueError, match="strict service readiness columns"):
+        run_producer(
+            tmp_path,
+            timeline_db=timeline_db,
+            package_db=package_db,
+            strict_service_ready=True,
+        )
 
 
 def test_canonical_source_id_uses_canonical_call_id_for_existing_timeline_compatibility(tmp_path: Path) -> None:

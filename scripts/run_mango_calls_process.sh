@@ -103,14 +103,23 @@ PIPELINE_COMMAND="${COMMAND}"
 [[ "${COMMAND}" == "watchdog-worker" ]] && PIPELINE_COMMAND="watchdog"
 
 verify_split_revision() {
-  local expected="${MANGO_CALLS_EXPECTED_CODE_SHA:-}" actual dirty
+  local expected="${MANGO_CALLS_EXPECTED_CODE_SHA:-}" actual dirty top unsafe_index
+  typeset -a safe_git
+  safe_git=(/usr/bin/env -i HOME="${HOME}" PATH="/usr/bin:/bin" \
+    /usr/bin/git -c core.fsmonitor=false -c core.untrackedCache=false -C "${ROOT}")
   if [[ ! "${expected}" =~ '^[0-9a-f]{40}$' ]]; then
     print -u2 '{"status":"failed","stop_reason":"split_code_sha_missing_or_invalid"}'
     return 4
   fi
-  actual="$(/usr/bin/git -C "${ROOT}" rev-parse HEAD 2>/dev/null)" || return 4
-  dirty="$(/usr/bin/git -C "${ROOT}" status --porcelain --untracked-files=all)" || return 4
-  if [[ "${actual}" != "${expected}" || -n "${dirty}" ]]; then
+  top="$("${safe_git[@]}" rev-parse --show-toplevel 2>/dev/null)" || return 4
+  [[ "${top:A}" == "${ROOT:A}" ]] || return 4
+  actual="$("${safe_git[@]}" rev-parse HEAD 2>/dev/null)" || return 4
+  unsafe_index="$("${safe_git[@]}" ls-files -v | /usr/bin/awk \
+    'substr($0,1,2) != "H " { print; exit }')" || return 4
+  dirty="$("${safe_git[@]}" status --porcelain=v1 --untracked-files=all)" || return 4
+  "${safe_git[@]}" diff-files --quiet --ignore-submodules=none -- || return 4
+  "${safe_git[@]}" diff-index --cached --quiet --ignore-submodules=none HEAD -- || return 4
+  if [[ "${actual}" != "${expected}" || -n "${dirty}" || -n "${unsafe_index}" ]]; then
     print -u2 '{"status":"failed","stop_reason":"split_code_revision_mismatch_or_dirty"}'
     return 4
   fi

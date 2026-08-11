@@ -48,6 +48,22 @@ def test_receiver_dry_run_does_not_write(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+def test_receiver_repo_gate_uses_fail_closed_exact_git_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = "a" * 40
+    monkeypatch.setattr(receiver, "current_git_sha", lambda _repo: expected)
+    monkeypatch.setattr(receiver, "git_worktree_is_clean", lambda _repo: False)
+
+    with pytest.raises(RuntimeError, match="does not match executable"):
+        receiver.verify_repo(tmp_path, expected)
+    with pytest.raises(RuntimeError, match="not exact and clean"):
+        receiver.verify_repo(receiver.ROOT, expected)
+
+    monkeypatch.setattr(receiver, "git_worktree_is_clean", lambda _repo: True)
+    receiver.verify_repo(receiver.ROOT, expected)
+
+
 def test_receiver_accepts_reuses_and_preserves_one_rollback(tmp_path: Path) -> None:
     first, sha1 = make_package(tmp_path / "first", "one")
     second, sha2 = make_package(tmp_path / "second", "two")

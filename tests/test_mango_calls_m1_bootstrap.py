@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,10 @@ def test_bootstrap_cannot_start_pipeline_or_launchd() -> None:
     assert '"yandex_target_verified":%s' in source
     assert '"disk_space_ok":%s' in source
     assert '"network_access_verified":false' in source
+    assert "/usr/bin/env -i" in source
+    assert "ls-files -v" in source
+    assert "diff-files --quiet --ignore-submodules=none" in source
+    assert "diff-index --cached --quiet --ignore-submodules=none" in source
     assert '&& "$tallanto_export" == true' in source
     assert '&& "$google_config_valid" == true' in source
     assert '&& "$google_config_valid" == true && "$secrets_dir_owner_only"' in source
@@ -267,6 +272,139 @@ def test_readiness_probe_accepts_tuple_and_rejects_future_measurement(
         host_id="m1-host",
     )
 
+
+def test_readiness_probe_requires_europe_moscow_timezone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    host_id_file = tmp_path / "host_id"
+    host_id_file.write_text("m1-host\n", encoding="utf-8")
+    parsed_config = SimpleNamespace(host_id_file=host_id_file)
+    config = {
+        "pipeline_root": str(tmp_path / "pipeline"),
+        "codex_home_root": str(tmp_path / "codex"),
+        "expected_code_sha": "a" * 40,
+    }
+    approved = probe.approved_runtime_fingerprint()
+    monkeypatch.setattr(probe, "current_git_sha", lambda _root: "a" * 40)
+    monkeypatch.setattr(probe, "git_worktree_is_clean", lambda _root: True)
+    monkeypatch.setattr(probe, "command_output", lambda _command: "")
+    monkeypatch.setattr(probe, "physical_memory_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr(
+        probe.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    monkeypatch.setattr(probe.shutil, "which", lambda _name: "/synthetic/tool")
+    monkeypatch.setattr(
+        probe,
+        "observe_runtime_fingerprint",
+        lambda _config: {"ok": True, "fingerprint": approved, "errors": []},
+    )
+    monkeypatch.setattr(probe, "inspect_codex_home", lambda _path: {"ok": True})
+    monkeypatch.setattr(
+        probe,
+        "probe_google_readonly",
+        lambda _config: {
+            "google_spreadsheet_acl_ok": True,
+            "google_metadata_readback_ok": True,
+        },
+    )
+    monkeypatch.setattr(probe, "probe_mango_readonly", lambda _config: True)
+    monkeypatch.setattr(probe, "probe_tallanto_readonly", lambda _config: True)
+    monkeypatch.setattr(probe, "probe_yandex_marker", lambda _config: True)
+    monkeypatch.setattr(
+        probe,
+        "probe_offline_models",
+        lambda _config: {
+            "offline_whisper_synthetic_ok": True,
+            "offline_gigaam_synthetic_ok": True,
+        },
+    )
+    monkeypatch.setattr(probe, "probe_time_sync", lambda: True)
+    monkeypatch.setattr(probe, "probe_conflicting_launchd", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "_measurement_evidence_ok",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        probe,
+        "stage_capacity_report",
+        lambda **_kwargs: {"status": "ok", "capacity_ok": True},
+    )
+    evidence = {"controlled_10": {}, "mango_peak_60d": {}}
+
+    monkeypatch.setattr(probe, "machine_timezone", lambda: "Europe/Moscow")
+    ready = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+    )
+    assert ready["checks"]["timezone_is_europe_moscow"] is True
+    assert ready["host_readiness"] == "OK"
+    assert ready["machine"]["timezone"] == "Europe/Moscow"
+
+    monkeypatch.setattr(probe, "machine_timezone", lambda: "UTC")
+    wrong_timezone = probe.probe(
+        config,
+        evidence,
+        parsed_config=parsed_config,
+        run_offline_model_probes=True,
+    )
+    assert wrong_timezone["checks"]["timezone_is_europe_moscow"] is False
+    assert wrong_timezone["host_readiness"] == "STOP"
+
+
+def test_ephemeral_codex_cycle_is_checked_for_persistent_residue(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from scripts import probe_m1_calls_access as probe
+
+    home = tmp_path / "home"
+    runtime_home = home / ".mango_local" / "codex-runtime"
+    runtime_home.mkdir(parents=True, mode=0o700)
+    runtime_home.chmod(0o700)
+    auth = runtime_home / "auth.json"
+    auth.write_text('{"synthetic":true}', encoding="utf-8")
+    auth.chmod(0o600)
+    captured = tmp_path / "args.txt"
+    fake = tmp_path / "fake-codex"
+    fake.write_text(
+        "#!/bin/zsh\nprintf '%s\\n' \"$@\" > \"$CAPTURED\"\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+    wrapper = ROOT / "scripts" / "run_codex_cli_isolated.sh"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "CODEX_HOME": str(runtime_home),
+        "MANGO_CODEX_REAL_BIN": str(fake),
+        "CAPTURED": str(captured),
+    }
+
+    subprocess.run(
+        [str(wrapper), "exec", "--model", "synthetic", "safe synthetic prompt"],
+        env=env,
+        check=True,
+    )
+
+    args = captured.read_text(encoding="utf-8").splitlines()
+    assert "--ephemeral" in args
+    assert probe.inspect_codex_home(runtime_home)["ok"] is True
+
+    residue = runtime_home / "history.jsonl"
+    residue.write_text("safe synthetic prompt\n", encoding="utf-8")
+    residue.chmod(0o600)
+    rejected = probe.inspect_codex_home(runtime_home)
+    assert rejected["ok"] is False
+    assert rejected["persistent_session_or_history"] is True
+
+
 def test_duplicate_or_blank_env_values_are_not_accepted() -> None:
     with tempfile.TemporaryDirectory() as home:
         env_file = Path(home) / "worker.env"
@@ -406,12 +544,24 @@ def test_runbook_sqlite_checks_assert_results() -> None:
     assert 'assert_existing_single_link_file "$SOURCE_WORKING_SHM"' in runbook
     source_stop = runbook[runbook.index("После снимка"):runbook.index("Если lock занят")]
     for label in (
+        "com.mango.calls-two-processes",
         "com.mango.calls-process-a",
         "com.mango.calls-process-b",
-        "com.mango.calls-two-processes",
+        "com.mango.calls-capture",
+        "com.mango.calls-pipeline",
+        "com.mango.calls-watchdog",
+        "com.mango.calls-publication-close-0600",
+        "com.mango.calls-publication-close-0700",
+        "com.mango.calls-publication-close-0800",
+        "com.mango.calls-publication-alert-0830",
+        "com.mango.calls-publication-status-0850",
     ):
-        assert f'launchctl bootout "gui/$(id -u)/{label}"' in source_stop
-        assert f'! launchctl print "gui/$(id -u)/{label}"' in source_stop
+        assert label in source_stop
+    assert 'launchctl bootout "gui/$(id -u)/$label"' in source_stop
+    assert '! launchctl print "gui/$(id -u)/$label"' in source_stop
+    assert "mv \"$plist\" \"$SNAP/\"" in source_stop
+    assert "active_calls_cron.txt" in source_stop
+    assert "('process_a.lock', 'capture.lock', 'pipeline.lock', 'process_b.lock')" in source_stop
 
 
 def test_remote_owner_local_repair_keeps_expansion_on_m1() -> None:

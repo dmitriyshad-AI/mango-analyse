@@ -202,6 +202,33 @@ def test_daily_close_keeps_the_full_72_hour_boundary_reachable(
     assert exported == [boundary]
 
 
+def test_daily_close_processes_three_missed_days_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _config(tmp_path, monkeypatch)
+    missed = [DAY - offset * date.resolution for offset in (3, 2, 1)]
+    manifest = _manifest(closed=False)
+    for candidate in missed:
+        manifest["daily_verdicts"][candidate.isoformat()] = {  # type: ignore[index]
+            "closure_ok": True
+        }
+    monkeypatch.setattr(coordinator, "_ready_manifest", lambda *_args: manifest)
+    exported: list[date] = []
+    monkeypatch.setattr(
+        coordinator,
+        "_daily_export",
+        lambda _config, _root, candidate, *, sealed_only, **_kwargs: (
+            exported.append(candidate)
+            or {"package_status": "FINAL", "reused": False}
+        ),
+    )
+
+    result = coordinator.run(config_path, "daily-close", day=DAY)
+
+    assert result["status"] == "pending_closure"
+    assert exported == missed
+
+
 def test_daily_close_cannot_hide_failed_catch_up_behind_closed_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

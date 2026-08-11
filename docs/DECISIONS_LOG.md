@@ -2278,8 +2278,21 @@ manifest с точными code SHA, host ID, SHA и размером ready DB. 
 выборочный manifest, dry-run и повтор без изменений. Слепая замена строк
 в SQLite запрещена.
 
-Phase A не запусает real Mango capture, ASR, Resolve/Analyze, launchd, cutover и
+Phase A не запускает real Mango capture, ASR, Resolve/Analyze, launchd, cutover и
 внешние записи. Google/Яндекс готовятся только как локальные owner-only
 планы. Локальный manifest не является межмашинной арендой: без внешнего
 наблюдателя и свежего доказательства остановки старого Process A cutover
 остаётся `STOP`.
+
+Cutover authority имеет схему v2. Он требует точный чистый Git worktree без
+унаследованных `GIT_*`-перенаправлений и скрытых index-флагов, а также реальный
+owner-only shutdown snapshot. Snapshot связан с предыдущим host и перенесённым
+cursor, проверяет все Calls labels, plist, процессы, cron и файловые блокировки;
+любая оставшаяся активность даёт отказ. Та же authority обязательна для любого
+install, способного запустить Process A, а не только для fast-service.
+
+Process B публикует в Timeline только строки полного service-ready контракта.
+Карантин и незавершённые стадии исключены, а стабильный идентификатор не
+меняется при восстановлении дубля. Код валидатора внешнего watchdog добавлен,
+но сам независимый наблюдатель не развёрнут; поэтому synthetic Phase A может
+получить PASS, а runtime/cutover остаются `STOP`.

@@ -10,12 +10,22 @@ import os
 import re
 import shutil
 import sqlite3
-import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
+    current_git_sha,
+    git_worktree_is_clean,
+)
 
 SCHEMA = "mango_calls_two_processes_v1"
 DB_NAME = "mango_calls_ready.sqlite"
@@ -299,9 +309,17 @@ def restore_rollback(pipeline_root: Path, *, execute: bool, confirmation: str) -
 def verify_repo(repo: Path, expected_sha: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         raise RuntimeError("expected code SHA is invalid")
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=False)
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=False)
-    if head.returncode or head.stdout.strip() != expected_sha or status.returncode or status.stdout.strip():
+    try:
+        resolved_repo = repo.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("receiver repository root is invalid") from exc
+    if resolved_repo != ROOT.resolve(strict=True):
+        raise RuntimeError("receiver repository root does not match executable")
+    try:
+        head = current_git_sha(resolved_repo)
+    except (OSError, RuntimeError):
+        head = ""
+    if head != expected_sha or not git_worktree_is_clean(resolved_repo):
         raise RuntimeError("receiver repository revision is not exact and clean")
 
 

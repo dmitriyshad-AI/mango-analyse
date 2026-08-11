@@ -9,12 +9,19 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.productization.mango_calls_service_contract import (
+    CALLS_PROCESS_MATCHER_VERSION,
     CUTOVER_MANIFEST_SCHEMA,
+    PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA,
     READY_MANIFEST_SCHEMA,
+    REQUIRED_CALLS_LAUNCHD_LABELS,
+    REQUIRED_CALLS_LOCK_NAMES,
     approved_runtime_fingerprint,
     build_stage10_verdict,
+    current_git_sha,
+    git_worktree_is_clean,
     moscow_day_bounds_utc,
     safe_alert_payload,
+    sha256_file,
     stage_capacity_report,
     validate_ready_manifest_payload,
     verify_cutover_authority,
@@ -23,6 +30,42 @@ from mango_mvp.productization.mango_calls_service_contract import (
 
 DAY = date(2026, 8, 10)
 NOW = datetime(2026, 8, 11, 9, tzinfo=timezone.utc)
+
+
+def _write_previous_host_snapshot(
+    path: Path,
+    *,
+    captured_at: datetime,
+    disabled_at: datetime,
+    cursor_sha: str = "b" * 64,
+    **overrides: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA,
+        "previous_host_id": "source-mac",
+        "source_cursor_sha256": cursor_sha,
+        "previous_host_disabled_at": disabled_at.isoformat(),
+        "captured_at_utc": captured_at.isoformat(),
+        "probe_ok": True,
+        "launchd_scan_complete": True,
+        "checked_launchd_labels": list(REQUIRED_CALLS_LAUNCHD_LABELS),
+        "active_calls_labels": [],
+        "plist_scan_complete": True,
+        "active_calls_plists": [],
+        "process_scan_complete": True,
+        "process_matcher_version": CALLS_PROCESS_MATCHER_VERSION,
+        "active_calls_pids": [],
+        "active_calls_commands": [],
+        "cron_scan_complete": True,
+        "active_calls_cron_entries": [],
+        "lock_scan_complete": True,
+        "checked_lock_names": list(REQUIRED_CALLS_LOCK_NAMES),
+        "held_lock_names": [],
+        **overrides,
+    }
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    path.chmod(0o600)
+    return payload
 
 
 def _capture(call_key: str, status: str = "downloaded", **extra: object) -> dict[str, object]:
@@ -97,6 +140,31 @@ def test_pending_day_is_consistent_but_not_closed() -> None:
     assert result["unexplained_missing"] == 0
     assert result["consistency_ok"] is True
     assert result["closure_ok"] is False
+
+
+def test_state_outside_enumeration_does_not_corrupt_pending_counters() -> None:
+    result = dict(
+        build_stage10_verdict(
+            day=DAY,
+            enumeration=_enumeration("enumerated-ready"),
+            capture_entries=[
+                _capture("enumerated-ready"),
+                _capture("foreign-pending", "skipped_no_recording"),
+            ],
+            ready_rows=[_ready("enumerated-ready")],
+            now=NOW,
+        )
+    )
+
+    assert result["state_not_in_mango_enumeration"] == 1
+    assert result["pending_unique"] == 0
+    assert result["pending_awaiting_recording"] == 0
+    assert result["pending_over_sla"] == 0
+    assert result["oldest_pending_age_minutes"] == 0
+    assert result["consistency_ok"] is False
+    assert validate_ready_manifest_payload(
+        _strict_ready_manifest_for(result), require_consistency=False
+    ) == []
 
 
 @pytest.mark.parametrize(
@@ -796,14 +864,21 @@ def test_cutover_authority_requires_fresh_old_host_proof_and_exact_sha(
     host.write_text("m1-host\n", encoding="utf-8")
     host.chmod(0o600)
     cutover = tmp_path / "cutover_manifest.json"
+    snapshot = tmp_path / "previous_host_shutdown_snapshot.json"
+    disabled_at = NOW - timedelta(minutes=20)
+    checked_at = NOW - timedelta(minutes=10)
+    _write_previous_host_snapshot(
+        snapshot, captured_at=checked_at, disabled_at=disabled_at
+    )
     payload = {
         "schema_version": CUTOVER_MANIFEST_SCHEMA,
         "active_host_id": "m1-host",
+        "previous_host_id": "source-mac",
         "expected_code_sha": "a" * 40,
         "source_cursor_sha256": "b" * 64,
-        "previous_host_snapshot_sha256": "c" * 64,
-        "previous_host_disabled_at": (NOW - timedelta(minutes=20)).isoformat(),
-        "previous_host_checked_at": (NOW - timedelta(minutes=10)).isoformat(),
+        "previous_host_snapshot_sha256": sha256_file(snapshot),
+        "previous_host_disabled_at": disabled_at.isoformat(),
+        "previous_host_checked_at": checked_at.isoformat(),
         "approved_at": (NOW - timedelta(minutes=5)).isoformat(),
         "approved_by": "owner",
     }
@@ -813,25 +888,195 @@ def test_cutover_authority_requires_fresh_old_host_proof_and_exact_sha(
         "mango_mvp.productization.mango_calls_service_contract.current_git_sha",
         lambda _: "a" * 40,
     )
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _: True,
+    )
 
     report = verify_cutover_authority(
         cutover_manifest_path=cutover,
         host_id_path=host,
+        previous_host_snapshot_path=snapshot,
+        expected_previous_host_id="source-mac",
         expected_code_sha="a" * 40,
         project_root=tmp_path,
         now=NOW,
     )
     assert report["ok"] is True
 
-    payload["previous_host_checked_at"] = (NOW - timedelta(hours=2)).isoformat()
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _: False,
+    )
+    dirty = verify_cutover_authority(
+        cutover_manifest_path=cutover,
+        host_id_path=host,
+        previous_host_snapshot_path=snapshot,
+        expected_previous_host_id="source-mac",
+        expected_code_sha="a" * 40,
+        project_root=tmp_path,
+        now=NOW,
+    )
+    assert dirty["ok"] is False
+    assert "cutover_worktree_dirty_or_unverifiable" in dirty["errors"]
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _: True,
+    )
+
+    stale_checked_at = NOW - timedelta(hours=2)
+    stale_disabled_at = stale_checked_at - timedelta(minutes=10)
+    _write_previous_host_snapshot(
+        snapshot, captured_at=stale_checked_at, disabled_at=stale_disabled_at
+    )
+    payload["previous_host_snapshot_sha256"] = sha256_file(snapshot)
+    payload["previous_host_disabled_at"] = stale_disabled_at.isoformat()
+    payload["previous_host_checked_at"] = stale_checked_at.isoformat()
     cutover.write_text(json.dumps(payload), encoding="utf-8")
     assert verify_cutover_authority(
         cutover_manifest_path=cutover,
         host_id_path=host,
+        previous_host_snapshot_path=snapshot,
+        expected_previous_host_id="source-mac",
         expected_code_sha="a" * 40,
         project_root=tmp_path,
         now=NOW,
+        require_fresh_previous_host_proof=True,
     )["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "snapshot_override,expected_error",
+    [
+        ({"previous_host_id": "another-mac"}, "previous_host_snapshot_host_id_mismatch"),
+        ({"source_cursor_sha256": "f" * 64}, "previous_host_snapshot_cursor_sha256_mismatch"),
+        ({"checked_launchd_labels": []}, "previous_host_required_labels_unchecked"),
+        ({"active_calls_pids": [4242]}, "previous_host_calls_process_active"),
+        ({"active_calls_plists": ["com.mango.calls-pipeline.plist"]}, "previous_host_calls_process_active"),
+        ({"active_calls_cron_entries": ["calls pipeline"]}, "previous_host_calls_process_active"),
+        ({"held_lock_names": ["pipeline"]}, "previous_host_calls_process_active"),
+    ],
+)
+def test_cutover_authority_rejects_unbound_or_active_previous_host_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_override: dict[str, object],
+    expected_error: str,
+) -> None:
+    host = tmp_path / "host_id"
+    host.write_text("m1-host\n", encoding="utf-8")
+    host.chmod(0o600)
+    checked_at = NOW - timedelta(minutes=10)
+    disabled_at = NOW - timedelta(minutes=20)
+    snapshot = tmp_path / "snapshot.json"
+    _write_previous_host_snapshot(
+        snapshot,
+        captured_at=checked_at,
+        disabled_at=disabled_at,
+        **snapshot_override,
+    )
+    manifest = tmp_path / "cutover.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": CUTOVER_MANIFEST_SCHEMA,
+                "active_host_id": "m1-host",
+                "previous_host_id": "source-mac",
+                "expected_code_sha": "a" * 40,
+                "source_cursor_sha256": "b" * 64,
+                "previous_host_snapshot_sha256": sha256_file(snapshot),
+                "previous_host_disabled_at": disabled_at.isoformat(),
+                "previous_host_checked_at": checked_at.isoformat(),
+                "approved_at": (NOW - timedelta(minutes=5)).isoformat(),
+                "approved_by": "owner",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest.chmod(0o600)
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.current_git_sha",
+        lambda _: "a" * 40,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _: True,
+    )
+
+    report = verify_cutover_authority(
+        cutover_manifest_path=manifest,
+        host_id_path=host,
+        previous_host_snapshot_path=snapshot,
+        expected_previous_host_id="source-mac",
+        expected_code_sha="a" * 40,
+        project_root=tmp_path,
+        now=NOW,
+    )
+
+    assert report["ok"] is False
+    assert expected_error in report["errors"]
+
+
+def test_cutover_authority_rejects_missing_empty_tampered_or_readable_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = tmp_path / "host_id"
+    host.write_text("m1-host\n", encoding="utf-8")
+    host.chmod(0o600)
+    checked_at = NOW - timedelta(minutes=10)
+    disabled_at = NOW - timedelta(minutes=20)
+    snapshot = tmp_path / "snapshot.json"
+    _write_previous_host_snapshot(
+        snapshot, captured_at=checked_at, disabled_at=disabled_at
+    )
+    manifest = tmp_path / "cutover.json"
+    payload = {
+        "schema_version": CUTOVER_MANIFEST_SCHEMA,
+        "active_host_id": "m1-host",
+        "previous_host_id": "source-mac",
+        "expected_code_sha": "a" * 40,
+        "source_cursor_sha256": "b" * 64,
+        "previous_host_snapshot_sha256": sha256_file(snapshot),
+        "previous_host_disabled_at": disabled_at.isoformat(),
+        "previous_host_checked_at": checked_at.isoformat(),
+        "approved_at": (NOW - timedelta(minutes=5)).isoformat(),
+        "approved_by": "owner",
+    }
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    manifest.chmod(0o600)
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.current_git_sha",
+        lambda _: "a" * 40,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _: True,
+    )
+
+    def report(path: Path | None) -> dict[str, object]:
+        return dict(
+            verify_cutover_authority(
+                cutover_manifest_path=manifest,
+                host_id_path=host,
+                previous_host_snapshot_path=path,
+                expected_previous_host_id="source-mac",
+                expected_code_sha="a" * 40,
+                project_root=tmp_path,
+                now=NOW,
+            )
+        )
+
+    assert "previous_host_snapshot_missing_or_invalid" in report(None)["errors"]
+    snapshot.write_text("{}", encoding="utf-8")
+    payload["previous_host_snapshot_sha256"] = sha256_file(snapshot)
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    empty = report(snapshot)
+    assert empty["ok"] is False
+    assert "previous_host_snapshot_schema_mismatch" in empty["errors"]
+    snapshot.write_text("{\"tampered\":true}", encoding="utf-8")
+    assert "previous_host_snapshot_sha256_mismatch" in report(snapshot)["errors"]
+    snapshot.chmod(0o644)
+    assert "previous_host_snapshot_missing_or_invalid" in report(snapshot)["errors"]
 
 
 def test_controlled_ten_capacity_uses_all_four_stages_and_peak_snapshot() -> None:
@@ -893,3 +1138,61 @@ def test_cutover_files_must_be_owner_only(tmp_path: Path, monkeypatch: pytest.Mo
             project_root=tmp_path,
             now=NOW,
         )
+
+
+def _commit_test_repo(path: Path, content: str) -> str:
+    path.mkdir()
+    subprocess.run(["/usr/bin/git", "init", "-q"], cwd=path, check=True)
+    (path / "tracked.py").write_text(content, encoding="utf-8")
+    subprocess.run(["/usr/bin/git", "add", "tracked.py"], cwd=path, check=True)
+    subprocess.run(
+        [
+            "/usr/bin/git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=path,
+        check=True,
+    )
+    return subprocess.check_output(
+        ["/usr/bin/git", "rev-parse", "HEAD"], cwd=path, text=True
+    ).strip()
+
+
+def test_git_authority_ignores_inherited_repository_redirection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual = tmp_path / "actual"
+    foreign = tmp_path / "foreign"
+    actual_sha = _commit_test_repo(actual, "actual = True\n")
+    _commit_test_repo(foreign, "foreign = True\n")
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+
+    assert current_git_sha(actual) == actual_sha
+    (actual / "tracked.py").write_text("actual = False\n", encoding="utf-8")
+    assert git_worktree_is_clean(actual) is False
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_git_authority_rejects_hidden_index_flags(
+    tmp_path: Path, flag: str
+) -> None:
+    repo = tmp_path / "repo"
+    _commit_test_repo(repo, "clean = True\n")
+    subprocess.run(
+        ["/usr/bin/git", "update-index", flag, "tracked.py"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "tracked.py").write_text("clean = False\n", encoding="utf-8")
+
+    assert subprocess.check_output(
+        ["/usr/bin/git", "status", "--porcelain"], cwd=repo, text=True
+    ) == ""
+    assert git_worktree_is_clean(repo) is False

@@ -52,7 +52,40 @@ Config и env — обычные файлы владельца `0600`, не syml
 - каждая тяжёлая команда имеет собственный тайм-аут 4 часа;
 - пустой worker завершается после одного idle-цикла;
 - свободный диск — не менее 40 GiB;
-- точный `expected_code_sha`, локальный `host_id` и cutover manifest обязательны.
+- точный `expected_code_sha`, локальный `host_id`, явный
+  `expected_previous_host_id`, cutover manifest v2 и путь к shutdown snapshot
+  обязательны.
+
+## Доказательство выключения старого Mac
+
+Этот раздел относится только к будущему отдельно разрешённому cutover. Phase A
+не создаёт реальное доказательство и не устанавливает службу.
+
+`previous_host_shutdown_snapshot.json` — обычный файл владельца `0600`, не
+symlink. Его SHA-256 должен дословно совпасть с
+`cutover_manifest.json.previous_host_snapshot_sha256`. Snapshot связан с теми
+же `previous_host_id`, `source_cursor_sha256`, `previous_host_disabled_at` и
+`previous_host_checked_at` и содержит:
+
+- полный scan всех 11 Calls launchd labels и пустой `active_calls_labels`;
+- полный scan plist и пустой `active_calls_plists`;
+- полный process scan версии `mango_calls_runtime_matchers_v1`, пустые PID и
+  команды;
+- полный cron scan и пустой `active_calls_cron_entries`;
+- scan блокировок `process_a`, `capture`, `pipeline`, `process_b` и пустой
+  `held_lock_names`.
+
+Пустой JSON, чужой host, другой cursor, неполный scan, оставшийся plist/cron/PID
+или изменённый SHA дают отказ. При первом закреплении cursor snapshot должен
+быть свежим; далее lineage остаётся стабильным, но SHA, host, cursor и пустые
+активные списки проверяются при каждом старте. Любая установка, содержащая
+Process A, capture или pipeline, проходит эту проверку до обращения к launchd.
+Render-only и отдельный Process B её не требуют.
+
+Внешний watchdog — отдельный read-only наблюдатель вне обоих Mac. Локальный код
+только валидирует его owner-only observation, привязанный к M1 host, старому
+host, code SHA, cutover SHA и shutdown snapshot SHA. Наличие валидатора не
+означает, что наблюдатель уже развёрнут: до этого runtime/cutover остаются STOP.
 
 ## Команды без установки
 

@@ -26,6 +26,8 @@
   "expected_code_sha": "<EXPECTED_CODE_SHA>",
   "host_id_path": "<HOME>/.mango_local/mango_calls_two_processes/state/host_id",
   "cutover_manifest_path": "<HOME>/.mango_local/mango_calls_two_processes/state/cutover_manifest.json",
+  "previous_host_snapshot_path": "<HOME>/.mango_local/mango_calls_two_processes/state/previous_host_shutdown_snapshot.json",
+  "expected_previous_host_id": "<PREVIOUS_MAC_HOST_ID>",
   "cutover_proof_max_age_minutes": 90,
   "max_catch_up_days": 7,
   "require_cutover_authority": true,

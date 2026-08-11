@@ -129,16 +129,16 @@ def _payload(
     return payload
 
 
-def _validate_fast_install_authority(
+def _validate_process_a_install_authority(
     config_path: Path, config: dict[str, object]
 ) -> None:
     if config.get("require_cutover_authority") is not True:
-        raise RuntimeError("fast service install requires cutover authority")
+        raise RuntimeError("Process A install requires cutover authority")
     expected = str(config.get("expected_code_sha") or "")
     host = Path(str(config.get("host_id_path") or "")).expanduser()
     cutover = Path(str(config.get("cutover_manifest_path") or "")).expanduser()
     if not expected or not host.is_file() or not cutover.is_file():
-        raise RuntimeError("fast service cutover proof is incomplete")
+        raise RuntimeError("Process A cutover proof is incomplete")
     import sys
 
     src = ROOT / "src"
@@ -152,14 +152,19 @@ def _validate_fast_install_authority(
 
     parsed = CallsTwoProcessesConfig.from_json(config_path)
     if not parsed.require_cutover_authority or not parsed.strict_ready_provenance:
-        raise RuntimeError("fast service install requires the complete strict config")
+        raise RuntimeError("Process A install requires the complete strict config")
     cursor = parsed.cursor_path
+    snapshot = parsed.previous_host_snapshot_file
     if not cursor.is_file() or cursor.is_symlink():
-        raise RuntimeError("fast service transferred cursor is missing")
+        raise RuntimeError("Process A transferred cursor is missing")
+    if not snapshot.is_file() or snapshot.is_symlink():
+        raise RuntimeError("Process A previous-host snapshot is missing")
 
     report = verify_cutover_authority(
         cutover_manifest_path=cutover,
         host_id_path=host,
+        previous_host_snapshot_path=snapshot,
+        expected_previous_host_id=parsed.expected_previous_host_id,
         expected_code_sha=expected,
         project_root=ROOT,
         expected_source_cursor_sha256=sha256_file(cursor),
@@ -167,7 +172,7 @@ def _validate_fast_install_authority(
         require_fresh_previous_host_proof=True,
     )
     if report.get("ok") is not True:
-        raise RuntimeError("fast service cutover authority validation failed")
+        raise RuntimeError("Process A cutover authority validation failed")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -352,11 +357,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.install and any(path != _standard_plist(label) for label, path in paths.items()):
         raise RuntimeError("install mode must use the standard LaunchAgents paths")
     domain = f"gui/{os.getuid()}"
+    if args.install and not args.process_b_only:
+        if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
+            raise RuntimeError("Process A service config must be owner-only 0600")
+        _validate_process_a_install_authority(config_path, config)
+    if args.install and not args.fast_service and not args.process_b_only:
+        fast_topology_labels = (
+            LABEL_CAPTURE,
+            LABEL_PIPELINE,
+            LABEL_WATCHDOG,
+            LABEL_DAILY_0600,
+            LABEL_DAILY_0700,
+            LABEL_DAILY_0800,
+            LABEL_DAILY_ALERT,
+            LABEL_DAILY_STATUS,
+        )
+        if (
+            any(_is_loaded(domain, label) for label in fast_topology_labels)
+            or _conflicting_plist_exists(fast_topology_labels)
+            or any(
+                _live_process_lock(pipeline_root, name)
+                for name in ("capture", "pipeline")
+            )
+        ):
+            raise RuntimeError(
+                "Process A install refuses an existing fast-service topology"
+            )
     if args.fast_service:
         if args.install:
-            if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
-                raise RuntimeError("fast service config must be owner-only 0600")
-            _validate_fast_install_authority(config_path, config)
             conflicts = (
                 OLD_LABEL,
                 LABEL_A,

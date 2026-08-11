@@ -110,11 +110,22 @@ PY
     [[ "$google" == true ]] && google_config_valid=true
   fi
   if owner_only "$ENV_FILE" && has_env_key "$ENV_FILE" MANGO_CALLS_EXPECTED_CODE_SHA; then
-    local expected actual dirty
+    local expected actual dirty top unsafe_index
+    typeset -a safe_git
+    safe_git=(/usr/bin/env -i HOME="${HOME}" PATH="/usr/bin:/bin" \
+      /usr/bin/git -c core.fsmonitor=false -c core.untrackedCache=false -C "${ROOT}")
     expected="$(env_value "$ENV_FILE" MANGO_CALLS_EXPECTED_CODE_SHA)"
-    actual="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
-    dirty="$(git -C "$ROOT" status --porcelain --untracked-files=all 2>/dev/null || true)"
-    [[ "$expected" == "$actual" && -z "$dirty" ]] && revision=true
+    top="$("${safe_git[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
+    actual="$("${safe_git[@]}" rev-parse HEAD 2>/dev/null || true)"
+    unsafe_index="$("${safe_git[@]}" ls-files -v 2>/dev/null | /usr/bin/awk \
+      'substr($0,1,2) != "H " { print; exit }' || true)"
+    dirty="$("${safe_git[@]}" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+    if [[ "${top:A}" == "${ROOT:A}" && "$expected" == "$actual" \
+        && -z "$dirty" && -z "$unsafe_index" ]] \
+        && "${safe_git[@]}" diff-files --quiet --ignore-submodules=none -- \
+        && "${safe_git[@]}" diff-index --cached --quiet --ignore-submodules=none HEAD --; then
+      revision=true
+    fi
   fi
   local ffmpeg=false ffprobe=false skills=false yandex=false tallanto_export=false disk_space_ok=false snapshot_as_of=false
   local secrets_dir_owner_only=false owner_local_root_only=false pipeline_root_owner_only=false pipeline_root_under_owner_local=false pipeline_root_matches_env=false conflicting_services_loaded=false pipeline_lock_held=false host_preflight_passed=false

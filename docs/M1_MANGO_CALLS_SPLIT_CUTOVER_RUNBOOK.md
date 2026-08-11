@@ -148,7 +148,20 @@ mkdir -p "$SNAP" && chmod 700 "$SNAP"
 printf '%s\n' "$SNAP" > "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
 chmod 600 "$HOME/.mango_local/mango_calls_cutover/MAIN_SOURCE_SNAPSHOT_PATH"
 : > "$SNAP/active_labels.txt"
-for label in com.mango.calls-process-a com.mango.calls-process-b com.mango.calls-two-processes; do
+CALLS_LABELS=(
+  com.mango.calls-two-processes
+  com.mango.calls-process-a
+  com.mango.calls-process-b
+  com.mango.calls-capture
+  com.mango.calls-pipeline
+  com.mango.calls-watchdog
+  com.mango.calls-publication-close-0600
+  com.mango.calls-publication-close-0700
+  com.mango.calls-publication-close-0800
+  com.mango.calls-publication-alert-0830
+  com.mango.calls-publication-status-0850
+)
+for label in "${CALLS_LABELS[@]}"; do
   if launchctl print "gui/$(id -u)/$label" > "$SNAP/$label.before.txt" 2>&1; then
     printf '%s\n' "$label" >> "$SNAP/active_labels.txt"
   fi
@@ -166,8 +179,8 @@ shasum -a 256 \
   > "$SNAP/drop.sha256"
 ```
 
-После снимка выгрузить оба возможных задания Process A и дождаться освобождения
-настоящей файловой блокировки. Перенос до этого запрещён:
+После снимка выгрузить все Calls-задания, убрать их plist в каталог отката и
+дождаться освобождения настоящих файловых блокировок. Перенос до этого запрещён:
 
 ```bash
 set -euo pipefail
@@ -177,18 +190,43 @@ SOURCE_PIPELINE="$(/usr/bin/plutil -extract pipeline_root raw -o - \
   "$SNAP/config.json")"
 [[ "$SOURCE_PIPELINE" == /* && "$SOURCE_PIPELINE" != / ]]
 test -d "$SOURCE_PIPELINE/capture" && test -d "$SOURCE_PIPELINE/working" && test -d "$SOURCE_PIPELINE/drop"
-launchctl bootout "gui/$(id -u)/com.mango.calls-process-a" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/com.mango.calls-process-b" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/com.mango.calls-two-processes" 2>/dev/null || true
-! launchctl print "gui/$(id -u)/com.mango.calls-process-a" >/dev/null 2>&1
-! launchctl print "gui/$(id -u)/com.mango.calls-process-b" >/dev/null 2>&1
-! launchctl print "gui/$(id -u)/com.mango.calls-two-processes" >/dev/null 2>&1
+CALLS_LABELS=(
+  com.mango.calls-two-processes
+  com.mango.calls-process-a
+  com.mango.calls-process-b
+  com.mango.calls-capture
+  com.mango.calls-pipeline
+  com.mango.calls-watchdog
+  com.mango.calls-publication-close-0600
+  com.mango.calls-publication-close-0700
+  com.mango.calls-publication-close-0800
+  com.mango.calls-publication-alert-0830
+  com.mango.calls-publication-status-0850
+)
+for label in "${CALLS_LABELS[@]}"; do
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+done
+for label in "${CALLS_LABELS[@]}"; do
+  ! launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1
+done
+for plist in "$HOME"/Library/LaunchAgents/com.mango.calls-*.plist; do
+  [[ -e "$plist" ]] || continue
+  mv "$plist" "$SNAP/"
+done
+test -z "$(find "$HOME/Library/LaunchAgents" -maxdepth 1 \
+  -name 'com.mango.calls-*.plist' -print -quit)"
+if crontab -l 2>/dev/null | grep -E 'mango.*calls|calls.*mango' > "$SNAP/active_calls_cron.txt"; then
+  chmod 600 "$SNAP/active_calls_cron.txt"
+  printf 'STOP: Calls cron entry remains; do not continue\n' >&2
+  exit 3
+fi
+chmod 600 "$SNAP/active_calls_cron.txt"
 python3 - "$SOURCE_PIPELINE" <<'PY'
 import fcntl
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
-for name in ('process_a.lock', 'process_b.lock'):
+for name in ('process_a.lock', 'capture.lock', 'pipeline.lock', 'process_b.lock'):
     path = root / 'locks' / name
     if not path.exists():
         continue
@@ -550,6 +588,18 @@ MANGO_CALLS_PIPELINE_ROOT=<HOME>/.mango_local/mango_calls_two_processes
 MANGO_CALLS_TALLANTO_EXPORT=<HOME>/.mango_local/tallanto/Contacts_current.csv
 ```
 
+В будущем config также обязан явно содержать разные идентификаторы машин и путь
+к доказательству остановки старого Mac:
+
+```json
+{
+  "host_id_path": "<HOME>/.mango_local/mango_calls_two_processes/state/host_id",
+  "expected_previous_host_id": "<PREVIOUS_MAC_HOST_ID>",
+  "cutover_manifest_path": "<HOME>/.mango_local/mango_calls_two_processes/state/cutover_manifest.json",
+  "previous_host_snapshot_path": "<HOME>/.mango_local/mango_calls_two_processes/state/previous_host_shutdown_snapshot.json"
+}
+```
+
 Следующий блок относится только к будущей фазе внешней публикации и без
 отдельного разрешения Дмитрия не выполняется. Тогда маркер создаётся только
 внутри уже установленной и проверенной папки Яндекс Диска:
@@ -582,6 +632,18 @@ set -euo pipefail
 08:30, 08:50. Ни один plist не содержит Google/Yandex `--execute`. На этом
 этапе `--install` запрещён. Следующий блок относится к будущему отдельно
 разрешённому cutover; в Phase A его не выполнять:
+
+Каталоги `M1_SNAP`/`SOURCE_SNAP` ниже нужны для отката, но сами по себе не
+являются cutover authority. Перед любым будущим `--install` нужен отдельный
+`previous_host_shutdown_snapshot.json` схемы
+`mango_calls_previous_host_shutdown_snapshot_v1` и manifest схемы
+`mango_calls_cutover_v2`. Snapshot читается как owner-only `0600` без symlink,
+его SHA проверяется по фактическим байтам. Он обязан быть связан с точными
+`previous_host_id` и `source_cursor_sha256`, подтвердить полный scan всех 11
+Calls labels, plist, процессов, cron и блокировок и содержать пустые списки
+активных labels/PID/команд/plist/cron/locks. Пустой или вручную выдуманный JSON
+не является доказательством. Пока такого свежего снимка и внешнего read-only
+watchdog нет, install/cutover — STOP.
 
 ```bash
 set -euo pipefail

@@ -25,6 +25,7 @@ if str(SRC) not in sys.path:
 from mango_mvp.productization.mango_calls_service_contract import (  # noqa: E402
     approved_runtime_fingerprint,
     current_git_sha,
+    git_worktree_is_clean,
     load_owner_only_json,
     stage_capacity_report,
     validate_runtime_fingerprint,
@@ -220,6 +221,21 @@ def probe_time_sync() -> bool:
     return "on" in output or "вкл" in output
 
 
+def machine_timezone() -> str:
+    """Return the canonical IANA timezone configured for the host."""
+    try:
+        target = os.readlink("/etc/localtime")
+    except OSError:
+        target = ""
+    marker = "/zoneinfo/"
+    if marker in target:
+        return target.split(marker, 1)[1].strip()
+    output = command_output(("/usr/sbin/systemsetup", "-gettimezone"))
+    if ":" in output:
+        return output.split(":", 1)[1].strip()
+    return ""
+
+
 def probe_conflicting_launchd() -> bool:
     labels = (
         "com.mango.calls-two-processes",
@@ -333,7 +349,7 @@ def probe(
     codex_home = Path(str(config.get("codex_home_root") or "")).expanduser()
     expected_sha = str(config.get("expected_code_sha") or "")
     actual_sha = current_git_sha(ROOT)
-    dirty = bool(command_output(("git", "status", "--porcelain", "--untracked-files=all")))
+    dirty = not git_worktree_is_clean(ROOT)
     memory = physical_memory_bytes()
     disk = shutil.disk_usage(pipeline_root.parent if pipeline_root.parent.exists() else Path.home())
     runtime_observation = (
@@ -381,6 +397,7 @@ def probe(
     measurements_ok = _measurement_evidence_ok(
         evidence, expected_sha=expected_sha, host_id=host_id
     )
+    configured_timezone = machine_timezone()
     benchmark = evidence.get("controlled_10") if measurements_ok else None
     peak_snapshot = evidence.get("mango_peak_60d") if measurements_ok else None
     capacity = (
@@ -403,6 +420,7 @@ def probe(
         "isolated_codex_home_ok": codex["ok"] is True,
         "capacity_2x_and_memory_ok": capacity.get("capacity_ok") is True,
         "measurement_evidence_bound_and_fresh": measurements_ok,
+        "timezone_is_europe_moscow": configured_timezone == "Europe/Moscow",
         "ffmpeg_present": shutil.which("ffmpeg") is not None,
         "ffprobe_present": shutil.which("ffprobe") is not None,
         **access,
@@ -426,7 +444,7 @@ def probe(
             "free_disk_bytes": disk.free,
             "macos": platform.mac_ver()[0],
             "python": platform.python_version(),
-            "timezone": command_output(("/bin/date", "+%Z")),
+            "timezone": configured_timezone,
         },
         "approved_runtime_fingerprint": approved_runtime_fingerprint(),
         "runs_asr": run_offline_model_probes,

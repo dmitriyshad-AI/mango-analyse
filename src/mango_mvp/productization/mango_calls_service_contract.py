@@ -19,8 +19,28 @@ from mango_mvp.productization.capture_staging import atomic_write_private_json
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 READY_MANIFEST_SCHEMA = "mango_calls_ready_v2"
-CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v1"
+CUTOVER_MANIFEST_SCHEMA = "mango_calls_cutover_v2"
+PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA = (
+    "mango_calls_previous_host_shutdown_snapshot_v1"
+)
+EXTERNAL_WATCHDOG_SCHEMA = "m1_mango_calls_external_watchdog_observation_v1"
+EXTERNAL_WATCHDOG_VERDICT_SCHEMA = "m1_mango_calls_external_watchdog_verdict_v1"
 STAGE10_SCHEMA = "mango_calls_stage10_verdict_v2"
+REQUIRED_CALLS_LAUNCHD_LABELS = (
+    "com.mango.calls-two-processes",
+    "com.mango.calls-process-a",
+    "com.mango.calls-process-b",
+    "com.mango.calls-capture",
+    "com.mango.calls-pipeline",
+    "com.mango.calls-watchdog",
+    "com.mango.calls-publication-close-0600",
+    "com.mango.calls-publication-close-0700",
+    "com.mango.calls-publication-close-0800",
+    "com.mango.calls-publication-alert-0830",
+    "com.mango.calls-publication-status-0850",
+)
+REQUIRED_CALLS_LOCK_NAMES = ("process_a", "capture", "pipeline", "process_b")
+CALLS_PROCESS_MATCHER_VERSION = "mango_calls_runtime_matchers_v1"
 APPROVED_MODELS: Mapping[str, Mapping[str, Any]] = {
     "whisper": {
         "provider": "mlx",
@@ -137,6 +157,14 @@ def parse_aware_datetime(value: Any) -> datetime:
     parsed = datetime.fromisoformat(text_value)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_strict_aware_datetime(value: Any) -> datetime:
+    text_value = str(value or "").strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text_value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
     return parsed.astimezone(timezone.utc)
 
 
@@ -299,10 +327,97 @@ def stable_regular_file_evidence(
     }
 
 
-def current_git_sha(project_root: Path) -> str:
+def _safe_git_environment() -> Mapping[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+
+
+def _safe_git_output(project_root: Path, *args: str) -> str:
+    root = project_root.resolve(strict=True)
     return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=project_root, text=True
+        [
+            "/usr/bin/git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-C",
+            str(root),
+            *args,
+        ],
+        cwd=root,
+        env=dict(_safe_git_environment()),
+        text=True,
+        stderr=subprocess.DEVNULL,
     ).strip()
+
+
+def current_git_sha(project_root: Path) -> str:
+    root = project_root.resolve(strict=True)
+    top = Path(_safe_git_output(root, "rev-parse", "--show-toplevel")).resolve()
+    if top != root:
+        raise RuntimeError("git worktree root mismatch")
+    return _safe_git_output(root, "rev-parse", "HEAD")
+
+
+def git_worktree_is_clean(project_root: Path) -> bool:
+    try:
+        root = project_root.resolve(strict=True)
+        top = Path(
+            _safe_git_output(root, "rev-parse", "--show-toplevel")
+        ).resolve()
+        if top != root:
+            return False
+        tracked = _safe_git_output(root, "ls-files", "-v", "-z")
+        if any(
+            not entry.startswith("H ")
+            for entry in tracked.split("\0")
+            if entry
+        ):
+            return False
+        status = _safe_git_output(
+            root, "status", "--porcelain=v1", "--untracked-files=all"
+        )
+        command = [
+            "/usr/bin/git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-C",
+            str(root),
+        ]
+        environment = dict(_safe_git_environment())
+        worktree_diff = subprocess.run(
+            [*command, "diff-files", "--quiet", "--ignore-submodules=none", "--"],
+            cwd=root,
+            env=environment,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        index_diff = subprocess.run(
+            [
+                *command,
+                "diff-index",
+                "--cached",
+                "--quiet",
+                "--ignore-submodules=none",
+                "HEAD",
+                "--",
+            ],
+            cwd=root,
+            env=environment,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not status and worktree_diff == 0 and index_diff == 0
 
 
 def approved_runtime_fingerprint() -> Mapping[str, Any]:
@@ -353,6 +468,8 @@ def verify_cutover_authority(
     *,
     cutover_manifest_path: Path,
     host_id_path: Path,
+    previous_host_snapshot_path: Optional[Path] = None,
+    expected_previous_host_id: Optional[str] = None,
     expected_code_sha: str,
     project_root: Path,
     expected_source_cursor_sha256: Optional[str] = None,
@@ -372,6 +489,8 @@ def verify_cutover_authority(
         errors.append("expected_code_sha_invalid")
     if manifest.get("expected_code_sha") != expected_code_sha or current_sha != expected_code_sha:
         errors.append("cutover_code_sha_mismatch")
+    if not git_worktree_is_clean(project_root):
+        errors.append("cutover_worktree_dirty_or_unverifiable")
     cursor_sha = str(manifest.get("source_cursor_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", cursor_sha):
         errors.append("source_cursor_sha256_invalid")
@@ -380,11 +499,33 @@ def verify_cutover_authority(
     snapshot_sha = str(manifest.get("previous_host_snapshot_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_sha):
         errors.append("previous_host_snapshot_sha256_invalid")
+    snapshot: Mapping[str, Any] = {}
+    snapshot_loaded = False
+    actual_snapshot_sha = ""
+    if previous_host_snapshot_path is None:
+        errors.append("previous_host_snapshot_missing_or_invalid")
+    else:
+        try:
+            snapshot_raw = read_stable_regular_bytes(
+                previous_host_snapshot_path,
+                label="previous_host_snapshot",
+                owner_only_mode=0o600,
+            )
+            decoded_snapshot = json.loads(snapshot_raw.decode("utf-8"))
+            if not isinstance(decoded_snapshot, Mapping):
+                raise ValueError("snapshot must be a JSON object")
+            snapshot = decoded_snapshot
+            snapshot_loaded = True
+            actual_snapshot_sha = hashlib.sha256(snapshot_raw).hexdigest()
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            errors.append("previous_host_snapshot_missing_or_invalid")
+    if actual_snapshot_sha and actual_snapshot_sha != snapshot_sha:
+        errors.append("previous_host_snapshot_sha256_mismatch")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     parsed_times: dict[str, datetime] = {}
     for field in ("previous_host_disabled_at", "previous_host_checked_at", "approved_at"):
         try:
-            stamp = parse_aware_datetime(manifest.get(field))
+            stamp = _parse_strict_aware_datetime(manifest.get(field))
         except (TypeError, ValueError):
             errors.append(f"{field}_invalid")
             continue
@@ -406,13 +547,131 @@ def verify_cutover_authority(
         errors.append("cutover_chronology_invalid")
     if not str(manifest.get("approved_by") or "").strip():
         errors.append("approved_by_missing")
+
+    manifest_previous_host_id = str(manifest.get("previous_host_id") or "")
+    snapshot_previous_host_id = str(snapshot.get("previous_host_id") or "")
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", expected_previous_host_id or ""
+    ):
+        errors.append("expected_previous_host_id_invalid")
+    if manifest_previous_host_id != expected_previous_host_id:
+        errors.append("cutover_previous_host_id_mismatch")
+    if snapshot_loaded:
+        if snapshot.get("schema_version") != PREVIOUS_HOST_SHUTDOWN_SNAPSHOT_SCHEMA:
+            errors.append("previous_host_snapshot_schema_mismatch")
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", snapshot_previous_host_id
+        ):
+            errors.append("previous_host_snapshot_host_id_invalid")
+        elif snapshot_previous_host_id != expected_previous_host_id:
+            errors.append("previous_host_snapshot_host_id_mismatch")
+        elif snapshot_previous_host_id == host_id:
+            errors.append("previous_host_snapshot_reuses_active_host")
+        if snapshot.get("source_cursor_sha256") != cursor_sha:
+            errors.append("previous_host_snapshot_cursor_sha256_mismatch")
+        if snapshot.get("probe_ok") is not True:
+            errors.append("previous_host_probe_unproven")
+        if snapshot.get("launchd_scan_complete") is not True:
+            errors.append("previous_host_launchd_scan_incomplete")
+        if snapshot.get("process_scan_complete") is not True:
+            errors.append("previous_host_process_scan_incomplete")
+        if snapshot.get("process_matcher_version") != CALLS_PROCESS_MATCHER_VERSION:
+            errors.append("previous_host_process_matcher_mismatch")
+        if snapshot.get("plist_scan_complete") is not True:
+            errors.append("previous_host_plist_scan_incomplete")
+        if snapshot.get("cron_scan_complete") is not True:
+            errors.append("previous_host_cron_scan_incomplete")
+        if snapshot.get("lock_scan_complete") is not True:
+            errors.append("previous_host_lock_scan_incomplete")
+
+        checked_labels = snapshot.get("checked_launchd_labels")
+        checked_label_set: set[str] = set()
+        if (
+            not isinstance(checked_labels, Sequence)
+            or isinstance(checked_labels, (str, bytes))
+            or any(
+                not isinstance(label, str)
+                or not re.fullmatch(r"com\.mango\.calls[-A-Za-z0-9.]*", label)
+                for label in checked_labels
+            )
+            or len(set(checked_labels)) != len(checked_labels)
+        ):
+            errors.append("previous_host_checked_labels_invalid")
+        else:
+            checked_label_set = set(checked_labels)
+        if not set(REQUIRED_CALLS_LAUNCHD_LABELS).issubset(checked_label_set):
+            errors.append("previous_host_required_labels_unchecked")
+
+        checked_locks = snapshot.get("checked_lock_names")
+        if (
+            not isinstance(checked_locks, Sequence)
+            or isinstance(checked_locks, (str, bytes))
+            or any(not isinstance(name, str) for name in checked_locks)
+            or len(set(checked_locks)) != len(checked_locks)
+            or not set(REQUIRED_CALLS_LOCK_NAMES).issubset(set(checked_locks))
+        ):
+            errors.append("previous_host_checked_locks_invalid")
+
+        sequence_rules = (
+            ("active_calls_labels", str),
+            ("active_calls_pids", int),
+            ("active_calls_commands", str),
+            ("active_calls_plists", str),
+            ("active_calls_cron_entries", str),
+            ("held_lock_names", str),
+        )
+        active_evidence = False
+        for field, expected_type in sequence_rules:
+            values = snapshot.get(field)
+            valid = isinstance(values, Sequence) and not isinstance(
+                values, (str, bytes)
+            )
+            if valid and expected_type is int:
+                valid = all(
+                    not isinstance(value, bool)
+                    and isinstance(value, int)
+                    and value > 0
+                    for value in values
+                )
+            elif valid:
+                valid = all(
+                    isinstance(value, str) and bool(value.strip())
+                    for value in values
+                )
+            if not valid:
+                errors.append(f"previous_host_{field}_invalid")
+            elif values:
+                active_evidence = True
+        if active_evidence:
+            errors.append("previous_host_calls_process_active")
+
+        snapshot_times: dict[str, datetime] = {}
+        for snapshot_field in ("captured_at_utc", "previous_host_disabled_at"):
+            try:
+                snapshot_times[snapshot_field] = _parse_strict_aware_datetime(
+                    snapshot.get(snapshot_field)
+                )
+            except (TypeError, ValueError):
+                errors.append(f"previous_host_snapshot_{snapshot_field}_invalid")
+        if (
+            snapshot_times.get("captured_at_utc")
+            and checked
+            and snapshot_times["captured_at_utc"] != checked
+        ):
+            errors.append("previous_host_snapshot_checked_at_mismatch")
+        if (
+            snapshot_times.get("previous_host_disabled_at")
+            and disabled
+            and snapshot_times["previous_host_disabled_at"] != disabled
+        ):
+            errors.append("previous_host_snapshot_disabled_at_mismatch")
     return {
         "ok": not errors,
         "errors": errors,
         "active_host_id": host_id,
         "current_code_sha": current_sha,
         "source_cursor_sha256": cursor_sha or None,
-        "previous_host_snapshot_sha256": snapshot_sha or None,
+        "previous_host_snapshot_sha256": actual_snapshot_sha or None,
         "previous_host_disabled_at": (
             parsed_times.get("previous_host_disabled_at").isoformat()
             if parsed_times.get("previous_host_disabled_at")
@@ -423,6 +682,147 @@ def verify_cutover_authority(
             if parsed_times.get("approved_at")
             else None
         ),
+    }
+
+
+def validate_external_watchdog_observation(
+    observation: Any,
+    *,
+    expected_active_host_id: str,
+    expected_previous_host_id: str,
+    expected_code_sha: str,
+    expected_cutover_manifest_sha256: str,
+    expected_previous_host_snapshot_sha256: str,
+    now: Optional[datetime] = None,
+    max_observation_age_minutes: int = 20,
+    max_heartbeat_age_minutes: int = 5,
+) -> Mapping[str, Any]:
+    """Validate a safe read-only observation produced outside both Macs."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    errors: list[str] = []
+    active_old_process = False
+    previous_labels_count = 0
+    previous_pids_count = 0
+    heartbeat_age_minutes: Optional[float] = None
+
+    if not isinstance(observation, Mapping):
+        observation = {}
+        errors.append("observation_missing")
+    if observation.get("schema_version") != EXTERNAL_WATCHDOG_SCHEMA:
+        errors.append("observation_schema_mismatch")
+    observer_id = str(observation.get("observer_id") or "")
+    observer_id_valid = bool(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", observer_id)
+    )
+    if not observer_id_valid:
+        errors.append("observer_id_invalid")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", expected_active_host_id):
+        errors.append("expected_active_host_id_invalid")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", expected_previous_host_id):
+        errors.append("expected_previous_host_id_invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_code_sha):
+        errors.append("expected_code_sha_invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_cutover_manifest_sha256):
+        errors.append("expected_cutover_manifest_sha256_invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_previous_host_snapshot_sha256):
+        errors.append("expected_previous_host_snapshot_sha256_invalid")
+    if observation.get("expected_code_sha") != expected_code_sha:
+        errors.append("observation_code_sha_mismatch")
+    if (
+        observation.get("cutover_manifest_sha256")
+        != expected_cutover_manifest_sha256
+    ):
+        errors.append("observation_cutover_sha_mismatch")
+    try:
+        observed_at = _parse_strict_aware_datetime(
+            observation.get("observed_at_utc")
+        )
+        observation_age = (current - observed_at).total_seconds() / 60
+        if observation_age < 0 or observation_age > max(
+            1, max_observation_age_minutes
+        ):
+            errors.append("observation_stale_or_future")
+    except (TypeError, ValueError):
+        errors.append("observation_time_invalid")
+
+    previous = observation.get("previous_host")
+    if not isinstance(previous, Mapping):
+        errors.append("previous_host_probe_unproven")
+        previous = {}
+    elif previous.get("probe_ok") is not True:
+        errors.append("previous_host_probe_unproven")
+    if previous.get("host_id") != expected_previous_host_id:
+        errors.append("previous_host_id_mismatch")
+    if (
+        previous.get("shutdown_snapshot_sha256")
+        != expected_previous_host_snapshot_sha256
+    ):
+        errors.append("previous_host_snapshot_sha256_mismatch")
+    labels = previous.get("active_calls_labels")
+    pids = previous.get("active_calls_pids")
+    if (
+        not isinstance(labels, Sequence)
+        or isinstance(labels, (str, bytes))
+        or any(not isinstance(value, str) or not value.strip() for value in labels)
+    ):
+        errors.append("previous_host_labels_invalid")
+        labels = ()
+    if (
+        not isinstance(pids, Sequence)
+        or isinstance(pids, (str, bytes))
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in pids
+        )
+    ):
+        errors.append("previous_host_pids_invalid")
+        pids = ()
+    previous_labels_count = len(labels)
+    previous_pids_count = len(pids)
+    active_old_process = bool(previous_labels_count or previous_pids_count)
+    if active_old_process:
+        errors.append("previous_host_calls_process_active")
+
+    m1 = observation.get("m1")
+    if not isinstance(m1, Mapping):
+        errors.append("m1_probe_unproven")
+        m1 = {}
+    elif m1.get("probe_ok") is not True:
+        errors.append("m1_probe_unproven")
+    if m1.get("host_id") != expected_active_host_id:
+        errors.append("m1_host_id_mismatch")
+    try:
+        heartbeat = _parse_strict_aware_datetime(m1.get("heartbeat_at"))
+        heartbeat_age_minutes = max(
+            0.0, (current - heartbeat).total_seconds() / 60
+        )
+        if heartbeat > current or heartbeat_age_minutes > max(
+            1, max_heartbeat_age_minutes
+        ):
+            errors.append("m1_heartbeat_stale_or_future")
+    except (TypeError, ValueError):
+        errors.append("m1_heartbeat_invalid")
+
+    status = "p0" if active_old_process else "ok" if not errors else "alert"
+    return {
+        "schema_version": EXTERNAL_WATCHDOG_VERDICT_SCHEMA,
+        "status": status,
+        "ok": status == "ok",
+        "errors": sorted(set(errors)),
+        "observer_id_valid": observer_id_valid,
+        "previous_host_active_labels_count": previous_labels_count,
+        "previous_host_active_pids_count": previous_pids_count,
+        "m1_heartbeat_age_minutes": (
+            round(heartbeat_age_minutes, 3)
+            if heartbeat_age_minutes is not None
+            else None
+        ),
+        "safety": {
+            "read_only_observation": True,
+            "runs_asr": False,
+            "runs_resolve_analyze": False,
+            "writes_external_systems": False,
+        },
     }
 
 
@@ -683,6 +1083,7 @@ def build_stage10_verdict(
     }
     capture_pending_keys = set(latest_capture) - quarantine_keys
     pending_keys = (capture_pending_keys | db_pending_keys) - ready_keys - quarantine_keys
+    enumerated_pending_keys = pending_keys & mango_keys
     state_overlap_count = sum(
         sum(key in state for state in (ready_keys, quarantine_keys, pending_keys)) > 1
         for key in mango_keys | ready_keys | quarantine_keys | pending_keys
@@ -691,7 +1092,7 @@ def build_stage10_verdict(
     extra_state_keys = (ready_keys | quarantine_keys | pending_keys) - mango_keys
 
     pending_ages: list[float] = []
-    for key in pending_keys:
+    for key in enumerated_pending_keys:
         entry = latest_capture.get(key) or {}
         try:
             age = (
@@ -820,13 +1221,13 @@ def build_stage10_verdict(
         "ready_incomplete_unique": len(db_pending_keys & mango_keys),
         "quarantine_unique": len(quarantine_keys & mango_keys),
         "quarantine_items": quarantine_items,
-        "pending_unique": len(pending_keys & mango_keys),
+        "pending_unique": len(enumerated_pending_keys),
         "unexplained_missing": len(unexplained_keys),
         "state_overlap_count": state_overlap_count,
         "pending_awaiting_recording": sum(
             str((latest_capture.get(key) or {}).get("status") or "")
             == "skipped_no_recording"
-            for key in pending_keys
+            for key in enumerated_pending_keys
         ),
         "pending_over_sla": pending_over_sla,
         "quarantine_without_reason": quarantine_without_reason,

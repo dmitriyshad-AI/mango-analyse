@@ -58,6 +58,11 @@ def _allow_test_install_path(
         "_standard_plist",
         lambda label: out_dir.resolve() / f"{label}.plist",
     )
+    monkeypatch.setattr(
+        installer,
+        "_validate_process_a_install_authority",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def _write_config(tmp_path: Path) -> tuple[Path, Path]:
@@ -1098,6 +1103,78 @@ def test_split_modes_require_exact_clean_code_revision(tmp_path: Path) -> None:
     assert result.returncode == 4
 
 
+def test_split_runner_ignores_inherited_git_repository_redirection(
+    tmp_path: Path,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    subprocess.run(["/usr/bin/git", "init", "-q"], cwd=foreign, check=True)
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            str(clean_repo / "scripts" / RUNNER.name),
+            str(config_path),
+            str(env_path),
+            "process-a-worker",
+        ],
+        cwd=ROOT,
+        env=_worker_env(
+            tmp_path,
+            GIT_DIR=str(foreign / ".git"),
+            GIT_WORK_TREE=str(foreign),
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 4
+    assert "split_code_revision_mismatch_or_dirty" not in result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_split_runner_rejects_hidden_index_flags(
+    tmp_path: Path, flag: str
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    clean_repo, head = _clean_git_repo(tmp_path)
+    relative_runner = f"scripts/{RUNNER.name}"
+    subprocess.run(
+        ["/usr/bin/git", "update-index", flag, relative_runner],
+        cwd=clean_repo,
+        check=True,
+    )
+    runner = clean_repo / relative_runner
+    runner.write_text(
+        runner.read_text(encoding="utf-8") + "\n# hidden dirty fixture\n",
+        encoding="utf-8",
+    )
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"MANGO_CALLS_EXPECTED_CODE_SHA={head}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(runner), str(config_path), str(env_path), "process-a-worker"],
+        cwd=ROOT,
+        env=_worker_env(tmp_path),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 4
+    assert "split_code_revision_mismatch_or_dirty" in result.stderr
+
+
 def test_process_a_partial_ready_starts_b_and_preserves_rc_one(tmp_path: Path) -> None:
     config_path, env_path = _write_config(tmp_path)
     capture = tmp_path / "launchctl_args.txt"
@@ -1200,6 +1277,114 @@ def test_install_boots_out_old_loaded_label_without_deleting_plist(
     assert ["launchctl", "bootout", f"{domain}/com.mango.calls-two-processes"] in calls
     assert ["launchctl", "bootstrap", domain, str(out_dir / "com.mango.calls-process-a.plist")] in calls
     assert ["launchctl", "bootstrap", domain, str(out_dir / "com.mango.calls-process-b.plist")] in calls
+
+
+@pytest.mark.parametrize("mode", [(), ("--process-a-only",), ("--fast-service",)])
+def test_every_process_a_install_requires_cutover_authority_before_launchctl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: tuple[str, ...],
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    monkeypatch.setattr(
+        installer,
+        "_standard_plist",
+        lambda label: out_dir.resolve() / f"{label}.plist",
+    )
+    launchctl_called = False
+
+    def reject_authority(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic_authority_rejected")
+
+    def forbidden_launchctl(*_args: object, **_kwargs: object) -> object:
+        nonlocal launchctl_called
+        launchctl_called = True
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(
+        installer, "_validate_process_a_install_authority", reject_authority
+    )
+    monkeypatch.setattr(installer.subprocess, "run", forbidden_launchctl)
+
+    with pytest.raises(RuntimeError, match="synthetic_authority_rejected"):
+        installer.main(
+            [
+                "--config",
+                str(config_path),
+                "--env-file",
+                str(env_path),
+                "--out-dir",
+                str(out_dir),
+                *mode,
+                "--install",
+            ]
+        )
+
+    assert launchctl_called is False
+
+
+@pytest.mark.parametrize("mode", [(), ("--process-a-only",)])
+@pytest.mark.parametrize(
+    "conflict_kind", ["loaded_capture", "pipeline_plist", "pipeline_lock"]
+)
+def test_monolithic_process_a_install_rejects_existing_fast_topology(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: tuple[str, ...],
+    conflict_kind: str,
+) -> None:
+    config_path, env_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    out_dir = tmp_path / "launchd"
+    installer = _load_installer()
+    _allow_test_install_path(monkeypatch, installer, out_dir)
+    out_dir.mkdir()
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        loaded = (
+            conflict_kind == "loaded_capture"
+            and command[:2] == ["launchctl", "print"]
+            and command[2].endswith(f"/{installer.LABEL_CAPTURE}")
+        )
+        return subprocess.CompletedProcess(command, 0 if loaded else 1)
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    lock_handle = None
+    if conflict_kind == "pipeline_plist":
+        (out_dir / f"{installer.LABEL_PIPELINE}.plist").write_text(
+            "synthetic", encoding="utf-8"
+        )
+    elif conflict_kind == "pipeline_lock":
+        lock_path = Path(config["pipeline_root"]) / "locks" / "pipeline.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        lock_handle = lock_path.open("r+", encoding="utf-8")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    try:
+        with pytest.raises(RuntimeError, match="existing fast-service topology"):
+            installer.main(
+                [
+                    "--config",
+                    str(config_path),
+                    "--env-file",
+                    str(env_path),
+                    "--out-dir",
+                    str(out_dir),
+                    *mode,
+                    "--install",
+                ]
+            )
+    finally:
+        if lock_handle is not None:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+
+    assert not (out_dir / f"{installer.LABEL_A}.plist").exists()
 
 
 def test_process_a_only_install_refuses_if_process_b_is_loaded(

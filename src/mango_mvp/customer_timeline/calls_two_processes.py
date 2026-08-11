@@ -60,6 +60,7 @@ from mango_mvp.productization.mango_calls_service_contract import (
     parse_aware_datetime,
     read_host_id,
     ready_row_is_complete,
+    safe_alert_payload,
     stage_capacity_report,
     validate_ready_manifest_payload,
     validate_runtime_fingerprint,
@@ -89,9 +90,6 @@ SEQUENTIAL_PIPELINE_STAGES = (
     "resolve",
     "analyze",
 )
-# Backward-compatible import for callers/tests written before the name was
-# corrected.  Execution remains strictly sequential.
-PARALLEL_PIPELINE_STAGES = SEQUENTIAL_PIPELINE_STAGES
 REQUIRED_PIPELINE_MODULES = ("sqlalchemy", "dotenv", "mlx_whisper", "gigaam", "mango_mvp.cli")
 PHONE_RE = re.compile(r"(?:\+7|\b8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -134,6 +132,8 @@ class CallsTwoProcessesConfig:
     expected_code_sha: Optional[str] = None
     host_id_path: Optional[Path] = None
     cutover_manifest_path: Optional[Path] = None
+    previous_host_snapshot_path: Optional[Path] = None
+    expected_previous_host_id: Optional[str] = None
     cutover_proof_max_age_minutes: int = 90
     max_catch_up_days: int = 7
     require_cutover_authority: bool = False
@@ -197,6 +197,14 @@ class CallsTwoProcessesConfig:
                 if payload.get("cutover_manifest_path")
                 else None
             ),
+            previous_host_snapshot_path=(
+                Path(str(payload["previous_host_snapshot_path"])).expanduser()
+                if payload.get("previous_host_snapshot_path")
+                else None
+            ),
+            expected_previous_host_id=optional_text(
+                payload.get("expected_previous_host_id")
+            ),
             cutover_proof_max_age_minutes=int(
                 payload.get("cutover_proof_max_age_minutes", 90)
             ),
@@ -249,6 +257,13 @@ class CallsTwoProcessesConfig:
             )
         if self.require_cutover_authority and not self.expected_code_sha:
             raise ValueError("expected_code_sha is required for cutover authority")
+        if self.require_cutover_authority and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}",
+            self.expected_previous_host_id or "",
+        ):
+            raise ValueError(
+                "expected_previous_host_id is required for cutover authority"
+            )
         if self.publication_root is not None:
             publication = self.publication_root.resolve(strict=False)
             owner_local = (Path.home() / ".mango_local").resolve(strict=False)
@@ -348,6 +363,12 @@ class CallsTwoProcessesConfig:
         return self.cutover_manifest_path or self.pipeline_root / "state" / "cutover_manifest.json"
 
     @property
+    def previous_host_snapshot_file(self) -> Path:
+        return self.previous_host_snapshot_path or (
+            self.pipeline_root / "state" / "previous_host_shutdown_snapshot.json"
+        )
+
+    @property
     def cutover_cursor_lineage_path(self) -> Path:
         return self.pipeline_root / "state" / "cutover_cursor_lineage.json"
 
@@ -399,6 +420,8 @@ def cutover_authority_report(
     report = dict(verify_cutover_authority(
         cutover_manifest_path=config.cutover_manifest_file,
         host_id_path=config.host_id_file,
+        previous_host_snapshot_path=config.previous_host_snapshot_file,
+        expected_previous_host_id=config.expected_previous_host_id,
         expected_code_sha=config.expected_code_sha,
         project_root=Path(__file__).resolve().parents[3],
         proof_max_age_minutes=config.cutover_proof_max_age_minutes,
@@ -416,6 +439,33 @@ def cutover_authority_report(
         and marker.get("active_host_id") == report.get("active_host_id")
     )
     if not marker_ok and initialize_lineage:
+        fresh_report = dict(
+            verify_cutover_authority(
+                cutover_manifest_path=config.cutover_manifest_file,
+                host_id_path=config.host_id_file,
+                previous_host_snapshot_path=config.previous_host_snapshot_file,
+                expected_previous_host_id=config.expected_previous_host_id,
+                expected_code_sha=config.expected_code_sha,
+                project_root=Path(__file__).resolve().parents[3],
+                proof_max_age_minutes=config.cutover_proof_max_age_minutes,
+                require_fresh_previous_host_proof=True,
+            )
+        )
+        if fresh_report.get("ok") is not True:
+            fresh_report["source_cursor_lineage_ok"] = False
+            return fresh_report
+        fresh_cutover_sha = sha256_file(config.cutover_manifest_file)
+        if fresh_cutover_sha != cutover_sha:
+            fresh_report["ok"] = False
+            fresh_report["errors"] = [
+                *list(fresh_report.get("errors") or ()),
+                "cutover_manifest_changed_during_lineage_init",
+            ]
+            fresh_report["source_cursor_lineage_ok"] = False
+            return fresh_report
+        report = fresh_report
+        expected_cursor_sha = str(report.get("source_cursor_sha256") or "")
+        cutover_sha = fresh_cutover_sha
         try:
             cursor_sha = sha256_file(config.cursor_path)
         except OSError:
@@ -431,7 +481,7 @@ def cutover_authority_report(
                     "verified_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
-            marker_ok = True
+            marker_ok = sha256_file(config.cutover_manifest_file) == cutover_sha
     if not marker_ok:
         report["ok"] = False
         report["errors"] = [*list(report.get("errors") or ()), "source_cursor_lineage_unproven"]
@@ -2554,7 +2604,7 @@ def stage_worker_environment_for(
         return transcribe_environment(config, base_env)
     if stage in {"resolve", "analyze"}:
         return transcribe_environment(config, base_env)
-    raise ValueError(f"unsupported parallel pipeline stage: {stage}")
+    raise ValueError(f"unsupported sequential pipeline stage: {stage}")
 
 
 def pipeline_stages(
@@ -2773,20 +2823,6 @@ def parse_macos_time_metrics(path: Path) -> Mapping[str, int]:
     return result
 
 
-def run_parallel_pipeline_workers(
-    config: CallsTwoProcessesConfig,
-    base_env: Mapping[str, str],
-    runner: CommandRunner,
-    *,
-    include_llm: bool = True,
-    run_id: Optional[str] = None,
-) -> list[Mapping[str, Any]]:
-    """Compatibility alias; the implementation is intentionally sequential."""
-    return run_sequential_pipeline_workers(
-        config, base_env, runner, include_llm=include_llm, run_id=run_id
-    )
-
-
 def worker_command(config: CallsTwoProcessesConfig, stages: str) -> list[str]:
     return cli_command(
         config,
@@ -2875,6 +2911,7 @@ def run_increment_producer(
         str(report_path),
         "--tenant-id",
         config.tenant_id,
+        "--strict-service-ready",
     ]
     if since:
         command.extend(["--since", since])
@@ -3606,11 +3643,14 @@ def pipeline_freshness(
         raw_data = optional_text(state.get("data_through"))
         checked = parse_datetime(raw_checked) if raw_checked else None
         data_at = parse_datetime(raw_data) if raw_data else None
-        checked_age = max(0.0, (current - checked).total_seconds()) if checked else None
-        data_age = max(0.0, (current - data_at).total_seconds()) if data_at else None
+        checked_age = (current - checked).total_seconds() if checked else None
+        data_age = (current - data_at).total_seconds() if data_at else None
         status = (
             "missing"
             if checked is None
+            else "future"
+            if (checked_age is not None and checked_age < 0)
+            or (data_age is not None and data_age < 0)
             else "stale"
             if checked_age is not None and checked_age > threshold
             else "fresh"
@@ -3635,6 +3675,13 @@ def pipeline_freshness(
             status = "partial"
         elif state.get("stop_reason") == "drop_missing":
             status = "missing"
+        elif state.get("status") not in {"ok", "idle"}:
+            raw_status = str(state.get("status") or "")
+            status = (
+                raw_status
+                if raw_status in {"blocked", "deferred", "locked"}
+                else "invalid"
+            )
         stages[process] = {
             "status": status,
             "age_seconds": round(data_age, 3) if data_age is not None else None,
@@ -3655,16 +3702,14 @@ def pipeline_freshness(
         try:
             heartbeat_at = parse_datetime(raw_heartbeat) if raw_heartbeat else None
             heartbeat_age = (
-                max(0.0, (current - heartbeat_at).total_seconds())
-                if heartbeat_at
-                else None
+                (current - heartbeat_at).total_seconds() if heartbeat_at else None
             )
         except (TypeError, ValueError):
             heartbeat_age = None
         heartbeat_pid = positive_int(heartbeat.get("pid"))
         heartbeat_live = bool(
             heartbeat_age is not None
-            and heartbeat_age <= 90
+            and 0 <= heartbeat_age <= 90
             and pid_exists(heartbeat_pid)
             and str(heartbeat.get("stage") or "") in SEQUENTIAL_PIPELINE_STAGES
         )

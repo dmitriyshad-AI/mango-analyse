@@ -18,7 +18,7 @@ from mango_mvp.config import get_settings
 from mango_mvp.customer_timeline.calls_two_processes import (
     CallsTwoProcessesConfig,
     LockBusy,
-    PARALLEL_PIPELINE_STAGES,
+    SEQUENTIAL_PIPELINE_STAGES,
     assert_no_pdn,
     call_db_has_open_work,
     call_event_source_systems,
@@ -42,8 +42,10 @@ from mango_mvp.customer_timeline.calls_two_processes import (
     read_json,
     read_known_processed_ids,
     run_capture,
-    run_parallel_pipeline_workers,
+    run_sequential_pipeline_workers,
     run_pipeline,
+    run_increment_producer,
+    run_local_watchdog,
     run_process_a,
     run_process_b,
     run_cycle,
@@ -103,6 +105,32 @@ def test_config_refuses_prod_and_stable_runtime_paths(tmp_path: Path) -> None:
         stable.validate()
 
 
+def test_process_b_producer_explicitly_enables_strict_service_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = config_for(tmp_path)
+    increment = config.ingest_dir / "increment.jsonl"
+    report = config.ingest_dir / "producer.json"
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert "--strict-service-ready" in command
+        assert command.count("--package-db") == 1
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps({"rows_selected": 0, "events_written": 0}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(calls_runtime.subprocess, "run", fake_run)
+
+    result = run_increment_producer(config, increment, report, None)
+
+    assert result["status"] == "ok"
+
+
 def test_disk_preflight_creates_owner_only_pipeline_root(tmp_path: Path) -> None:
     config = replace(config_for(tmp_path), min_free_gib=0)
     previous = os.umask(0)
@@ -123,6 +151,45 @@ def test_process_a_lock_is_nonblocking_and_reports_holder(tmp_path: Path) -> Non
             with process_lease(lock, stale_seconds=60):
                 pass
         assert caught.value.metadata["pid"] == first["pid"]
+
+
+def test_killed_lock_owner_releases_kernel_flock_for_next_run(
+    tmp_path: Path,
+) -> None:
+    lock = tmp_path / "killed-owner.lock"
+    root = Path(__file__).resolve().parents[1]
+    child_code = (
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "from mango_mvp.customer_timeline.calls_two_processes import process_lease\n"
+        "with process_lease(Path(sys.argv[1]), stale_seconds=60):\n"
+        " print('locked', flush=True)\n"
+        " time.sleep(60)\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(lock)],
+        cwd=root,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(root / "src"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        with pytest.raises(LockBusy):
+            with process_lease(lock, stale_seconds=60):
+                pass
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+    with process_lease(lock, stale_seconds=60) as acquired:
+        assert acquired["pid"] == os.getpid()
 
 
 def test_pipeline_and_direct_process_a_share_one_lock_while_capture_is_independent(
@@ -183,6 +250,120 @@ def test_run_capture_writes_cursor_only_for_complete_enumeration(
     assert failed["status"] == "failed"
     assert failed["stop_reason"] == "capture_or_enumeration_failed"
     assert not incomplete.cursor_path.exists()
+
+
+def test_direct_strict_entrypoints_reject_dirty_worktree_before_callers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sha = "a" * 40
+    host = tmp_path / "host_id"
+    host.write_text("m1-host\n", encoding="utf-8")
+    host.chmod(0o600)
+    cutover = tmp_path / "cutover.json"
+    cutover.write_text(
+        json.dumps(
+            {
+                "schema_version": "mango_calls_cutover_v2",
+                "active_host_id": "m1-host",
+                "previous_host_id": "source-mac",
+                "expected_code_sha": expected_sha,
+                "source_cursor_sha256": "b" * 64,
+                "previous_host_snapshot_sha256": "c" * 64,
+                "previous_host_disabled_at": "2026-08-11T08:00:00+00:00",
+                "previous_host_checked_at": "2026-08-11T08:05:00+00:00",
+                "approved_at": "2026-08-11T08:10:00+00:00",
+                "approved_by": "owner",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cutover.chmod(0o600)
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha=expected_sha,
+        host_id_path=host,
+        cutover_manifest_path=cutover,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    monkeypatch.setattr(calls_runtime, "current_git_sha", lambda _root: expected_sha)
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.current_git_sha",
+        lambda _root: expected_sha,
+    )
+    monkeypatch.setattr(
+        "mango_mvp.productization.mango_calls_service_contract.git_worktree_is_clean",
+        lambda _root: False,
+    )
+
+    capture = run_capture(
+        config,
+        capture_runner=lambda *_args: pytest.fail("Mango caller must not run"),
+    )
+    pipeline = run_pipeline(
+        config,
+        command_runner=lambda *_args: pytest.fail("worker caller must not run"),
+    )
+
+    assert capture["status"] == pipeline["status"] == "failed"
+    assert capture["stop_reason"] == pipeline["stop_reason"] == "cutover_authority_failed"
+    assert "cutover_worktree_dirty_or_unverifiable" in capture["counters"]["authority"]["errors"]
+    assert "cutover_worktree_dirty_or_unverifiable" in pipeline["authority"]["errors"]
+
+
+def test_first_lineage_requires_fresh_old_host_proof_then_becomes_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_sha = "a" * 40
+    config = replace(
+        config_for(tmp_path),
+        expected_code_sha=expected_sha,
+        expected_previous_host_id="source-mac",
+        require_cutover_authority=True,
+        strict_ready_provenance=True,
+    )
+    config.host_id_file.parent.mkdir(parents=True, exist_ok=True)
+    config.host_id_file.write_text("m1-host\n", encoding="utf-8")
+    config.host_id_file.chmod(0o600)
+    config.cutover_manifest_file.write_text("{}", encoding="utf-8")
+    config.cutover_manifest_file.chmod(0o600)
+    config.cursor_path.write_bytes(b"transferred-cursor")
+    cursor_sha = sha256_file(config.cursor_path)
+    fresh_required: list[bool] = []
+
+    def verify(**kwargs: object) -> dict[str, object]:
+        require_fresh = bool(kwargs["require_fresh_previous_host_proof"])
+        fresh_required.append(require_fresh)
+        return {
+            "ok": not require_fresh or len(fresh_required) > 2,
+            "errors": [] if not require_fresh or len(fresh_required) > 2 else [
+                "previous_host_proof_stale"
+            ],
+            "active_host_id": "m1-host",
+            "source_cursor_sha256": cursor_sha,
+        }
+
+    monkeypatch.setattr(calls_runtime, "verify_cutover_authority", verify)
+
+    stale = calls_runtime.cutover_authority_report(
+        config, initialize_lineage=True
+    )
+    assert stale["ok"] is False
+    assert stale["errors"] == ["previous_host_proof_stale"]
+    assert not config.cutover_cursor_lineage_path.exists()
+
+    initialized = calls_runtime.cutover_authority_report(
+        config, initialize_lineage=True
+    )
+    assert initialized["ok"] is True
+    assert initialized["source_cursor_lineage_ok"] is True
+    assert fresh_required == [False, True, False, True]
+
+    steady = calls_runtime.cutover_authority_report(config)
+    assert steady["ok"] is True
+    assert steady["source_cursor_lineage_ok"] is True
+    assert fresh_required == [False, True, False, True, False]
 
 
 def test_run_pipeline_reuses_unchanged_frozen_snapshot_without_workers(
@@ -1508,11 +1689,11 @@ def test_pipeline_matches_ui_one_stage_at_a_time(tmp_path: Path) -> None:
         calls.append((list(command), dict(env)))
         return {"rc": 0}
 
-    result = run_parallel_pipeline_workers(config, {}, fake_runner)
+    result = run_sequential_pipeline_workers(config, {}, fake_runner)
 
-    assert len(result) == len(PARALLEL_PIPELINE_STAGES) == 4
+    assert len(result) == len(SEQUENTIAL_PIPELINE_STAGES) == 4
     assert [command[command.index("--stages") + 1] for command, _ in calls] == list(
-        PARALLEL_PIPELINE_STAGES
+        SEQUENTIAL_PIPELINE_STAGES
     )
     assert calls[0][1]["DUAL_TRANSCRIBE_ENABLED"] == "0"
     assert calls[1][1]["DUAL_TRANSCRIBE_ENABLED"] == "1"
@@ -1957,6 +2138,164 @@ def test_pipeline_freshness_marks_old_data_stale(tmp_path: Path) -> None:
     assert report["stages"]["process_b"]["status"] == "stale"
 
 
+def test_pipeline_freshness_rejects_future_status_timestamps(
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
+    future = "2099-01-01T00:00:00+00:00"
+    for path, process in (
+        (config.process_a_status_path, "process_a"),
+        (config.process_b_status_path, "process_b"),
+    ):
+        write_json(
+            path,
+            {
+                "process": process,
+                "status": "ok",
+                "checked_through": future,
+                "data_through": future,
+            },
+        )
+
+    report = pipeline_freshness(
+        config, now=datetime(2026, 7, 10, 2, 0, tzinfo=timezone.utc)
+    )
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == "future"
+    assert report["stages"]["process_b"]["status"] == "future"
+
+
+@pytest.mark.parametrize(
+    ("last_status", "expected_status"),
+    (
+        ("deferred", "deferred"),
+        ("blocked", "blocked"),
+        ("locked", "locked"),
+        ("unexpected", "invalid"),
+    ),
+)
+def test_pipeline_freshness_never_turns_non_success_status_green(
+    tmp_path: Path, last_status: str, expected_status: str
+) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": last_status,
+            "stop_reason": "synthetic_stop",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+    write_json(
+        config.process_b_status_path,
+        {
+            "process": "process_b",
+            "status": "ok",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+
+    report = pipeline_freshness(
+        config, now=datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc)
+    )
+
+    assert report["status"] == "stale"
+    assert report["stages"]["process_a"]["status"] == expected_status
+    assert report["stages"]["process_a"]["last_run_status"] == last_status
+
+
+def test_future_live_pid_heartbeat_cannot_override_failed_process_a(
+    tmp_path: Path,
+) -> None:
+    config = replace(config_for(tmp_path), freshness_max_age_minutes=30)
+    create_empty_capture_manifest(config)
+    now = datetime(2026, 7, 10, 2, 1, tzinfo=timezone.utc)
+    fresh = "2026-07-10T02:00:00+00:00"
+    write_json(
+        config.process_a_status_path,
+        {
+            "process": "process_a",
+            "status": "failed",
+            "stop_reason": "runtime_fingerprint_mismatch",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+    write_json(
+        config.process_b_status_path,
+        {
+            "process": "process_b",
+            "status": "ok",
+            "checked_through": fresh,
+            "data_through": fresh,
+        },
+    )
+    write_json(
+        config.process_a_heartbeat_path,
+        {
+            "updated_at": "2099-01-01T00:00:00+00:00",
+            "pid": os.getpid(),
+            "stage": "transcribe",
+        },
+    )
+
+    report = pipeline_freshness(config, now=now)
+
+    assert report["status"] == "stale"
+    assert report["heavy_heartbeat"]["status"] == "stale_or_dead"
+    assert report["heavy_heartbeat"]["age_seconds"] < 0
+    assert report["stages"]["process_a"]["status"] == "failed"
+    assert (
+        report["stages"]["process_a"]["stop_reason"]
+        == "runtime_fingerprint_mismatch"
+    )
+
+
+def test_local_watchdog_raises_p0_for_foreign_manifest_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = config_for(tmp_path)
+    monkeypatch.setattr(
+        calls_runtime,
+        "pipeline_freshness",
+        lambda *_args, **_kwargs: {"status": "fresh", "stages": {}},
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "cutover_authority_report",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "previous_host_disabled_at": "2026-08-11T08:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        calls_runtime,
+        "capture_manifest_snapshot",
+        lambda *_args, **_kwargs: {"entries": []},
+    )
+    monkeypatch.setattr(calls_runtime, "configured_host_id", lambda *_a, **_k: "m1-host")
+    monkeypatch.setattr(
+        calls_runtime,
+        "foreign_host_ids",
+        lambda *_args, **_kwargs: ["old-mac-host"],
+    )
+
+    report = run_local_watchdog(config, now=datetime(2026, 8, 11, 9, tzinfo=timezone.utc))
+
+    assert report["status"] == "p0"
+    assert report["stop_reason"] == "foreign_host_or_cutover_authority_failed"
+    assert report["foreign_host_ids"] == ["old-mac-host"]
+    assert report["safe_alert"]["foreign_host_count"] == 1
+    assert report["safety"]["read_only"] is True
+
+
 def test_pipeline_freshness_does_not_call_missing_drop_fresh(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     write_json(
@@ -2320,10 +2659,16 @@ def create_ready_call_db(path: Path) -> None:
                 direction TEXT,
                 duration_sec REAL,
                 transcription_status TEXT,
+                transcript_variants_json TEXT,
                 resolve_status TEXT,
                 analysis_status TEXT,
                 analysis_json TEXT,
                 dead_letter_stage TEXT,
+                pipeline_stage TEXT,
+                pipeline_worker_id TEXT,
+                pipeline_claimed_at TEXT,
+                analysis_worker_id TEXT,
+                analysis_claimed_at TEXT,
                 amocrm_contact_id TEXT,
                 amocrm_lead_id TEXT
             )
@@ -2334,8 +2679,9 @@ def create_ready_call_db(path: Path) -> None:
             INSERT INTO call_records (
                 id, source_call_id, source_filename, source_file, started_at,
                 phone, manager_name, direction, duration_sec,
-                analysis_status, analysis_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                transcription_status, transcript_variants_json,
+                resolve_status, analysis_status, analysis_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 1,
@@ -2347,6 +2693,19 @@ def create_ready_call_db(path: Path) -> None:
                 "manager",
                 "inbound",
                 60.0,
+                "done",
+                json.dumps(
+                    {
+                        "primary_provider": "mlx",
+                        "secondary_provider": "gigaam",
+                        "full": {
+                            "variant_a": "готовый Whisper",
+                            "variant_b": "готовый GigaAM",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "done",
                 "done",
                 json.dumps({"call_type": "sales_call", "history_summary": "Обсуждался курс."}),
             ),
@@ -3235,10 +3594,40 @@ def test_call_db_open_work_includes_interrupted_secondary_backfill(tmp_path: Pat
     config = config_for(tmp_path)
     create_ready_call_db(config.working_db)
     with sqlite3.connect(config.working_db) as con:
-        con.execute("ALTER TABLE call_records ADD COLUMN pipeline_stage TEXT")
         con.execute(
             "UPDATE call_records SET transcription_status='done', resolve_status='done', "
             "analysis_status='done', pipeline_stage='backfill-second-asr'"
+        )
+
+    assert call_db_has_open_work(config.working_db) is True
+
+
+@pytest.mark.parametrize(
+    ("stage", "status_update"),
+    (
+        (
+            "transcribe",
+            "transcription_status='in_progress', resolve_status='pending', "
+            "analysis_status='pending'",
+        ),
+        (
+            "resolve",
+            "transcription_status='done', resolve_status='in_progress', "
+            "analysis_status='pending'",
+        ),
+    ),
+)
+def test_interrupted_primary_or_resolve_lease_is_recoverable_open_work(
+    tmp_path: Path, stage: str, status_update: str
+) -> None:
+    config = config_for(tmp_path)
+    create_ready_call_db(config.working_db)
+    with sqlite3.connect(config.working_db) as con:
+        con.execute(
+            f"UPDATE call_records SET {status_update}, pipeline_stage=?, "
+            "pipeline_worker_id='killed-worker', "
+            "pipeline_claimed_at='2020-01-01T00:00:00+00:00'",
+            (stage,),
         )
 
     assert call_db_has_open_work(config.working_db) is True
@@ -3262,7 +3651,6 @@ def test_call_db_open_work_includes_stale_analyze_claim(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     create_ready_call_db(config.working_db)
     with sqlite3.connect(config.working_db) as con:
-        con.execute("ALTER TABLE call_records ADD COLUMN analysis_claimed_at TEXT")
         con.execute(
             "UPDATE call_records SET transcription_status='done', resolve_status='done', "
             "analysis_status='in_progress', analysis_claimed_at='2020-01-01T00:00:00+00:00'"
@@ -3280,7 +3668,6 @@ def test_call_db_open_work_includes_secondary_asr_retry(tmp_path: Path) -> None:
         "full": {"variant_a": "текст", "variant_b": ""},
     }
     with sqlite3.connect(config.working_db) as con:
-        con.execute("ALTER TABLE call_records ADD COLUMN transcript_variants_json TEXT")
         con.execute(
             "UPDATE call_records SET transcription_status='done', resolve_status='done', "
             "analysis_status='done', transcript_variants_json=?",
